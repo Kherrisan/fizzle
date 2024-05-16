@@ -19,7 +19,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_open {
 
         let mut state = state::fizzle_state().lock().unwrap();
-
+        
         
 
         crate::debug_abort("open");

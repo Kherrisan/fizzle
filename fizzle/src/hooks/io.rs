@@ -43,10 +43,10 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn sendmsg(
         fd: libc::c_int,
-        mst: *const libc::msghdr,
-        flags: libc::c_int,
+        msg: *const libc::msghdr,
+        flags: libc::c_int
     ) -> libc::ssize_t => fizzle_sendmsg {
-        hook_macros::real!(sendmsg)(fd, buf, len, flags, dest_addr, addrlen)
+        hook_macros::real!(sendmsg)(fd, msg, flags)
     }
 }
 

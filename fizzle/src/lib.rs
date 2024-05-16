@@ -9,10 +9,12 @@ mod state;
 mod streams;
 
 pub(crate) use hook_macros::hook;
+use libc::O_NONBLOCK;
 
 use std::{ffi::CStr, process, ptr};
 
 
+#[derive(Debug)]
 pub struct BufferError {
     pub reason: &'static str,
 }
@@ -49,12 +51,12 @@ impl<const T: usize> Buffer<T> {
         &self.data[..self.data_len]
     }
 
-    pub fn data_mut(&self) -> &mut [u8] {
+    pub fn data_mut(&mut self) -> &mut [u8] {
         &mut self.data[..self.data_len]
     }
 
     pub fn put(&mut self, data: &[u8]) -> Result<(), BufferError> {
-        write_slice[..data.len()].copy_from_slice(data);
+        self.data[..data.len()].copy_from_slice(data);
         self.data_len = data.len();
         Ok(())
     }
@@ -72,7 +74,6 @@ impl<const T: usize> Buffer<T> {
     pub fn append(&mut self, data: &[u8]) {
         self.data[..data.len()].copy_from_slice(data);
         self.data_len = data.len();
-        Ok(())
     }
 
     pub fn try_append(&mut self, data: &[u8]) -> Result<(), BufferError> {
@@ -81,12 +82,6 @@ impl<const T: usize> Buffer<T> {
         };
 
         write_slice.copy_from_slice(data);
-        self.data_len += data.len();
-        Ok(())
-    }
-
-    pub fn append(&mut self, data: &[u8]) {
-        self.data[self.data_len..self.data_len + data.len()].copy_from_slice(data);
         self.data_len += data.len();
         Ok(())
     }
@@ -100,34 +95,147 @@ pub struct FilePathError {
 #[derive(Debug, Clone)]
 pub struct FilePath {
     buf: Buffer<256>,
+    trailing_slash: bool,
 }
 
 impl FilePath {
-    pub fn from_cstr(path: &CStr) -> Result<Self, FilePathError> {
+    fn segment(path: &[u8]) -> &[u8] {
+        for (idx, &c) in path.iter().enumerate() {
+            if c == b'/' {
+                return &path[..idx]
+            }
+        }
+        path
+    }
 
+    // Gets the reverse segment of the given path
+    fn last_segment(path: &[u8]) -> &[u8] {
+        let mut first_slash_seen = false;
+        for (idx, &c) in path.iter().enumerate().rev() {
+            if c == b'/' {
+                if first_slash_seen {
+                    return &path[idx + 1..]
+                } else {
+                    first_slash_seen = true;
+                }
+            }
+        }
+        path
+    }
+
+    pub fn from_cstr(path: &CStr) -> Result<Self, FilePathError> {
+        if path.to_bytes().len() > 255 {
+            return Err(FilePathError { reason: "filepath exceeded 255 character max size" })
+        }
 
         let mut buf = Buffer::new();
-        buf.try_put(path.to_bytes_with_nul()).map_err(|e| FilePathError { reason: e.reason })?;
+        buf.try_put(path.to_bytes()).map_err(|e| FilePathError { reason: e.reason })?;
 
         let mut read_idx = 0usize;
         let mut write_idx = 0usize;
         let data = buf.data_mut();
 
-        while let Some(&c) = data.get(write_idx) {
-            
+        // Special case: path is absolute
+        if let Some(b'/') = data.get(read_idx) {
+            read_idx += 1;
+            write_idx += 1;
         }
 
+        while read_idx < data.len() {
+            let segment = Self::segment(&data[read_idx..]);
+            let segment_len = segment.len();
+            match segment {
+                b"" | b"." => (), // Do nothing
+                b".." => {
+                    // Traverse back one segment
+                    match Self::last_segment(&data[..write_idx]) {
+                        b"" | b"../" => {
+                            data.copy_from_slice(b"../");
+                            write_idx += 3;
+                        },
+                        b"/" => return Err(FilePathError { reason: "backtrack attempted on root path" }),
+                        segment => write_idx -= segment.len(),
+                    }
+                },
+                _ => {
+                    // Copy current segment to write portion
+                    for i in 0..segment_len {
+                        data[write_idx + i] = data[read_idx + i];
+                    }
+                    write_idx += segment_len;
 
+                    // copy '/' if exists
+                    if segment_len < data.len() - read_idx { 
+                        data[write_idx] = b'/';
+                        write_idx += 1;
+                    }
+                },
+            }
 
-        Ok(FilePath { buf })
+            read_idx += segment_len + 1;
+        }
+
+        if write_idx == 0 {
+            return Err(FilePathError { reason: "empty path" })
+        }
+
+        let trailing_slash = data[write_idx - 1] == b'/';
+
+        data[write_idx] = b'\0';
+        write_idx += 1;
+
+        buf.shrink(write_idx).map_err(|e| FilePathError { reason: e.reason })?;
+
+        Ok(FilePath { buf, trailing_slash })
     }
 
-    pub fn concat(&mut self, other: &FilePath) -> Result<(), FilePathError> {
-        todo!()
+    pub fn concat(mut self, other: &FilePath) -> Result<Self, FilePathError> {
+        let data = &other.buf.data()[..other.buf.data().len() - 1]; // remove null character
+        let mut read_idx = 0;
+
+        self.buf.shrink(self.buf.len() - 1).unwrap(); // Remove null character
+        
+        while read_idx < other.buf.len() {
+            let segment = Self::segment(&data[read_idx..]);
+            let segment_len = segment.len();
+
+            match segment {
+                b"" | b"." => (), // Do nothing (shouldn't happen unless `other` has an absolute at the start)
+                b".." => {
+                    // Traverse back one segment
+                    match Self::last_segment(self.buf.data()) {
+                        b"" | b"../" => self.buf.try_append(b"../").map_err(|_| FilePathError { reason: "insufficient space" })?,
+                        b"/" => return Err(FilePathError { reason: "backtrack attempted on root path" }),
+                        segment => self.buf.shrink(segment.len()).unwrap(),
+                    }
+                }
+                _ => {
+                    self.buf.try_append(segment).map_err(|_| FilePathError { reason: "insufficient space" })?;
+                    // copy '/' if exists
+                    if segment_len < data.len() - read_idx { 
+                        self.buf.try_append(b"/").map_err(|_| FilePathError { reason: "insufficient space" })?;
+                    }
+                }
+            }
+
+            read_idx += segment_len + 1;
+        }
+
+        // Re-add null character
+        self.buf.try_append(b"\0").map_err(|_| FilePathError { reason: "insufficient space" })?;
+
+        self.trailing_slash = other.trailing_slash;
+        Ok(self)
+    }
+
+    pub fn is_absolute(&self) -> bool {
+        self.buf.data().get(0) == Some(&b'/')
+    }
+
+    pub fn has_trailing_slash(&self) -> bool {
+        self.trailing_slash
     }
 }
-
-
 
 /// Abort the process immediately, printing `reason` to stderr.
 pub(crate) fn abort(reason: &'static str) -> ! {
