@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::CString;
 use std::os::fd::RawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{env, thread};
 use std::sync::{OnceLock, Mutex};
@@ -12,6 +13,8 @@ use std::thread::{Thread, ThreadId};
 
 use fxhash::FxBuildHasher;
 use libc::pthread_t;
+
+use crate::FilePath;
 
 // See `set_entered_handler` and `has_entered_handler`
 std::thread_local! {
@@ -82,6 +85,15 @@ impl SemaphoreId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FileId(usize);
+
+impl From<*mut libc::FILE> for FileId {
+    fn from(value: *mut libc::FILE) -> Self {
+        FileId(value as usize)
+    }
+}
+
 #[derive(Debug)]
 pub struct BarrierInfo {
     pub curr: Vec<ThreadId>,
@@ -90,7 +102,16 @@ pub struct BarrierInfo {
 
 #[derive(Debug)]
 pub struct FileInfo {
-    path: CString,
+    pub temporary: bool,
+}
+
+impl FileInfo {
+    /// Creates a new temporary file.
+    pub fn new() -> Self {
+        Self {
+            temporary: true,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -135,8 +156,13 @@ pub struct ThreadInfo {
 pub struct State {
     pub barriers: HashMap<BarrierId, BarrierInfo, FxBuildHasher>,
     pub condvars: HashMap<CondVarId, VecDeque<ThreadId>, FxBuildHasher>,
-    pub filepaths: HashMap<CString, RawFd>,
-    pub files: HashMap<RawFd, FileInfo>,
+    /// Files specifically designated as being emulated.
+    pub files: HashMap<FilePath, FileInfo, FxBuildHasher>,
+    pub passthrough_files: HashMap<RawFd, FilePath, FxBuildHasher>,
+    pub file_fds: HashMap<RawFd, FilePath, FxBuildHasher>,
+    pub file_objs: HashMap<FileId, RawFd, FxBuildHasher>,
+    pub passthrough_file_objs: HashMap<FileId, RawFd>,
+    pub path_fds: HashMap<RawFd, FilePath, FxBuildHasher>,
     pub mutexes: HashMap<MutexId, VecDeque<ThreadId>, FxBuildHasher>,
     pub named_semaphores: HashMap<CString, SemaphoreId>,
     pub rwlocks: HashMap<RwLockId, RwLockInfo, FxBuildHasher>,
@@ -149,15 +175,24 @@ pub struct State {
     pub debug_enabled: bool,
     /// Indicates which thread(s) are awaiting the death of a specific thread (via pthread_join)
     pub awaiting_thread_death: HashMap<ThreadId, Vec<ThreadId>, FxBuildHasher>,
+    /// The directory that the program is currently executing relative to.
+    pub working_directory: FilePath,
 }
 
 impl State {
     fn new(debug_enabled: bool) -> Self {
+        let working_directory_bytes = std::env::current_dir().map(|dir| FilePath::from_raw_bytes(dir.as_os_str().as_bytes()).unwrap_or_default());
+        let working_directory = working_directory_bytes.unwrap_or_default();
+
         Self {
             barriers: HashMap::with_hasher(Default::default()),
             condvars: HashMap::with_hasher(Default::default()),
-            filepaths: HashMap::with_hasher(Default::default()),
             files: HashMap::with_hasher(Default::default()),
+            passthrough_files: HashMap::with_hasher(Default::default()),
+            file_fds: HashMap::with_hasher(Default::default()),
+            file_objs: HashMap::with_hasher(Default::default()),
+            passthrough_file_objs: HashMap::with_hasher(Default::default()),
+            path_fds: HashMap::with_hasher(Default::default()),
             mutexes: HashMap::with_hasher(Default::default()),
             named_semaphores: HashMap::with_hasher(Default::default()),
             rwlocks: HashMap::with_hasher(Default::default()),
@@ -168,6 +203,7 @@ impl State {
             terminated_threads: HashSet::with_hasher(Default::default()),
             program_threads: HashMap::with_hasher(Default::default()),
             debug_enabled,
+            working_directory,
             awaiting_thread_death: HashMap::with_hasher(Default::default()),
         }
     }

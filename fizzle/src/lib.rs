@@ -11,7 +11,7 @@ mod streams;
 pub(crate) use hook_macros::hook;
 use libc::O_NONBLOCK;
 
-use std::{ffi::CStr, process, ptr};
+use std::{ffi::CStr, hash::Hash, os::fd::RawFd, process, ptr};
 
 
 #[derive(Debug)]
@@ -20,10 +20,23 @@ pub struct BufferError {
 }
 
 // Future work: make the state variable `Sized` so that it can be constructed in shared memory for multi-process fuzzing
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq)]
 pub struct Buffer<const T: usize> {
     data: [u8; T],
     data_len: usize,
+}
+
+impl<const T: usize> PartialEq for Buffer<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.data[..self.data_len] == other.data[..other.data_len]
+    }
+}
+
+impl<const T: usize> Hash for Buffer<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.data[..self.data_len].hash(state);
+        self.data_len.hash(state);
+    }
 }
 
 impl<const T: usize> Buffer<T> {
@@ -92,10 +105,19 @@ pub struct FilePathError {
     reason: &'static str,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FilePath {
     buf: Buffer<256>,
     trailing_slash: bool,
+}
+
+impl Default for FilePath {
+    fn default() -> Self {
+        let mut buf = Buffer::new();
+        buf.append(b"/");
+
+        Self { buf, trailing_slash: true }
+    }
 }
 
 impl FilePath {
@@ -124,12 +146,17 @@ impl FilePath {
     }
 
     pub fn from_cstr(path: &CStr) -> Result<Self, FilePathError> {
-        if path.to_bytes().len() > 255 {
+        Self::from_raw_bytes(path.to_bytes())
+    }
+
+    /// Note that this should not include any null terminating character.
+    pub fn from_raw_bytes(path: &[u8]) -> Result<Self, FilePathError> {
+        if path.len() > 255 {
             return Err(FilePathError { reason: "filepath exceeded 255 character max size" })
         }
 
         let mut buf = Buffer::new();
-        buf.try_put(path.to_bytes()).map_err(|e| FilePathError { reason: e.reason })?;
+        buf.try_put(path).map_err(|e| FilePathError { reason: e.reason })?;
 
         let mut read_idx = 0usize;
         let mut write_idx = 0usize;
@@ -253,7 +280,7 @@ pub(crate) fn debug_abort(function_name: &'static str) {
 
 #[macro_export]
 macro_rules! trace_enter {
-    ($f:tt) => { if state::fizzle_trace_enabled() { eprintln!("Thread {:?} entering function {}", std::thread::current().id(), stringify!($f)); } }
+    ($f:tt) => { if state::fizzle_trace_enabled() { eprintln!("Thread {:?} invoked function {}", std::thread::current().id(), stringify!($f)); } }
 }
 
 #[macro_export]
@@ -265,6 +292,8 @@ macro_rules! trace_exit {
 /// This is particularly useful in emulating hooks that require a pointer as a return value.
 /// Memory locations should be destroyed with `unique_mem_destroy()` once finished using.
 unsafe fn unique_mem_create() -> *mut libc::c_void {
+    // TODO: turn this into an alias creator that uses sequential addresses in allocated to handle these opaque references more efficiently.
+
     let addr = libc::mmap(ptr::null_mut(), 1, libc::PROT_NONE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0);
     if addr.is_null() {
         abort("failed to create unique memory handle via `mmap`");
@@ -280,4 +309,16 @@ unsafe fn unique_mem_destroy(mem_location: *mut libc::c_void) {
     if res != 0 {
         abort("error during destruction of unique memory handle via `mmap`");
     }
+}
+
+fn alias_fd_create() -> RawFd {
+    let fd = unsafe { libc::memfd_create(c"FIZZLE_ALIAS_FD".as_ptr(), 0) };
+    if fd < 0 {
+        abort("fizzle internal file descriptor alias creation (`memfd_create`) failed");
+    }
+    fd
+}
+
+fn alias_fd_destroy(fd: RawFd) {
+    unsafe { libc::close(fd); }
 }

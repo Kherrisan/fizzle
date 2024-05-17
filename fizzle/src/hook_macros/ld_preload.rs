@@ -52,7 +52,7 @@ macro_rules! hook {
                     let res = {
                         $hook_fn ( $($v),* )
                     };
-                    crate::trace_exit!($real_fn);
+                    // crate::trace_exit!($real_fn);
                     crate::state::set_entered_handler(false);
                     res
                 }).unwrap_or_else(|e| {

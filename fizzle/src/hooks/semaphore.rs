@@ -50,18 +50,23 @@ hook_macros::hook! {
                 return ptr::null_mut()
             }
 
-            // NOTE: we ignore `mode` file permissions here, as the semaphore is completely simulated.
+            // TODO: we ignore `mode` file permissions here
 
-            let sem = crate::unique_mem_create() as *mut libc::sem_t;
-            let semaphore_id = SemaphoreId::from(sem);
-            state.named_semaphores.insert(name.clone(), semaphore_id);
-            state.semaphores.insert(semaphore_id, SemaphoreInfo {
-                name: Some(name),
-                value: value as usize,
-                waiting: VecDeque::new(),
-            });
+            match state.named_semaphores.entry(name.clone()) {
+                std::collections::hash_map::Entry::Occupied(o) => return o.get().to_mut_ptr(),
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    let sem = crate::unique_mem_create() as *mut libc::sem_t;
+                    let semaphore_id = SemaphoreId::from(sem);
 
-            return sem
+                    v.insert(semaphore_id);
+                    state.semaphores.insert(semaphore_id, SemaphoreInfo {
+                        name: Some(name),
+                        value: value as usize,
+                        waiting: VecDeque::new(),
+                    });
+                    return sem
+                },
+            }
         } else { // Open existing semaphore
             let Some(semaphore_id) = state.named_semaphores.get(&name) else {
                 *libc::__errno_location() = libc::ENOENT;
