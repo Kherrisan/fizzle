@@ -1,5 +1,5 @@
 
-
+pub mod fd;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::CString;
@@ -15,6 +15,8 @@ use fxhash::FxBuildHasher;
 use libc::pthread_t;
 
 use crate::FilePath;
+
+use self::fd::FdInfo;
 
 // See `set_entered_handler` and `has_entered_handler`
 std::thread_local! {
@@ -114,12 +116,14 @@ impl FileInfo {
     }
 }
 
+/*
 #[derive(Debug)]
 pub enum FileMode {
     Readonly,
     Writeonly,
     ReadWrite,
 }
+*/
 
 #[derive(Debug)]
 pub struct RwLockInfo {
@@ -154,15 +158,13 @@ pub struct ThreadInfo {
 /// Global singleton that holds (nearly) all internal information for fizzle.
 #[derive(Debug)]
 pub struct State {
+    pub fds: HashMap<RawFd, FdInfo, FxBuildHasher>,
     pub barriers: HashMap<BarrierId, BarrierInfo, FxBuildHasher>,
     pub condvars: HashMap<CondVarId, VecDeque<ThreadId>, FxBuildHasher>,
     /// Files specifically designated as being emulated.
     pub files: HashMap<FilePath, FileInfo, FxBuildHasher>,
-    pub passthrough_files: HashMap<RawFd, FilePath, FxBuildHasher>,
-    pub file_fds: HashMap<RawFd, FilePath, FxBuildHasher>,
     pub file_objs: HashMap<FileId, RawFd, FxBuildHasher>,
     pub passthrough_file_objs: HashMap<FileId, RawFd>,
-    pub path_fds: HashMap<RawFd, FilePath, FxBuildHasher>,
     pub mutexes: HashMap<MutexId, VecDeque<ThreadId>, FxBuildHasher>,
     pub named_semaphores: HashMap<CString, SemaphoreId>,
     pub rwlocks: HashMap<RwLockId, RwLockInfo, FxBuildHasher>,
@@ -188,11 +190,9 @@ impl State {
             barriers: HashMap::with_hasher(Default::default()),
             condvars: HashMap::with_hasher(Default::default()),
             files: HashMap::with_hasher(Default::default()),
-            passthrough_files: HashMap::with_hasher(Default::default()),
-            file_fds: HashMap::with_hasher(Default::default()),
+            fds: HashMap::with_hasher(Default::default()),
             file_objs: HashMap::with_hasher(Default::default()),
             passthrough_file_objs: HashMap::with_hasher(Default::default()),
-            path_fds: HashMap::with_hasher(Default::default()),
             mutexes: HashMap::with_hasher(Default::default()),
             named_semaphores: HashMap::with_hasher(Default::default()),
             rwlocks: HashMap::with_hasher(Default::default()),

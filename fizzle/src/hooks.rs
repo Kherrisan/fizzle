@@ -1,3 +1,4 @@
+pub mod fd;
 pub mod file;
 pub mod io;
 pub mod pthread;

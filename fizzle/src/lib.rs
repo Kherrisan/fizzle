@@ -9,7 +9,6 @@ mod state;
 mod streams;
 
 pub(crate) use hook_macros::hook;
-use libc::O_NONBLOCK;
 
 use std::{ffi::CStr, hash::Hash, os::fd::RawFd, process, ptr};
 
@@ -102,7 +101,7 @@ impl<const T: usize> Buffer<T> {
 
 #[derive(Debug, Clone)]
 pub struct FilePathError {
-    reason: &'static str,
+    pub reason: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

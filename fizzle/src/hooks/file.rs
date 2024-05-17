@@ -1,6 +1,8 @@
 use std::ffi::CStr;
+use std::ptr;
 
 use crate::{hook_macros, state::{self, FileId, FileInfo}, FilePath};
+use crate::state::fd::FdInfo;
 
 hook_macros::hook! {
     unsafe fn fdopen(
@@ -9,7 +11,15 @@ hook_macros::hook! {
     ) -> *mut libc::FILE => fizzle_fdopen {
         let mut state = state::fizzle_state().lock().unwrap();
 
-        if state.file_fds.contains_key(&fd) {
+        if let Some(fd_info) = state.fds.get(&fd) {
+            match fd_info {
+                FdInfo::File(_) | FdInfo::PassthroughFile(_) => (),
+                _ => {
+                    *libc::__errno_location() = libc::EBADFD;
+                    return ptr::null_mut()
+                },
+            }
+
             // TODO: parse and use `mode`
             let file = crate::unique_mem_create() as *mut libc::FILE;
             let file_id = FileId::from(file);
@@ -88,25 +98,25 @@ hook_macros::hook! {
                     v.insert(FileInfo::new());
                 },
             }
-
+            
             let fd = crate::alias_fd_create();
-            state.file_fds.insert(fd, path);
+            state.fds.insert(fd, FdInfo::File(path));
             fd
         } else if (flags & libc::O_PATH) != 0 {
             let fd = hook_macros::real!(open)(pathname, flags, mode);
-            state.path_fds.insert(fd, path);
+            state.fds.insert(fd, FdInfo::Directory(path));
             fd
         } else if !state.files.contains_key(&path) {
             let fd = hook_macros::real!(open)(pathname, flags, mode);
             if fd == 0 {
-                state.file_fds.insert(fd, path);
+                state.fds.insert(fd, FdInfo::PassthroughFile(path));
             }
 
             fd
         } else {
 
             let fd = crate::alias_fd_create();
-            state.file_fds.insert(fd, path);
+            state.fds.insert(fd, FdInfo::File(path));
             fd
         }
     }
@@ -136,14 +146,14 @@ hook_macros::hook! {
                 // TODO: this should act as O_TRUNC...
                 // TODO: save lock info in entry
                 let fd = crate::alias_fd_create();
-                state.file_fds.insert(fd, path);
+                state.fds.insert(fd, FdInfo::File(path));
                 fd
             }
             std::collections::hash_map::Entry::Vacant(v) => {
                 v.insert(FileInfo::new());
 
                 let fd = crate::alias_fd_create();
-                state.file_fds.insert(fd, path);
+                state.fds.insert(fd, FdInfo::File(path));
                 fd
             },
         }
@@ -160,8 +170,13 @@ hook_macros::hook! {
 
         let mut state = state::fizzle_state().lock().unwrap();
 
-        let Some(dir_path) = state.path_fds.get(&dirfd) else {
+        let Some(fd_info) = state.fds.get(&dirfd) else {
             *libc::__errno_location() = libc::ENOENT; // TODO: check errno correctness
+            return -1
+        };
+
+        let FdInfo::Directory(dir_path) = fd_info else {
+            *libc::__errno_location() = libc::EBADFD; // TODO: check errno correctness
             return -1
         };
 
@@ -190,23 +205,23 @@ hook_macros::hook! {
             }
 
             let fd = crate::alias_fd_create();
-            state.file_fds.insert(fd, path);
+            state.fds.insert(fd, FdInfo::File(path));
             fd
         } else if (flags & libc::O_PATH) != 0 {
             let fd = hook_macros::real!(open)(pathname, flags, mode);
-            state.path_fds.insert(fd, path);
+            state.fds.insert(fd, FdInfo::Directory(path));
             fd
         } else if !state.files.contains_key(&path) {
             let fd = hook_macros::real!(openat)(dirfd, pathname, flags, mode);
             if fd == 0 {
-                state.file_fds.insert(fd, path);
+                state.fds.insert(fd, FdInfo::PassthroughFile(path));
             }
 
             fd
         } else {
 
             let fd = crate::alias_fd_create();
-            state.file_fds.insert(fd, path);
+            state.fds.insert(fd, FdInfo::File(path));
             fd
         }
     }
@@ -291,7 +306,7 @@ hook_macros::hook! {
         let file_id = FileId::from(stream);
         match state.file_objs.remove(&file_id) {
             Some(fd) => {
-                let Some(_) = state.file_fds.remove(&fd) else {
+                let Some(_) = state.fds.remove(&fd) else {
                     crate::abort("invalid internal state (FILE* object with no corresponding FileInfo)")
                 };
 
@@ -304,7 +319,7 @@ hook_macros::hook! {
                         crate::abort("invalid internal state (passthrough FILE* object closed with no entry in fizzle state)")
                     };
 
-                    let Some(_) = state.file_fds.remove(&fd) else {
+                    let Some(_) = state.fds.remove(&fd) else {
                         crate::abort("invalid internal state (passthrough FILE* object closed with no corresponding FileInfo)")
                     };
                 }
@@ -346,14 +361,10 @@ hook_macros::hook! {
         if res == 0 {
             let mut state = state::fizzle_state().lock().unwrap();
 
-            if let Some(path) = state.file_fds.get(&fd) {
+            if let Some(FdInfo::File(path) | FdInfo::PassthroughFile(path)) = state.fds.get(&fd) {
                 state.working_directory = path.clone();  
             }else {
-                if let Some(path) = state.passthrough_files.get(&fd) {
-                    state.working_directory = path.clone();
-                } else {
-                    crate::abort("`fchdir` called on unrecognized fd");
-                };
+                crate::abort("`fchdir` called on unrecognized fd");
             }
         }
         
@@ -434,7 +445,7 @@ hook_macros::hook! {
 
         let state = state::fizzle_state().lock().unwrap();
 
-        if state.file_fds.contains_key(&fd) {
+        if state.fds.contains_key(&fd) {
             0 // TODO: handle ownership permissions?
         } else {
             hook_macros::real!(fchown)(fd, owner, group)           
@@ -450,7 +461,7 @@ hook_macros::hook! {
 
         let state = state::fizzle_state().lock().unwrap();
 
-        if state.file_fds.contains_key(&fd) {
+        if state.fds.contains_key(&fd) {
             0 // TODO: handle ownership permissions?
         } else {
             hook_macros::real!(fchmod)(fd, mode)
@@ -474,11 +485,16 @@ hook_macros::hook! {
             return -1
         };
 
-        let Some(dir_path) = state.path_fds.get(&dirfd) else {
+        let Some(fd_info) = state.fds.get(&dirfd) else {
             crate::abort("unrecognized dirfd passed to `fchownat`");
             // TODO: downgrade this to a warning in the future and return the following
             // *libc::__errno_location() = libc::ENOENT;
             // return -1
+        };
+
+        let FdInfo::Directory(dir_path) = fd_info else {
+            *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
+            return -1
         };
 
         let Ok(path) = dir_path.clone().concat(&relative_path) else {
@@ -509,11 +525,16 @@ hook_macros::hook! {
             return -1
         };
 
-        let Some(dir_path) = state.path_fds.get(&dirfd) else {
+        let Some(fd_info) = state.fds.get(&dirfd) else {
             crate::abort("unrecognized dirfd passed to `fchmodat`");
             // TODO: downgrade this to a warning in the future and return the following
             // *libc::__errno_location() = libc::ENOENT;
             // return -1
+        };
+
+        let FdInfo::Directory(dir_path) = fd_info else {
+            *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
+            return -1
         };
 
         let Ok(path) = dir_path.clone().concat(&relative_path) else {
@@ -676,11 +697,16 @@ hook_macros::hook! {
             return -1
         };
 
-        let Some(dir_path) = state.path_fds.get(&dirfd) else {
+        let Some(fd_info) = state.fds.get(&dirfd) else {
             crate::abort("unrecognized dirfd passed to `faccessat`");
             // TODO: downgrade this to a warning in the future and return the following
             // *libc::__errno_location() = libc::ENOENT;
             // return -1
+        };
+
+        let FdInfo::Directory(dir_path) = fd_info else {
+            *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
+            return -1
         };
 
         let Ok(path) = dir_path.clone().concat(&relative_path) else {
@@ -758,7 +784,7 @@ hook_macros::hook! {
 
         let state = state::fizzle_state().lock().unwrap();
 
-        if state.file_fds.contains_key(&fd) {
+        if state.fds.contains_key(&fd) {
             crate::abort("function `fstat` unimplemented for fizzle virtual fs")
             // TODO: implement
         } else {
@@ -782,11 +808,16 @@ hook_macros::hook! {
             return -1
         };
 
-        let Some(dir_path) = state.path_fds.get(&dirfd) else {
+        let Some(fd_info) = state.fds.get(&dirfd) else {
             crate::abort("unrecognized dirfd passed to `fstatat`");
             // TODO: downgrade this to a warning in the future and return the following
             // *libc::__errno_location() = libc::ENOENT;
             // return -1
+        };
+
+        let FdInfo::Directory(dir_path) = fd_info else {
+            *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
+            return -1
         };
 
         let Ok(path) = dir_path.clone().concat(&relative_path) else {
@@ -819,11 +850,16 @@ hook_macros::hook! {
             return -1
         };
 
-        let Some(dir_path) = state.path_fds.get(&dirfd) else {
+        let Some(fd_info) = state.fds.get(&dirfd) else {
             crate::abort("unrecognized dirfd passed to `statx`");
             // TODO: downgrade this to a warning in the future and return the following
             // *libc::__errno_location() = libc::ENOENT;
             // return -1
+        };
+
+        let FdInfo::Directory(dir_path) = fd_info else {
+            *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
+            return -1
         };
 
         let Ok(path) = dir_path.clone().concat(&relative_path) else {
@@ -971,11 +1007,16 @@ hook_macros::hook! {
             return -1
         };
 
-        let Some(dir_oldpath) = state.path_fds.get(&olddirfd) else {
+        let Some(oldfd_info) = state.fds.get(&olddirfd) else {
             crate::abort("unrecognized olddirfd passed to `renameat`");
             // TODO: downgrade this to a warning in the future and return the following
             // *libc::__errno_location() = libc::ENOENT;
             // return -1
+        };
+
+        let FdInfo::Directory(dir_oldpath) = oldfd_info else {
+            *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
+            return -1
         };
 
         let Ok(abs_oldpath) = dir_oldpath.clone().concat(&rel_oldpath) else {
@@ -983,11 +1024,16 @@ hook_macros::hook! {
             return -1
         };
 
-        let Some(dir_newpath) = state.path_fds.get(&newdirfd) else {
+        let Some(newfd_info) = state.fds.get(&newdirfd) else {
             crate::abort("unrecognized newdirfd passed to `renameat`");
             // TODO: downgrade this to a warning in the future and return the following
             // *libc::__errno_location() = libc::ENOENT;
             // return -1
+        };
+
+        let FdInfo::Directory(dir_newpath) = newfd_info else {
+            *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
+            return -1
         };
 
         let Ok(rel_newpath) = FilePath::from_cstr(CStr::from_ptr(newpath)) else {
@@ -1023,11 +1069,16 @@ hook_macros::hook! {
             return -1
         };
 
-        let Some(dir_oldpath) = state.path_fds.get(&olddirfd) else {
+        let Some(oldfd_info) = state.fds.get(&olddirfd) else {
             crate::abort("unrecognized olddirfd passed to `renameat2`");
             // TODO: downgrade this to a warning in the future and return the following
             // *libc::__errno_location() = libc::ENOENT;
             // return -1
+        };
+
+        let FdInfo::Directory(dir_oldpath) = oldfd_info else {
+            *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
+            return -1
         };
 
         let Ok(abs_oldpath) = dir_oldpath.clone().concat(&rel_oldpath) else {
@@ -1035,11 +1086,16 @@ hook_macros::hook! {
             return -1
         };
 
-        let Some(dir_newpath) = state.path_fds.get(&newdirfd) else {
+        let Some(newfd_info) = state.fds.get(&newdirfd) else {
             crate::abort("unrecognized newdirfd passed to `renameat2`");
             // TODO: downgrade this to a warning in the future and return the following
             // *libc::__errno_location() = libc::ENOENT;
             // return -1
+        };
+
+        let FdInfo::Directory(dir_newpath) = newfd_info else {
+            *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
+            return -1
         };
 
         let Ok(rel_newpath) = FilePath::from_cstr(CStr::from_ptr(newpath)) else {
