@@ -17,7 +17,7 @@ struct PTWrapperArgs {
 
 unsafe extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void {
     crate::trace_enter!("pt_wrapper_fn");
-    let ctx = state::get_fizzle_state(); // ONLY use this here and in ld_preload hooks
+    let mut ctx = state::FIZZLE_STATE.get(); // ONLY use this here and in ld_preload hooks
 
     let wrapped_arg = (arg as *mut PTWrapperArgs).as_mut().unwrap();
 
@@ -39,8 +39,8 @@ unsafe extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void 
     // Once again, avoid accidental preload hook recursion
     state::set_entered_handler(true);
 
-    // Flag this thread as dying so that scheduler can clean its context up
-    let ctx = state::get_fizzle_state(); // ONLY use this here and in ld_preload hooks
+    let mut ctx = state::FIZZLE_STATE.get(); // ONLY use this here and in ld_preload hooks
+
     ctx.exit_thread(res);
 }
 
@@ -116,7 +116,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn pthread_cancel(
         thread: libc::pthread_t
-    ) => fizzle_pthread_cancel(ctx) {
+    ) => fizzle_pthread_cancel(_ctx) {
 
         crate::debug_abort("pthread_cancel");
 
@@ -128,7 +128,7 @@ hook_macros::hook! {
     unsafe fn pthread_tryjoin_np(
         thread: libc::pthread_t,
         retval: *mut *mut libc::c_void
-    ) -> libc::c_int => fizzle_pthread_tryjoin_np(ctx) {
+    ) -> libc::c_int => fizzle_pthread_tryjoin_np(_ctx) {
         hook_macros::real!(pthread_tryjoin_np)(thread, retval)
     }
 }
@@ -138,7 +138,7 @@ hook_macros::hook! {
         thread: libc::pthread_t,
         retval: *mut *mut libc::c_void,
         abstime: *const libc::timespec
-    ) -> libc::c_int => fizzle_pthread_timedjoin_np(ctx) {
+    ) -> libc::c_int => fizzle_pthread_timedjoin_np(_ctx) {
 
         crate::debug_abort("pthread_timedjoin_np");
 
@@ -152,7 +152,7 @@ hook_macros::hook! {
         retval: *mut *mut libc::c_void,
         clock_id: *mut libc::clockid_t,
         abstime: *const libc::timespec
-    ) -> libc::c_int => fizzle_pthread_clockjoin_np(ctx) {
+    ) -> libc::c_int => fizzle_pthread_clockjoin_np(_ctx) {
 
         crate::debug_abort("pthread_timedjoin_np");
 
@@ -163,7 +163,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn pthread_detach(
         thread: libc::pthread_t
-    ) => fizzle_pthread_detach(ctx) {
+    ) => fizzle_pthread_detach(_ctx) {
 
         crate::debug_abort("pthread_detach");
 
@@ -175,7 +175,7 @@ hook_macros::hook! {
     unsafe fn pthread_kill(
         thread: libc::pthread_t,
         sig: libc::c_int
-    ) -> libc::c_int => fizzle_pthread_kill(ctx) {
+    ) -> libc::c_int => fizzle_pthread_kill(_ctx) {
 
         crate::debug_abort("pthread_kill");
 
@@ -198,7 +198,7 @@ hook_macros::hook! {
     unsafe fn pthread_setcancelstate(
         state: libc::c_int,
         old_state: *mut libc::c_int
-    ) -> libc::c_int => fizzle_pthread_setcancelstate(ctx) {
+    ) -> libc::c_int => fizzle_pthread_setcancelstate(_ctx) {
 
         crate::debug_abort("pthread_setcancelstate");
 
@@ -210,7 +210,7 @@ hook_macros::hook! {
     unsafe fn pthread_setcanceltype(
         cancel_type: libc::c_int,
         old_type: *mut libc::c_int
-    ) -> libc::c_int => fizzle_pthread_setcanceltype(ctx) {
+    ) -> libc::c_int => fizzle_pthread_setcanceltype(_ctx) {
 
         crate::debug_abort("pthread_setcanceltype");
 
@@ -220,7 +220,7 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn pthread_testcancel(
-    ) -> libc::c_int => fizzle_pthread_testcancel(ctx) {
+    ) -> libc::c_int => fizzle_pthread_testcancel(_ctx) {
 
         crate::debug_abort("pthread_testcancel");
 
@@ -488,7 +488,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn pthread_mutex_consistent(
         _mutex: *mut libc::pthread_mutex_t
-    ) -> libc::c_int => fizzle_pthread_mutex_consistent(ctx) {
+    ) -> libc::c_int => fizzle_pthread_mutex_consistent(_ctx) {
 
         // TODO: make poisoned lock behavior compliant with POSIX
 
@@ -849,7 +849,7 @@ hook_macros::hook! {
     unsafe fn pthread_rwlock_timedrdlock(
         _lock: *mut libc::pthread_rwlock_t,
         _abstime: *const libc::timespec
-    ) -> libc::c_int => fizzle_pthread_rwlock_timedrdlock(ctx) {
+    ) -> libc::c_int => fizzle_pthread_rwlock_timedrdlock(_ctx) {
 
         crate::abort("Unimplemented shim `pthread_rwlock_timedrdlock`");
     }
@@ -860,7 +860,7 @@ hook_macros::hook! {
         _lock: *mut libc::pthread_rwlock_t,
         _clock_id: libc::clockid_t,
         _abstime: *const libc::timespec
-    ) -> libc::c_int => fizzle_pthread_rwlock_clockrdlock(ctx) {
+    ) -> libc::c_int => fizzle_pthread_rwlock_clockrdlock(_ctx) {
 
         crate::abort("Unimplemented shim `pthread_rwlock_clockrdlock`");
     }
@@ -923,7 +923,7 @@ hook_macros::hook! {
     unsafe fn pthread_rwlock_timedwrlock(
         _lock: *mut libc::pthread_rwlock_t,
         _abstime: *const libc::timespec
-    ) -> libc::c_int => fizzle_pthread_rwlock_timedwrlock(ctx) {
+    ) -> libc::c_int => fizzle_pthread_rwlock_timedwrlock(_ctx) {
 
         crate::abort("Unimplemented shim `pthread_rwlock_timedwrlock`");
     }
@@ -934,7 +934,7 @@ hook_macros::hook! {
         _lock: *mut libc::pthread_rwlock_t,
         _clock_id: libc::clockid_t,
         _abstime: *const libc::timespec
-    ) -> libc::c_int => fizzle_pthread_rwlock_clockwrlock(ctx) {
+    ) -> libc::c_int => fizzle_pthread_rwlock_clockwrlock(_ctx) {
 
         crate::abort("Unimplemented shim `pthread_rwlock_clockwrlock`");
     }

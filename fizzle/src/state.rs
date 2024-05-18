@@ -5,6 +5,8 @@ use std::cell::{RefCell, UnsafeCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{CStr, CString};
 use std::hash::{Hash, Hasher};
+use std::mem::MaybeUninit;
+use std::ops::{Deref, DerefMut};
 use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,7 +40,11 @@ static TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
 /// State that remains synchronized across multiple processes via shared memory.
 // static GLOBAL_STATE: OnceLock<IpcMemory<GlobalState>> = OnceLock::new();
 
-static FIZZLE_STATE: FizzleOnce = FizzleOnce::new();
+/// Retrieves the current fizzle state.
+///
+/// SAFETY: this function MUST ONLY be called within `ld_preload.rs` or `dyld_insert_libraries.rs`.
+/// Accessing the global `FizzleState` variable multiple times in one scope will lead to UB.
+pub static FIZZLE_STATE: FizzleCell = FizzleCell::new();
 
 /// Indicates whether the thread is currently executing within a fizzle handler.
 ///
@@ -69,17 +75,17 @@ pub fn fizzle_trace_enabled() -> bool {
 
 /// A global singleton storing fizzle data and state.
 ///
-struct FizzleOnce {
-    inner: UnsafeCell<Option<FizzleState>>,
+pub struct FizzleCell {
+    inner: UnsafeCell<(bool, MaybeUninit<FizzleState>)>,
 }
 
-unsafe impl Send for FizzleOnce {}
-unsafe impl Sync for FizzleOnce {}
+unsafe impl Send for FizzleCell {}
+unsafe impl Sync for FizzleCell {}
 
-impl FizzleOnce {
+impl FizzleCell {
     const fn new() -> Self {
         Self {
-            inner: UnsafeCell::new(None),
+            inner: UnsafeCell::new((false, MaybeUninit::uninit())),
         }
     }
 
@@ -108,12 +114,37 @@ impl FizzleOnce {
     /// never accessed other than via [`get_fizzle_state()`], which in turn is called as part of the
     /// libc hook macro.
     ///
-    fn get(&self) -> &mut FizzleState {
-        let inner = unsafe { &mut *self.inner.get() };
-        match inner {
-            Some(state) => state,
-            None => fizzle_state_initialize(inner),
+    pub fn get(&self) -> FizzleGuard<'_> {
+        let (is_init, inner) = unsafe { &mut *self.inner.get() };
+        if !*is_init {
+            *inner = MaybeUninit::new(FizzleState::new());
+            *is_init = true;
         }
+
+        FizzleGuard {
+            cell: self,
+        }
+    }
+}
+
+pub struct FizzleGuard<'a> {
+    cell: &'a FizzleCell,
+}
+
+unsafe impl Send for FizzleGuard<'_> {}
+unsafe impl Sync for FizzleGuard<'_> {}
+
+impl Deref for FizzleGuard<'_> {
+    type Target = FizzleState;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { (*self.cell.inner.get()).1.assume_init_ref() }
+    }
+}
+
+impl DerefMut for FizzleGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { (*self.cell.inner.get()).1.assume_init_mut() }
     }
 }
 
@@ -122,14 +153,6 @@ impl FizzleOnce {
 #[inline(never)]
 fn fizzle_state_initialize(state: &mut Option<FizzleState>) -> &mut FizzleState {
     state.insert(FizzleState::new())
-}
-
-/// Retrieves the current fizzle state.
-///
-/// SAFETY: this function MUST ONLY be called within `ld_preload.rs` or `dyld_insert_libraries.rs`.
-/// Accessing the global `FizzleState` variable multiple times in one scope will lead to UB.
-pub fn get_fizzle_state() -> &'static mut FizzleState {
-    FIZZLE_STATE.get()
 }
 
 /// The collective process/interprocess state that fizzle has global access to.

@@ -48,7 +48,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn umask(
         mask: libc::mode_t
-    ) -> libc::c_int => fizzle_umask(ctx) {
+    ) -> libc::c_int => fizzle_umask(_ctx) {
         let res = hook_macros::real!(umask)(mask);
 
         // TODO: set umask in virtual fs once permissions implemented
@@ -362,7 +362,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn chroot(
         _path: *const libc::c_char
-    ) -> libc::c_int => fizzle_chroot(ctx) {
+    ) -> libc::c_int => fizzle_chroot(_ctx) {
 
         crate::abort("`chroot` not implemented");
     }
@@ -835,7 +835,7 @@ hook_macros::hook! {
         pathname: *mut libc::c_char,
         buf: *mut libc::c_char,
         bufsiz: libc::size_t
-    ) -> libc::c_int => fizzle_readlink(ctx) {
+    ) -> libc::c_int => fizzle_readlink(_ctx) {
         hook_macros::real!(readlink)(pathname, buf, bufsiz)
     }
 }
@@ -846,7 +846,7 @@ hook_macros::hook! {
         pathname: *mut libc::c_char,
         buf: *mut libc::c_char,
         bufsiz: libc::size_t
-    ) -> libc::c_int => fizzle_readlinkat(ctx) {
+    ) -> libc::c_int => fizzle_readlinkat(_ctx) {
         hook_macros::real!(readlinkat)(dirfd, pathname, buf, bufsiz)
     }
 }
@@ -855,7 +855,7 @@ hook_macros::hook! {
     unsafe fn symlink(
         target: *mut libc::c_char,
         linkpath: *const libc::c_char
-    ) -> libc::c_int => fizzle_symlink(ctx) {
+    ) -> libc::c_int => fizzle_symlink(_ctx) {
         hook_macros::real!(symlink)(target, linkpath)
     }
 }
@@ -865,7 +865,7 @@ hook_macros::hook! {
         target: *mut libc::c_char,
         newdirfd: libc::c_int,
         linkpath: *const libc::c_char
-    ) -> libc::c_int => fizzle_symlinkat(ctx) {
+    ) -> libc::c_int => fizzle_symlinkat(_ctx) {
         hook_macros::real!(symlinkat)(target, newdirfd, linkpath)
     }
 }
@@ -874,7 +874,7 @@ hook_macros::hook! {
     unsafe fn link(
         oldpath: *mut libc::c_char,
         newpath: *const libc::c_char
-    ) -> libc::c_int => fizzle_link(ctx) {
+    ) -> libc::c_int => fizzle_link(_ctx) {
         hook_macros::real!(link)(oldpath, newpath)
     }
 }
@@ -886,7 +886,7 @@ hook_macros::hook! {
         newdirfd: libc::c_int,
         newpath: *const libc::c_char,
         flags: libc::c_int
-    ) -> libc::c_int => fizzle_linkat(ctx) {
+    ) -> libc::c_int => fizzle_linkat(_ctx) {
         hook_macros::real!(linkat)(olddirfd, oldpath, newdirfd, newpath, flags)
     }
 }
@@ -894,7 +894,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn unlink(
         pathname: *const libc::c_char
-    ) -> libc::c_int => fizzle_unlink(ctx) {
+    ) -> libc::c_int => fizzle_unlink(_ctx) {
         hook_macros::real!(unlink)(pathname)
     }
 }
@@ -904,7 +904,7 @@ hook_macros::hook! {
         dirfd: libc::c_int,
         pathname: *const libc::c_char,
         flags: libc::c_int
-    ) -> libc::c_int => fizzle_unlinkat(ctx) {
+    ) -> libc::c_int => fizzle_unlinkat(_ctx) {
         hook_macros::real!(unlinkat)(dirfd, pathname, flags)
     }
 }
@@ -1068,7 +1068,7 @@ hook_macros::hook! {
         pathname: *const libc::c_char,
         mode: libc::mode_t,
         dev: libc::dev_t
-    ) -> libc::c_int => fizzle_mknod(ctx) {
+    ) -> libc::c_int => fizzle_mknod(_ctx) {
         hook_macros::real!(mknod)(pathname, mode, dev)
     }
 }
@@ -1079,7 +1079,7 @@ hook_macros::hook! {
         pathname: *const libc::c_char,
         mode: libc::mode_t,
         dev: libc::dev_t
-    ) -> libc::c_int => fizzle_mknodat(ctx) {
+    ) -> libc::c_int => fizzle_mknodat(_ctx) {
         hook_macros::real!(mknodat)(dirfd, pathname, mode, dev)
     }
 }
@@ -1091,7 +1091,7 @@ hook_macros::hook! {
         filesystemtype: *const libc::c_char,
         mountflags: libc::c_ulong,
         data: *const libc::c_void
-    ) -> libc::c_int => fizzle_mount(ctx) {
+    ) -> libc::c_int => fizzle_mount(_ctx) {
         hook_macros::real!(mount)(source, target, filesystemtype, mountflags, data)
     }
 }
@@ -1099,7 +1099,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn umount(
         target: *const libc::c_char
-    ) -> libc::c_int => fizzle_umount(ctx) {
+    ) -> libc::c_int => fizzle_umount(_ctx) {
         hook_macros::real!(umount)(target)
     }
 }
@@ -1108,7 +1108,7 @@ hook_macros::hook! {
     unsafe fn umount2(
         target: *const libc::c_char,
         flags: libc::c_int
-    ) -> libc::c_int => fizzle_umount2(ctx) {
+    ) -> libc::c_int => fizzle_umount2(_ctx) {
         hook_macros::real!(umount2)(target, flags)
     }
 }

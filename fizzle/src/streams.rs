@@ -5,6 +5,7 @@
 use std::io;
 use std::os::fd::RawFd;
 
+#[allow(unused)]
 pub trait Stream {
     /// Pass data into the stream.
     ///

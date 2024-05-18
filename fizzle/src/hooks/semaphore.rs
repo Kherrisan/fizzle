@@ -129,7 +129,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn sem_unlink(
         _sem: *const libc::c_char
-    ) -> libc::c_int => fizzle_sem_unlink(ctx) {
+    ) -> libc::c_int => fizzle_sem_unlink(_ctx) {
 
         crate::debug_abort("sem_unlink");
 

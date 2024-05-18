@@ -79,7 +79,7 @@ impl<T: Sized> IpcMemory<T> {
                 crate::abort("unable to initialize per-process semaphores for IpcMemory");
             }
             proc_locks[i] = sem_ptr;
-            unsafe { sem_ptr = sem_ptr.add(mem::size_of::<libc::sem_t>()) };
+            unsafe { sem_ptr = sem_ptr.add(1) };
         }
 
         let data_ptr = sem_ptr as *mut T;
@@ -124,7 +124,7 @@ impl<T: Sized> IpcMemory<T> {
         let mut sem_ptr = mem_start as *mut libc::sem_t;
         let proc_locks = array::from_fn(|_| {
             let ptr = sem_ptr;
-            sem_ptr = unsafe { sem_ptr.add(mem::size_of::<libc::sem_t>()) };
+            sem_ptr = unsafe { sem_ptr.add(1) };
             ptr
         });
 
