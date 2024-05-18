@@ -1,7 +1,10 @@
 //! Hooks for general functions that can be applied to any file descriptor.
-//! 
+//!
 
-use crate::{hook_macros, state::{self, fd::FdInfo}};
+use crate::{
+    hook_macros,
+    state::{self, fd::FdInfo},
+};
 
 hook_macros::hook! {
     unsafe fn close(
@@ -21,6 +24,3 @@ hook_macros::hook! {
         0
     }
 }
-
-
-

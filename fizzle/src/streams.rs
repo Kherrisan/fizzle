@@ -1,6 +1,6 @@
 //! Process I/O shims.
-//! 
-//! 
+//!
+//!
 
 use std::io;
 use std::os::fd::RawFd;
@@ -36,5 +36,3 @@ pub trait Stream {
 // How do we map string inputs from config to implementations of this trait?
 // Fundamentally a config parser problem: the parser has to be implemented
 // by the lib that derives this crate
-
-

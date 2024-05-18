@@ -6,8 +6,6 @@ use std::ffi::CStr;
 use std::ptr;
 use std::thread;
 
-
-
 hook_macros::hook! {
     unsafe fn sem_init(
         sem: *mut libc::sem_t,
@@ -85,7 +83,7 @@ hook_macros::hook! {
         let Some(semaphore) = ctx.local().semaphores.remove(&semaphore_id) else {
             crate::abort("`sem_destroy` called on uninitialized semaphore");
         };
-        
+
         if !semaphore.waiting.is_empty() {
             crate::abort("`sem_destroy` called on semaphore while threads were waiting on it");
         }

@@ -1,8 +1,12 @@
 use std::ffi::CStr;
 use std::ptr;
 
-use crate::{hook_macros, state::{self, FileId, FileInfo}, FilePath};
 use crate::state::fd::FdInfo;
+use crate::{
+    hook_macros,
+    state::{self, FileId, FileInfo},
+    FilePath,
+};
 
 hook_macros::hook! {
     unsafe fn fdopen(
@@ -23,7 +27,7 @@ hook_macros::hook! {
             let file = crate::unique_mem_create() as *mut libc::FILE;
             let file_id = FileId::from(file);
             let None = ctx.local().file_objs.insert(file_id, fd) else {
-                crate::abort("unexpected duplicate passthrough FILE* object created");               
+                crate::abort("unexpected duplicate passthrough FILE* object created");
             };
 
             file
@@ -67,7 +71,7 @@ hook_macros::hook! {
         // TODO: deal with terminals
 
         // TODO: what about O_TRUNC?
-        
+
         let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
             *libc::__errno_location() = libc::EINVAL;
             return -1
@@ -95,7 +99,7 @@ hook_macros::hook! {
                     v.insert(FileInfo::new());
                 },
             }
-            
+
             let fd = crate::alias_fd_create();
             ctx.local().fds.insert(fd, FdInfo::File(path));
             fd
@@ -125,7 +129,7 @@ hook_macros::hook! {
         pathname: *const libc::c_char,
         _mode: libc::mode_t
     ) -> libc::c_int => fizzle_creat(ctx) {
-        
+
         let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
             *libc::__errno_location() = libc::EINVAL;
             return -1
@@ -220,7 +224,6 @@ hook_macros::hook! {
         }
     }
 }
-
 
 // TODO: libc::file_handle not defined in `libc` crate
 /*
@@ -346,12 +349,12 @@ hook_macros::hook! {
         let res = hook_macros::real!(fchdir)(fd);
         if res == 0 {
             if let Some(FdInfo::File(path) | FdInfo::PassthroughFile(path)) = ctx.local().fds.get(&fd) {
-                ctx.local().working_directory = path.clone();  
+                ctx.local().working_directory = path.clone();
             }else {
                 crate::abort("`fchdir` called on unrecognized fd");
             }
         }
-        
+
         res
     }
 }
@@ -426,7 +429,7 @@ hook_macros::hook! {
         if ctx.local().fds.contains_key(&fd) {
             0 // TODO: handle ownership permissions?
         } else {
-            hook_macros::real!(fchown)(fd, owner, group)           
+            hook_macros::real!(fchown)(fd, owner, group)
         }
     }
 }
@@ -887,7 +890,6 @@ hook_macros::hook! {
         hook_macros::real!(linkat)(olddirfd, oldpath, newdirfd, newpath, flags)
     }
 }
-
 
 hook_macros::hook! {
     unsafe fn unlink(

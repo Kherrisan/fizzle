@@ -2,9 +2,9 @@
 
 extern crate libc;
 
-mod semaphore;
 mod hook_macros;
 mod hooks;
+mod semaphore;
 // mod scheduler;
 mod state;
 mod streams;
@@ -12,7 +12,6 @@ mod streams;
 pub(crate) use hook_macros::hook;
 
 use std::{ffi::CStr, hash::Hash, os::fd::RawFd, process, ptr};
-
 
 #[derive(Debug)]
 pub struct BufferError {
@@ -53,7 +52,9 @@ impl<const T: usize> Buffer<T> {
 
     pub fn shrink(&mut self, new_length: usize) -> Result<(), BufferError> {
         if self.data_len < new_length {
-            return Err(BufferError { reason: "shrink() called with length greater than buffer" })
+            return Err(BufferError {
+                reason: "shrink() called with length greater than buffer",
+            });
         }
 
         self.data_len = new_length;
@@ -76,7 +77,9 @@ impl<const T: usize> Buffer<T> {
 
     pub fn try_put(&mut self, data: &[u8]) -> Result<(), BufferError> {
         let Some(write_slice) = self.data.get_mut(..data.len()) else {
-            return Err(BufferError { reason: "insufficient size" })
+            return Err(BufferError {
+                reason: "insufficient size",
+            });
         };
 
         write_slice.copy_from_slice(data);
@@ -91,7 +94,9 @@ impl<const T: usize> Buffer<T> {
 
     pub fn try_append(&mut self, data: &[u8]) -> Result<(), BufferError> {
         let Some(write_slice) = self.data.get_mut(self.data_len..self.data_len + data.len()) else {
-            return Err(BufferError { reason: "insufficient size" })
+            return Err(BufferError {
+                reason: "insufficient size",
+            });
         };
 
         write_slice.copy_from_slice(data);
@@ -116,7 +121,10 @@ impl Default for FilePath {
         let mut buf = Buffer::new();
         buf.append(b"/");
 
-        Self { buf, trailing_slash: true }
+        Self {
+            buf,
+            trailing_slash: true,
+        }
     }
 }
 
@@ -124,7 +132,7 @@ impl FilePath {
     fn segment(path: &[u8]) -> &[u8] {
         for (idx, &c) in path.iter().enumerate() {
             if c == b'/' {
-                return &path[..idx]
+                return &path[..idx];
             }
         }
         path
@@ -136,7 +144,7 @@ impl FilePath {
         for (idx, &c) in path.iter().enumerate().rev() {
             if c == b'/' {
                 if first_slash_seen {
-                    return &path[idx + 1..]
+                    return &path[idx + 1..];
                 } else {
                     first_slash_seen = true;
                 }
@@ -152,11 +160,14 @@ impl FilePath {
     /// Note that this should not include any null terminating character.
     pub fn from_raw_bytes(path: &[u8]) -> Result<Self, FilePathError> {
         if path.len() > 255 {
-            return Err(FilePathError { reason: "filepath exceeded 255 character max size" })
+            return Err(FilePathError {
+                reason: "filepath exceeded 255 character max size",
+            });
         }
 
         let mut buf = Buffer::new();
-        buf.try_put(path).map_err(|e| FilePathError { reason: e.reason })?;
+        buf.try_put(path)
+            .map_err(|e| FilePathError { reason: e.reason })?;
 
         let mut read_idx = 0usize;
         let mut write_idx = 0usize;
@@ -179,11 +190,15 @@ impl FilePath {
                         b"" | b"../" => {
                             data.copy_from_slice(b"../");
                             write_idx += 3;
-                        },
-                        b"/" => return Err(FilePathError { reason: "backtrack attempted on root path" }),
+                        }
+                        b"/" => {
+                            return Err(FilePathError {
+                                reason: "backtrack attempted on root path",
+                            })
+                        }
                         segment => write_idx -= segment.len(),
                     }
-                },
+                }
                 _ => {
                     // Copy current segment to write portion
                     for i in 0..segment_len {
@@ -192,18 +207,20 @@ impl FilePath {
                     write_idx += segment_len;
 
                     // copy '/' if exists
-                    if segment_len < data.len() - read_idx { 
+                    if segment_len < data.len() - read_idx {
                         data[write_idx] = b'/';
                         write_idx += 1;
                     }
-                },
+                }
             }
 
             read_idx += segment_len + 1;
         }
 
         if write_idx == 0 {
-            return Err(FilePathError { reason: "empty path" })
+            return Err(FilePathError {
+                reason: "empty path",
+            });
         }
 
         let trailing_slash = data[write_idx - 1] == b'/';
@@ -211,9 +228,13 @@ impl FilePath {
         data[write_idx] = b'\0';
         write_idx += 1;
 
-        buf.shrink(write_idx).map_err(|e| FilePathError { reason: e.reason })?;
+        buf.shrink(write_idx)
+            .map_err(|e| FilePathError { reason: e.reason })?;
 
-        Ok(FilePath { buf, trailing_slash })
+        Ok(FilePath {
+            buf,
+            trailing_slash,
+        })
     }
 
     pub fn concat(mut self, other: &FilePath) -> Result<Self, FilePathError> {
@@ -221,7 +242,7 @@ impl FilePath {
         let mut read_idx = 0;
 
         self.buf.shrink(self.buf.len() - 1).unwrap(); // Remove null character
-        
+
         while read_idx < other.buf.len() {
             let segment = Self::segment(&data[read_idx..]);
             let segment_len = segment.len();
@@ -231,16 +252,26 @@ impl FilePath {
                 b".." => {
                     // Traverse back one segment
                     match Self::last_segment(self.buf.data()) {
-                        b"" | b"../" => self.buf.try_append(b"../").map_err(|_| FilePathError { reason: "insufficient space" })?,
-                        b"/" => return Err(FilePathError { reason: "backtrack attempted on root path" }),
+                        b"" | b"../" => self.buf.try_append(b"../").map_err(|_| FilePathError {
+                            reason: "insufficient space",
+                        })?,
+                        b"/" => {
+                            return Err(FilePathError {
+                                reason: "backtrack attempted on root path",
+                            })
+                        }
                         segment => self.buf.shrink(segment.len()).unwrap(),
                     }
                 }
                 _ => {
-                    self.buf.try_append(segment).map_err(|_| FilePathError { reason: "insufficient space" })?;
+                    self.buf.try_append(segment).map_err(|_| FilePathError {
+                        reason: "insufficient space",
+                    })?;
                     // copy '/' if exists
-                    if segment_len < data.len() - read_idx { 
-                        self.buf.try_append(b"/").map_err(|_| FilePathError { reason: "insufficient space" })?;
+                    if segment_len < data.len() - read_idx {
+                        self.buf.try_append(b"/").map_err(|_| FilePathError {
+                            reason: "insufficient space",
+                        })?;
                     }
                 }
             }
@@ -249,7 +280,9 @@ impl FilePath {
         }
 
         // Re-add null character
-        self.buf.try_append(b"\0").map_err(|_| FilePathError { reason: "insufficient space" })?;
+        self.buf.try_append(b"\0").map_err(|_| FilePathError {
+            reason: "insufficient space",
+        })?;
 
         self.trailing_slash = other.trailing_slash;
         Ok(self)
@@ -280,12 +313,28 @@ pub(crate) fn debug_abort(function_name: &'static str) {
 
 #[macro_export]
 macro_rules! trace_enter {
-    ($f:tt) => { if state::fizzle_trace_enabled() { eprintln!("Thread {:?} invoked function {}", std::thread::current().id(), stringify!($f)); } }
+    ($f:tt) => {
+        if state::fizzle_trace_enabled() {
+            eprintln!(
+                "Thread {:?} invoked function {}",
+                std::thread::current().id(),
+                stringify!($f)
+            );
+        }
+    };
 }
 
 #[macro_export]
 macro_rules! trace_exit {
-    ($f:tt) => { if state::fizzle_trace_enabled() { eprintln!("Thread {:?} leaving function {}", std::thread::current().id(), stringify!($f)); } }
+    ($f:tt) => {
+        if state::fizzle_trace_enabled() {
+            eprintln!(
+                "Thread {:?} leaving function {}",
+                std::thread::current().id(),
+                stringify!($f)
+            );
+        }
+    };
 }
 
 /// Creates a new location in memory that is guaranteed to be unique to others.
@@ -294,7 +343,14 @@ macro_rules! trace_exit {
 unsafe fn unique_mem_create() -> *mut libc::c_void {
     // TODO: turn this into an alias creator that uses sequential addresses in allocated to handle these opaque references more efficiently.
 
-    let addr = libc::mmap(ptr::null_mut(), 1, libc::PROT_NONE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0);
+    let addr = libc::mmap(
+        ptr::null_mut(),
+        1,
+        libc::PROT_NONE,
+        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+        -1,
+        0,
+    );
     if addr.is_null() {
         abort("failed to create unique memory handle via `mmap`");
     }
@@ -320,5 +376,7 @@ fn alias_fd_create() -> RawFd {
 }
 
 fn alias_fd_destroy(fd: RawFd) {
-    unsafe { libc::close(fd); }
+    unsafe {
+        libc::close(fd);
+    }
 }

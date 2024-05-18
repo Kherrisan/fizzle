@@ -12,7 +12,10 @@ const RTLD_NEXT: *const c_void = -1isize as *const c_void;
 pub unsafe fn dlsym_next(symbol: &'static str) -> *const u8 {
     let ptr = dlsym(RTLD_NEXT, symbol.as_ptr() as *const c_char);
     if ptr.is_null() {
-        panic!("LD_PRELOAD: Unable to find underlying function for {}", symbol);
+        panic!(
+            "LD_PRELOAD: Unable to find underlying function for {}",
+            symbol
+        );
     }
     ptr as *const u8
 }

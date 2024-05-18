@@ -11,9 +11,9 @@ use std::thread;
 ///
 /// Note that yield_after may lead to instability across fuzzing runs unless the upper layer indicates
 /// whether the blocking element should be waited for or not.
-/// 
+///
 /// # Safety
-/// 
+///
 /// Global state MUST NOT be locked at the time this function is called.
 /// Likewise, global state MUST NOT be accessed within `closure`; otherwise, deadlock will most likely occur.
 pub fn yield_after<F: FnOnce() -> ()>(blocking_fn: F) {
@@ -43,7 +43,6 @@ pub fn yield_after<F: FnOnce() -> ()>(blocking_fn: F) {
 }
 */
 
-
 /*
 /// Marks the current thread as paused to the scheduler, then waits until the scheduler has
 /// assigned control flow back to the current thread before continuing.
@@ -54,7 +53,7 @@ pub fn yield_thread() {
     state.wake_next_thread();
 
     // Let go of state (to avoid deadlock)
-    drop(state); 
+    drop(state);
 
     // Pause current thread until scheduler delegates execution to it
     thread::park();

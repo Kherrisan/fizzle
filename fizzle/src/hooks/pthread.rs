@@ -1,4 +1,6 @@
-use crate::state::{BarrierInfo, CondVarId, BarrierId, MutexId, RwLockId, RwLockInfo, RwLockState, SpinlockId};
+use crate::state::{
+    BarrierId, BarrierInfo, CondVarId, MutexId, RwLockId, RwLockInfo, RwLockState, SpinlockId,
+};
 use crate::{hook_macros, state};
 
 use std::collections::{HashSet, VecDeque};
@@ -22,7 +24,9 @@ unsafe extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void 
     // Before we do ANYTHING, we need to set this to avoid accidental preload hook recursion
     state::set_entered_handler(true);
 
-    ctx.local().pthreads.insert(unsafe { libc::pthread_self() }, thread::current().id());
+    ctx.local()
+        .pthreads
+        .insert(unsafe { libc::pthread_self() }, thread::current().id());
 
     drop(ctx);
 
@@ -34,7 +38,7 @@ unsafe extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void 
 
     // Once again, avoid accidental preload hook recursion
     state::set_entered_handler(true);
-    
+
     // Flag this thread as dying so that scheduler can clean its context up
     let ctx = state::get_fizzle_state(); // ONLY use this here and in ld_preload hooks
     ctx.exit_thread(res);
@@ -68,7 +72,7 @@ hook_macros::hook! {
     unsafe fn pthread_exit(
         retval: *mut libc::c_void
     ) => fizzle_pthread_exit(ctx) {
-        
+
         ctx.exit_thread(retval);
     }
 }
@@ -102,14 +106,12 @@ hook_macros::hook! {
     }
 }
 
-
 // TODO: pthread_cancel
 // Save pthread_t and pthread_setcancel_state values
 // When a thread tries to cancel another, check cancel ctx.local(). If thread is cancellable, set a
 // variable that indicates to the scheduler that it should shut down that thread.
 // TODO: deferred cancellation as well--have to hook all known cancellation points and go from there
 // TODO: handle cancellation cleanup handlers
-
 
 hook_macros::hook! {
     unsafe fn pthread_cancel(
@@ -157,7 +159,6 @@ hook_macros::hook! {
         hook_macros::real!(pthread_clockjoin_np)(thread, retval, clock_id, abstime)
     }
 }
-
 
 hook_macros::hook! {
     unsafe fn pthread_detach(
@@ -563,7 +564,7 @@ hook_macros::hook! {
         };
 
         let threads: Vec<ThreadId> = cond_queue.drain(..).collect();
-        
+
         for thread in threads {
             ctx.local().ready_threads.push_back(thread);
         }
@@ -802,7 +803,7 @@ hook_macros::hook! {
             }
             RwLockState::Reading => { // The lock is ready to be taken
                 rwlock_info.holding_state.insert(thread::current().id());
-            }, 
+            },
             RwLockState::Available => {
                 assert!(rwlock_info.holding_state.is_empty(), "PTRwLock in inconsistent state (RwLockState::Available when some threads still holding state)");
 
@@ -831,7 +832,7 @@ hook_macros::hook! {
             RwLockState::Reading if !rwlock_info.awaiting_write.is_empty() => return libc::EBUSY,
             RwLockState::Reading => { // The lock is ready to be taken
                 rwlock_info.holding_state.insert(thread::current().id());
-            }, 
+            },
             RwLockState::Available => {
                 assert!(rwlock_info.holding_state.is_empty(), "PTRwLock in inconsistent state (RwLockState::Available when some threads still holding state)");
 
@@ -971,7 +972,7 @@ hook_macros::hook! {
                         if rwlock_info.holding_state.is_empty() { // No threads awaiting reads or writes
                             rwlock_info.state = RwLockState::Available;
                         }
-                        
+
                         for thread in threads {
                             ctx.local().ready_threads.push_back(thread);
                         }
@@ -981,7 +982,7 @@ hook_macros::hook! {
                     if let Some(write_thread) = rwlock_info.awaiting_write.pop_front() {
                         rwlock_info.holding_state.insert(write_thread);
                         ctx.local().ready_threads.push_back(write_thread);
-                        
+
                     }else { // No threads waiting reads or writes
                         rwlock_info.state = RwLockState::Available;
                     }
@@ -997,7 +998,7 @@ hook_macros::hook! {
                 _ => ()
             }
         }
-        
+
         0
     }
 }

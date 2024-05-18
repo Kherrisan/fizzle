@@ -1,6 +1,6 @@
 //! Process I/O shims.
-//! 
-//! 
+//!
+//!
 
 use crate::{hook_macros, state};
 
@@ -16,4 +16,3 @@ hook_macros::hook! {
 
     }
 }
-

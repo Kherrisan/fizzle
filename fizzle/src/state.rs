@@ -1,16 +1,15 @@
-
 pub mod fd;
 pub mod ipc;
 
-use std::{array, env, mem, thread};
+use std::cell::{RefCell, UnsafeCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{CStr, CString};
 use std::hash::{Hash, Hasher};
 use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::cell::{RefCell, UnsafeCell};
 use std::thread::ThreadId;
+use std::{array, env, mem, thread};
 
 use heapless::spsc::Queue;
 
@@ -41,20 +40,23 @@ static TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
 
 static FIZZLE_STATE: FizzleOnce = FizzleOnce::new();
 
-
 /// Indicates whether the thread is currently executing within a fizzle handler.
-/// 
-/// We want to be able to call rust functions that may use syscalls without those leading to 
+///
+/// We want to be able to call rust functions that may use syscalls without those leading to
 /// infinite recursion. To do so, we keep track of whether we've already hooked the current
 /// function using a thread-local variable.
 pub fn has_entered_handler() -> bool {
     let mut entered = true;
-    ENTERED_HANDLER.with(|e| { entered = *e.borrow(); });
+    ENTERED_HANDLER.with(|e| {
+        entered = *e.borrow();
+    });
     entered
 }
 
 pub fn set_entered_handler(entered: bool) {
-    ENTERED_HANDLER.with(|e| { *e.borrow_mut() = entered; });
+    ENTERED_HANDLER.with(|e| {
+        *e.borrow_mut() = entered;
+    });
 }
 
 pub fn fizzle_trace_enabled() -> bool {
@@ -65,11 +67,10 @@ pub fn fizzle_trace_enabled() -> bool {
 ///                                       PUBLIC FUNCTIONS
 /// ================================================================================================
 
-
 /// A global singleton storing fizzle data and state.
-/// 
+///
 struct FizzleOnce {
-    inner: UnsafeCell<Option<FizzleState>>, 
+    inner: UnsafeCell<Option<FizzleState>>,
 }
 
 unsafe impl Send for FizzleOnce {}
@@ -83,30 +84,30 @@ impl FizzleOnce {
     }
 
     /// Retrieves a mutable reference to global fizzle state.
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// This method returns a global mutable variable without any explicit mutex/semaphore guarding
     /// it. As such, accessing state ([`ProcessState`] or [`InterprocessState`]) via this method is
     /// **only** safe when no two threads/processes access or mutate that state at the same time.
-    /// 
+    ///
     /// Fizzle accomplishes this by: a) hooking thread/process creation (`pthread_create`, `fork`),
     /// and b) enforcing that a thread never accesses process/interprocess state variables from the
     /// time it delegates execution to another thread until it is delegated execution back (i.e.,
     /// within  [yield_thread()](FizzleState::yield_thread)).
-    /// 
+    ///
     /// a) is accomplished within the `hooks/pthread` module.
-    /// 
-    /// b) is accomplished by having [`yield_thread()`](FizzleState::yield_thread) and 
+    ///
+    /// b) is accomplished by having [`yield_thread()`](FizzleState::yield_thread) and
     /// [`process_state()`](FizzleState::process_state)/[`interprocess_state()`](FizzleState::interprocess_state)
     /// both require mutable references to [`FizzleState`]. This ensures state will never be held
     /// at the time a thread is yielded. Process/interprocess state is never accessed within
     /// `yield_thread` (other than for a few statically-allocated semaphores).
-    /// 
+    ///
     /// Lastly, the `FizzleOnce` singleton variable [`STATE`] is kept local to this module and is
     /// never accessed other than via [`get_fizzle_state()`], which in turn is called as part of the
     /// libc hook macro.
-    /// 
+    ///
     fn get(&self) -> &mut FizzleState {
         let inner = unsafe { &mut *self.inner.get() };
         match inner {
@@ -132,7 +133,7 @@ pub fn get_fizzle_state() -> &'static mut FizzleState {
 }
 
 /// The collective process/interprocess state that fizzle has global access to.
-/// 
+///
 pub struct FizzleState {
     thread_locks: [Option<Semaphore>; FIZZLE_MAX_THREADS],
     /// `local`, as in local to the current executing process.
@@ -143,7 +144,7 @@ pub struct FizzleState {
 
 impl FizzleState {
     /// Initializes the fizzle state.
-    /// 
+    ///
     /// This will be called when the first shimmed libc call is executed--only one thread
     /// is executing at the time, and no libc calls have completed yet.
     fn new() -> Self {
@@ -151,11 +152,15 @@ impl FizzleState {
 
         // Initialize the lock for the current thread
         let thread_idx = index_of_thread(&thread::current().id());
-        assert!(thread_idx == 0, "unexpected ThreadId value `{}` on fizzle startup", thread_idx);
+        assert!(
+            thread_idx == 0,
+            "unexpected ThreadId value `{}` on fizzle startup",
+            thread_idx
+        );
         thread_locks[thread_idx] = Some(Semaphore::new(0));
 
         let mem_location_ptr = unsafe { libc::getenv(FIZZLE_MEMORY_ENV.as_ptr()) };
-        
+
         if mem_location_ptr.is_null() {
             let global = IpcMemory::new(InterprocessState::new());
             let process_id = ProcessId::new(0);
@@ -192,7 +197,6 @@ impl FizzleState {
     /// Once all threads/processes have finished executing, this returns control flow to the primary
     /// fuzzing process, which signals to the fuzzer that it is ready for the next input.
     pub fn yield_thread(&mut self) {
-
         // Check to see if all threads have finished execution for this process
         if let Some(thread_id) = self.local.ready_threads.pop_front() {
             // ...if not, then run the next one.
@@ -208,7 +212,7 @@ impl FizzleState {
                 // Wait for a process to delegate back to this one.
                 let process_id = self.local().process_id;
                 self.global.process_wait(process_id);
-            }else {
+            } else {
                 // If no ready processes are left, notify the fuzzing engine
                 self.notify_complete()
             };
@@ -218,7 +222,7 @@ impl FizzleState {
     }
 
     /// Notifies the fuzzing engine that the current round of fuzzing has finished.
-    /// Note that 
+    /// Note that
     fn notify_complete(&mut self) {
         // Communicate that process is finished running
 
@@ -249,7 +253,10 @@ impl FizzleState {
 
         // De-allocate the lock for this thread
         let mut sem: Option<Semaphore> = None;
-        mem::swap(&mut sem, &mut self.thread_locks[index_of_thread(&thread_id)]);
+        mem::swap(
+            &mut sem,
+            &mut self.thread_locks[index_of_thread(&thread_id)],
+        );
         unsafe { sem.unwrap().destroy() };
 
         // Finally, exit the thread properly
@@ -303,8 +310,8 @@ impl ProcessState {
 
         TRACE_ENABLED.store(trace_enabled, Ordering::Release);
 
-
-        let working_directory_bytes = std::env::current_dir().map(|dir| FilePath::from_raw_bytes(dir.as_os_str().as_bytes()).unwrap_or_default());
+        let working_directory_bytes = std::env::current_dir()
+            .map(|dir| FilePath::from_raw_bytes(dir.as_os_str().as_bytes()).unwrap_or_default());
         let working_directory = working_directory_bytes.unwrap_or_default();
 
         Self {
@@ -337,9 +344,7 @@ pub struct ProcessId {
 
 impl ProcessId {
     pub fn new(ident: usize) -> Self {
-        Self {
-            identifier: ident,
-        }
+        Self { identifier: ident }
     }
 
     pub fn ident(&self) -> usize {
@@ -377,9 +382,7 @@ pub struct ThreadHasher {
 
 impl ThreadHasher {
     pub fn new() -> Self {
-        Self {
-            value: 0,
-        }
+        Self { value: 0 }
     }
 }
 
@@ -497,9 +500,7 @@ pub struct FileInfo {
 impl FileInfo {
     /// Creates a new temporary file.
     pub fn new() -> Self {
-        Self {
-            temporary: true,
-        }
+        Self { temporary: true }
     }
 }
 
