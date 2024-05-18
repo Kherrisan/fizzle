@@ -38,6 +38,12 @@ impl<const T: usize> Hash for Buffer<T> {
     }
 }
 
+impl<const T: usize> Default for Buffer<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const T: usize> Buffer<T> {
     pub fn new() -> Self {
         Self {
@@ -48,6 +54,10 @@ impl<const T: usize> Buffer<T> {
 
     pub fn len(&self) -> usize {
         self.data_len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn shrink(&mut self, new_length: usize) -> Result<(), BufferError> {
@@ -289,7 +299,7 @@ impl FilePath {
     }
 
     pub fn is_absolute(&self) -> bool {
-        self.buf.data().get(0) == Some(&b'/')
+        self.buf.data().first() == Some(&b'/')
     }
 
     pub fn has_trailing_slash(&self) -> bool {

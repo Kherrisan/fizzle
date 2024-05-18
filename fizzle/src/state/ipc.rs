@@ -30,17 +30,17 @@ impl<T: Sized> IpcMemory<T> {
         }
 
         name[..15].copy_from_slice(b"/fizzle_shared_");
-        for i in 15..64 {
+        for c in name.iter_mut().skip(15) {
             // Encode random characters to be [0-9?@A-Za-Z] (64 options)
-            name[i] /= 4; // reduce options to 0..=63
-            name[i] += 48;
+            *c /= 4; // reduce options to 0..=63
+            *c += 48;
 
-            if name[i] >= 58 {
-                name[i] += 5;
+            if *c >= 58 {
+                *c += 5;
             }
 
-            if name[i] >= 91 {
-                name[i] += 6;
+            if *c >= 91 {
+                *c += 6;
             }
         }
 
@@ -72,13 +72,13 @@ impl<T: Sized> IpcMemory<T> {
             "unable to `mmap` shared memory for IpcMemory"
         );
 
-        let mut proc_locks = [ptr::null_mut() as *mut libc::sem_t; FIZZLE_MAX_PROCESSES];
+        let mut proc_locks = [ptr::null_mut(); FIZZLE_MAX_PROCESSES];
         let mut sem_ptr = mem_start as *mut libc::sem_t;
-        for i in 0..FIZZLE_MAX_PROCESSES {
+        for proc_lock in proc_locks.iter_mut() {
             if unsafe { libc::sem_init(sem_ptr, libc::PTHREAD_PROCESS_SHARED, 1) } != 0 {
                 crate::abort("unable to initialize per-process semaphores for IpcMemory");
             }
-            proc_locks[i] = sem_ptr;
+            *proc_lock = sem_ptr;
             unsafe { sem_ptr = sem_ptr.add(1) };
         }
 
@@ -97,7 +97,7 @@ impl<T: Sized> IpcMemory<T> {
     }
 
     pub fn from_identifier(name: &CStr) -> Self {
-        let fd = unsafe { libc::shm_open(name.as_ptr() as *const i8, libc::O_RDWR, 0) };
+        let fd = unsafe { libc::shm_open(name.as_ptr(), libc::O_RDWR, 0) };
         assert!(
             fd >= 0,
             "unable to allocate shared memory for IpcMemory (`shm_open` failed)"

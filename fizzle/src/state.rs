@@ -23,14 +23,14 @@ use crate::FilePath;
 use self::fd::FdInfo;
 use self::ipc::IpcMemory;
 
-const FIZZLE_MEMORY_ENV: &'static CStr = c"FIZZLE_MEMORY";
+const FIZZLE_MEMORY_ENV: &CStr = c"FIZZLE_MEMORY";
 
 const FIZZLE_MAX_READY_PROCESSES: usize = 256;
 const FIZZLE_MAX_THREADS: usize = 65536;
 
 // See `set_entered_handler` and `has_entered_handler`
 std::thread_local! {
-    static ENTERED_HANDLER: RefCell<bool> = RefCell::new(false);
+    static ENTERED_HANDLER: RefCell<bool> = const { RefCell::new(false) };
 }
 
 static TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -117,8 +117,7 @@ impl FizzleCell {
     pub fn get(&self) -> FizzleGuard<'_> {
         let (is_init, inner) = unsafe { &mut *self.inner.get() };
         if !*is_init {
-            *inner = MaybeUninit::new(FizzleState::new());
-            *is_init = true;
+            fizzle_state_initialize(inner, is_init);
         }
 
         FizzleGuard {
@@ -151,8 +150,9 @@ impl DerefMut for FizzleGuard<'_> {
 // Labelling this as cold and not inlining ensures the `None` branch will be marked cold
 #[cold]
 #[inline(never)]
-fn fizzle_state_initialize(state: &mut Option<FizzleState>) -> &mut FizzleState {
-    state.insert(FizzleState::new())
+fn fizzle_state_initialize(state: &mut MaybeUninit<FizzleState>, is_init: &mut bool) {
+    *state = MaybeUninit::new(FizzleState::new());
+    *is_init = true;
 }
 
 /// The collective process/interprocess state that fizzle has global access to.
@@ -321,15 +321,8 @@ pub struct ProcessState {
 
 impl ProcessState {
     fn new(process_id: ProcessId) -> Self {
-        let debug_enabled = match env::var("FIZZLE_DEBUG") {
-            Ok(s) if s.as_str() == "1" => true,
-            _ => false,
-        };
-
-        let trace_enabled = match env::var("FIZZLE_TRACE") {
-            Ok(s) if s.as_str() == "1" => true,
-            _ => false,
-        };
+        let debug_enabled = matches!(env::var("FIZZLE_DEBUG"), Ok(s) if s.as_str() == "1");
+        let trace_enabled = matches!(env::var("FIZZLE_TRACE"), Ok(s) if s.as_str() == "1");
 
         TRACE_ENABLED.store(trace_enabled, Ordering::Release);
 
@@ -436,7 +429,7 @@ impl Hasher for ThreadHasher {
     }
 
     fn write_u64(&mut self, i: u64) {
-        self.value += i as u64;
+        self.value += i;
     }
 }
 

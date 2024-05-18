@@ -49,11 +49,11 @@ hook_macros::hook! {
     unsafe fn umask(
         mask: libc::mode_t
     ) -> libc::c_int => fizzle_umask(_ctx) {
-        let res = hook_macros::real!(umask)(mask);
+        
 
         // TODO: set umask in virtual fs once permissions implemented
 
-        res
+        hook_macros::real!(umask)(mask)
     }
 }
 
@@ -558,7 +558,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_fseek(ctx) {
 
         let file_id = FileId::from(stream);
-        if let Some(_) = ctx.local().file_objs.get(&file_id) {
+        if ctx.local().file_objs.contains_key(&file_id) {
             0 // TODO: handle passthrough
         } else {
             hook_macros::real!(fseek)(stream, offset, whence)
@@ -572,7 +572,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_ftell(ctx) {
 
         let file_id = FileId::from(stream);
-        if let Some(_) = ctx.local().file_objs.get(&file_id) {
+        if ctx.local().file_objs.contains_key(&file_id) {
             0 // TODO: handle passthrough
         } else {
             hook_macros::real!(ftell)(stream)
@@ -586,7 +586,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_frewind(ctx) {
 
         let file_id = FileId::from(stream);
-        if let Some(_) = ctx.local().file_objs.get(&file_id) {
+        if ctx.local().file_objs.contains_key(&file_id) {
             0 // TODO: handle passthrough
         } else {
             hook_macros::real!(frewind)(stream)
@@ -601,7 +601,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_fgetpos(ctx) {
 
         let file_id = FileId::from(stream);
-        if let Some(_) = ctx.local().file_objs.get(&file_id) {
+        if ctx.local().file_objs.contains_key(&file_id) {
             0 // TODO: handle passthrough
         } else {
             hook_macros::real!(fgetpos)(stream, pos)
@@ -616,7 +616,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_fsetpos(ctx) {
 
         let file_id = FileId::from(stream);
-        if let Some(_) = ctx.local().file_objs.get(&file_id) {
+        if ctx.local().file_objs.contains_key(&file_id) {
             0 // TODO: handle passthrough
         } else {
             hook_macros::real!(fsetpos)(stream, pos)
@@ -640,7 +640,7 @@ hook_macros::hook! {
             return -1
         };
 
-        if let Some(_) = ctx.local().files.get(&path) {
+        if ctx.local().files.contains_key(&path) {
             0 // TODO: handle passthrough
         } else {
             hook_macros::real!(access)(pathname, mode)
@@ -702,7 +702,7 @@ hook_macros::hook! {
             return -1
         };
 
-        if let Some(_) = ctx.local().files.get(&path) {
+        if ctx.local().files.contains_key(&path) {
             crate::abort("function `stat` unimplimented for fizzle virtual fs")
             // TODO: implement
         } else {
@@ -727,7 +727,7 @@ hook_macros::hook! {
             return -1
         };
 
-        if let Some(_) = ctx.local().files.get(&path) {
+        if ctx.local().files.contains_key(&path) {
             crate::abort("function `stat` unimplimented for fizzle virtual fs")
             // TODO: implement
         } else {
@@ -935,7 +935,7 @@ hook_macros::hook! {
             return -1
         };
 
-        if let Some(_) = ctx.local().files.remove(&abs_oldpath) {
+        if ctx.local().files.remove(&abs_oldpath).is_some() {
             crate::abort("function `rename` not implemented for fizzle virtual fs");
         } else {
             hook_macros::real!(rename)(oldpath, newpath)
@@ -995,7 +995,7 @@ hook_macros::hook! {
             return -1
         };
 
-        if let Some(_) = ctx.local().files.remove(&abs_oldpath) {
+        if ctx.local().files.remove(&abs_oldpath).is_some() {
             crate::abort("function `renameat` not implemented for fizzle virtual fs");
         } else {
             hook_macros::real!(renameat)(olddirfd, oldpath, newdirfd, newpath)
@@ -1055,7 +1055,7 @@ hook_macros::hook! {
             return -1
         };
 
-        if let Some(_) = ctx.local().files.remove(&abs_oldpath) {
+        if ctx.local().files.remove(&abs_oldpath).is_some() {
             crate::abort("function `renameat2` not implemented for fizzle virtual fs");
         } else {
             hook_macros::real!(renameat2)(olddirfd, oldpath, newdirfd, newpath)

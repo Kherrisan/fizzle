@@ -28,8 +28,6 @@ unsafe extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void 
         .pthreads
         .insert(unsafe { libc::pthread_self() }, thread::current().id());
 
-    drop(ctx);
-
     // Now enable preload hooks to actually work during this thread's execution
     state::set_entered_handler(false);
 
@@ -40,7 +38,6 @@ unsafe extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void 
     state::set_entered_handler(true);
 
     let mut ctx = state::FIZZLE_STATE.get(); // ONLY use this here and in ld_preload hooks
-
     ctx.exit_thread(res);
 }
 
@@ -326,7 +323,7 @@ hook_macros::hook! {
             crate::abort("`pthread_spin_unlock` called by a thread not currently holding the spinlock")
         }
 
-        if let Some(next_thread) = spinlock_queue.front().map(|t| t.clone()) {
+        if let Some(next_thread) = spinlock_queue.front().copied() {
             ctx.local().ready_threads.push_back(next_thread);
         }
 
@@ -477,7 +474,7 @@ hook_macros::hook! {
             crate::abort("`pthread_mutex_unlock` called by a thread not currently holding the lock")
         }
 
-        if let Some(next_thread) = mutex_queue.front().map(|t| t.clone()) {
+        if let Some(next_thread) = mutex_queue.front().copied() {
             ctx.local().ready_threads.push_back(next_thread);
         }
 
@@ -602,7 +599,7 @@ hook_macros::hook! {
             crate::abort("`pthread_cond_wait` called by a thread not currently holding the lock")
         }
 
-        if let Some(next_thread) = mutex_queue.front().map(|t| t.clone()) {
+        if let Some(next_thread) = mutex_queue.front().copied() {
             ctx.local().ready_threads.push_back(next_thread);
         }
 
@@ -656,7 +653,7 @@ hook_macros::hook! {
             crate::abort("`pthread_cond_wait` called by a thread not currently holding the lock")
         }
 
-        if let Some(next_thread) = mutex_queue.front().map(|t| t.clone()) {
+        if let Some(next_thread) = mutex_queue.front().copied() {
             ctx.local().ready_threads.push_back(next_thread);
         }
 
@@ -710,7 +707,7 @@ hook_macros::hook! {
             crate::abort("`pthread_cond_wait` called by a thread not currently holding the lock")
         }
 
-        if let Some(next_thread) = mutex_queue.front().map(|t| t.clone()) {
+        if let Some(next_thread) = mutex_queue.front().copied() {
             ctx.local().ready_threads.push_back(next_thread);
         }
 
@@ -1029,7 +1026,7 @@ hook_macros::hook! {
         let barrier = BarrierId::from(lock);
 
         match ctx.local().barriers.remove(&barrier) {
-            Some(barrier_info) if barrier_info.curr.len() > 0 => crate::abort("`pthread_barrier_destroy` called on barrier other threads were waiting on"),
+            Some(barrier_info) if !barrier_info.curr.is_empty() => crate::abort("`pthread_barrier_destroy` called on barrier other threads were waiting on"),
             None => crate::abort("`pthread_barrier_destroy` called on uninitialized barrier"),
             _ => ()
         }
