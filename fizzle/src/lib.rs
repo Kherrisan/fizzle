@@ -8,7 +8,6 @@ mod hooks;
 // mod scheduler;
 mod state;
 mod streams;
-mod util;
 
 pub(crate) use hook_macros::hook;
 
