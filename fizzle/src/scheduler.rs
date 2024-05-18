@@ -43,6 +43,8 @@ pub fn yield_after<F: FnOnce() -> ()>(blocking_fn: F) {
 }
 */
 
+
+/*
 /// Marks the current thread as paused to the scheduler, then waits until the scheduler has
 /// assigned control flow back to the current thread before continuing.
 pub fn yield_thread() {
@@ -62,3 +64,5 @@ pub fn yield_thread() {
 
     // Continue regular execution--anothre thread has delegated execution back to our thread
 }
+
+*/

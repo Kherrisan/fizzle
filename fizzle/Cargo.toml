@@ -9,3 +9,4 @@ crate-type = ["cdylib"]
 [dependencies]
 libc = "0.2"
 fxhash = "0.2"
+heapless = "0.8"

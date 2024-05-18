@@ -5,7 +5,7 @@ hook_macros::hook! {
         fd: libc::c_int,
         buf: *const libc::c_void,
         count: libc::size_t
-    ) -> libc::ssize_t => fizzle_read {
+    ) -> libc::ssize_t => fizzle_read(ctx) {
 
         crate::debug_abort("read");
         hook_macros::real!(read)(fd, buf, count)
@@ -18,7 +18,7 @@ hook_macros::hook! {
         buf: *const libc::c_void,
         len: libc::size_t,
         flags: libc::c_int
-    ) -> libc::ssize_t => fizzle_send {
+    ) -> libc::ssize_t => fizzle_send(ctx) {
 
         crate::debug_abort("send");
         hook_macros::real!(send)(fd, buf, len, flags)
@@ -33,7 +33,7 @@ hook_macros::hook! {
         flags: libc::c_int,
         dest_addr: *const libc::sockaddr,
         addrlen: libc::socklen_t
-    ) -> libc::ssize_t => fizzle_sendto {
+    ) -> libc::ssize_t => fizzle_sendto(ctx) {
 
         crate::debug_abort("sendto");
         hook_macros::real!(sendto)(fd, buf, len, flags, dest_addr, addrlen)
@@ -45,7 +45,7 @@ hook_macros::hook! {
         fd: libc::c_int,
         msg: *const libc::msghdr,
         flags: libc::c_int
-    ) -> libc::ssize_t => fizzle_sendmsg {
+    ) -> libc::ssize_t => fizzle_sendmsg(ctx) {
         hook_macros::real!(sendmsg)(fd, msg, flags)
     }
 }
@@ -55,7 +55,7 @@ hook_macros::hook! {
         fd: libc::c_int,
         buf: *const libc::c_void,
         count: libc::size_t
-    ) -> libc::ssize_t => fizzle_write {
+    ) -> libc::ssize_t => fizzle_write(ctx) {
         hook_macros::real!(write)(fd, buf, count)
     }
 }

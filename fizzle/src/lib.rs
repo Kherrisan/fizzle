@@ -2,11 +2,13 @@
 
 extern crate libc;
 
+mod semaphore;
 mod hook_macros;
 mod hooks;
-mod scheduler;
+// mod scheduler;
 mod state;
 mod streams;
+mod util;
 
 pub(crate) use hook_macros::hook;
 
@@ -271,7 +273,7 @@ pub(crate) fn abort(reason: &'static str) -> ! {
 
 /// Abort the process if the `FIZZLE_ABORT` environment variable is equal to 1.
 pub(crate) fn debug_abort(function_name: &'static str) {
-    if state::fizzle_state().lock().unwrap().debug_enabled {
+    if false {
         eprintln!("Fatal: unimplemented shim `{}`", function_name);
         process::exit(-1);
     }

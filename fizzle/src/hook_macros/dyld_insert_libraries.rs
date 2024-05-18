@@ -30,6 +30,7 @@ macro_rules! hook {
                 state::set_entered_handler(true);
                 state::fizzle_initialize();
                 let res = {
+                    let fizzle_state = state::get_fizzle_state();
                     $body
                 };
                 state::set_entered_handler(false);

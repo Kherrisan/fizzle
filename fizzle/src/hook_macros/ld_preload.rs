@@ -18,7 +18,7 @@ pub unsafe fn dlsym_next(symbol: &'static str) -> *const u8 {
 }
 
 macro_rules! hook {
-    (unsafe fn $real_fn:ident ( $($v:ident : $t:ty),* ) -> $r:ty => $hook_fn:ident $body:block) => {
+    (unsafe fn $real_fn:ident ( $($v:ident : $t:ty),* ) -> $r:ty => $hook_fn:ident ( $state:ident ) $body:block) => {
         #[allow(non_camel_case_types)]
         pub struct $real_fn {__private_field: ()}
         #[allow(non_upper_case_globals)]
@@ -47,10 +47,10 @@ macro_rules! hook {
                         return $real_fn.get() ( $($v),* )
                     }
                     crate::state::set_entered_handler(true);
-                    crate::state::fizzle_initialize();
                     crate::trace_enter!($real_fn);
                     let res = {
-                        $hook_fn ( $($v),* )
+
+                        $hook_fn ( $($v),*)
                     };
                     // crate::trace_exit!($real_fn);
                     crate::state::set_entered_handler(false);
@@ -62,13 +62,15 @@ macro_rules! hook {
             }
         }
 
-        pub unsafe fn $hook_fn ( $($v : $t),* ) -> $r {
+        pub unsafe fn $hook_fn ( $($v : $t),*) -> $r {
+            let $state = state::get_fizzle_state();
             $body
         }
     };
 
-    (unsafe fn $real_fn:ident ( $($v:ident : $t:ty),* ) => $hook_fn:ident $body:block) => {
-        $crate::hook! { unsafe fn $real_fn ( $($v : $t),* ) -> () => $hook_fn $body }
+    // Handle case where function signature has no return type
+    (unsafe fn $real_fn:ident ( $($v:ident : $t:ty),* ) => $hook_fn:ident ( $state:ident ) $body:block) => {
+        $crate::hook! { unsafe fn $real_fn ( $($v : $t),* ) -> () => $hook_fn ( $state ) $body }
     };
 }
 
