@@ -58,8 +58,14 @@ hook_macros::hook! {
 
         let res = hook_macros::real!(pthread_create)(thread, attr, pt_wrapper_fn, ptr::addr_of_mut!(wrapped_arg) as *mut libc::c_void);
 
+        // This thread should still be able to execute afterwards
+        ctx.local().ready_threads.push_back(thread::current().id());
+
         // The newly-created thread executes now, so this thread pauses
         ctx.yield_thread();
+
+        // Pause our current thread until it gets delegated execution again.
+        ctx.pause_current_thread();
 
         res
     }

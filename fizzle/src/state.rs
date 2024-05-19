@@ -226,15 +226,14 @@ impl FizzleState {
             self.get_thread_lock(&thread_id).post();
 
             // Pause our current thread until it gets delegated execution again.
-            self.get_thread_lock(&thread::current().id()).wait();
+            self.pause_current_thread();
         } else {
             // ...if all threads have finished execution, move to next process.
-            if let Some(next_process_id) = self.global().ready_processes.dequeue() {
+            if let Some(next_process_id) = self.global().next_ready_process() {
                 self.global.process_wake(next_process_id);
 
                 // Wait for a process to delegate back to this one.
-                let process_id = self.local().process_id;
-                self.global.process_wait(process_id);
+                self.pause_current_process();
             } else {
                 // If no ready processes are left, notify the fuzzing engine
                 self.notify_complete()
@@ -291,6 +290,15 @@ impl FizzleState {
         let thread_idx = index_of_thread(thread_id);
         assert!(thread_idx < self.thread_locks.len(), "too many threads spawned during fizzle execution (ThreadID out of range)--increase FIZZLE_MAX_THREADS constant during fizzle compilation");
         self.thread_locks[thread_idx].as_ref().unwrap()
+    }
+
+    pub fn pause_current_thread(&mut self) {
+        self.get_thread_lock(&thread::current().id()).wait()
+    }
+
+    pub fn pause_current_process(&mut self) {
+        let current_process = self.local().process_id;
+        self.global.process_wait(current_process);
     }
 }
 
@@ -373,6 +381,7 @@ pub struct InterprocessState {
     /// The next process ID available to be assigned to a new process.
     next_process_id: ProcessId,
     ready_processes: Queue<ProcessId, FIZZLE_MAX_READY_PROCESSES>,
+    process_in_ready_queue: [bool; FIZZLE_MAX_READY_PROCESSES],
 }
 
 impl InterprocessState {
@@ -380,14 +389,30 @@ impl InterprocessState {
         Self {
             next_process_id: ProcessId::new(1), // First process takes 0, so next is 1
             ready_processes: Queue::new(),
+            process_in_ready_queue: array::from_fn(|_| false),
         }
     }
 
     /// Assigns the next available process ID and increments it internally.
-    fn assign_process_id(&mut self) -> ProcessId {
+    pub fn assign_process_id(&mut self) -> ProcessId {
         let process_id = self.next_process_id;
         self.next_process_id.identifier += 1;
         process_id
+    }
+
+    /// Retrieves the next available process that has work to execute.
+    pub fn next_ready_process(&mut self) -> Option<ProcessId> {
+        let process_id = self.ready_processes.dequeue()?;
+        self.process_in_ready_queue[process_id.ident()] = false;
+        Some(process_id)
+    }
+
+    /// Marks the given process as having further work to execute.
+    pub fn mark_process_ready(&mut self, process_id: ProcessId) {
+        if !self.process_in_ready_queue[process_id.ident()] {
+            self.process_in_ready_queue[process_id.ident()] = true;
+            self.ready_processes.enqueue(process_id).unwrap();
+        }
     }
 }
 
