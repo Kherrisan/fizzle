@@ -5,7 +5,6 @@ extern crate libc;
 mod hook_macros;
 mod hooks;
 mod semaphore;
-// mod scheduler;
 mod state;
 mod streams;
 
