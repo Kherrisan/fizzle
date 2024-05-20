@@ -49,7 +49,7 @@ hook_macros::hook! {
     unsafe fn umask(
         mask: libc::mode_t
     ) -> libc::c_int => fizzle_umask(_ctx) {
-        
+
 
         // TODO: set umask in virtual fs once permissions implemented
 

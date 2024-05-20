@@ -3,7 +3,7 @@ pub mod ipc;
 
 use std::cell::{RefCell, UnsafeCell};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::hash::{Hash, Hasher};
 use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
@@ -18,7 +18,7 @@ use heapless::spsc::Queue;
 use fxhash::FxBuildHasher;
 
 use crate::semaphore::Semaphore;
-use crate::FilePath;
+use crate::{FilePath, SemPath};
 
 use self::fd::FdInfo;
 use self::ipc::IpcMemory;
@@ -32,6 +32,8 @@ const FIZZLE_MAX_THREADS: usize = 65536;
 std::thread_local! {
     static ENTERED_HANDLER: RefCell<bool> = const { RefCell::new(false) };
 }
+
+static DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
 
 static TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
 
@@ -67,6 +69,10 @@ pub fn set_entered_handler(entered: bool) {
 
 pub fn fizzle_trace_enabled() -> bool {
     TRACE_ENABLED.load(Ordering::Relaxed)
+}
+
+pub fn fizzle_debug_enabled() -> bool {
+    DEBUG_ENABLED.load(Ordering::Relaxed)
 }
 
 /// ================================================================================================
@@ -120,9 +126,7 @@ impl FizzleCell {
             fizzle_state_initialize(inner, is_init);
         }
 
-        FizzleGuard {
-            cell: self,
-        }
+        FizzleGuard { cell: self }
     }
 }
 
@@ -302,25 +306,35 @@ impl FizzleState {
     }
 }
 
+// File/socket objects should be global, but file descriptors should be proc-local.
+//
+// GlobalState should have a file descriptor map area available for a forked/exec'd process to pass its non-CLOEXEC
+// fds to a child.
+
+// We do not currently support sem_init() with pshared enabled--that would require tracking shared memory
+// across processes. While this is possible, it would be a difficult and bug-ridden path to take.
+// In a similar vein, we will not
+
+// We will, however, support named process-shared semaphores.
+
 /// State local to the current process.
 pub struct ProcessState {
     pub process_id: ProcessId,
-    pub fds: HashMap<RawFd, FdInfo, FxBuildHasher>,
+    pub fds: HashMap<RawFd, FdInfo, FxBuildHasher>, // local, but copy on fork/exec (minus CLOEXEC fds)
     pub barriers: HashMap<BarrierId, BarrierInfo, FxBuildHasher>,
     pub condvars: HashMap<CondVarId, VecDeque<ThreadId>, FxBuildHasher>,
     /// Files specifically designated as being emulated.
-    pub files: HashMap<FilePath, FileInfo, FxBuildHasher>,
+    pub files: HashMap<FilePath, FileInfo, FxBuildHasher>, // global--move to InterprocessState
     pub file_objs: HashMap<FileId, RawFd, FxBuildHasher>,
     pub passthrough_file_objs: HashMap<FileId, RawFd>,
     pub mutexes: HashMap<MutexId, VecDeque<ThreadId>, FxBuildHasher>,
-    pub named_semaphores: HashMap<CString, SemaphoreId>,
+    pub named_semaphores: HashMap<SemPath, SemaphoreId>, // global--move to InterprocessState
     pub rwlocks: HashMap<RwLockId, RwLockInfo, FxBuildHasher>,
     pub semaphores: HashMap<SemaphoreId, SemaphoreInfo>,
     pub spinlocks: HashMap<SpinlockId, VecDeque<ThreadId>, FxBuildHasher>,
     pub pthreads: HashMap<libc::pthread_t, ThreadId, FxBuildHasher>,
     pub ready_threads: VecDeque<ThreadId>,
     pub terminated_threads: HashSet<ThreadId, FxBuildHasher>,
-    pub debug_enabled: bool,
     /// Indicates which thread(s) are awaiting the death of a specific thread (via pthread_join)
     pub awaiting_thread_death: HashMap<ThreadId, Vec<ThreadId>, FxBuildHasher>,
     /// The directory that the program is currently executing relative to.
@@ -332,6 +346,7 @@ impl ProcessState {
         let debug_enabled = matches!(env::var("FIZZLE_DEBUG"), Ok(s) if s.as_str() == "1");
         let trace_enabled = matches!(env::var("FIZZLE_TRACE"), Ok(s) if s.as_str() == "1");
 
+        DEBUG_ENABLED.store(debug_enabled, Ordering::Release);
         TRACE_ENABLED.store(trace_enabled, Ordering::Release);
 
         let working_directory_bytes = std::env::current_dir()
@@ -354,7 +369,6 @@ impl ProcessState {
             pthreads: HashMap::with_hasher(Default::default()),
             ready_threads: VecDeque::new(),
             terminated_threads: HashSet::with_hasher(Default::default()),
-            debug_enabled,
             working_directory,
             awaiting_thread_death: HashMap::with_hasher(Default::default()),
         }
@@ -562,7 +576,7 @@ pub enum RwLockState {
 
 #[derive(Debug)]
 pub struct SemaphoreInfo {
-    pub name: Option<CString>,
+    pub name: Option<SemPath>,
     pub value: usize,
     pub waiting: VecDeque<ThreadId>,
 }

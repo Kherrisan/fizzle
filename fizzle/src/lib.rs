@@ -115,9 +115,7 @@ impl<const T: usize> Buffer<T> {
 }
 
 #[derive(Debug, Clone)]
-pub struct FilePathError {
-    pub reason: &'static str,
-}
+pub struct PathError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FilePath {
@@ -162,21 +160,19 @@ impl FilePath {
         path
     }
 
-    pub fn from_cstr(path: &CStr) -> Result<Self, FilePathError> {
+    pub fn from_cstr(path: &CStr) -> Result<Self, PathError> {
         Self::from_raw_bytes(path.to_bytes())
     }
 
     /// Note that this should not include any null terminating character.
-    pub fn from_raw_bytes(path: &[u8]) -> Result<Self, FilePathError> {
+    pub fn from_raw_bytes(path: &[u8]) -> Result<Self, PathError> {
         if path.len() > 255 {
-            return Err(FilePathError {
-                reason: "filepath exceeded 255 character max size",
-            });
+            return Err(PathError);
         }
 
         let mut buf = Buffer::new();
         buf.try_put(path)
-            .map_err(|e| FilePathError { reason: e.reason })?;
+            .map_err(|_| PathError)?;
 
         let mut read_idx = 0usize;
         let mut write_idx = 0usize;
@@ -201,9 +197,7 @@ impl FilePath {
                             write_idx += 3;
                         }
                         b"/" => {
-                            return Err(FilePathError {
-                                reason: "backtrack attempted on root path",
-                            })
+                            return Err(PathError)
                         }
                         segment => write_idx -= segment.len(),
                     }
@@ -227,9 +221,7 @@ impl FilePath {
         }
 
         if write_idx == 0 {
-            return Err(FilePathError {
-                reason: "empty path",
-            });
+            return Err(PathError);
         }
 
         let trailing_slash = data[write_idx - 1] == b'/';
@@ -238,7 +230,7 @@ impl FilePath {
         write_idx += 1;
 
         buf.shrink(write_idx)
-            .map_err(|e| FilePathError { reason: e.reason })?;
+            .map_err(|_| PathError)?;
 
         Ok(FilePath {
             buf,
@@ -246,7 +238,7 @@ impl FilePath {
         })
     }
 
-    pub fn concat(mut self, other: &FilePath) -> Result<Self, FilePathError> {
+    pub fn concat(mut self, other: &FilePath) -> Result<Self, PathError> {
         let data = &other.buf.data()[..other.buf.data().len() - 1]; // remove null character
         let mut read_idx = 0;
 
@@ -261,26 +253,18 @@ impl FilePath {
                 b".." => {
                     // Traverse back one segment
                     match Self::last_segment(self.buf.data()) {
-                        b"" | b"../" => self.buf.try_append(b"../").map_err(|_| FilePathError {
-                            reason: "insufficient space",
-                        })?,
+                        b"" | b"../" => self.buf.try_append(b"../").map_err(|_| PathError)?,
                         b"/" => {
-                            return Err(FilePathError {
-                                reason: "backtrack attempted on root path",
-                            })
+                            return Err(PathError)
                         }
                         segment => self.buf.shrink(segment.len()).unwrap(),
                     }
                 }
                 _ => {
-                    self.buf.try_append(segment).map_err(|_| FilePathError {
-                        reason: "insufficient space",
-                    })?;
+                    self.buf.try_append(segment).map_err(|_| PathError)?;
                     // copy '/' if exists
                     if segment_len < data.len() - read_idx {
-                        self.buf.try_append(b"/").map_err(|_| FilePathError {
-                            reason: "insufficient space",
-                        })?;
+                        self.buf.try_append(b"/").map_err(|_| PathError)?;
                     }
                 }
             }
@@ -289,9 +273,7 @@ impl FilePath {
         }
 
         // Re-add null character
-        self.buf.try_append(b"\0").map_err(|_| FilePathError {
-            reason: "insufficient space",
-        })?;
+        self.buf.try_append(b"\0").map_err(|_| PathError)?;
 
         self.trailing_slash = other.trailing_slash;
         Ok(self)
@@ -306,6 +288,48 @@ impl FilePath {
     }
 }
 
+/// The path for a named semaphore.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SemPath {
+    buf: Buffer<252>,
+}
+
+impl SemPath {
+    pub fn from_cstr(path: &CStr) -> Result<Self, PathError> {
+        Self::from_raw_bytes(path.to_bytes_with_nul())
+    }
+
+    /// Note that this **should** include a null terminating character.
+    pub fn from_raw_bytes(path: &[u8]) -> Result<Self, PathError> {
+        if path.len() > 252 {
+            return Err(PathError);
+        }
+
+        let Some(b'/') = path.first() else {
+            return Err(PathError);
+        };
+
+        let Some(b'\0') = path.last() else {
+            return Err(PathError);
+        };
+
+        for &b in path.iter().skip(1).take(path.len() - 2) {
+            if b == b'/' || b == b'\0' {
+                return Err(PathError);
+            }
+        }
+
+        let mut buf = Buffer::new();
+        buf.append(path);
+
+        Ok(Self { buf })
+    }
+
+    pub fn as_cstr(&self) -> &CStr {
+        unsafe { CStr::from_bytes_with_nul_unchecked(&self.buf.data) }
+    }
+}
+
 /// Abort the process immediately, printing `reason` to stderr.
 pub(crate) fn abort(reason: &'static str) -> ! {
     eprintln!("Fatal: {}", reason);
@@ -314,7 +338,7 @@ pub(crate) fn abort(reason: &'static str) -> ! {
 
 /// Abort the process if the `FIZZLE_ABORT` environment variable is equal to 1.
 pub(crate) fn debug_abort(function_name: &'static str) {
-    if false {
+    if state::fizzle_debug_enabled() {
         eprintln!("Fatal: unimplemented shim `{}`", function_name);
         process::exit(-1);
     }

@@ -1,5 +1,5 @@
 use crate::state::{SemaphoreId, SemaphoreInfo};
-use crate::{hook_macros, state};
+use crate::{hook_macros, state, SemPath};
 
 use std::collections::VecDeque;
 use std::ffi::CStr;
@@ -37,18 +37,21 @@ hook_macros::hook! {
         value: libc::c_uint
     ) -> *mut libc::sem_t => fizzle_sem_open(ctx) {
 
-        let name = CStr::from_ptr(name).to_owned();
-        // TODO: validate name?
+        let name = CStr::from_ptr(name);
+        let Ok(sem_path) = SemPath::from_cstr(name) else {
+            *libc::__errno_location() = libc::EINVAL;
+            return ptr::null_mut()
+        };
 
         if (oflag & libc::O_CREAT) != 0 {
-            if (oflag & libc::O_EXCL) != 0 && ctx.local().named_semaphores.contains_key(&name) {
+            if (oflag & libc::O_EXCL) != 0 && ctx.local().named_semaphores.contains_key(&sem_path) {
                 *libc::__errno_location() = libc::EEXIST;
                 return ptr::null_mut()
             }
 
             // TODO: we ignore `mode` file permissions here
 
-            match ctx.local().named_semaphores.entry(name.clone()) {
+            match ctx.local().named_semaphores.entry(sem_path.clone()) {
                 std::collections::hash_map::Entry::Occupied(o) => return o.get().to_mut_ptr(),
                 std::collections::hash_map::Entry::Vacant(v) => {
                     let sem = crate::unique_mem_create() as *mut libc::sem_t;
@@ -56,7 +59,7 @@ hook_macros::hook! {
 
                     v.insert(semaphore_id);
                     ctx.local().semaphores.insert(semaphore_id, SemaphoreInfo {
-                        name: Some(name),
+                        name: Some(sem_path),
                         value: value as usize,
                         waiting: VecDeque::new(),
                     });
@@ -64,7 +67,7 @@ hook_macros::hook! {
                 },
             }
         } else { // Open existing semaphore
-            let Some(semaphore_id) = ctx.local().named_semaphores.get(&name) else {
+            let Some(semaphore_id) = ctx.local().named_semaphores.get(&sem_path) else {
                 *libc::__errno_location() = libc::ENOENT;
                 return ptr::null_mut()
             };
