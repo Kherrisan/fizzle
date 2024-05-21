@@ -1,0 +1,16 @@
+
+# To learn more about how to define values in TOML, see https://toml.io/en/v1.0.0
+
+[fizzle]
+max_fds = "100" # TODO: implement this in the future with build.rs
+
+[io]
+"/dev/null" = "sink"
+
+[io."tcp://127.0.0.1:80"]
+method = "plugin" # The means of passing I/O on the device. Can be "sink", "fuzz", "plugin" or "passthrough"
+module = "fizzle-http" # The name of the cargo crate to source the plugin from
+plugin = "FizzleHttpPlugin" # The name of the `FizzlePlugin` implementation to be used
+
+[io."tcp://127.0.0.1:80".config]
+# Arbitrary configuration options specific to `fizzle-http` go here
