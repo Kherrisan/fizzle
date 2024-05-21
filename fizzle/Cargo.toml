@@ -10,3 +10,18 @@ crate-type = ["cdylib"]
 libc = "0.2"
 fxhash = "0.2"
 heapless = "0.8"
+toml = "0.8"
+fizzle-plugin = { version = "0.1", path = "../fizzle-plugin" }
+
+# Start of Fizzle Plugin Dependencies
+
+# Examples:
+# 
+# fizzle-http = "0.1"
+# fizzle-yaml = "0.2.0"
+# fizzle-zmq-client = "0.4.2"
+# fizzle-http-customheaders = { version = "0.1", path = "../../fizzle-http-customheaders" }
+#
+
+
+# End of Fizzle Plugin Dependencies
