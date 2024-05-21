@@ -10,14 +10,100 @@ mod streams;
 
 pub(crate) use hook_macros::hook;
 
-use std::{ffi::CStr, hash::Hash, os::fd::RawFd, process, ptr};
+use std::cmp::Ordering;
+use std::ffi::CStr;
+use std::hash::Hash;
+use std::io::{Read, Write};
+use std::marker::PhantomData;
+use std::mem::MaybeUninit;
+use std::os::fd::RawFd;
+use std::{array, cmp, io, mem, process, ptr};
+
+/// A set of values that can be indexed into by a key of type `K`.
+///
+#[derive(Debug)]
+pub struct ValueIndex<K: Sized + From<usize> + Into<usize>, V: Sized, const N: usize> {
+    inner: [Option<V>; N],
+    next_key: usize,
+    _phantom: PhantomData<K>,
+}
+
+impl<K: Sized + From<usize> + Into<usize>, V: Sized, const N: usize> ValueIndex<K, V, N> {
+    fn next_key(&mut self) -> Option<usize> {
+        let mut curr_key = self.next_key;
+        while self.inner[curr_key].is_some() {
+            curr_key = (curr_key + 1) % N;
+            if curr_key == self.next_key {
+                return None;
+            }
+        }
+        self.next_key = (curr_key + 1) % N;
+        Some(curr_key)
+    }
+
+    pub fn new() -> Self {
+        Self {
+            inner: array::from_fn(|_| None),
+            next_key: 0usize,
+            _phantom: Default::default(),
+        }
+    }
+
+    pub fn get(&self, key: K) -> Option<&V> {
+        self.inner[key.into()].as_ref()
+    }
+
+    pub fn get_mut(&mut self, key: K) -> Option<&mut V> {
+        self.inner[key.into()].as_mut()
+    }
+
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        let mut res = Some(value);
+        mem::swap(&mut res, &mut self.inner[key.into()]);
+        res
+    }
+
+    pub fn put(&mut self, value: V) -> K {
+        let Some(key) = self.next_key() else {
+            panic!("ValueIndex structure out of space");
+        };
+
+        self.inner[key] = Some(value);
+        K::from(key)
+    }
+
+    pub fn remove(&mut self, key: K) -> Option<V> {
+        let mut res = None;
+        mem::swap(&mut res, &mut self.inner[key.into()]);
+        res
+    }
+}
+
+impl<K: Sized + From<usize> + Into<usize>, V: Sized, const N: usize> Default
+    for ValueIndex<K, V, N>
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K: Sized + From<usize> + Into<usize> + Clone, V: Sized + Clone, const N: usize> Clone
+    for ValueIndex<K, V, N>
+{
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            next_key: self.next_key,
+            _phantom: self._phantom,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct BufferError {
     pub reason: &'static str,
 }
 
-// Future work: make the state variable `Sized` so that it can be constructed in shared memory for multi-process fuzzing
 #[derive(Debug, Clone, Eq)]
 pub struct Buffer<const T: usize> {
     data: [u8; T],
@@ -115,6 +201,104 @@ impl<const T: usize> Buffer<T> {
 }
 
 #[derive(Debug, Clone)]
+pub struct RingBuffer<const T: usize> {
+    data: [MaybeUninit<u8>; T],
+    data_idx: usize,
+    data_len: usize,
+}
+
+impl<const T: usize> Hash for RingBuffer<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let end_idx = self.data_idx + self.data_len;
+        let first_end = cmp::min(end_idx, T);
+        (unsafe {
+            &*(&self.data[self.data_idx..first_end] as *const [MaybeUninit<u8>] as *const [u8])
+        })
+        .hash(state);
+
+        if end_idx > T {
+            (unsafe { &*(&self.data[..end_idx % T] as *const [MaybeUninit<u8>] as *const [u8]) })
+                .hash(state);
+        }
+    }
+}
+
+impl<const T: usize> Default for RingBuffer<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const T: usize> Write for RingBuffer<T> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.data_len == T {
+            return Err(io::Error::from_raw_os_error(libc::EAGAIN));
+        }
+
+        let end_idx = (self.data_idx + self.data_len) % T;
+
+        let available = match end_idx.cmp(&self.data_idx) {
+            Ordering::Greater | Ordering::Equal => T - end_idx,
+            Ordering::Less => self.data_idx - end_idx,
+        };
+
+        let written = cmp::min(available, buf.len());
+
+        self.data[end_idx..end_idx + written].copy_from_slice(unsafe {
+            &*(&buf[..written] as *const [u8] as *const [MaybeUninit<u8>])
+        });
+        self.data_len += written;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<const T: usize> Read for RingBuffer<T> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.data_len == 0 {
+            return Err(io::Error::from_raw_os_error(libc::EAGAIN));
+        }
+
+        let available = cmp::min(self.data_len, T - self.data_idx);
+        let read = cmp::min(available, buf.len());
+
+        buf[..read].copy_from_slice(unsafe {
+            &*(&self.data[self.data_idx..self.data_idx + read] as *const [MaybeUninit<u8>]
+                as *const [u8])
+        });
+        self.data_idx = (self.data_idx + read) % T;
+
+        Ok(read)
+    }
+}
+
+impl<const T: usize> RingBuffer<T> {
+    pub fn new() -> Self {
+        Self {
+            data: array::from_fn(|_| MaybeUninit::uninit()),
+            data_idx: 0,
+            data_len: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.data_len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn clear(&mut self) {
+        self.data_idx = 0;
+        self.data_len = 0;
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct PathError;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -171,8 +355,7 @@ impl FilePath {
         }
 
         let mut buf = Buffer::new();
-        buf.try_put(path)
-            .map_err(|_| PathError)?;
+        buf.try_put(path).map_err(|_| PathError)?;
 
         let mut read_idx = 0usize;
         let mut write_idx = 0usize;
@@ -196,9 +379,7 @@ impl FilePath {
                             data.copy_from_slice(b"../");
                             write_idx += 3;
                         }
-                        b"/" => {
-                            return Err(PathError)
-                        }
+                        b"/" => return Err(PathError),
                         segment => write_idx -= segment.len(),
                     }
                 }
@@ -229,8 +410,7 @@ impl FilePath {
         data[write_idx] = b'\0';
         write_idx += 1;
 
-        buf.shrink(write_idx)
-            .map_err(|_| PathError)?;
+        buf.shrink(write_idx).map_err(|_| PathError)?;
 
         Ok(FilePath {
             buf,
@@ -254,9 +434,7 @@ impl FilePath {
                     // Traverse back one segment
                     match Self::last_segment(self.buf.data()) {
                         b"" | b"../" => self.buf.try_append(b"../").map_err(|_| PathError)?,
-                        b"/" => {
-                            return Err(PathError)
-                        }
+                        b"/" => return Err(PathError),
                         segment => self.buf.shrink(segment.len()).unwrap(),
                     }
                 }

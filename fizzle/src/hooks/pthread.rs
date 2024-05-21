@@ -1,5 +1,5 @@
 use crate::state::{
-    BarrierId, BarrierInfo, CondVarId, MutexId, RwLockId, RwLockInfo, RwLockState, SpinlockId,
+    BarrierInfo, BarrierPtr, CondVarPtr, MutexPtr, RwLockInfo, RwLockPtr, RwLockState, SpinlockPtr,
 };
 use crate::{hook_macros, state};
 
@@ -17,14 +17,15 @@ struct PTWrapperArgs {
 
 unsafe extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void {
     crate::trace_enter!("pt_wrapper_fn");
-    let mut ctx = state::FIZZLE_STATE.get(); // ONLY use this here and in ld_preload hooks
 
     let wrapped_arg = (arg as *mut PTWrapperArgs).as_mut().unwrap();
 
     // Before we do ANYTHING, we need to set this to avoid accidental preload hook recursion
     state::set_entered_handler(true);
 
-    ctx.local()
+    state::FIZZLE_STATE
+        .get()
+        .local()
         .pthreads
         .insert(unsafe { libc::pthread_self() }, thread::current().id());
 
@@ -62,9 +63,6 @@ hook_macros::hook! {
         ctx.local().ready_threads.push_back(thread::current().id());
 
         // The newly-created thread executes now, so this thread pauses
-        ctx.yield_thread();
-
-        // Pause our current thread until it gets delegated execution again.
         ctx.pause_current_thread();
 
         res
@@ -239,7 +237,7 @@ hook_macros::hook! {
 
         // TODO: what about mutexes shared across processes?
 
-        let spinlock = SpinlockId::from(lock);
+        let spinlock = SpinlockPtr::from(lock);
 
         if ctx.local().spinlocks.insert(spinlock, VecDeque::new()).is_some() {
             crate::abort("`pthread_spin_init` called twice on one spinlock");
@@ -254,7 +252,7 @@ hook_macros::hook! {
         lock: *mut libc::pthread_spinlock_t
     ) -> libc::c_int => fizzle_pthread_spin_destroy(ctx) {
 
-        let spinlock = SpinlockId::from(lock);
+        let spinlock = SpinlockPtr::from(lock);
 
         let Some(spinlock_queue) = ctx.local().spinlocks.remove(&spinlock) else {
             crate::abort("`pthread_spin_destroy` called on uninitialized spinlock")
@@ -273,7 +271,7 @@ hook_macros::hook! {
         lock: *mut libc::pthread_spinlock_t
     ) -> libc::c_int => fizzle_pthread_spin_lock(ctx) {
 
-        let spinlock = SpinlockId::from(lock);
+        let spinlock = SpinlockPtr::from(lock);
 
         let Some(spinlock_queue) = ctx.local().spinlocks.get_mut(&spinlock) else {
             crate::abort("`pthread_spin_lock` called on uninitialized spinlock")
@@ -295,7 +293,7 @@ hook_macros::hook! {
         lock: *mut libc::pthread_spinlock_t
     ) -> libc::c_int => fizzle_pthread_spin_trylock(ctx) {
 
-        let spinlock = SpinlockId::from(lock);
+        let spinlock = SpinlockPtr::from(lock);
 
         let Some(spinlock_queue) = ctx.local().spinlocks.get_mut(&spinlock) else {
             crate::abort("`pthread_spin_trylock` called on uninitialized spinlock")
@@ -315,7 +313,7 @@ hook_macros::hook! {
         lock: *mut libc::pthread_spinlock_t
     ) -> libc::c_int => fizzle_pthread_spin_unlock(ctx) {
 
-        let spinlock = SpinlockId::from(lock);
+        let spinlock = SpinlockPtr::from(lock);
 
         let Some(spinlock_queue) = ctx.local().spinlocks.get_mut(&spinlock) else {
             crate::abort("`pthread_spin_unlock` called on uninitialized spinlock")
@@ -343,7 +341,7 @@ hook_macros::hook! {
         _attr: *mut libc::pthread_mutexattr_t
     ) -> libc::c_int => fizzle_pthread_mutex_init(ctx) {
 
-        let mutex = MutexId::from(lock);
+        let mutex = MutexPtr::from(lock);
 
         if ctx.local().mutexes.insert(mutex, VecDeque::new()).is_some() {
             crate::abort("`pthread_mutex_init` called twice on one mutex");
@@ -358,7 +356,7 @@ hook_macros::hook! {
         lock: *mut libc::pthread_mutex_t
     ) -> libc::c_int => fizzle_pthread_mutex_destroy(ctx) {
 
-        let mutex = MutexId::from(lock);
+        let mutex = MutexPtr::from(lock);
 
         let Some(mutex_queue) = ctx.local().mutexes.remove(&mutex) else {
             crate::abort("`pthread_mutex_destroy` called on uninitialized mutex")
@@ -377,7 +375,7 @@ hook_macros::hook! {
         lock: *mut libc::pthread_mutex_t
     ) -> libc::c_int => fizzle_pthread_mutex_lock(ctx) {
 
-        let mutex = MutexId::from(lock);
+        let mutex = MutexPtr::from(lock);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
             crate::abort("`pthread_mutex_lock` called on uninitialized mutex")
@@ -399,7 +397,7 @@ hook_macros::hook! {
         lock: *mut libc::pthread_mutex_t
     ) -> libc::c_int => fizzle_pthread_mutex_trylock(ctx) {
 
-        let mutex = MutexId::from(lock);
+        let mutex = MutexPtr::from(lock);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
             crate::abort("`pthread_mutex_trylock` called on uninitialized mutex")
@@ -421,7 +419,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_pthread_mutex_timedlock(ctx) {
         // TODO: this just returns immediately if locked
 
-        let mutex = MutexId::from(lock);
+        let mutex = MutexPtr::from(lock);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
             crate::abort("`pthread_mutex_timedlock` called on uninitialized mutex")
@@ -446,7 +444,7 @@ hook_macros::hook! {
 
         // TODO: this just returns immediately if locked
 
-        let mutex = MutexId::from(lock);
+        let mutex = MutexPtr::from(lock);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
             crate::abort("`pthread_mutex_clocklock` called on uninitialized mutex")
@@ -466,7 +464,7 @@ hook_macros::hook! {
         lock: *mut libc::pthread_mutex_t
     ) -> libc::c_int => fizzle_pthread_mutex_unlock(ctx) {
 
-        let mutex = MutexId::from(lock);
+        let mutex = MutexPtr::from(lock);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
             crate::abort("`pthread_mutex_unlock` called on uninitialized mutex")
@@ -507,7 +505,7 @@ hook_macros::hook! {
 
         // TODO: what about mutexes shared across processes?
 
-        let cond = CondVarId::from(lock);
+        let cond = CondVarPtr::from(lock);
 
         if ctx.local().condvars.insert(cond, VecDeque::new()).is_some() {
             crate::abort("`pthread_cond_init` called twice on one condvar");
@@ -522,7 +520,7 @@ hook_macros::hook! {
         lock: *mut libc::pthread_cond_t
     ) -> libc::c_int => fizzle_pthread_cond_destroy(ctx) {
 
-        let cond = CondVarId::from(lock);
+        let cond = CondVarPtr::from(lock);
 
         let Some(condvar_queue) = ctx.local().condvars.remove(&cond) else {
             crate::abort("`pthread_cond_destroy` called on uninitialized condvar")
@@ -541,7 +539,7 @@ hook_macros::hook! {
         lock: *mut libc::pthread_cond_t
     ) -> libc::c_int => fizzle_pthread_cond_signal(ctx) {
 
-        let cond = CondVarId::from(lock);
+        let cond = CondVarPtr::from(lock);
 
         let Some(cond_queue) = ctx.local().condvars.get_mut(&cond) else {
             crate::abort("`pthread_cond_signal` called on uninitialized condvar")
@@ -560,7 +558,7 @@ hook_macros::hook! {
         lock: *mut libc::pthread_cond_t
     ) -> libc::c_int => fizzle_pthread_cond_broadcast(ctx) {
 
-        let cond = CondVarId::from(lock);
+        let cond = CondVarPtr::from(lock);
 
         let Some(cond_queue) = ctx.local().condvars.get_mut(&cond) else {
             crate::abort("`pthread_cond_broadcast` called on uninitialized condvar")
@@ -582,7 +580,7 @@ hook_macros::hook! {
         mutex: *mut libc::pthread_mutex_t
     ) -> libc::c_int => fizzle_pthread_cond_wait(ctx) {
 
-        let cond = CondVarId::from(lock);
+        let cond = CondVarPtr::from(lock);
 
         let Some(cond_queue) = ctx.local().condvars.get_mut(&cond) else {
             crate::abort("`pthread_cond_wait` called on uninitialized condvar")
@@ -591,7 +589,7 @@ hook_macros::hook! {
         cond_queue.push_back(thread::current().id());
 
         // Now unlock the mutex
-        let mutex = MutexId::from(mutex);
+        let mutex = MutexPtr::from(mutex);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
             crate::abort("`pthread_cond_wait` called on uninitialized mutex")
@@ -636,7 +634,7 @@ hook_macros::hook! {
 
         // TODO: timeout is infinite by default
 
-        let cond = CondVarId::from(lock);
+        let cond = CondVarPtr::from(lock);
 
         let Some(cond_queue) = ctx.local().condvars.get_mut(&cond) else {
             crate::abort("`pthread_cond_wait` called on uninitialized condvar")
@@ -645,7 +643,7 @@ hook_macros::hook! {
         cond_queue.push_back(thread::current().id());
 
         // Now unlock the mutex
-        let mutex = MutexId::from(mutex);
+        let mutex = MutexPtr::from(mutex);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
             crate::abort("`pthread_cond_wait` called on uninitialized mutex")
@@ -690,7 +688,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_pthread_cond_clockwait(ctx) {
 
         // TODO: timeout is infinite by default
-        let cond = CondVarId::from(lock);
+        let cond = CondVarPtr::from(lock);
 
         let Some(cond_queue) = ctx.local().condvars.get_mut(&cond) else {
             crate::abort("`pthread_cond_wait` called on uninitialized condvar")
@@ -699,7 +697,7 @@ hook_macros::hook! {
         cond_queue.push_back(thread::current().id());
 
         // Now unlock the mutex
-        let mutex = MutexId::from(mutex);
+        let mutex = MutexPtr::from(mutex);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
             crate::abort("`pthread_cond_wait` called on uninitialized mutex")
@@ -742,7 +740,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_pthread_rwlock_init(ctx) {
         // TODO: what about mutexes shared across processes?
 
-        let rwlock = RwLockId::from(lock);
+        let rwlock = RwLockPtr::from(lock);
 
         if ctx.local().rwlocks.insert(rwlock, RwLockInfo {
             state: RwLockState::Available,
@@ -762,7 +760,7 @@ hook_macros::hook! {
         lock: *mut libc::pthread_rwlock_t
     ) -> libc::c_int => fizzle_pthread_rwlock_destroy(ctx) {
 
-        let rwlock = RwLockId::from(lock);
+        let rwlock = RwLockPtr::from(lock);
 
         let Some(rwlock_info) = ctx.local().rwlocks.remove(&rwlock) else {
             crate::abort("`pthread_rwlock_destroy` called on uninitialized rwlock")
@@ -786,7 +784,7 @@ hook_macros::hook! {
         lock: *mut libc::pthread_rwlock_t
     ) -> libc::c_int => fizzle_pthread_rwlock_rdlock(ctx) {
 
-        let rwlock = RwLockId::from(lock);
+        let rwlock = RwLockPtr::from(lock);
 
         let Some(rwlock_info) = ctx.local().rwlocks.get_mut(&rwlock) else {
             crate::abort("`pthread_rwlock_rdlock` called on uninitialized rwlock")
@@ -824,7 +822,7 @@ hook_macros::hook! {
         lock: *mut libc::pthread_rwlock_t
     ) -> libc::c_int => fizzle_pthread_rwlock_tryrdlock(ctx) {
 
-        let rwlock = RwLockId::from(lock);
+        let rwlock = RwLockPtr::from(lock);
 
         let Some(rwlock_info) = ctx.local().rwlocks.get_mut(&rwlock) else {
             crate::abort("`pthread_rwlock_tryrdlock` called on uninitialized rwlock")
@@ -874,7 +872,7 @@ hook_macros::hook! {
         lock: *mut libc::pthread_rwlock_t
     ) -> libc::c_int => fizzle_pthread_rwlock_wrlock(ctx) {
 
-        let rwlock = RwLockId::from(lock);
+        let rwlock = RwLockPtr::from(lock);
 
         let Some(rwlock_info) = ctx.local().rwlocks.get_mut(&rwlock) else {
             crate::abort("`pthread_rwlock_wrlock` called on uninitialized rwlock")
@@ -903,7 +901,7 @@ hook_macros::hook! {
         lock: *mut libc::pthread_rwlock_t
     ) -> libc::c_int => fizzle_pthread_rwlock_trywrlock(ctx) {
 
-        let rwlock = RwLockId::from(lock);
+        let rwlock = RwLockPtr::from(lock);
 
         let Some(rwlock_info) = ctx.local().rwlocks.get_mut(&rwlock) else {
             crate::abort("`pthread_rwlock_trywrlock` called on uninitialized rwlock")
@@ -948,7 +946,7 @@ hook_macros::hook! {
         lock: *mut libc::pthread_rwlock_t
     ) -> libc::c_int => fizzle_pthread_rwlock_unlock(ctx) {
 
-        let rwlock = RwLockId::from(lock);
+        let rwlock = RwLockPtr::from(lock);
 
         let Some(rwlock_info) = ctx.local().rwlocks.get_mut(&rwlock) else {
             crate::abort("`pthread_rwlock_unlock` called on uninitialized rwlock")
@@ -1014,7 +1012,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_pthread_barrier_init(ctx) {
         // TODO: what about mutexes shared across processes?
 
-        let barrier = BarrierId::from(lock);
+        let barrier = BarrierPtr::from(lock);
 
         if ctx.local().barriers.insert(barrier, BarrierInfo { curr: Vec::new(), needed: count as usize }).is_some() {
             crate::abort("`pthread_barrier_init` called twice on one barrier");
@@ -1029,7 +1027,7 @@ hook_macros::hook! {
         lock: *mut libc::pthread_barrier_t
     ) -> libc::c_int => fizzle_pthread_barrier_destroy(ctx) {
 
-        let barrier = BarrierId::from(lock);
+        let barrier = BarrierPtr::from(lock);
 
         match ctx.local().barriers.remove(&barrier) {
             Some(barrier_info) if !barrier_info.curr.is_empty() => crate::abort("`pthread_barrier_destroy` called on barrier other threads were waiting on"),
@@ -1046,7 +1044,7 @@ hook_macros::hook! {
         lock: *mut libc::pthread_barrier_t
     ) -> libc::c_int => fizzle_pthread_barrier_wait(ctx) {
 
-        let barrier = BarrierId::from(lock);
+        let barrier = BarrierPtr::from(lock);
 
         let Some(barrier_info) = ctx.local().barriers.get_mut(&barrier) else {
             crate::abort("`pthread_barrier_wait` called on uninitialized barrier");

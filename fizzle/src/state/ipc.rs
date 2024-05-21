@@ -151,27 +151,32 @@ impl<T: Sized> IpcMemory<T> {
 
     /// Wakes up the process designated by `process_id`.
     pub fn process_wake(&self, process_id: ProcessId) {
+        let proc_id: usize = process_id.into();
         assert!(
-            process_id.ident() < FIZZLE_MAX_PROCESSES,
+            proc_id < FIZZLE_MAX_PROCESSES,
             "internal fizzle process_wake function called with invalid ProcessId"
         );
 
-        unsafe { libc::sem_post(self.proc_locks[process_id.ident()]) };
+        unsafe { libc::sem_post(self.proc_locks[proc_id]) };
     }
 
     /// Waits for the lock associated with `process_id` to be unlocked.
     pub fn process_wait(&self, process_id: ProcessId) {
+        let proc_id: usize = process_id.into();
         assert!(
-            process_id.ident() < FIZZLE_MAX_PROCESSES,
+            proc_id < FIZZLE_MAX_PROCESSES,
             "internal fizzle process_wait function called with invalid ProcessId"
         );
 
-        while unsafe { libc::sem_wait(self.proc_locks[process_id.ident()]) } != 0 {}
+        while unsafe { libc::sem_wait(self.proc_locks[proc_id]) } != 0 {}
     }
 
     #[allow(unused)]
     pub fn destroy(self) {
-        unsafe { libc::munmap(self.proc_locks[0] as *mut libc::c_void, Self::SHMEM_LENGTH) };
-        unsafe { libc::close(self.memfd) };
+        let ret =
+            unsafe { libc::munmap(self.proc_locks[0] as *mut libc::c_void, Self::SHMEM_LENGTH) };
+        debug_assert!(ret == 0, "`munmap` failed while destroying IpcMemory");
+        let ret = unsafe { libc::close(self.memfd) };
+        debug_assert!(ret == 0, "`close` failed while destroying IpcMemory");
     }
 }

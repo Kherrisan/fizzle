@@ -16,9 +16,10 @@ use std::{array, env, mem, thread};
 use heapless::spsc::Queue;
 
 use fxhash::FxBuildHasher;
+use heapless::{Deque, FnvIndexMap};
 
 use crate::semaphore::Semaphore;
-use crate::{FilePath, SemPath};
+use crate::{FilePath, RingBuffer, SemPath, ValueIndex};
 
 use self::fd::FdInfo;
 use self::ipc::IpcMemory;
@@ -27,6 +28,29 @@ const FIZZLE_MEMORY_ENV: &CStr = c"FIZZLE_MEMORY";
 
 const FIZZLE_MAX_READY_PROCESSES: usize = 256;
 const FIZZLE_MAX_THREADS: usize = 65536;
+
+/// The maximum number of paths to files fizzle emulates.
+const FIZZLE_MAX_FILE_PATHS: usize = 512;
+/// The maximum number of files fizzle can emulate.
+const FIZZLE_MAX_FILES: usize = 512;
+
+const FIZZLE_MAX_DIRS: usize = 256;
+
+const FIZZLE_MAX_PIPES: usize = 256;
+
+const FIZZLE_MAX_MESSAGE_QUEUES: usize = 256;
+
+const FIZZLE_BUFFER_LENGTH: usize = 262_144; // 256 KB per buffer (twice the Linux default for `/proc/sys/net/ipv4/tcp_rmem`)
+
+const FIZZLE_MAX_BUFFERS: usize = 256; // 256 * 128 KB = 64 MB total
+
+const FIZZLE_MAX_SOCKETS: usize = 256;
+
+const FIZZLE_MAX_NAMED_SEMAPHORES: usize = 128;
+
+const FIZZLE_MAX_FDS: usize = 4096;
+
+const FIZZLE_MAX_WAITING_SEMAPHORES: usize = 32;
 
 // See `set_entered_handler` and `has_entered_handler`
 std::thread_local! {
@@ -228,23 +252,30 @@ impl FizzleState {
         if let Some(thread_id) = self.local.ready_threads.pop_front() {
             // ...if not, then run the next one.
             self.get_thread_lock(&thread_id).post();
-
-            // Pause our current thread until it gets delegated execution again.
             self.pause_current_thread();
-        } else {
+        } else if let Some(next_process_id) = self.global().next_ready_process() {
             // ...if all threads have finished execution, move to next process.
-            if let Some(next_process_id) = self.global().next_ready_process() {
-                self.global.process_wake(next_process_id);
 
-                // Wait for a process to delegate back to this one.
-                self.pause_current_process();
-            } else {
-                // If no ready processes are left, notify the fuzzing engine
-                self.notify_complete()
+            self.global().waking_thread_id = Some(next_process_id.thread);
+            self.global.process_wake(next_process_id.process);
+
+            // Wait for a process to delegate back to this one.
+            self.pause_current_process();
+
+            let Some(thread_id) = self.global().waking_thread_id.take() else {
+                crate::abort("internal fizzle error--no waking_thread_id assigned");
             };
-        }
 
-        // Thread ready to execute
+            if thread::current().id() != thread_id {
+                self.get_thread_lock(&thread_id).post();
+                self.pause_current_thread();
+            }
+        } else {
+            // If no ready processes are left, notify the fuzzing engine
+            self.notify_complete()
+        };
+
+        // Current thread isready to execute
     }
 
     /// Notifies the fuzzing engine that the current round of fuzzing has finished.
@@ -256,10 +287,9 @@ impl FizzleState {
 
         // Mark appropriate processes/threads as ready to receive input
 
-        // If our thread isn't receiving input, continue on to the next.
+        // If the current running thread isn't ready to receive input, pass on to the next thread.
         if false {
-            // This will not recurse infinitely, as we mark threads ready for input just before it.
-            self.yield_thread();
+            self.yield_thread(); // This won't recurse as long as new inputs are received.
         }
     }
 
@@ -320,18 +350,18 @@ impl FizzleState {
 /// State local to the current process.
 pub struct ProcessState {
     pub process_id: ProcessId,
-    pub fds: HashMap<RawFd, FdInfo, FxBuildHasher>, // local, but copy on fork/exec (minus CLOEXEC fds)
-    pub barriers: HashMap<BarrierId, BarrierInfo, FxBuildHasher>,
-    pub condvars: HashMap<CondVarId, VecDeque<ThreadId>, FxBuildHasher>,
+    pub fds: ValueIndex<DescriptorId, FdInfo, FIZZLE_MAX_FDS>,
+    pub dirs: ValueIndex<DirectoryId, FilePath, FIZZLE_MAX_DIRS>,
+    pub barriers: HashMap<BarrierPtr, BarrierInfo, FxBuildHasher>,
+    pub condvars: HashMap<CondVarPtr, VecDeque<ThreadId>, FxBuildHasher>,
+    pub named_semaphores: HashMap<SemaphorePtr, SemaphoreId>,
     /// Files specifically designated as being emulated.
-    pub files: HashMap<FilePath, FileInfo, FxBuildHasher>, // global--move to InterprocessState
-    pub file_objs: HashMap<FileId, RawFd, FxBuildHasher>,
-    pub passthrough_file_objs: HashMap<FileId, RawFd>,
-    pub mutexes: HashMap<MutexId, VecDeque<ThreadId>, FxBuildHasher>,
-    pub named_semaphores: HashMap<SemPath, SemaphoreId>, // global--move to InterprocessState
-    pub rwlocks: HashMap<RwLockId, RwLockInfo, FxBuildHasher>,
-    pub semaphores: HashMap<SemaphoreId, SemaphoreInfo>,
-    pub spinlocks: HashMap<SpinlockId, VecDeque<ThreadId>, FxBuildHasher>,
+    pub file_objs: HashMap<FilePtr, DescriptorId, FxBuildHasher>,
+    pub passthrough_file_objs: HashMap<FilePtr, DescriptorId>,
+    pub mutexes: HashMap<MutexPtr, VecDeque<ThreadId>, FxBuildHasher>,
+    pub rwlocks: HashMap<RwLockPtr, RwLockInfo, FxBuildHasher>,
+    pub semaphores: HashMap<SemaphorePtr, SemaphoreInfo>,
+    pub spinlocks: HashMap<SpinlockPtr, VecDeque<ThreadId>, FxBuildHasher>,
     pub pthreads: HashMap<libc::pthread_t, ThreadId, FxBuildHasher>,
     pub ready_threads: VecDeque<ThreadId>,
     pub terminated_threads: HashSet<ThreadId, FxBuildHasher>,
@@ -355,10 +385,10 @@ impl ProcessState {
 
         Self {
             process_id, // TODO: increment each time new process is made
+            fds: Default::default(),
+            dirs: Default::default(),
             barriers: HashMap::with_hasher(Default::default()),
             condvars: HashMap::with_hasher(Default::default()),
-            files: HashMap::with_hasher(Default::default()),
-            fds: HashMap::with_hasher(Default::default()),
             file_objs: HashMap::with_hasher(Default::default()),
             passthrough_file_objs: HashMap::with_hasher(Default::default()),
             mutexes: HashMap::with_hasher(Default::default()),
@@ -373,6 +403,10 @@ impl ProcessState {
             awaiting_thread_death: HashMap::with_hasher(Default::default()),
         }
     }
+
+    pub fn process_id(&self) -> ProcessId {
+        self.process_id
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -384,9 +418,223 @@ impl ProcessId {
     pub fn new(ident: usize) -> Self {
         Self { identifier: ident }
     }
+}
 
-    pub fn ident(&self) -> usize {
-        self.identifier
+impl From<ProcessId> for usize {
+    fn from(val: ProcessId) -> Self {
+        val.identifier
+    }
+}
+
+/// An identifier used to represent a valid file descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DescriptorId {
+    identifier: usize,
+}
+
+impl DescriptorId {
+    pub fn new(fd: RawFd) -> Self {
+        Self {
+            identifier: fd as usize,
+        }
+    }
+}
+
+impl From<usize> for DescriptorId {
+    fn from(value: usize) -> Self {
+        Self { identifier: value }
+    }
+}
+
+impl From<DescriptorId> for usize {
+    fn from(val: DescriptorId) -> Self {
+        val.identifier
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FileId {
+    identifier: usize,
+}
+
+impl FileId {
+    #[allow(unused)]
+    pub fn new(ident: usize) -> Self {
+        Self { identifier: ident }
+    }
+}
+
+impl From<usize> for FileId {
+    fn from(value: usize) -> Self {
+        Self { identifier: value }
+    }
+}
+
+impl From<FileId> for usize {
+    fn from(val: FileId) -> Self {
+        val.identifier
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DirectoryId {
+    identifier: usize,
+}
+
+impl DirectoryId {
+    #[allow(unused)]
+    pub fn new(ident: usize) -> Self {
+        Self { identifier: ident }
+    }
+}
+
+impl From<usize> for DirectoryId {
+    fn from(value: usize) -> Self {
+        Self { identifier: value }
+    }
+}
+
+impl From<DirectoryId> for usize {
+    fn from(val: DirectoryId) -> Self {
+        val.identifier
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PipeId {
+    identifier: usize,
+}
+
+impl PipeId {
+    #[allow(unused)]
+    pub fn new(ident: usize) -> Self {
+        Self { identifier: ident }
+    }
+}
+
+impl From<usize> for PipeId {
+    fn from(value: usize) -> Self {
+        Self { identifier: value }
+    }
+}
+
+impl From<PipeId> for usize {
+    fn from(val: PipeId) -> Self {
+        val.identifier
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SocketId {
+    identifier: usize,
+}
+
+impl SocketId {
+    #[allow(unused)]
+    pub fn new(ident: usize) -> Self {
+        Self { identifier: ident }
+    }
+}
+
+impl From<usize> for SocketId {
+    fn from(value: usize) -> Self {
+        Self { identifier: value }
+    }
+}
+
+impl From<SocketId> for usize {
+    fn from(val: SocketId) -> Self {
+        val.identifier
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SemaphoreId {
+    identifier: usize,
+}
+
+impl SemaphoreId {
+    #[allow(unused)]
+    pub fn new(ident: usize) -> Self {
+        Self { identifier: ident }
+    }
+}
+
+impl From<usize> for SemaphoreId {
+    fn from(value: usize) -> Self {
+        Self { identifier: value }
+    }
+}
+
+impl From<SemaphoreId> for usize {
+    fn from(val: SemaphoreId) -> Self {
+        val.identifier
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BufferId {
+    identifier: usize,
+}
+
+impl BufferId {
+    #[allow(unused)]
+    pub fn new(ident: usize) -> Self {
+        Self { identifier: ident }
+    }
+}
+
+impl From<usize> for BufferId {
+    fn from(value: usize) -> Self {
+        Self { identifier: value }
+    }
+}
+
+impl From<BufferId> for usize {
+    fn from(val: BufferId) -> Self {
+        val.identifier
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FifoId {
+    identifier: usize,
+}
+
+impl FifoId {
+    #[allow(unused)]
+    pub fn new(ident: usize) -> Self {
+        Self { identifier: ident }
+    }
+}
+
+impl From<FifoId> for usize {
+    fn from(val: FifoId) -> Self {
+        val.identifier
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MessageQueueId {
+    identifier: usize,
+}
+
+impl MessageQueueId {
+    #[allow(unused)]
+    pub fn new(ident: usize) -> Self {
+        Self { identifier: ident }
+    }
+}
+
+impl From<usize> for MessageQueueId {
+    fn from(value: usize) -> Self {
+        Self { identifier: value }
+    }
+}
+
+impl From<MessageQueueId> for usize {
+    fn from(val: MessageQueueId) -> Self {
+        val.identifier
     }
 }
 
@@ -394,16 +642,35 @@ impl ProcessId {
 pub struct InterprocessState {
     /// The next process ID available to be assigned to a new process.
     next_process_id: ProcessId,
-    ready_processes: Queue<ProcessId, FIZZLE_MAX_READY_PROCESSES>,
-    process_in_ready_queue: [bool; FIZZLE_MAX_READY_PROCESSES],
+    /// The thread identifier to be executed by the waking process.
+    waking_thread_id: Option<ThreadId>,
+    ready_workers: Queue<WorkerId, FIZZLE_MAX_READY_PROCESSES>,
+    pub file_paths: FnvIndexMap<FilePath, FileId, FIZZLE_MAX_FILE_PATHS>,
+    pub files: ValueIndex<FileId, FileInfo, FIZZLE_MAX_FILES>,
+    pub sem_paths: FnvIndexMap<SemPath, SemaphoreId, FIZZLE_MAX_NAMED_SEMAPHORES>,
+    pub semaphores: ValueIndex<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>,
+    pub pipes: ValueIndex<PipeId, PipeInfo, FIZZLE_MAX_PIPES>,
+    pub message_queues: ValueIndex<MessageQueueId, MessageQueueInfo, FIZZLE_MAX_MESSAGE_QUEUES>,
+    pub sockets: ValueIndex<SocketId, SocketInfo, FIZZLE_MAX_SOCKETS>,
+    pub buffers: ValueIndex<BufferId, RingBuffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
+    pub transfer_fds: Option<ValueIndex<DescriptorId, FdInfo, FIZZLE_MAX_FDS>>,
 }
 
 impl InterprocessState {
     fn new() -> Self {
         Self {
             next_process_id: ProcessId::new(1), // First process takes 0, so next is 1
-            ready_processes: Queue::new(),
-            process_in_ready_queue: array::from_fn(|_| false),
+            waking_thread_id: None,
+            ready_workers: Queue::new(),
+            file_paths: FnvIndexMap::new(),
+            files: Default::default(),
+            sem_paths: FnvIndexMap::new(),
+            semaphores: Default::default(),
+            pipes: Default::default(),
+            message_queues: Default::default(),
+            sockets: Default::default(),
+            buffers: Default::default(),
+            transfer_fds: None,
         }
     }
 
@@ -414,19 +681,15 @@ impl InterprocessState {
         process_id
     }
 
-    /// Retrieves the next available process that has work to execute.
-    pub fn next_ready_process(&mut self) -> Option<ProcessId> {
-        let process_id = self.ready_processes.dequeue()?;
-        self.process_in_ready_queue[process_id.ident()] = false;
-        Some(process_id)
+    /// Retrieves the next available process/thread pair that has work to execute.
+    pub fn next_ready_process(&mut self) -> Option<WorkerId> {
+        let worker_id = self.ready_workers.dequeue()?;
+        Some(worker_id)
     }
 
-    /// Marks the given process as having further work to execute.
-    pub fn mark_process_ready(&mut self, process_id: ProcessId) {
-        if !self.process_in_ready_queue[process_id.ident()] {
-            self.process_in_ready_queue[process_id.ident()] = true;
-            self.ready_processes.enqueue(process_id).unwrap();
-        }
+    /// Marks the given process/thread pair as having further work to execute.
+    pub fn mark_worker_ready(&mut self, worker_id: WorkerId) {
+        self.ready_workers.enqueue(worker_id).unwrap();
     }
 }
 
@@ -473,71 +736,71 @@ impl Hasher for ThreadHasher {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BarrierId(usize);
+pub struct BarrierPtr(usize);
 
-impl From<*mut libc::pthread_barrier_t> for BarrierId {
+impl From<*mut libc::pthread_barrier_t> for BarrierPtr {
     fn from(value: *mut libc::pthread_barrier_t) -> Self {
-        BarrierId(value as usize)
+        BarrierPtr(value as usize)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CondVarId(usize);
+pub struct CondVarPtr(usize);
 
-impl From<*mut libc::pthread_cond_t> for CondVarId {
+impl From<*mut libc::pthread_cond_t> for CondVarPtr {
     fn from(value: *mut libc::pthread_cond_t) -> Self {
-        CondVarId(value as usize)
+        CondVarPtr(value as usize)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MutexId(usize);
+pub struct MutexPtr(usize);
 
-impl From<*mut libc::pthread_mutex_t> for MutexId {
+impl From<*mut libc::pthread_mutex_t> for MutexPtr {
     fn from(value: *mut libc::pthread_mutex_t) -> Self {
-        MutexId(value as usize)
+        MutexPtr(value as usize)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RwLockId(usize);
+pub struct RwLockPtr(usize);
 
-impl From<*mut libc::pthread_rwlock_t> for RwLockId {
+impl From<*mut libc::pthread_rwlock_t> for RwLockPtr {
     fn from(value: *mut libc::pthread_rwlock_t) -> Self {
-        RwLockId(value as usize)
+        RwLockPtr(value as usize)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SpinlockId(usize);
+pub struct SpinlockPtr(usize);
 
-impl From<*mut libc::pthread_spinlock_t> for SpinlockId {
+impl From<*mut libc::pthread_spinlock_t> for SpinlockPtr {
     fn from(value: *mut libc::pthread_spinlock_t) -> Self {
-        SpinlockId(value as usize)
+        SpinlockPtr(value as usize)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SemaphoreId(usize);
+pub struct SemaphorePtr(usize);
 
-impl From<*mut libc::sem_t> for SemaphoreId {
+impl From<*mut libc::sem_t> for SemaphorePtr {
     fn from(value: *mut libc::sem_t) -> Self {
-        SemaphoreId(value as usize)
+        SemaphorePtr(value as usize)
     }
 }
 
-impl SemaphoreId {
+impl SemaphorePtr {
     pub(crate) fn to_mut_ptr(self) -> *mut libc::sem_t {
         self.0 as *mut libc::sem_t
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FileId(usize);
+pub struct FilePtr(usize);
 
-impl From<*mut libc::FILE> for FileId {
+impl From<*mut libc::FILE> for FilePtr {
     fn from(value: *mut libc::FILE) -> Self {
-        FileId(value as usize)
+        FilePtr(value as usize)
     }
 }
 
@@ -551,6 +814,35 @@ pub struct BarrierInfo {
 pub struct FileInfo {
     pub temporary: bool,
 }
+
+#[derive(Debug)]
+pub struct PipeInfo {
+    /// The transmission mode of the packet.
+    ///
+    /// See [`PipeMode`] for more details.
+    pub mode: PipeMode,
+    /// The peer pipe that this pipe is connected to.
+    ///
+    /// If this value is `None`, then the pipe has broken (e.g., the other end has shut).
+    pub peer: Option<PipeId>,
+    /// The buffer this pipe reads in data from.
+    pub read_buf: BufferId,
+}
+
+/// The mode of operation by which data is passed over the pipe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipeMode {
+    /// Performs I/O in "packet" mode--writes are treated as individual packets.
+    Direct,
+    /// Performs I/O as if data is a constant stream.
+    Streamed,
+}
+
+#[derive(Debug)]
+pub struct SocketInfo {}
+
+#[derive(Debug)]
+pub struct MessageQueueInfo {}
 
 impl FileInfo {
     /// Creates a new temporary file.
@@ -576,9 +868,17 @@ pub enum RwLockState {
 
 #[derive(Debug)]
 pub struct SemaphoreInfo {
-    pub name: Option<SemPath>,
+    pub refs: usize,
+    pub unlinked: bool,
     pub value: usize,
-    pub waiting: VecDeque<ThreadId>,
+    pub waiting: Deque<WorkerId, FIZZLE_MAX_WAITING_SEMAPHORES>,
+}
+
+/// The unique identifying information for a given thread in a process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkerId {
+    pub process: ProcessId,
+    pub thread: ThreadId,
 }
 
 // ---=== Helper Functions ===---
