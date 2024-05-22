@@ -17,7 +17,7 @@ use std::io::{Read, Write};
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::os::fd::RawFd;
-use std::{array, cmp, io, mem, process, ptr};
+use std::{array, cmp, io, mem, ptr};
 
 /// A set of values that can be indexed into by a key of type `K`.
 ///
@@ -29,6 +29,18 @@ pub struct ValueIndex<K: Sized + From<usize> + Into<usize>, V: Sized, const N: u
 }
 
 impl<K: Sized + From<usize> + Into<usize>, V: Sized, const N: usize> ValueIndex<K, V, N> {
+    // Wait, what about alignment issues...
+    fn initialize(index: *mut MaybeUninit<ValueIndex<K, V, N>>) {
+        unsafe {
+            let value_idx = index as *mut ValueIndex<K, V, N>;
+            for i in 0..N {
+                *ptr::addr_of_mut!((*value_idx).inner[i]) = None;
+            }
+            *ptr::addr_of_mut!((*value_idx).next_key) = 0;
+            *ptr::addr_of_mut!((*value_idx)._phantom) = Default::default();
+        }
+    }
+
     fn next_key(&mut self) -> Option<usize> {
         let mut curr_key = self.next_key;
         while self.inner[curr_key].is_some() {
@@ -50,7 +62,11 @@ impl<K: Sized + From<usize> + Into<usize>, V: Sized, const N: usize> ValueIndex<
     }
 
     pub fn get(&self, key: K) -> Option<&V> {
-        self.inner[key.into()].as_ref()
+        let key: usize = key.into();
+        if key >= self.inner.len() {
+            return None
+        }
+        self.inner[key].as_ref()
     }
 
     pub fn get_mut(&mut self, key: K) -> Option<&mut V> {
@@ -100,9 +116,7 @@ impl<K: Sized + From<usize> + Into<usize> + Clone, V: Sized + Clone, const N: us
 }
 
 #[derive(Debug)]
-pub struct BufferError {
-    pub reason: &'static str,
-}
+pub struct BufferError;
 
 #[derive(Debug, Clone, Eq)]
 pub struct Buffer<const T: usize> {
@@ -147,9 +161,7 @@ impl<const T: usize> Buffer<T> {
 
     pub fn shrink(&mut self, new_length: usize) -> Result<(), BufferError> {
         if self.data_len < new_length {
-            return Err(BufferError {
-                reason: "shrink() called with length greater than buffer",
-            });
+            return Err(BufferError);
         }
 
         self.data_len = new_length;
@@ -164,17 +176,17 @@ impl<const T: usize> Buffer<T> {
         &mut self.data[..self.data_len]
     }
 
+    /// Places `data` in the buffer, clearing out any prior data in the process.
     pub fn put(&mut self, data: &[u8]) -> Result<(), BufferError> {
         self.data[..data.len()].copy_from_slice(data);
         self.data_len = data.len();
         Ok(())
     }
 
+    /// Attempts to place `data` in the buffer, clearing out any prior data in the process.
     pub fn try_put(&mut self, data: &[u8]) -> Result<(), BufferError> {
         let Some(write_slice) = self.data.get_mut(..data.len()) else {
-            return Err(BufferError {
-                reason: "insufficient size",
-            });
+            return Err(BufferError);
         };
 
         write_slice.copy_from_slice(data);
@@ -183,15 +195,13 @@ impl<const T: usize> Buffer<T> {
     }
 
     pub fn append(&mut self, data: &[u8]) {
-        self.data[..data.len()].copy_from_slice(data);
-        self.data_len = data.len();
+        self.data[self.data_len..self.data_len + data.len()].copy_from_slice(data);
+        self.data_len += data.len();
     }
 
     pub fn try_append(&mut self, data: &[u8]) -> Result<(), BufferError> {
         let Some(write_slice) = self.data.get_mut(self.data_len..self.data_len + data.len()) else {
-            return Err(BufferError {
-                reason: "insufficient size",
-            });
+            return Err(BufferError);
         };
 
         write_slice.copy_from_slice(data);
@@ -350,25 +360,32 @@ impl FilePath {
 
     /// Note that this should not include any null terminating character.
     pub fn from_raw_bytes(path: &[u8]) -> Result<Self, PathError> {
-        if path.len() > 255 {
+        if path.len() > 255 || path.len() == 0 {
             return Err(PathError);
+        }
+        
+        if let Ok(s) = std::str::from_utf8(path) {
+            log::debug!("`from_raw_bytes` path: {}", s);
+        }else {
+            log::debug!("`from_raw_bytes` path: {:?}", path);
         }
 
         let mut buf = Buffer::new();
-        buf.try_put(path).map_err(|_| PathError)?;
+        buf.try_append(path).map_err(|_| PathError)?;
+        buf.try_append(b"\0").map_err(|_| PathError)?;
 
         let mut read_idx = 0usize;
         let mut write_idx = 0usize;
         let data = buf.data_mut();
 
         // Special case: path is absolute
-        if let Some(b'/') = data.get(read_idx) {
+        if let Some(b'/') = path.get(read_idx) {
             read_idx += 1;
             write_idx += 1;
         }
 
-        while read_idx < data.len() {
-            let segment = Self::segment(&data[read_idx..]);
+        while read_idx < path.len() {
+            let segment = Self::segment(&path[read_idx..]);
             let segment_len = segment.len();
             match segment {
                 b"" | b"." => (), // Do nothing
@@ -376,7 +393,7 @@ impl FilePath {
                     // Traverse back one segment
                     match Self::last_segment(&data[..write_idx]) {
                         b"" | b"../" => {
-                            data.copy_from_slice(b"../");
+                            data[write_idx..write_idx + 3].copy_from_slice(b"../");
                             write_idx += 3;
                         }
                         b"/" => return Err(PathError),
@@ -385,13 +402,11 @@ impl FilePath {
                 }
                 _ => {
                     // Copy current segment to write portion
-                    for i in 0..segment_len {
-                        data[write_idx + i] = data[read_idx + i];
-                    }
+                    data[write_idx..write_idx + segment_len].copy_from_slice(&path[read_idx..read_idx + segment_len]);
                     write_idx += segment_len;
 
                     // copy '/' if exists
-                    if segment_len < data.len() - read_idx {
+                    if read_idx + segment_len == path.len() - 1 {
                         data[write_idx] = b'/';
                         write_idx += 1;
                     }
@@ -401,16 +416,15 @@ impl FilePath {
             read_idx += segment_len + 1;
         }
 
-        if write_idx == 0 {
-            return Err(PathError);
+        if write_idx == 0 || (write_idx == 1 && data[0] == b'.') {
+            data[..2].copy_from_slice(b"./");
+            write_idx = 2;
         }
 
         let trailing_slash = data[write_idx - 1] == b'/';
-
-        data[write_idx] = b'\0';
-        write_idx += 1;
-
+        
         buf.shrink(write_idx).map_err(|_| PathError)?;
+        buf.try_append(b"\0").map_err(|_| PathError)?;
 
         Ok(FilePath {
             buf,
@@ -508,44 +522,12 @@ impl SemPath {
     }
 }
 
-/// Abort the process immediately, printing `reason` to stderr.
-pub(crate) fn abort(reason: &'static str) -> ! {
-    eprintln!("Fatal: {}", reason);
-    process::exit(-1);
-}
-
-/// Abort the process if the `FIZZLE_ABORT` environment variable is equal to 1.
-pub(crate) fn debug_abort(function_name: &'static str) {
-    if state::fizzle_debug_enabled() {
-        eprintln!("Fatal: unimplemented shim `{}`", function_name);
-        process::exit(-1);
+pub fn report_strict_failure(explanation: &'static str) {
+    if state::strict_mode() {
+        panic!("{}", explanation);
+    } else {
+        log::error!("{}", explanation);
     }
-}
-
-#[macro_export]
-macro_rules! trace_enter {
-    ($f:tt) => {
-        if state::fizzle_trace_enabled() {
-            eprintln!(
-                "Thread {:?} invoked function {}",
-                std::thread::current().id(),
-                stringify!($f)
-            );
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! trace_exit {
-    ($f:tt) => {
-        if state::fizzle_trace_enabled() {
-            eprintln!(
-                "Thread {:?} leaving function {}",
-                std::thread::current().id(),
-                stringify!($f)
-            );
-        }
-    };
 }
 
 /// Creates a new location in memory that is guaranteed to be unique to others.
@@ -563,7 +545,7 @@ unsafe fn unique_mem_create() -> *mut libc::c_void {
         0,
     );
     if addr.is_null() {
-        abort("failed to create unique memory handle via `mmap`");
+        panic!("failed to create unique memory handle via `mmap`");
     }
 
     addr
@@ -574,14 +556,14 @@ unsafe fn unique_mem_create() -> *mut libc::c_void {
 unsafe fn unique_mem_destroy(mem_location: *mut libc::c_void) {
     let res = unsafe { libc::munmap(mem_location, 1) };
     if res != 0 {
-        abort("error during destruction of unique memory handle via `mmap`");
+        panic!("error during destruction of unique memory handle via `mmap`");
     }
 }
 
 fn alias_fd_create() -> RawFd {
     let fd = unsafe { libc::memfd_create(c"FIZZLE_ALIAS_FD".as_ptr(), 0) };
     if fd < 0 {
-        abort("fizzle internal file descriptor alias creation (`memfd_create`) failed");
+        panic!("fizzle internal file descriptor alias creation (`memfd_create`) failed");
     }
     fd
 }

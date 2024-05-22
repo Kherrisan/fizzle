@@ -2,9 +2,9 @@ use std::ffi::CStr;
 use std::ptr;
 
 use crate::state::fd::{FdInfo, FdResource};
-use crate::state::{DescriptorId, FileInfo, FilePtr};
-use crate::FilePath;
-use crate::{hook_macros, state};
+use crate::state::{DescriptorId, FileInfo, FileObject, FilePtr};
+use crate::{FilePath, RingBuffer};
+use crate::hook_macros;
 
 hook_macros::hook! {
     unsafe fn fdopen(
@@ -15,7 +15,8 @@ hook_macros::hook! {
         let descriptor_id = DescriptorId::new(fd);
 
         let Some(fd_info) = ctx.local().fds.get(descriptor_id) else {
-            *libc::__errno_location() = libc::EBADFD; // TODO: check errno
+            log::debug!("`fdopen` called with unrecognized file descriptor");
+            *libc::__errno_location() = libc::EBADF; // TODO: check errno
             return ptr::null_mut()
         };
 
@@ -23,29 +24,30 @@ hook_macros::hook! {
             FdResource::PassthroughFile => hook_macros::real!(fdopen)(fd, mode),
             FdResource::File(_) => crate::unique_mem_create() as *mut libc::FILE,
             _ => {
-                *libc::__errno_location() = libc::EBADFD; // TODO: check errno
-                return ptr::null_mut()
+                log::debug!("`fdopen` called with unusual (non-file) file descriptor");
+                crate::unique_mem_create() as *mut libc::FILE
             },
         };
 
         // TODO: parse and use `mode`
         let file_id = FilePtr::from(file);
 
-        let None = ctx.local().file_objs.insert(file_id, descriptor_id) else {
-            crate::abort("unexpected duplicate passthrough FILE* object created");
+        let None = ctx.local().file_objs.insert(file_id, crate::state::FileObject { descriptor_id, buf: RingBuffer::new() }) else {
+            panic!("unexpected duplicate passthrough FILE* object created");
         };
 
         file
     }
 }
 
+
 hook_macros::hook! {
     unsafe fn umask(
         mask: libc::mode_t
     ) -> libc::c_int => fizzle_umask(_ctx) {
 
-
         // TODO: set umask in virtual fs once permissions implemented
+        crate::report_strict_failure("unimplemented function `umask`");
 
         hook_macros::real!(umask)(mask)
     }
@@ -68,6 +70,7 @@ hook_macros::hook! {
         // TODO: what about O_TRUNC?
 
         let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
+            log::debug!("malformed or oversized filepath passed to `open`");
             *libc::__errno_location() = libc::EINVAL;
             return -1
         };
@@ -76,6 +79,7 @@ hook_macros::hook! {
             relative_path
         } else {
             let Ok(path) = ctx.local().working_directory.clone().concat(&relative_path) else {
+                log::debug!("oversized total filepath length in `open`");
                 *libc::__errno_location() = libc::EINVAL;
                 return -1
             };
@@ -211,31 +215,31 @@ hook_macros::hook! {
 
         // TODO: what about O_TRUNC?
 
-        let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(dirfd)) else {
-            *libc::__errno_location() = libc::ENOENT; // TODO: check errno correctness
-            return -1
-        };
-
-        let dir_id = *dir_id;
-
-        let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
+        let Ok(mut path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
             *libc::__errno_location() = libc::EINVAL;
             return -1
         };
 
-        let path = if relative_path.is_absolute() {
-            relative_path
-        } else {
-            let Some(dir_path) = ctx.local().dirs.get(dir_id) else {
-                crate::abort("invalid fizzle state--`openat` dir_id not found");
-            };
+        if !path.is_absolute() {
+            if dirfd == libc::AT_FDCWD {
+                let cwd = &ctx.local().working_directory;
+                path = cwd.clone().concat(&path).unwrap();
+            } else {
+                let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(dirfd)) else {
+                    log::debug!("`openat` called with unrecognized file descriptor");
+                    *libc::__errno_location() = libc::ENOTDIR;
+                    return -1
+                };
 
-            let Ok(path) = dir_path.clone().concat(&relative_path) else {
-                *libc::__errno_location() = libc::EINVAL;
-                return -1
-            };
-            path
-        };
+                let dir_id = *dir_id;
+                let Some(dir_path) = ctx.local().dirs.get(dir_id) else {
+                    *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
+                    return -1
+                };
+
+                path = dir_path.clone().concat(&path).unwrap();
+            }
+        }
 
         // Files are drawn from the underlying filesystem by default.
         // A user may configure certain file paths to be mapped to virtual files.
@@ -369,6 +373,75 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
+    unsafe fn fopen(
+        pathname: *const libc::c_char,
+        _mode: *const libc::c_char
+    ) -> *mut libc::FILE => fizzle_fopen(ctx) {
+        let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
+            log::debug!("malformed or oversized filepath passed to `open`");
+            *libc::__errno_location() = libc::ENAMETOOLONG; // TODO: split apart errors from backpathing too much (/../) vs too-long errors
+            return ptr::null_mut() as *mut libc::FILE
+        };
+
+        let path = if relative_path.is_absolute() {
+            relative_path
+        } else {
+            let Ok(path) = ctx.local().working_directory.clone().concat(&relative_path) else {
+                log::debug!("oversized total filepath length in `fopen`");
+                *libc::__errno_location() = libc::ENAMETOOLONG;
+                return ptr::null_mut()
+            };
+            path
+        };
+
+        let descriptor_id = if let Some(&file_id) = ctx.global().file_paths.get(&path) {
+            let fd = crate::alias_fd_create();
+            ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
+                close_on_exec: false,
+                nonblocking: false,
+                resource: FdResource::File(file_id),
+            });
+            DescriptorId::new(fd)
+
+        } else {
+            let fd = hook_macros::real!(open)(pathname, 0, 0); // TODO: account for mode here
+            if fd >= 0 {
+                ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
+                    close_on_exec: false,
+                    nonblocking: false,
+                    resource: FdResource::PassthroughFile,
+                });
+            }
+            DescriptorId::new(fd)
+        };
+
+        let file = crate::unique_mem_create() as *mut libc::FILE;
+
+        let None = ctx.local().file_objs.insert(FilePtr::from(file), FileObject { descriptor_id, buf: RingBuffer::new() }) else {
+            panic!("fizzle acquired non-unique virtual file handle");
+        };
+
+        file
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn __fsetlocking(
+        stream: *mut libc::FILE,
+        lock_type: libc::c_int
+    ) -> libc::c_int => fizzle_fsetlocking(ctx) {
+        let file_id = FilePtr::from(stream);
+        match ctx.local().file_objs.get(&file_id) {
+            Some(_descriptor_id) => {
+                0 // TODO: handle
+            }
+            None => hook_macros::real!(__fsetlocking)(stream, lock_type)
+        }
+    }
+}
+
+
+hook_macros::hook! {
     unsafe fn fclose(
         stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_fclose(ctx) {
@@ -376,7 +449,7 @@ hook_macros::hook! {
         let file_id = FilePtr::from(stream);
         match ctx.local().file_objs.remove(&file_id) {
             Some(fd) => {
-                let Some(_) = ctx.local().fds.remove(fd) else {
+                let Some(_) = ctx.local().fds.remove(fd.descriptor_id) else {
                     *libc::__errno_location() = libc::EBADF;
                     return libc::EOF
                 };
@@ -388,10 +461,12 @@ hook_macros::hook! {
                 if ret == 0 {
                     if let Some(fd) = ctx.local().passthrough_file_objs.remove(&file_id) {
                         let Some(_) = ctx.local().fds.remove(fd) else {
-                            crate::abort("invalid internal state (passthrough FILE* object closed with no corresponding FileInfo)")
+                            log::debug!("invalid internal state in `fclose`--file descriptor likely closed twice on file object");
+                            *libc::__errno_location() = libc::EBADF;
+                            return -1
                         };
                     } else {
-                        crate::debug_abort("invalid internal state (passthrough FILE* object closed with no entry in fizzle state--`fclose` likely called twice on one underlying fd)");
+                        panic!("[UB] `fclose` called twice on file object");
                     };
                 }
 
@@ -400,6 +475,7 @@ hook_macros::hook! {
         }
     }
 }
+
 
 hook_macros::hook! {
     unsafe fn chdir(
@@ -429,12 +505,14 @@ hook_macros::hook! {
         let res = hook_macros::real!(fchdir)(fd);
         if res == 0 {
             let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(fd)) else {
-                crate::abort("`fchdir` called on unrecognized fd");
+                log::debug!("`fchdir` called with unrecognized fd");
+                *libc::__errno_location() = libc::EBADF;
+                return -1
             };
             let dir_id = *dir_id;
 
             let Some(path) = ctx.local().dirs.get(dir_id) else {
-                crate::abort("inconsistent fizzle state in dir file descriptors for `fchdir`");
+                panic!("inconsistent fizzle state in directory fds for `fchdir`");
             };
 
             ctx.local().working_directory = path.clone();
@@ -449,7 +527,8 @@ hook_macros::hook! {
         _path: *const libc::c_char
     ) -> libc::c_int => fizzle_chroot(_ctx) {
 
-        crate::abort("`chroot` not implemented");
+        crate::report_strict_failure("`chroot` not implemented for fizzle virtual fs");
+        -1
     }
 }
 
@@ -542,30 +621,31 @@ hook_macros::hook! {
         flags: libc::c_int
     ) -> libc::c_int => fizzle_fchownat(ctx) {
 
-        let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
+        let Ok(mut path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
             *libc::__errno_location() = libc::EINVAL;
             return -1
         };
 
+        if !path.is_absolute() {
+            if dirfd == libc::AT_FDCWD {
+                let cwd = &ctx.local().working_directory;
+                path = cwd.clone().concat(&path).unwrap();
+            } else {
+                let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(dirfd)) else {
+                    log::debug!("`fchownat` called with unrecognized file descriptor");
+                    *libc::__errno_location() = libc::ENOTDIR;
+                    return -1
+                };
 
-        let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(dirfd)) else {
-            crate::abort("unrecognized dirfd passed to `fchownat`");
-            // TODO: downgrade this to a warning in the future and return the following
-            // *libc::__errno_location() = libc::ENOENT;
-            // return -1
-        };
+                let dir_id = *dir_id;
+                let Some(dir_path) = ctx.local().dirs.get(dir_id) else {
+                    *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
+                    return -1
+                };
 
-        let dir_id = *dir_id;
-        let Some(dir_path) = ctx.local().dirs.get(dir_id) else {
-            *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
-            return -1
-        };
-
-        // TODO: conditionally concat based on absolute filepath?
-        let Ok(path) = dir_path.clone().concat(&relative_path) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
+                path = dir_path.clone().concat(&path).unwrap();
+            }
+        }
 
         if ctx.global().file_paths.contains_key(&path) {
             0 // TODO: handle ownership permissions?
@@ -583,28 +663,31 @@ hook_macros::hook! {
         flags: libc::c_int
     ) -> libc::c_int => fizzle_fchmodat(ctx) {
 
-        let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
+        let Ok(mut path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
             *libc::__errno_location() = libc::EINVAL;
             return -1
         };
 
-        let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(dirfd)) else {
-            crate::abort("unrecognized dirfd passed to `fchownat`");
-            // TODO: downgrade this to a warning in the future and return the following
-            // *libc::__errno_location() = libc::ENOENT;
-            // return -1
-        };
+        if !path.is_absolute() {
+            if dirfd == libc::AT_FDCWD {
+                let cwd = &ctx.local().working_directory;
+                path = cwd.clone().concat(&path).unwrap();
+            } else {
+                let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(dirfd)) else {
+                    log::debug!("`fchmodat` called with unrecognized file descriptor");
+                    *libc::__errno_location() = libc::ENOTDIR;
+                    return -1
+                };
 
-        let dir_id = *dir_id;
-        let Some(dir_path) = ctx.local().dirs.get(dir_id) else {
-            *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
-            return -1
-        };
+                let dir_id = *dir_id;
+                let Some(dir_path) = ctx.local().dirs.get(dir_id) else {
+                    *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
+                    return -1
+                };
 
-        let Ok(path) = dir_path.clone().concat(&relative_path) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
+                path = dir_path.clone().concat(&path).unwrap();
+            }
+        }
 
         if ctx.global().file_paths.contains_key(&path) {
             0 // TODO: handle ownership permissions?
@@ -745,28 +828,31 @@ hook_macros::hook! {
         flags: libc::c_int
     ) -> libc::c_int => fizzle_faccessat(ctx) {
 
-        let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
+        let Ok(mut path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
             *libc::__errno_location() = libc::EINVAL;
             return -1
         };
 
-        let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(dirfd)) else {
-            crate::abort("unrecognized dirfd passed to `fchownat`");
-            // TODO: downgrade this to a warning in the future and return the following
-            // *libc::__errno_location() = libc::ENOENT;
-            // return -1
-        };
+        if !path.is_absolute() {
+            if dirfd == libc::AT_FDCWD {
+                let cwd = &ctx.local().working_directory;
+                path = cwd.clone().concat(&path).unwrap();
+            } else {
+                let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(dirfd)) else {
+                    log::debug!("`faccessat` called with unrecognized file descriptor");
+                    *libc::__errno_location() = libc::ENOTDIR;
+                    return -1
+                };
 
-        let dir_id = *dir_id;
-        let Some(dir_path) = ctx.local().dirs.get(dir_id) else {
-            *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
-            return -1
-        };
+                let dir_id = *dir_id;
+                let Some(dir_path) = ctx.local().dirs.get(dir_id) else {
+                    *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
+                    return -1
+                };
 
-        let Ok(path) = dir_path.clone().concat(&relative_path) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
+                path = dir_path.clone().concat(&path).unwrap();
+            }
+        }
 
         if ctx.global().file_paths.contains_key(&path) {
             0 // TODO: handle ownership permissions?
@@ -793,8 +879,8 @@ hook_macros::hook! {
         };
 
         if ctx.global().file_paths.contains_key(&path) {
-            crate::abort("function `stat` unimplimented for fizzle virtual fs")
-            // TODO: implement
+            crate::report_strict_failure("`stat` not implemented for fizzle virtual fs");
+            -1
         } else {
             hook_macros::real!(stat)(pathname, statbuf)
         }
@@ -818,8 +904,8 @@ hook_macros::hook! {
         };
 
         if ctx.global().file_paths.contains_key(&path) {
-            crate::abort("function `stat` unimplimented for fizzle virtual fs")
-            // TODO: implement
+            crate::report_strict_failure("`lstat` not implemented for fizzle virtual fs");
+            -1
         } else {
             hook_macros::real!(lstat)(pathname, statbuf)
         }
@@ -833,8 +919,8 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_fstat(ctx) {
 
         if let Some(_fd_info) = ctx.local().fds.get(DescriptorId::new(fd)) {
-            crate::abort("function `fstat` unimplemented for fizzle virtual fs")
-            // TODO: implement
+            crate::report_strict_failure("`fstat` not implemented for fizzle virtual fs");
+            -1
         } else {
             hook_macros::real!(fstat)(fd, statbuf)
         }
@@ -849,32 +935,35 @@ hook_macros::hook! {
         flags: libc::c_int
     ) -> libc::c_int => fizzle_fstatat(ctx) {
 
-        let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
+        let Ok(mut path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
             *libc::__errno_location() = libc::EINVAL;
             return -1
         };
 
-        let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(dirfd)) else {
-            crate::abort("unrecognized dirfd passed to `fchownat`");
-            // TODO: downgrade this to a warning in the future and return the following
-            // *libc::__errno_location() = libc::ENOENT;
-            // return -1
-        };
+        if !path.is_absolute() {
+            if dirfd == libc::AT_FDCWD {
+                let cwd = &ctx.local().working_directory;
+                path = cwd.clone().concat(&path).unwrap();
+            } else {
+                let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(dirfd)) else {
+                    log::debug!("`fstatat` called with unrecognized file descriptor");
+                    *libc::__errno_location() = libc::ENOTDIR;
+                    return -1
+                };
 
-        let dir_id = *dir_id;
-        let Some(dir_path) = ctx.local().dirs.get(dir_id) else {
-            *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
-            return -1
-        };
+                let dir_id = *dir_id;
+                let Some(dir_path) = ctx.local().dirs.get(dir_id) else {
+                    *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
+                    return -1
+                };
 
-        let Ok(path) = dir_path.clone().concat(&relative_path) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
+                path = dir_path.clone().concat(&path).unwrap();
+            }
+        }
 
         if ctx.global().file_paths.contains_key(&path) {
-            crate::abort("function `fstatat` unimplemented for fizzle virtual fs")
-            // TODO: implement
+            crate::report_strict_failure("`fstatat` unimplemented for fizzle virtual fs");
+            -1
         } else {
             hook_macros::real!(fstatat)(dirfd, pathname, statbuf, flags)
         }
@@ -890,31 +979,35 @@ hook_macros::hook! {
         statxbuf: *mut libc::statx
     ) -> libc::c_int => fizzle_statx(ctx) {
 
-        let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
+        let Ok(mut path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
             *libc::__errno_location() = libc::EINVAL;
             return -1
         };
 
-        let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(dirfd)) else {
-            crate::abort("unrecognized dirfd passed to `fchownat`");
-            // TODO: downgrade this to a warning in the future and return the following
-            // *libc::__errno_location() = libc::ENOENT;
-            // return -1
-        };
+        if !path.is_absolute() {
+            if dirfd == libc::AT_FDCWD {
+                let cwd = &ctx.local().working_directory;
+                path = cwd.clone().concat(&path).unwrap();
+            } else {
+                let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(dirfd)) else {
+                    log::debug!("`statx` called with unrecognized file descriptor");
+                    *libc::__errno_location() = libc::ENOTDIR;
+                    return -1
+                };
 
-        let dir_id = *dir_id;
-        let Some(dir_path) = ctx.local().dirs.get(dir_id) else {
-            *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
-            return -1
-        };
+                let dir_id = *dir_id;
+                let Some(dir_path) = ctx.local().dirs.get(dir_id) else {
+                    *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
+                    return -1
+                };
 
-        let Ok(path) = dir_path.clone().concat(&relative_path) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
+                path = dir_path.clone().concat(&path).unwrap();
+            }
+        }
 
         if ctx.global().file_paths.contains_key(&path) {
-            crate::abort("function `statx` unimplemented for fizzle virtual fs")
+            crate::report_strict_failure("`statx` not implemented for fizzle virtual fs");
+            -1
             // TODO: implement
         } else {
             hook_macros::real!(statx)(dirfd, pathname, flags, mask, statxbuf)
@@ -1029,7 +1122,8 @@ hook_macros::hook! {
 
         // TODO: handle inode deletion here
         if ctx.global().file_paths.remove(&abs_oldpath).is_some() {
-            crate::abort("function `rename` not implemented for fizzle virtual fs");
+            crate::report_strict_failure("`rename` not implemented for fizzle virtual fs");
+            -1
         } else {
             hook_macros::real!(rename)(oldpath, newpath)
         }
@@ -1044,55 +1138,62 @@ hook_macros::hook! {
         newpath: *const libc::c_char
     ) -> libc::c_int => fizzle_renameat(ctx) {
 
-        let Ok(rel_oldpath) = FilePath::from_cstr(CStr::from_ptr(oldpath)) else {
+        let Ok(mut old) = FilePath::from_cstr(CStr::from_ptr(oldpath)) else {
             *libc::__errno_location() = libc::EINVAL;
             return -1
         };
 
-        let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(olddirfd)) else {
-            crate::abort("unrecognized dirfd passed to `fchownat`");
-            // TODO: downgrade this to a warning in the future and return the following
-            // *libc::__errno_location() = libc::ENOENT;
-            // return -1
-        };
+        if !old.is_absolute() {
+            if olddirfd == libc::AT_FDCWD {
+                let cwd = &ctx.local().working_directory;
+                old = cwd.clone().concat(&old).unwrap();
+            } else {
+                let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(olddirfd)) else {
+                    log::debug!("`renameat` called with unrecognized file descriptor `olddirfd`");
+                    *libc::__errno_location() = libc::ENOTDIR;
+                    return -1
+                };
 
-        let dir_id = *dir_id;
-        let Some(dir_oldpath) = ctx.local().dirs.get(dir_id) else {
-            *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
-            return -1
-        };
+                let dir_id = *dir_id;
+                let Some(dir_path) = ctx.local().dirs.get(dir_id) else {
+                    *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
+                    return -1
+                };
 
-        let Ok(abs_oldpath) = dir_oldpath.clone().concat(&rel_oldpath) else {
+                old = dir_path.clone().concat(&old).unwrap();
+            }
+        }
+
+        let Ok(mut _new) = FilePath::from_cstr(CStr::from_ptr(newpath)) else {
             *libc::__errno_location() = libc::EINVAL;
             return -1
         };
 
-        let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(newdirfd)) else {
-            crate::abort("unrecognized dirfd passed to `fchownat`");
-            // TODO: downgrade this to a warning in the future and return the following
-            // *libc::__errno_location() = libc::ENOENT;
-            // return -1
-        };
+        if !_new.is_absolute() {
+            if newdirfd == libc::AT_FDCWD {
+                let cwd = &ctx.local().working_directory;
+                _new = cwd.clone().concat(&_new).unwrap();
+            } else {
+                let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(newdirfd)) else {
+                    log::debug!("`renameat` called with unrecognized file descriptor `newdirfd`");
+                    *libc::__errno_location() = libc::ENOTDIR;
+                    return -1
+                };
 
-        let dir_id = *dir_id;
-        let Some(dir_newpath) = ctx.local().dirs.get(dir_id) else {
-            *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
-            return -1
-        };
+                let dir_id = *dir_id;
+                let Some(dir_path) = ctx.local().dirs.get(dir_id) else {
+                    *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
+                    return -1
+                };
 
-        let Ok(rel_newpath) = FilePath::from_cstr(CStr::from_ptr(newpath)) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
-
-        let Ok(_abs_newpath) = dir_newpath.clone().concat(&rel_newpath) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
+                _new = dir_path.clone().concat(&_new).unwrap();
+            }
+        }
 
         // TODO: handle inode deletion
-        if ctx.global().file_paths.remove(&abs_oldpath).is_some() {
-            crate::abort("function `renameat` not implemented for fizzle virtual fs");
+        if ctx.global().file_paths.remove(&old).is_some() {
+            crate::report_strict_failure("`renameat` not implemented for fizzle virtual fs");
+            -1
         } else {
             hook_macros::real!(renameat)(olddirfd, oldpath, newdirfd, newpath)
         }
@@ -1107,54 +1208,61 @@ hook_macros::hook! {
         newpath: *const libc::c_char
     ) -> libc::c_int => fizzle_renameat2(ctx) {
 
-        let Ok(rel_oldpath) = FilePath::from_cstr(CStr::from_ptr(oldpath)) else {
+        let Ok(mut old) = FilePath::from_cstr(CStr::from_ptr(oldpath)) else {
             *libc::__errno_location() = libc::EINVAL;
             return -1
         };
 
-        let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(olddirfd)) else {
-            crate::abort("unrecognized dirfd passed to `fchownat`");
-            // TODO: downgrade this to a warning in the future and return the following
-            // *libc::__errno_location() = libc::ENOENT;
-            // return -1
-        };
+        if !old.is_absolute() {
+            if olddirfd == libc::AT_FDCWD {
+                let cwd = &ctx.local().working_directory;
+                old = cwd.clone().concat(&old).unwrap();
+            } else {
+                let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(olddirfd)) else {
+                    log::debug!("`renameat2` called with unrecognized file descriptor `olddirfd`");
+                    *libc::__errno_location() = libc::ENOTDIR;
+                    return -1
+                };
 
-        let dir_id = *dir_id;
-        let Some(dir_oldpath) = ctx.local().dirs.get(dir_id) else {
-            *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
-            return -1
-        };
+                let dir_id = *dir_id;
+                let Some(dir_path) = ctx.local().dirs.get(dir_id) else {
+                    *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
+                    return -1
+                };
 
-        let Ok(abs_oldpath) = dir_oldpath.clone().concat(&rel_oldpath) else {
+                old = dir_path.clone().concat(&old).unwrap();
+            }
+        }
+
+        let Ok(mut _new) = FilePath::from_cstr(CStr::from_ptr(newpath)) else {
             *libc::__errno_location() = libc::EINVAL;
             return -1
         };
 
-        let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(newdirfd)) else {
-            crate::abort("unrecognized dirfd passed to `fchownat`");
-            // TODO: downgrade this to a warning in the future and return the following
-            // *libc::__errno_location() = libc::ENOENT;
-            // return -1
-        };
+        if !_new.is_absolute() {
+            if newdirfd == libc::AT_FDCWD {
+                let cwd = &ctx.local().working_directory;
+                _new = cwd.clone().concat(&_new).unwrap();
+            } else {
+                let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = ctx.local().fds.get(DescriptorId::new(newdirfd)) else {
+                    log::debug!("`renameat2` called with unrecognized file descriptor `newdirfd`");
+                    *libc::__errno_location() = libc::ENOTDIR;
+                    return -1
+                };
 
-        let dir_id = *dir_id;
-        let Some(dir_newpath) = ctx.local().dirs.get(dir_id) else {
-            *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
-            return -1
-        };
+                let dir_id = *dir_id;
+                let Some(dir_path) = ctx.local().dirs.get(dir_id) else {
+                    *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
+                    return -1
+                };
 
-        let Ok(rel_newpath) = FilePath::from_cstr(CStr::from_ptr(newpath)) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
+                _new = dir_path.clone().concat(&_new).unwrap();
+            }
+        }
 
-        let Ok(_abs_newpath) = dir_newpath.clone().concat(&rel_newpath) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
-
-        if ctx.global().file_paths.remove(&abs_oldpath).is_some() {
-            crate::abort("function `renameat2` not implemented for fizzle virtual fs");
+        if ctx.global().file_paths.remove(&old).is_some() {
+            crate::report_strict_failure("`renameat2` not implemented for fizzle virtual fs");
+            -1
         } else {
             hook_macros::real!(renameat2)(olddirfd, oldpath, newdirfd, newpath)
         }

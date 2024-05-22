@@ -50,17 +50,21 @@ macro_rules! hook {
                         return $real_fn.get() ( $($v),* )
                     }
                     crate::state::set_entered_handler(true);
-                    crate::trace_enter!($real_fn);
+
+                    log::trace!(
+                        "Thread {:?} invoked function {}", // TODO: add process info in the future
+                        std::thread::current().id(),
+                        stringify!($real_fn)
+                    );
+
                     let res = {
 
                         $hook_fn ( $($v),*)
                     };
-                    // crate::trace_exit!($real_fn);
                     crate::state::set_entered_handler(false);
                     res
-                }).unwrap_or_else(|e| {
-                    eprintln!("fizzle hook panicked: {:?}", e);
-                    std::process::abort();
+                }).unwrap_or_else(|_| {
+                    std::process::abort(); // Panic unwind hook already prints out stack info
                 })
             }
         }

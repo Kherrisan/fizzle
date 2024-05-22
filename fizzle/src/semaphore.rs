@@ -1,5 +1,5 @@
 use std::cell::UnsafeCell;
-use std::mem;
+use std::mem::MaybeUninit;
 
 /// A wrapper for a POSIX semaphore, suitable for use in inter-process shared memory.
 ///
@@ -7,17 +7,17 @@ use std::mem;
 /// This is to accomadate shared memory, as multiple processes may claim "ownership" of the same `Semaphore`.
 /// To clean up a semaphore, use [`destroy()`](Semaphore::destroy).
 pub struct Semaphore {
-    inner: UnsafeCell<libc::sem_t>,
+    inner: UnsafeCell<MaybeUninit<libc::sem_t>>,
 }
 
 impl Semaphore {
     pub fn new(value: u16) -> Self {
         let sem = Self {
-            inner: UnsafeCell::new(unsafe { mem::zeroed() }),
+            inner: UnsafeCell::new(MaybeUninit::uninit()),
         };
 
         let res =
-            unsafe { libc::sem_init(sem.inner.get(), libc::PTHREAD_PROCESS_SHARED, value as u32) };
+            unsafe { libc::sem_init(sem.inner.get() as *mut libc::sem_t, libc::PTHREAD_PROCESS_SHARED, value as u32) };
         if res != 0 {
             panic!("platform does not support process-shared semaphores");
         }
@@ -27,7 +27,7 @@ impl Semaphore {
 
     pub fn wait(&self) {
         loop {
-            let res = unsafe { libc::sem_wait(self.inner.get()) };
+            let res = unsafe { libc::sem_wait(self.inner.get() as *mut libc::sem_t) };
             if res == 0 {
                 break;
             } else if unsafe { *libc::__errno_location() } != libc::EINTR {
@@ -37,7 +37,7 @@ impl Semaphore {
     }
 
     pub fn post(&self) {
-        let res = unsafe { libc::sem_post(self.inner.get()) };
+        let res = unsafe { libc::sem_post(self.inner.get() as *mut libc::sem_t) };
         if res != 0 {
             panic!("semaphore internal error during post()");
         }
@@ -54,7 +54,7 @@ impl Semaphore {
     /// semaphore (see [wait()](Semaphore::wait)); destroying a semaphore that is being waited on
     /// may result in undefined behavior.
     pub unsafe fn destroy(self) {
-        let res = unsafe { libc::sem_destroy(self.inner.get()) };
+        let res = unsafe { libc::sem_destroy(self.inner.get() as *mut libc::sem_t) };
         if res != 0 {
             panic!("semaphore internal error during destroy()");
         }

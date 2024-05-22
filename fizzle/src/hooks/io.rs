@@ -1,4 +1,4 @@
-use crate::{hook_macros, state};
+use crate::hook_macros;
 
 hook_macros::hook! {
     unsafe fn read(
@@ -7,7 +7,7 @@ hook_macros::hook! {
         count: libc::size_t
     ) -> libc::ssize_t => fizzle_read(_ctx) {
 
-        crate::debug_abort("read");
+        crate::report_strict_failure("`read` unimplemented");
         hook_macros::real!(read)(fd, buf, count)
     }
 }
@@ -20,7 +20,7 @@ hook_macros::hook! {
         flags: libc::c_int
     ) -> libc::ssize_t => fizzle_send(_ctx) {
 
-        crate::debug_abort("send");
+        crate::report_strict_failure("`send` unimplemented");
         hook_macros::real!(send)(fd, buf, len, flags)
     }
 }
@@ -35,7 +35,7 @@ hook_macros::hook! {
         addrlen: libc::socklen_t
     ) -> libc::ssize_t => fizzle_sendto(_ctx) {
 
-        crate::debug_abort("sendto");
+        crate::report_strict_failure("`sendto` unimplemented");
         hook_macros::real!(sendto)(fd, buf, len, flags, dest_addr, addrlen)
     }
 }
@@ -46,10 +46,13 @@ hook_macros::hook! {
         msg: *const libc::msghdr,
         flags: libc::c_int
     ) -> libc::ssize_t => fizzle_sendmsg(_ctx) {
+
+        crate::report_strict_failure("`sendmsg` unimplemented");
         hook_macros::real!(sendmsg)(fd, msg, flags)
     }
 }
 
+/*
 hook_macros::hook! {
     unsafe fn write(
         fd: libc::c_int,
@@ -59,3 +62,4 @@ hook_macros::hook! {
         hook_macros::real!(write)(fd, buf, count)
     }
 }
+*/

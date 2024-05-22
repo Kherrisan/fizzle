@@ -5,7 +5,9 @@
 max_fds = "100" # TODO: implement this in the future with build.rs
 
 [io]
-"/dev/null" = "sink"
+"/home/user/.myconfig" = "sink" # Consume all input, produce no output
+"/dev/null" = "nullsink" # Consume all input, produce repeating 0s
+"/etc/hosts" = "feedback" # Output whatever is given as input (like a virtualized file
 
 [io."tcp://127.0.0.1:80"]
 method = "plugin" # The means of passing I/O on the device. Can be "sink", "fuzz", "plugin" or "passthrough"

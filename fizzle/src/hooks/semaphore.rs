@@ -1,7 +1,7 @@
 use heapless::Deque;
 
 use crate::state::{SemaphoreInfo, SemaphorePtr, WorkerId};
-use crate::{hook_macros, state, SemPath};
+use crate::{hook_macros, SemPath};
 
 use std::ffi::CStr;
 use std::ptr;
@@ -10,11 +10,15 @@ use std::thread;
 hook_macros::hook! {
     unsafe fn sem_init(
         sem: *mut libc::sem_t,
-        _pshared: libc::c_int,
+        pshared: libc::c_int,
         value: libc::c_uint
     ) -> libc::c_int => fizzle_sem_init(ctx) {
 
-        // TODO: what about semaphores shared across processes?
+        // TODO: what about semaphores shared via memory across processes?
+
+        if pshared != 0 {
+            
+        }
 
         let semaphore_id = SemaphorePtr::from(sem);
 
@@ -24,7 +28,7 @@ hook_macros::hook! {
             value: value as usize,
             waiting: Deque::new(),
         }).is_some() {
-            crate::abort("`sem_init` called twice on one semaphore");
+            log::warn!("`sem_init` called twice on one semaphore");
         }
 
         0
@@ -94,16 +98,20 @@ hook_macros::hook! {
         let sem_ptr = SemaphorePtr::from(sem);
 
         if ctx.local().named_semaphores.contains_key(&sem_ptr) {
-            crate::abort("`sem_destroy` called on named pointer");
+            log::warn!("`sem_destroy` called on named pointer");
+            *libc::__errno_location() = libc::EINVAL;
+            return -1
         }
 
         let Some(semaphore) = ctx.local().semaphores.remove(&sem_ptr) else {
-            crate::abort("`sem_destroy` called on uninitialized semaphore");
+            log::warn!("`sem_destroy` called on uninitialized semaphore");
+            *libc::__errno_location() = libc::EINVAL;
+            return -1
         };
         crate::unique_mem_destroy(sem as *mut libc::c_void);
 
         if !semaphore.waiting.is_empty() {
-            crate::abort("`sem_destroy` called on semaphore while threads were waiting on it");
+            panic!("[UB] `sem_destroy` called on semaphore while threads were still waiting on it")
         }
 
         0
@@ -124,7 +132,7 @@ hook_macros::hook! {
 
         crate::unique_mem_destroy(sem as *mut libc::c_void); // TODO: make sure this is called everywhere
         let Some(sem_ctx) = ctx.global().semaphores.get_mut(sem_id) else {
-            crate::abort("inconsistent fizzle state--named semaphore without global context in `sem_close`");
+            panic!("inconsistent fizzle state--named semaphore without global context in `sem_close`");
         };
 
         sem_ctx.refs -= 1;
@@ -149,12 +157,13 @@ hook_macros::hook! {
         };
 
         let Some(sem_id) = ctx.global().sem_paths.remove(&sem_path) else {
-            *libc::__errno_location() = libc::ENOENT; // TODO: get right
+            log::debug!("`sem_unlink` called on nonexistent named semaphore");
+            *libc::__errno_location() = libc::ENOENT;
             return -1
         };
 
         let Some(sem_info) = ctx.global().semaphores.get_mut(sem_id) else {
-            crate::abort("inconsistent fizzle state--named semaphore without global context in `sem_unlink`")
+            panic!("inconsistent fizzle state--named semaphore without global context in `sem_unlink`")
         };
 
         sem_info.unlinked = true;
@@ -181,7 +190,7 @@ hook_macros::hook! {
 
         } else if let Some(&semaphore_id) = ctx.local().named_semaphores.get(&semaphore_ptr) {
             let Some(sem_info) = ctx.global().semaphores.get_mut(semaphore_id) else {
-                crate::abort("inconsistent fizzle state--named semaphore without global context in `sem_unlink`");
+                panic!("inconsistent fizzle state--named semaphore without global context in `sem_unlink`");
             };
 
             match sem_info.waiting.pop_front() {
@@ -190,7 +199,9 @@ hook_macros::hook! {
             }
 
         } else {
-            crate::abort("`sem_post` passed in iinvalid semaphore pointer");
+            log::debug!("`sem_post` passed in invalid semaphore pointer");
+            *libc::__errno_location() = libc::EINVAL;
+            return -1
         }
 
         0
@@ -205,7 +216,9 @@ hook_macros::hook! {
         let process_id = ctx.local().process_id;
 
         let Some(semaphore) = ctx.local().semaphores.get_mut(&semaphore_id) else {
-            crate::abort("`sem_wait` called on uninitialized semaphore");
+            log::debug!("`sem_wait` called on uninitialized semaphore");
+            *libc::__errno_location() = libc::EINVAL;
+            return -1
         };
 
         match semaphore.value.checked_sub(1) {
@@ -230,7 +243,9 @@ hook_macros::hook! {
         let semaphore_id = SemaphorePtr::from(sem);
 
         let Some(semaphore) = ctx.local().semaphores.get_mut(&semaphore_id) else {
-            crate::abort("`sem_trywait` called on uninitialized semaphore");
+            log::debug!("`sem_trywait` called on uninitialized semaphore");
+            *libc::__errno_location() = libc::EINVAL;
+            return -1
         };
 
         match semaphore.value.checked_sub(1) {
@@ -254,7 +269,9 @@ hook_macros::hook! {
         let process_id = ctx.local().process_id;
 
         let Some(semaphore) = ctx.local().semaphores.get_mut(&semaphore_id) else {
-            crate::abort("`sem_timedwait` called on uninitialized semaphore");
+            log::debug!("`sem_timedwait` called on uninitialized semaphore");
+            *libc::__errno_location() = libc::EINVAL;
+            return -1
         };
 
         match semaphore.value.checked_sub(1) {

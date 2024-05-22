@@ -1,6 +1,6 @@
 use crate::state::fd::{FdInfo, FdResource};
 use crate::state::{DescriptorId, PipeInfo, PipeMode};
-use crate::{hook_macros, state, RingBuffer};
+use crate::{hook_macros, RingBuffer};
 
 hook_macros::hook! {
     unsafe fn pipe(
@@ -25,6 +25,7 @@ hook_macros::hook! {
             read_buf: buffer2,
         });
 
+        // `unwrap()` guaranteed to succeed--we *just* inserted the pipe
         ctx.global().pipes.get_mut(pipe1_id).unwrap().peer = Some(pipe2_id);
 
         let fd1_info = FdInfo {
@@ -82,6 +83,7 @@ hook_macros::hook! {
             read_buf: buffer2,
         });
 
+        // `unwrap()` guaranteed to succeed--we *just* inserted the pipe
         ctx.global().pipes.get_mut(pipe1_id).unwrap().peer = Some(pipe2_id);
 
         let fd1_info = FdInfo {

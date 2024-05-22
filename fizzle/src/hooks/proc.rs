@@ -4,10 +4,8 @@
 
 use std::thread;
 
-use crate::{
-    hook_macros,
-    state::{self, WorkerId},
-};
+use crate::hook_macros;
+use crate::state::WorkerId;
 
 hook_macros::hook! {
     unsafe fn fork() -> libc::pid_t => fizzle_fork(ctx) {
@@ -16,7 +14,7 @@ hook_macros::hook! {
         match pid {
             0 => {
                 // Child process--fix all of the local state
-                crate::abort("unimplemented: `fork()`")
+                panic!("`fork` unimplemented");
             }
             1.. => {
                 // Parent process--await execution

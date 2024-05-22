@@ -16,7 +16,7 @@ struct PTWrapperArgs {
 }
 
 unsafe extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void {
-    crate::trace_enter!("pt_wrapper_fn");
+    log::trace!("entering `pt_wrapper_fn`");
 
     let wrapped_arg = (arg as *mut PTWrapperArgs).as_mut().unwrap();
 
@@ -119,7 +119,7 @@ hook_macros::hook! {
         thread: libc::pthread_t
     ) => fizzle_pthread_cancel(_ctx) {
 
-        crate::debug_abort("pthread_cancel");
+        crate::report_strict_failure("`pthread_cancel` unimplemented");
 
         hook_macros::real!(pthread_cancel)(thread);
     }
@@ -141,7 +141,7 @@ hook_macros::hook! {
         abstime: *const libc::timespec
     ) -> libc::c_int => fizzle_pthread_timedjoin_np(_ctx) {
 
-        crate::debug_abort("pthread_timedjoin_np");
+        crate::report_strict_failure("`pthread_timedjoin_np` unimplemented");
 
         hook_macros::real!(pthread_timedjoin_np)(thread, retval, abstime)
     }
@@ -155,7 +155,7 @@ hook_macros::hook! {
         abstime: *const libc::timespec
     ) -> libc::c_int => fizzle_pthread_clockjoin_np(_ctx) {
 
-        crate::debug_abort("pthread_timedjoin_np");
+        crate::report_strict_failure("`pthread_clockjoin_np` unimplemented");
 
         hook_macros::real!(pthread_clockjoin_np)(thread, retval, clock_id, abstime)
     }
@@ -166,7 +166,7 @@ hook_macros::hook! {
         thread: libc::pthread_t
     ) => fizzle_pthread_detach(_ctx) {
 
-        crate::debug_abort("pthread_detach");
+        crate::report_strict_failure("`pthread_detach` unimplemented");
 
         hook_macros::real!(pthread_detach)(thread);
     }
@@ -178,7 +178,7 @@ hook_macros::hook! {
         sig: libc::c_int
     ) -> libc::c_int => fizzle_pthread_kill(_ctx) {
 
-        crate::debug_abort("pthread_kill");
+        crate::report_strict_failure("`pthread_kill` unimplemented");
 
         hook_macros::real!(pthread_kill)(thread, sig)
     }
@@ -201,7 +201,7 @@ hook_macros::hook! {
         old_state: *mut libc::c_int
     ) -> libc::c_int => fizzle_pthread_setcancelstate(_ctx) {
 
-        crate::debug_abort("pthread_setcancelstate");
+        crate::report_strict_failure("`pthread_setcancelstate` unimplemented");
 
         hook_macros::real!(pthread_setcancelstate)(state, old_state)
     }
@@ -213,7 +213,7 @@ hook_macros::hook! {
         old_type: *mut libc::c_int
     ) -> libc::c_int => fizzle_pthread_setcanceltype(_ctx) {
 
-        crate::debug_abort("pthread_setcanceltype");
+        crate::report_strict_failure("`pthread_setcanceltype` unimplemented");
 
         hook_macros::real!(pthread_setcancelstate)(cancel_type, old_type)
     }
@@ -223,7 +223,7 @@ hook_macros::hook! {
     unsafe fn pthread_testcancel(
     ) -> libc::c_int => fizzle_pthread_testcancel(_ctx) {
 
-        crate::debug_abort("pthread_testcancel");
+        crate::report_strict_failure("`pthread_testcancel` unimplemented");
 
         hook_macros::real!(pthread_testcancel)()
     }
@@ -240,7 +240,7 @@ hook_macros::hook! {
         let spinlock = SpinlockPtr::from(lock);
 
         if ctx.local().spinlocks.insert(spinlock, VecDeque::new()).is_some() {
-            crate::abort("`pthread_spin_init` called twice on one spinlock");
+            panic!("[UB] `pthread_spin_init` called twice on one spinlock");
         }
 
         0
@@ -255,11 +255,11 @@ hook_macros::hook! {
         let spinlock = SpinlockPtr::from(lock);
 
         let Some(spinlock_queue) = ctx.local().spinlocks.remove(&spinlock) else {
-            crate::abort("`pthread_spin_destroy` called on uninitialized spinlock")
+            panic!("[UB] `pthread_spin_destroy` called on uninitialized spinlock");
         };
 
         if !spinlock_queue.is_empty() {
-            crate::abort("`pthread_spin_destroy` called on locked spinlock") // Undefined behavior
+            panic!("[UB] `pthread_spin_destroy` called on locked spinlock") // Undefined behavior
         }
 
         0
@@ -274,7 +274,7 @@ hook_macros::hook! {
         let spinlock = SpinlockPtr::from(lock);
 
         let Some(spinlock_queue) = ctx.local().spinlocks.get_mut(&spinlock) else {
-            crate::abort("`pthread_spin_lock` called on uninitialized spinlock")
+            panic!("[UB] `pthread_spin_lock` called on uninitialized spinlock")
         };
 
         let available = spinlock_queue.is_empty();
@@ -296,7 +296,7 @@ hook_macros::hook! {
         let spinlock = SpinlockPtr::from(lock);
 
         let Some(spinlock_queue) = ctx.local().spinlocks.get_mut(&spinlock) else {
-            crate::abort("`pthread_spin_trylock` called on uninitialized spinlock")
+            panic!("[UB] `pthread_spin_trylock` called on uninitialized spinlock")
         };
 
         if !spinlock_queue.is_empty() {
@@ -316,15 +316,15 @@ hook_macros::hook! {
         let spinlock = SpinlockPtr::from(lock);
 
         let Some(spinlock_queue) = ctx.local().spinlocks.get_mut(&spinlock) else {
-            crate::abort("`pthread_spin_unlock` called on uninitialized spinlock")
+            panic!("[UB] `pthread_spin_unlock` called on uninitialized spinlock")
         };
 
         let Some(popped_thread) = spinlock_queue.pop_front() else {
-            crate::abort("`pthread_spin_unlock` called when spinlock already unlocked")
+            panic!("[UB] `pthread_spin_unlock` called when spinlock already unlocked")
         };
 
         if popped_thread != thread::current().id() {
-            crate::abort("`pthread_spin_unlock` called by a thread not currently holding the spinlock")
+            panic!("[UB] `pthread_spin_unlock` called by a thread not currently holding the spinlock")
         }
 
         if let Some(next_thread) = spinlock_queue.front().copied() {
@@ -344,7 +344,7 @@ hook_macros::hook! {
         let mutex = MutexPtr::from(lock);
 
         if ctx.local().mutexes.insert(mutex, VecDeque::new()).is_some() {
-            crate::abort("`pthread_mutex_init` called twice on one mutex");
+            panic!("[UB] `pthread_mutex_init` called twice on one mutex");
         }
 
         0
@@ -359,11 +359,11 @@ hook_macros::hook! {
         let mutex = MutexPtr::from(lock);
 
         let Some(mutex_queue) = ctx.local().mutexes.remove(&mutex) else {
-            crate::abort("`pthread_mutex_destroy` called on uninitialized mutex")
+            panic!("[UB] `pthread_mutex_destroy` called on uninitialized mutex")
         };
 
         if !mutex_queue.is_empty() {
-            crate::abort("`pthread_mutex_destroy` called on locked mutex")
+            panic!("[UB] `pthread_mutex_destroy` called on locked mutex")
         }
 
         0
@@ -378,7 +378,7 @@ hook_macros::hook! {
         let mutex = MutexPtr::from(lock);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
-            crate::abort("`pthread_mutex_lock` called on uninitialized mutex")
+            panic!("[UB] `pthread_mutex_lock` called on uninitialized mutex")
         };
 
         let available = mutex_queue.is_empty();
@@ -400,7 +400,7 @@ hook_macros::hook! {
         let mutex = MutexPtr::from(lock);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
-            crate::abort("`pthread_mutex_trylock` called on uninitialized mutex")
+            panic!("[UB] `pthread_mutex_trylock` called on uninitialized mutex")
         };
 
         if !mutex_queue.is_empty() {
@@ -422,7 +422,7 @@ hook_macros::hook! {
         let mutex = MutexPtr::from(lock);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
-            crate::abort("`pthread_mutex_timedlock` called on uninitialized mutex")
+            panic!("[UB] `pthread_mutex_timedlock` called on uninitialized mutex")
         };
 
         if !mutex_queue.is_empty() {
@@ -447,7 +447,7 @@ hook_macros::hook! {
         let mutex = MutexPtr::from(lock);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
-            crate::abort("`pthread_mutex_clocklock` called on uninitialized mutex")
+            panic!("[UB] `pthread_mutex_clocklock` called on uninitialized mutex")
         };
 
         if !mutex_queue.is_empty() {
@@ -467,15 +467,15 @@ hook_macros::hook! {
         let mutex = MutexPtr::from(lock);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
-            crate::abort("`pthread_mutex_unlock` called on uninitialized mutex")
+            panic!("[UB] `pthread_mutex_unlock` called on uninitialized mutex")
         };
 
         let Some(popped_thread) = mutex_queue.pop_front() else {
-            crate::abort("`pthread_mutex_unlock` called when mutex already unlocked")
+            panic!("[UB] `pthread_mutex_unlock` called when mutex already unlocked")
         };
 
         if popped_thread != thread::current().id() {
-            crate::abort("`pthread_mutex_unlock` called by a thread not currently holding the lock")
+            panic!("[UB] `pthread_mutex_unlock` called by a thread not currently holding the lock")
         }
 
         if let Some(next_thread) = mutex_queue.front().copied() {
@@ -493,7 +493,9 @@ hook_macros::hook! {
 
         // TODO: make poisoned lock behavior compliant with POSIX
 
-        crate::abort("Unimplemented `pthread_mutex_consistent`");
+        crate::report_strict_failure("`pthread_mutex_consistent` unimplemented");
+
+        0
     }
 }
 
@@ -508,7 +510,7 @@ hook_macros::hook! {
         let cond = CondVarPtr::from(lock);
 
         if ctx.local().condvars.insert(cond, VecDeque::new()).is_some() {
-            crate::abort("`pthread_cond_init` called twice on one condvar");
+            panic!("[UB] `pthread_cond_init` called twice on one condvar");
         }
 
         0
@@ -523,11 +525,11 @@ hook_macros::hook! {
         let cond = CondVarPtr::from(lock);
 
         let Some(condvar_queue) = ctx.local().condvars.remove(&cond) else {
-            crate::abort("`pthread_cond_destroy` called on uninitialized condvar")
+            panic!("[UB] `pthread_cond_destroy` called on uninitialized condvar")
         };
 
         if !condvar_queue.is_empty() {
-            crate::abort("`pthread_cond_destroy` called on locked condvar") // Undefined behavior
+            panic!("[UB] `pthread_cond_destroy` called on locked condvar")
         }
 
         0
@@ -542,7 +544,7 @@ hook_macros::hook! {
         let cond = CondVarPtr::from(lock);
 
         let Some(cond_queue) = ctx.local().condvars.get_mut(&cond) else {
-            crate::abort("`pthread_cond_signal` called on uninitialized condvar")
+            panic!("[UB] `pthread_cond_signal` called on uninitialized condvar")
         };
 
         if let Some(thread) = cond_queue.pop_front() {
@@ -561,7 +563,7 @@ hook_macros::hook! {
         let cond = CondVarPtr::from(lock);
 
         let Some(cond_queue) = ctx.local().condvars.get_mut(&cond) else {
-            crate::abort("`pthread_cond_broadcast` called on uninitialized condvar")
+            panic!("[UB] `pthread_cond_broadcast` called on uninitialized condvar")
         };
 
         let threads: Vec<ThreadId> = cond_queue.drain(..).collect();
@@ -583,7 +585,7 @@ hook_macros::hook! {
         let cond = CondVarPtr::from(lock);
 
         let Some(cond_queue) = ctx.local().condvars.get_mut(&cond) else {
-            crate::abort("`pthread_cond_wait` called on uninitialized condvar")
+            panic!("[UB] `pthread_cond_wait` called on uninitialized condvar")
         };
 
         cond_queue.push_back(thread::current().id());
@@ -592,15 +594,15 @@ hook_macros::hook! {
         let mutex = MutexPtr::from(mutex);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
-            crate::abort("`pthread_cond_wait` called on uninitialized mutex")
+            panic!("[UB] `pthread_cond_wait` called on uninitialized mutex")
         };
 
         let Some(popped_thread) = mutex_queue.pop_front() else {
-            crate::abort("`pthread_cond_wait` called when mutex already unlocked")
+            panic!("[UB] `pthread_cond_wait` called when mutex already unlocked")
         };
 
         if popped_thread != thread::current().id() {
-            crate::abort("`pthread_cond_wait` called by a thread not currently holding the lock")
+            panic!("[UB] `pthread_cond_wait` called by a thread not currently holding the lock")
         }
 
         if let Some(next_thread) = mutex_queue.front().copied() {
@@ -611,7 +613,7 @@ hook_macros::hook! {
         ctx.yield_thread();
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
-            crate::abort("`pthread_mutex_lock` called on uninitialized mutex")
+            panic!("[UB] `pthread_cond_wait` called on uninitialized mutex")
         };
 
         let available = mutex_queue.is_empty();
@@ -637,7 +639,7 @@ hook_macros::hook! {
         let cond = CondVarPtr::from(lock);
 
         let Some(cond_queue) = ctx.local().condvars.get_mut(&cond) else {
-            crate::abort("`pthread_cond_wait` called on uninitialized condvar")
+            panic!("[UB] `pthread_cond_timedwait` called on uninitialized condvar")
         };
 
         cond_queue.push_back(thread::current().id());
@@ -646,15 +648,15 @@ hook_macros::hook! {
         let mutex = MutexPtr::from(mutex);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
-            crate::abort("`pthread_cond_wait` called on uninitialized mutex")
+            panic!("[UB] `pthread_cond_timedwait` called on uninitialized mutex")
         };
 
         let Some(popped_thread) = mutex_queue.pop_front() else {
-            crate::abort("`pthread_cond_wait` called when mutex already unlocked")
+            panic!("[UB] `pthread_cond_timedwait` called when mutex already unlocked")
         };
 
         if popped_thread != thread::current().id() {
-            crate::abort("`pthread_cond_wait` called by a thread not currently holding the lock")
+            panic!("[UB] `pthread_cond_timedwait` called by a thread not currently holding the lock")
         }
 
         if let Some(next_thread) = mutex_queue.front().copied() {
@@ -665,7 +667,7 @@ hook_macros::hook! {
         ctx.yield_thread();
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
-            crate::abort("`pthread_mutex_lock` called on uninitialized mutex")
+            panic!("[UB] `pthread_cond_timedwait` called on uninitialized mutex")
         };
 
         let available = mutex_queue.is_empty();
@@ -691,7 +693,7 @@ hook_macros::hook! {
         let cond = CondVarPtr::from(lock);
 
         let Some(cond_queue) = ctx.local().condvars.get_mut(&cond) else {
-            crate::abort("`pthread_cond_wait` called on uninitialized condvar")
+            panic!("[UB] `pthread_cond_clockwait` called on uninitialized condvar")
         };
 
         cond_queue.push_back(thread::current().id());
@@ -700,15 +702,15 @@ hook_macros::hook! {
         let mutex = MutexPtr::from(mutex);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
-            crate::abort("`pthread_cond_wait` called on uninitialized mutex")
+            panic!("[UB] `pthread_cond_clockwait` called on uninitialized mutex")
         };
 
         let Some(popped_thread) = mutex_queue.pop_front() else {
-            crate::abort("`pthread_cond_wait` called when mutex already unlocked")
+            panic!("[UB] `pthread_cond_clockwait` called when mutex already unlocked")
         };
 
         if popped_thread != thread::current().id() {
-            crate::abort("`pthread_cond_wait` called by a thread not currently holding the lock")
+            panic!("[UB] `pthread_cond_clockwait` called by a thread not currently holding the lock")
         }
 
         if let Some(next_thread) = mutex_queue.front().copied() {
@@ -719,7 +721,7 @@ hook_macros::hook! {
         ctx.yield_thread();
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
-            crate::abort("`pthread_cond_wait` mutex freed while waiting for condition")
+            panic!("[UB] `pthread_cond_clockwait` mutex freed while waiting for condition")
         };
 
         let available = mutex_queue.is_empty();
@@ -748,7 +750,7 @@ hook_macros::hook! {
             awaiting_write: VecDeque::new(),
             holding_state: HashSet::with_hasher(Default::default())
         }).is_some() {
-            crate::abort("`pthread_rwlock_init` called twice on one rwlock");
+            panic!("[UB] `pthread_rwlock_init` called twice on one rwlock");
         }
 
         0
@@ -763,17 +765,16 @@ hook_macros::hook! {
         let rwlock = RwLockPtr::from(lock);
 
         let Some(rwlock_info) = ctx.local().rwlocks.remove(&rwlock) else {
-            crate::abort("`pthread_rwlock_destroy` called on uninitialized rwlock")
+            panic!("[UB] `pthread_rwlock_destroy` called on uninitialized rwlock")
         };
 
         if rwlock_info.state != RwLockState::Available {
-            crate::abort("`pthread_rwlock_destroy` called on locked rwlock") // Undefined behavior
+            panic!("[UB] `pthread_rwlock_destroy` called on locked rwlock") // Undefined behavior
         }
 
-        // Invariant: if RwLockState::Available, then neither of the Read/Write queues will have any threads
-        assert!(rwlock_info.awaiting_read.is_empty(), "PTRwLock in inconsistent state (RwLockState::Available when some threads still awaiting read)");
-        assert!(rwlock_info.awaiting_read.is_empty(), "PTRwLock in inconsistent state (RwLockState::Available when some threads still awaiting write)");
-        assert!(rwlock_info.holding_state.is_empty(), "PTRwLock in inconsistent state (RwLockState::Available when some threads still holding state)");
+        if !rwlock_info.awaiting_read.is_empty() || !rwlock_info.awaiting_read.is_empty() || !rwlock_info.awaiting_read.is_empty() {
+            panic!("inconsistent fizzle RwLock state in `pthread_rwlock_destroy`");
+        }
 
         0
     }
@@ -787,7 +788,7 @@ hook_macros::hook! {
         let rwlock = RwLockPtr::from(lock);
 
         let Some(rwlock_info) = ctx.local().rwlocks.get_mut(&rwlock) else {
-            crate::abort("`pthread_rwlock_rdlock` called on uninitialized rwlock")
+            panic!("[UB] `pthread_rwlock_rdlock` called on uninitialized rwlock")
         };
 
         match rwlock_info.state {
@@ -806,7 +807,9 @@ hook_macros::hook! {
                 rwlock_info.holding_state.insert(thread::current().id());
             },
             RwLockState::Available => {
-                assert!(rwlock_info.holding_state.is_empty(), "PTRwLock in inconsistent state (RwLockState::Available when some threads still holding state)");
+                if !rwlock_info.holding_state.is_empty() {
+                    panic!("fizzle RwLock in inconsistent state (RwLockState::Available when some threads still holding state)");
+                }
 
                 rwlock_info.state = RwLockState::Reading;
                 rwlock_info.holding_state.insert(thread::current().id());
@@ -825,7 +828,7 @@ hook_macros::hook! {
         let rwlock = RwLockPtr::from(lock);
 
         let Some(rwlock_info) = ctx.local().rwlocks.get_mut(&rwlock) else {
-            crate::abort("`pthread_rwlock_tryrdlock` called on uninitialized rwlock")
+            panic!("[UB] `pthread_rwlock_tryrdlock` called on uninitialized rwlock");
         };
 
         match rwlock_info.state {
@@ -835,7 +838,9 @@ hook_macros::hook! {
                 rwlock_info.holding_state.insert(thread::current().id());
             },
             RwLockState::Available => {
-                assert!(rwlock_info.holding_state.is_empty(), "PTRwLock in inconsistent state (RwLockState::Available when some threads still holding state)");
+                if !rwlock_info.holding_state.is_empty() {
+                    panic!("fizzle RwLock in inconsistent state (RwLockState::Available when some threads still holding state)");
+                }
 
                 rwlock_info.state = RwLockState::Reading;
                 rwlock_info.holding_state.insert(thread::current().id());
@@ -852,7 +857,8 @@ hook_macros::hook! {
         _abstime: *const libc::timespec
     ) -> libc::c_int => fizzle_pthread_rwlock_timedrdlock(_ctx) {
 
-        crate::abort("Unimplemented shim `pthread_rwlock_timedrdlock`");
+        crate::report_strict_failure("`pthread_rwlock_timedrdlock` unimplemented");
+        0
     }
 }
 
@@ -863,7 +869,8 @@ hook_macros::hook! {
         _abstime: *const libc::timespec
     ) -> libc::c_int => fizzle_pthread_rwlock_clockrdlock(_ctx) {
 
-        crate::abort("Unimplemented shim `pthread_rwlock_clockrdlock`");
+        crate::report_strict_failure("`pthread_rwlock_clockrdlock` unimplemented");
+        0
     }
 }
 
@@ -875,12 +882,14 @@ hook_macros::hook! {
         let rwlock = RwLockPtr::from(lock);
 
         let Some(rwlock_info) = ctx.local().rwlocks.get_mut(&rwlock) else {
-            crate::abort("`pthread_rwlock_wrlock` called on uninitialized rwlock")
+            panic!("[UB] `pthread_rwlock_wrlock` called on uninitialized rwlock")
         };
 
         match rwlock_info.state {
             RwLockState::Available => {
-                assert!(rwlock_info.holding_state.is_empty(), "PTRwLock in inconsistent state (RwLockState::Available when some threads still holding state)");
+                if !rwlock_info.holding_state.is_empty() {
+                    panic!("PTRwLock in inconsistent state (RwLockState::Available when some threads still holding state)");
+                }
 
                 rwlock_info.state = RwLockState::Writing;
                 rwlock_info.holding_state.insert(thread::current().id());
@@ -904,12 +913,14 @@ hook_macros::hook! {
         let rwlock = RwLockPtr::from(lock);
 
         let Some(rwlock_info) = ctx.local().rwlocks.get_mut(&rwlock) else {
-            crate::abort("`pthread_rwlock_trywrlock` called on uninitialized rwlock")
+            panic!("[UB] `pthread_rwlock_trywrlock` called on uninitialized rwlock")
         };
 
         match rwlock_info.state {
             RwLockState::Available => {
-                assert!(rwlock_info.holding_state.is_empty(), "PTRwLock in inconsistent state (RwLockState::Available when some threads still holding state)");
+                if !rwlock_info.holding_state.is_empty() {
+                    panic!("PTRwLock in inconsistent state (RwLockState::Available when some threads still holding state)");
+                }
 
                 rwlock_info.state = RwLockState::Writing;
                 rwlock_info.holding_state.insert(thread::current().id());
@@ -926,7 +937,8 @@ hook_macros::hook! {
         _abstime: *const libc::timespec
     ) -> libc::c_int => fizzle_pthread_rwlock_timedwrlock(_ctx) {
 
-        crate::abort("Unimplemented shim `pthread_rwlock_timedwrlock`");
+        crate::report_strict_failure("`pthread_rwlock_timedwrlock` unimplemented");
+        0
     }
 }
 
@@ -937,7 +949,8 @@ hook_macros::hook! {
         _abstime: *const libc::timespec
     ) -> libc::c_int => fizzle_pthread_rwlock_clockwrlock(_ctx) {
 
-        crate::abort("Unimplemented shim `pthread_rwlock_clockwrlock`");
+        crate::report_strict_failure("`pthread_rwlock_clockwrlock` unimplemented");
+        0
     }
 }
 
@@ -949,14 +962,16 @@ hook_macros::hook! {
         let rwlock = RwLockPtr::from(lock);
 
         let Some(rwlock_info) = ctx.local().rwlocks.get_mut(&rwlock) else {
-            crate::abort("`pthread_rwlock_unlock` called on uninitialized rwlock")
+            panic!("[UB] `pthread_rwlock_unlock` called on uninitialized rwlock")
         };
 
         if !rwlock_info.holding_state.remove(&thread::current().id()) {
-            crate::abort("`pthread_rwlock_unlock` called on rwlock when not locked")
+            panic!("[UB] `pthread_rwlock_unlock` called on rwlock when not locked")
         }
 
-        assert!(rwlock_info.state != RwLockState::Available, "PTRwLock in inconsistent state (RwLockState::Available during unlock procedure)");
+        if rwlock_info.state == RwLockState::Available {
+            panic!("fizzle RwLock in inconsistent state (RwLockState::Available during unlock procedure)");
+        } 
 
         if rwlock_info.holding_state.is_empty() {
             // No more threads holding lock--time to transition to a new state
@@ -1015,7 +1030,7 @@ hook_macros::hook! {
         let barrier = BarrierPtr::from(lock);
 
         if ctx.local().barriers.insert(barrier, BarrierInfo { curr: Vec::new(), needed: count as usize }).is_some() {
-            crate::abort("`pthread_barrier_init` called twice on one barrier");
+            panic!("[UB] `pthread_barrier_init` called twice on one barrier");
         }
 
         0
@@ -1030,8 +1045,8 @@ hook_macros::hook! {
         let barrier = BarrierPtr::from(lock);
 
         match ctx.local().barriers.remove(&barrier) {
-            Some(barrier_info) if !barrier_info.curr.is_empty() => crate::abort("`pthread_barrier_destroy` called on barrier other threads were waiting on"),
-            None => crate::abort("`pthread_barrier_destroy` called on uninitialized barrier"),
+            Some(barrier_info) if !barrier_info.curr.is_empty() => panic!("[UB] `pthread_barrier_destroy` called on barrier other threads were waiting on"),
+            None => panic!("[UB] `pthread_barrier_destroy` called on uninitialized barrier"),
             _ => ()
         }
 
@@ -1047,7 +1062,7 @@ hook_macros::hook! {
         let barrier = BarrierPtr::from(lock);
 
         let Some(barrier_info) = ctx.local().barriers.get_mut(&barrier) else {
-            crate::abort("`pthread_barrier_wait` called on uninitialized barrier");
+            panic!("[UB] `pthread_barrier_wait` called on uninitialized barrier");
         };
 
         barrier_info.curr.push(thread::current().id());
