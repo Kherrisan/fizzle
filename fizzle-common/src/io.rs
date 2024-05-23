@@ -6,24 +6,25 @@ use crate::path::FilePath;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SocketLocation {
-    pub socket_type: SocketType,
-    pub socket_addr: SocketAddr,
+    pub direction: SocketDirection,
+    pub protocol: TransportProtocol,
+    pub address: SocketAddr,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum SocketType {
-    /// A Transmission Control Protocol client.
-    TcpClient,
-    /// A Transmission Control Protocol server.
-    TcpServer,
-    /// A User Datagram Protocol client.
-    UdpClient,
-    /// A User Datagram Protocol server.
-    UdpServer,
-    /// A Stream Control Transmission Protocol client.
-    SctpClient,
-    /// A Stream Control Transmission Protocol server.
-    SctpServer,
+pub enum TransportProtocol {
+    /// Transmission Control Protocol.
+    Tcp,
+    /// User Datagram Protocol.
+    Udp,
+    /// Stream Control Transmission Protocol.
+    Sctp,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SocketDirection {
+    Client,
+    Server,
 }
 
 pub enum IoLocation {

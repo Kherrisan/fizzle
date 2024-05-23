@@ -2,7 +2,7 @@
 //!
 //!
 
-use crate::{hook_macros, state};
+use crate::hook_macros;
 
 hook_macros::hook! {
     unsafe fn socket(

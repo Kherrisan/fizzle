@@ -1,5 +1,6 @@
 mod comptime;
 pub mod fd;
+pub mod identifiers;
 pub mod plugins;
 
 use std::cell::{RefCell, UnsafeCell};
@@ -8,7 +9,6 @@ use std::ffi::{CStr, CString};
 use std::hash::{Hash, Hasher};
 use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
-use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::ThreadId;
 use std::{array, env, mem, ptr, thread};
@@ -26,6 +26,7 @@ use crate::constants::*;
 use crate::semaphore::Semaphore;
 use crate::state::plugins::PluginConfig;
 
+use self::identifiers::*;
 use self::fd::FdInfo;
 use self::plugins::{PluginId, PluginMappings, PluginModules};
 
@@ -440,27 +441,6 @@ impl FizzleContext {
     }
 }
 
-/*
-pub struct PluginModules {
-    map: ValueIndex<IoLocationId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>,
-}
-
-impl PluginModules {
-    pub fn new(plugin_mapping: ValueIndex<IoLocationId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>) -> Self {
-        Self {
-            map: plugin_mapping,
-        }
-    }
-
-    pub fn get(&self, location_id: IoLocationId) -> &dyn FizzlePluginObject {
-        self.map.get(location_id).unwrap().deref()   }
-
-    pub fn get_mut(&mut self, location_id: IoLocationId) -> &mut dyn FizzlePluginObject {
-        self.map.get_mut(location_id).unwrap().deref_mut()
-    }
-}
-*/
-
 // We do not currently support sem_init() with pshared enabled--that would require tracking shared memory
 // across processes. While this is possible, it would be a difficult and bug-ridden path to take.
 // In a similar vein, we will not
@@ -538,234 +518,7 @@ impl ProcessState {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ProcessId {
-    identifier: usize,
-}
 
-impl ProcessId {
-    pub fn new(ident: usize) -> Self {
-        Self { identifier: ident }
-    }
-}
-
-impl From<ProcessId> for usize {
-    fn from(val: ProcessId) -> Self {
-        val.identifier
-    }
-}
-
-/// An identifier used to represent a valid file descriptor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct DescriptorId {
-    identifier: usize,
-}
-
-impl DescriptorId {
-    pub fn new(fd: RawFd) -> Self {
-        Self {
-            identifier: fd as usize,
-        }
-    }
-}
-
-impl From<usize> for DescriptorId {
-    fn from(value: usize) -> Self {
-        Self { identifier: value }
-    }
-}
-
-impl From<DescriptorId> for usize {
-    fn from(val: DescriptorId) -> Self {
-        val.identifier
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct FileId {
-    identifier: usize,
-}
-
-impl FileId {
-    #[allow(unused)]
-    pub fn new(ident: usize) -> Self {
-        Self { identifier: ident }
-    }
-}
-
-impl From<usize> for FileId {
-    fn from(value: usize) -> Self {
-        Self { identifier: value }
-    }
-}
-
-impl From<FileId> for usize {
-    fn from(val: FileId) -> Self {
-        val.identifier
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct DirectoryId {
-    identifier: usize,
-}
-
-impl DirectoryId {
-    #[allow(unused)]
-    pub fn new(ident: usize) -> Self {
-        Self { identifier: ident }
-    }
-}
-
-impl From<usize> for DirectoryId {
-    fn from(value: usize) -> Self {
-        Self { identifier: value }
-    }
-}
-
-impl From<DirectoryId> for usize {
-    fn from(val: DirectoryId) -> Self {
-        val.identifier
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PipeId {
-    identifier: usize,
-}
-
-impl PipeId {
-    #[allow(unused)]
-    pub fn new(ident: usize) -> Self {
-        Self { identifier: ident }
-    }
-}
-
-impl From<usize> for PipeId {
-    fn from(value: usize) -> Self {
-        Self { identifier: value }
-    }
-}
-
-impl From<PipeId> for usize {
-    fn from(val: PipeId) -> Self {
-        val.identifier
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SocketId {
-    identifier: usize,
-}
-
-impl SocketId {
-    #[allow(unused)]
-    pub fn new(ident: usize) -> Self {
-        Self { identifier: ident }
-    }
-}
-
-impl From<usize> for SocketId {
-    fn from(value: usize) -> Self {
-        Self { identifier: value }
-    }
-}
-
-impl From<SocketId> for usize {
-    fn from(val: SocketId) -> Self {
-        val.identifier
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SemaphoreId {
-    identifier: usize,
-}
-
-impl SemaphoreId {
-    #[allow(unused)]
-    pub fn new(ident: usize) -> Self {
-        Self { identifier: ident }
-    }
-}
-
-impl From<usize> for SemaphoreId {
-    fn from(value: usize) -> Self {
-        Self { identifier: value }
-    }
-}
-
-impl From<SemaphoreId> for usize {
-    fn from(val: SemaphoreId) -> Self {
-        val.identifier
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct BufferId {
-    identifier: usize,
-}
-
-impl BufferId {
-    #[allow(unused)]
-    pub fn new(ident: usize) -> Self {
-        Self { identifier: ident }
-    }
-}
-
-impl From<usize> for BufferId {
-    fn from(value: usize) -> Self {
-        Self { identifier: value }
-    }
-}
-
-impl From<BufferId> for usize {
-    fn from(val: BufferId) -> Self {
-        val.identifier
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct FifoId {
-    identifier: usize,
-}
-
-impl FifoId {
-    #[allow(unused)]
-    pub fn new(ident: usize) -> Self {
-        Self { identifier: ident }
-    }
-}
-
-impl From<FifoId> for usize {
-    fn from(val: FifoId) -> Self {
-        val.identifier
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct MessageQueueId {
-    identifier: usize,
-}
-
-impl MessageQueueId {
-    #[allow(unused)]
-    pub fn new(ident: usize) -> Self {
-        Self { identifier: ident }
-    }
-}
-
-impl From<usize> for MessageQueueId {
-    fn from(value: usize) -> Self {
-        Self { identifier: value }
-    }
-}
-
-impl From<MessageQueueId> for usize {
-    fn from(val: MessageQueueId) -> Self {
-        val.identifier
-    }
-}
 
 /// State/data shared among all processes in a fizzle execution.
 pub struct InterprocessState {
@@ -829,7 +582,7 @@ impl InterprocessState {
     /// Assigns the next available process ID and increments it internally.
     pub fn assign_process_id(&mut self) -> ProcessId {
         let process_id = self.next_process_id;
-        self.next_process_id.identifier += 1;
+        self.next_process_id = ProcessId::new(usize::from(process_id) + 1);
         process_id
     }
 

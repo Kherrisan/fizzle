@@ -1,5 +1,4 @@
 use std::cmp::Ordering;
-use std::ffi::CStr;
 use std::hash::Hash;
 use std::io::{Read, Write};
 use std::marker::PhantomData;

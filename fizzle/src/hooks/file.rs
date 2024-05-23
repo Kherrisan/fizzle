@@ -2,8 +2,10 @@ use std::ffi::CStr;
 use std::ptr;
 
 use crate::hook_macros;
+use crate::state::{FileObject, FilePtr};
 use crate::state::fd::{FdInfo, FdResource};
-use crate::state::{DescriptorId, FileObject, FilePtr};
+use crate::state::identifiers::DescriptorId;
+
 
 use fizzle_common::path::FilePath;
 use fizzle_common::storage::RingBuffer;
