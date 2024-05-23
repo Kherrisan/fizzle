@@ -1,0 +1,29 @@
+use std::ffi::CStr;
+
+// Environment variables
+
+pub const FIZZLE_MEMORY_ENV: &CStr = c"FIZZLE_MEMORY";
+pub const FIZZLE_STRICT_ENV: &str = "FIZZLE_STRICT";
+
+// Static buffers
+
+pub const FIZZLE_MAX_PLUGINS: usize = 128;
+
+pub const FIZZLE_MAX_PROCESSES: usize = 128;
+
+pub const FIZZLE_MAX_READY_PROCESSES: usize = 256;
+pub const FIZZLE_MAX_THREADS: usize = 256;
+/// The maximum number of paths to files fizzle emulates.
+pub const FIZZLE_MAX_FILE_PATHS: usize = 512;
+/// The maximum number of files fizzle can emulate.
+pub const FIZZLE_MAX_FILES: usize = 512;
+pub const FIZZLE_MAX_DIRS: usize = 256;
+pub const FIZZLE_MAX_PIPES: usize = 256;
+pub const FIZZLE_MAX_MESSAGE_QUEUES: usize = 256;
+pub const FIZZLE_BUFFER_LENGTH: usize = 262_144; // 256 KB per buffer (twice the Linux default for `/proc/sys/net/ipv4/tcp_rmem`)
+pub const FIZZLE_MAX_BUFFERS: usize = 256; // 256 * 128 KB = 64 MB total
+pub const FIZZLE_MAX_SOCKETS: usize = 256;
+pub const FIZZLE_MAX_NAMED_SEMAPHORES: usize = 128;
+pub const FIZZLE_MAX_FDS: usize = 4096;
+pub const FIZZLE_MAX_WAITING_SEMAPHORES: usize = 32;
+pub const FIZZLE_FOPEN_BUFSIZE: usize = 8192;

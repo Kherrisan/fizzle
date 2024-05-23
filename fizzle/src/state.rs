@@ -24,36 +24,16 @@ use heapless::spsc::Queue;
 use fxhash::FxBuildHasher;
 use heapless::{Deque, FnvIndexMap};
 
+use crate::constants::*;
 use crate::semaphore::Semaphore;
 use crate::state::plugins::Plugins;
 
 use self::fd::FdInfo;
 use self::ipc::IpcMemory;
-use self::plugins::FIZZLE_MAX_PLUGINS;
-
-const FIZZLE_MEMORY_ENV: &CStr = c"FIZZLE_MEMORY";
-const FIZZLE_STRICT_ENV: &str = "FIZZLE_STRICT";
 
 // TODO: we will assume that the main process cannot exit. This should be documented.
 // Likewise, there should exist an env variable (like `FIZZLE_NOEXIT=status_code`) that, when set,
 // ensures that the main process does not exit when passed the given status code.
-
-const FIZZLE_MAX_READY_PROCESSES: usize = 256;
-const FIZZLE_MAX_THREADS: usize = 256;
-/// The maximum number of paths to files fizzle emulates.
-const FIZZLE_MAX_FILE_PATHS: usize = 512;
-/// The maximum number of files fizzle can emulate.
-const FIZZLE_MAX_FILES: usize = 512;
-const FIZZLE_MAX_DIRS: usize = 256;
-const FIZZLE_MAX_PIPES: usize = 256;
-const FIZZLE_MAX_MESSAGE_QUEUES: usize = 256;
-const FIZZLE_BUFFER_LENGTH: usize = 262_144; // 256 KB per buffer (twice the Linux default for `/proc/sys/net/ipv4/tcp_rmem`)
-const FIZZLE_MAX_BUFFERS: usize = 256; // 256 * 128 KB = 64 MB total
-const FIZZLE_MAX_SOCKETS: usize = 256;
-const FIZZLE_MAX_NAMED_SEMAPHORES: usize = 128;
-const FIZZLE_MAX_FDS: usize = 4096;
-const FIZZLE_MAX_WAITING_SEMAPHORES: usize = 32;
-const FIZZLE_FOPEN_BUFSIZE: usize = 8192;
 
 // See `set_entered_handler` and `has_entered_handler`
 std::thread_local! {

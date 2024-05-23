@@ -2,6 +2,7 @@
 
 extern crate libc;
 
+mod constants;
 mod hook_macros;
 mod hooks;
 mod semaphore;

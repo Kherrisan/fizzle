@@ -7,11 +7,9 @@ use fizzle_common::io::IoLocation;
 use fizzle_plugin::IoLocationId;
 use heapless::FnvIndexMap;
 
-use super::plugins::FIZZLE_MAX_PLUGINS;
 use super::InterprocessState;
+use crate::constants::*;
 use crate::state::ProcessId;
-
-const FIZZLE_MAX_PROCESSES: usize = 128;
 
 /// A thread-safe and multiprocess-safe shared memory segment.
 pub struct IpcMemory {

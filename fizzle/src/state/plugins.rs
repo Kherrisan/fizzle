@@ -1,9 +1,9 @@
+use crate::constants::*;
+
 use fizzle_common::io::IoLocation;
 use fizzle_common::storage::ValueIndex;
 use fizzle_plugin::{FizzlePluginObject, IoLocationId};
 use heapless::FnvIndexMap;
-
-pub const FIZZLE_MAX_PLUGINS: usize = 128;
 
 /// Plugin information, populated based on the Fizzle configuration file.
 ///
