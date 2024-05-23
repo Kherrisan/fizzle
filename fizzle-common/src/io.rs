@@ -12,6 +12,13 @@ pub struct SocketLocation {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SocketDirection {
+    Client,
+    Server,
+}
+
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TransportProtocol {
     /// Transmission Control Protocol.
     Tcp,
@@ -21,13 +28,7 @@ pub enum TransportProtocol {
     Sctp,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum SocketDirection {
-    Client,
-    Server,
-}
-
-pub enum IoLocation {
+pub enum IoEndpoint {
     /// I/O emulating `stdin`/`stdout`.
     /// 
     /// `stderr` is currently reserved for error messaging by fizzle.

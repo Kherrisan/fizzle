@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
 // TODO: can we pass through configuration options for specific streams? How would we go about
-// doing that?? The problem is that a plugin can be defined in multiple I/O locations, so the
-// configuration would need to differentiate based on I/O location. BUT, `stream_id` is too opaque
-// to convey to the plugin what I/O location it's associated with. One hacky way to account for
+// doing that?? The problem is that a plugin can be defined in multiple I/O endpoints, so the
+// configuration would need to differentiate based on I/O endpoint. BUT, `stream_id` is too opaque
+// to convey to the plugin what I/O endpoint it's associated with. One hacky way to account for
 // this would be to order configuration temporally, but that would run into issues if I/O streams
 // have different orderings based on fuzzing input.
 //
-// So, what do we do? It would be best to enable plugins to be reused across I/O locations while
+// So, what do we do? It would be best to enable plugins to be reused across I/O endpoints while
 // also allowing plugin configuration to be passed through the main fizzle configuration file;
 // re-defining plugiins for each configuration desired doesn't seem ergonomic. To do this, we
 // need to make `stream_id` non-opaque enough to convey I/O information...
@@ -15,10 +15,10 @@ use std::collections::HashMap;
 // The good news is that StreamId can remain opaque for now, and we can just redefine its contents
 // later to include non-opaque info that we expose via method calls.
 
-/// The specific protocol, I/O location and stream that a plugin method is called for.
+/// The specific protocol, I/O endpoint and stream that a plugin method is called for.
 #[derive(Clone, Copy, Debug)]
 pub struct Context {
-    pub io_location: IoLocationId,
+    pub endpoint: IoEndpointId,
     pub stream_id: StreamId,
 }
 
@@ -29,22 +29,22 @@ pub struct Context {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StreamId(usize);
 
-/// A unique identifier that corresponds to a single I/O location defined in the `Fizzle`
+/// A unique identifier that corresponds to a single I/O endpoint defined in the `Fizzle`
 /// configuration file.
 ///
 /// This identifier enables multiple connections of the same stream type to be handled
 /// by a single plugin instance, thereby allowing for shared state across streams when needed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct IoLocationId(usize);
+pub struct IoEndpointId(usize);
 
-impl From<usize> for IoLocationId {
+impl From<usize> for IoEndpointId {
     #[inline]
     fn from(value: usize) -> Self {
         Self(value)
     }
 }
 
-impl Into<usize> for IoLocationId {
+impl Into<usize> for IoEndpointId {
     #[inline]
     fn into(self) -> usize {
         self.0
@@ -70,14 +70,14 @@ pub enum PluginError {
 /// or even add structure- and protocol-awareness to otherwise arbitrary fuzzing inputs.
 pub trait FizzlePlugin: FizzlePluginObject {
     /// Constructs an instance of this plugin, configured with `config`.
-    fn new(config: HashMap<IoLocationId, toml::Table>) -> Self;
+    fn new(config: HashMap<IoEndpointId, toml::Table>) -> Self;
 }
 
 /// The object-safe subset of methods that must be implemented for a [`FizzlePlugin`].
 ///
 /// Each method includes a [`Context`] that indicates what protocol and stream the method is being
 /// called for. An application being tested may open an I/O device multiple times, or a plugin may
-/// be applied to multiple I/O locations within configuration, so the plugin must be able to
+/// be applied to multiple I/O endpoints within configuration, so the plugin must be able to
 /// differentiate between different `stream_id` values within the context. The `protocol_id` field
 /// of the context is meant for plugins that implement multiple protocols (e.g., to share state
 /// between protocols), so it can be safely ignored for plugins that only have one [`FizzlePlugin`]

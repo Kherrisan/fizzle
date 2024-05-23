@@ -296,7 +296,7 @@ impl FizzleContext {
             }
 
         } else {
-            process_id = ProcessId::new(1);
+            process_id = ProcessId::from(0);
 
             let mut plugin_config = PluginConfig::new();
             comptime::populate_plugins(&mut plugin_config);
@@ -548,7 +548,7 @@ impl InterprocessState {
         state: *mut MaybeUninit<InterprocessState>,
     ) {
         let state = state as *mut InterprocessState;
-        *ptr::addr_of_mut!((*state).next_process_id) = ProcessId::new(1);
+        *ptr::addr_of_mut!((*state).next_process_id) = ProcessId::from(1);
         *ptr::addr_of_mut!((*state).waking_thread_id) = None;
         *ptr::addr_of_mut!((*state).ready_workers) = Queue::new();
         *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
@@ -582,7 +582,7 @@ impl InterprocessState {
     /// Assigns the next available process ID and increments it internally.
     pub fn assign_process_id(&mut self) -> ProcessId {
         let process_id = self.next_process_id;
-        self.next_process_id = ProcessId::new(usize::from(process_id) + 1);
+        self.next_process_id = ProcessId::from(usize::from(process_id) + 1);
         process_id
     }
 

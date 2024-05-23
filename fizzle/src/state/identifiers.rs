@@ -27,69 +27,53 @@ impl From<BufferId> for usize {
 
 /// An identifier used to represent a valid file descriptor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct DescriptorId {
-    identifier: usize,
-}
+pub struct DescriptorId(usize);
 
 impl DescriptorId {
     pub fn new(fd: RawFd) -> Self {
-        Self {
-            identifier: fd as usize,
-        }
+        Self(fd as usize)
     }
 }
 
 impl From<usize> for DescriptorId {
     fn from(value: usize) -> Self {
-        Self { identifier: value }
+        Self(value)
     }
 }
 
 impl From<DescriptorId> for usize {
     fn from(val: DescriptorId) -> Self {
-        val.identifier
+        val.0
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct DirectoryId {
-    identifier: usize,
-}
-
-impl DirectoryId {
-    #[allow(unused)]
-    pub fn new(ident: usize) -> Self {
-        Self { identifier: ident }
-    }
-}
+pub struct DirectoryId(usize);
 
 impl From<usize> for DirectoryId {
     fn from(value: usize) -> Self {
-        Self { identifier: value }
+        Self(value)
     }
 }
 
 impl From<DirectoryId> for usize {
     fn from(val: DirectoryId) -> Self {
-        val.identifier
+        val.0
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct FifoId {
-    identifier: usize,
-}
-
-impl FifoId {
-    #[allow(unused)]
-    pub fn new(ident: usize) -> Self {
-        Self { identifier: ident }
-    }
-}
+pub struct FifoId(usize);
 
 impl From<FifoId> for usize {
     fn from(val: FifoId) -> Self {
-        val.identifier
+        val.0
+    }
+}
+
+impl From<usize> for FifoId {
+    fn from(val: usize) -> Self {
+        Self(val)
     }
 }
 
@@ -146,13 +130,6 @@ pub struct PipeId {
     identifier: usize,
 }
 
-impl PipeId {
-    #[allow(unused)]
-    pub fn new(ident: usize) -> Self {
-        Self { identifier: ident }
-    }
-}
-
 impl From<usize> for PipeId {
     fn from(value: usize) -> Self {
         Self { identifier: value }
@@ -166,32 +143,23 @@ impl From<PipeId> for usize {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ProcessId {
-    identifier: usize,
-}
+pub struct ProcessId(usize);
 
-impl ProcessId {
-    pub fn new(ident: usize) -> Self {
-        Self { identifier: ident }
+impl From<usize> for ProcessId {
+    fn from(value: usize) -> Self {
+        Self(value)
     }
 }
 
 impl From<ProcessId> for usize {
     fn from(val: ProcessId) -> Self {
-        val.identifier
+        val.0
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SemaphoreId {
     identifier: usize,
-}
-
-impl SemaphoreId {
-    #[allow(unused)]
-    pub fn new(ident: usize) -> Self {
-        Self { identifier: ident }
-    }
 }
 
 impl From<usize> for SemaphoreId {
@@ -209,13 +177,6 @@ impl From<SemaphoreId> for usize {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SocketId {
     identifier: usize,
-}
-
-impl SocketId {
-    #[allow(unused)]
-    pub fn new(ident: usize) -> Self {
-        Self { identifier: ident }
-    }
 }
 
 impl From<usize> for SocketId {

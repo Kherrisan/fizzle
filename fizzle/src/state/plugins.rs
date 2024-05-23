@@ -1,12 +1,13 @@
 use crate::constants::*;
 
-use fizzle_common::io::IoLocation;
+use fizzle_common::io::IoEndpoint;
 use fizzle_common::storage::ValueIndex;
-use fizzle_plugin::{FizzlePluginObject, IoLocationId};
+use fizzle_plugin::{FizzlePluginObject, IoEndpointId};
 use heapless::FnvIndexMap;
 
-pub type PluginModules = ValueIndex<IoLocationId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>;
-pub type PluginMappings = FnvIndexMap<IoLocation, IoLocationId, FIZZLE_MAX_PLUGINS>;
+pub type PluginEndpoints = ValueIndex<IoEndpointId, PluginId, FIZZLE_MAX_PLUGINS>;
+pub type PluginModules = ValueIndex<PluginId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>;
+pub type PluginMappings = FnvIndexMap<IoEndpoint, IoEndpointId, FIZZLE_MAX_PLUGINS>;
 
 /// Plugin information, populated based on the Fizzle configuration file.
 ///
@@ -26,6 +27,7 @@ pub type PluginMappings = FnvIndexMap<IoLocation, IoLocationId, FIZZLE_MAX_PLUGI
 /// set to keep the main process alive after a call to `exit()`
 ///
 pub struct PluginConfig {
+    pub endpoints: PluginEndpoints,
     pub modules: PluginModules,
     pub mappings: PluginMappings,
 }
@@ -33,6 +35,7 @@ pub struct PluginConfig {
 impl PluginConfig {
     pub fn new() -> Self {
         Self {
+            endpoints: Default::default(),
             modules: Default::default(),
             mappings: FnvIndexMap::new(),
         }
@@ -42,8 +45,14 @@ impl PluginConfig {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PluginId(usize);
 
-impl PluginId {
-    fn new(idx: usize) -> Self {
-        Self(idx)
+impl From<usize> for PluginId {
+    fn from(value: usize) -> Self {
+        Self(value)
+    }
+}
+
+impl Into<usize> for PluginId {
+    fn into(self) -> usize {
+        self.0
     }
 }
