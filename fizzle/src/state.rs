@@ -814,13 +814,6 @@ pub struct SemaphoreInfo {
     pub waiting: Deque<WorkerId, FIZZLE_MAX_WAITING_SEMAPHORES>,
 }
 
-/// The unique identifying information for a given thread in a process.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WorkerId {
-    pub process: ProcessId,
-    pub thread: ThreadId,
-}
-
 // ---=== Helper Functions ===---
 
 fn index_of_thread(thread: &ThreadId) -> usize {

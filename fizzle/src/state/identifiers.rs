@@ -1,4 +1,4 @@
-use std::os::fd::RawFd;
+use std::{os::fd::RawFd, thread::ThreadId};
 
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -228,4 +228,11 @@ impl From<SocketId> for usize {
     fn from(val: SocketId) -> Self {
         val.identifier
     }
+}
+
+/// The unique identifying information for a given thread in a process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkerId {
+    pub process: ProcessId,
+    pub thread: ThreadId,
 }

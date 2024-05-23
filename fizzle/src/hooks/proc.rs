@@ -5,7 +5,7 @@
 use std::thread;
 
 use crate::hook_macros;
-use crate::state::WorkerId;
+use crate::state::identifiers::WorkerId;
 
 hook_macros::hook! {
     unsafe fn fork() -> libc::pid_t => fizzle_fork(ctx) {
