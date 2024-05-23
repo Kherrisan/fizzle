@@ -2,9 +2,9 @@ use std::ffi::CStr;
 use std::ptr;
 
 use crate::hook_macros;
-use crate::state::{FileObject, FilePtr};
+use crate::state::FileObject;
 use crate::state::fd::{FdInfo, FdResource};
-use crate::state::identifiers::DescriptorId;
+use crate::state::identifiers::{DescriptorId, FilePtr};
 
 
 use fizzle_common::path::FilePath;

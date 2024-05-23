@@ -1,8 +1,8 @@
 use heapless::Deque;
 
 use crate::hook_macros;
-use crate::state::{SemaphoreInfo, SemaphorePtr};
-use crate::state::identifiers::WorkerId;
+use crate::state::SemaphoreInfo;
+use crate::state::identifiers::{SemaphorePtr, WorkerId};
 
 use fizzle_common::path::SemPath;
 
