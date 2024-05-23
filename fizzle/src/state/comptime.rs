@@ -1,3 +1,3 @@
 use super::plugins::Plugins;
 
-pub fn populate_plugins(plugins: &mut Plugins) {}
+pub fn populate_plugins(_plugins: &mut Plugins) {}
