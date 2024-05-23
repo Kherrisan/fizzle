@@ -2,8 +2,8 @@
 //!
 
 use crate::hook_macros;
-use crate::state::DescriptorId;
 use crate::state::fd::{FdInfo, FdResource};
+use crate::state::DescriptorId;
 
 hook_macros::hook! {
     unsafe fn close(

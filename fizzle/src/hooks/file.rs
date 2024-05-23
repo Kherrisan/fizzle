@@ -1,10 +1,12 @@
 use std::ffi::CStr;
 use std::ptr;
 
+use crate::hook_macros;
 use crate::state::fd::{FdInfo, FdResource};
 use crate::state::{DescriptorId, FileInfo, FileObject, FilePtr};
-use crate::{FilePath, RingBuffer};
-use crate::hook_macros;
+
+use fizzle_common::path::FilePath;
+use fizzle_common::storage::RingBuffer;
 
 hook_macros::hook! {
     unsafe fn fdopen(
@@ -39,7 +41,6 @@ hook_macros::hook! {
         file
     }
 }
-
 
 hook_macros::hook! {
     unsafe fn umask(
@@ -440,7 +441,6 @@ hook_macros::hook! {
     }
 }
 
-
 hook_macros::hook! {
     unsafe fn fclose(
         stream: *mut libc::FILE
@@ -475,7 +475,6 @@ hook_macros::hook! {
         }
     }
 }
-
 
 hook_macros::hook! {
     unsafe fn chdir(

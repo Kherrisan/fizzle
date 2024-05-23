@@ -1,6 +1,8 @@
+use crate::hook_macros;
 use crate::state::fd::{FdInfo, FdResource};
 use crate::state::{DescriptorId, PipeInfo, PipeMode};
-use crate::{hook_macros, RingBuffer};
+
+use fizzle_common::storage::RingBuffer;
 
 hook_macros::hook! {
     unsafe fn pipe(

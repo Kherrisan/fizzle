@@ -971,7 +971,7 @@ hook_macros::hook! {
 
         if rwlock_info.state == RwLockState::Available {
             panic!("fizzle RwLock in inconsistent state (RwLockState::Available during unlock procedure)");
-        } 
+        }
 
         if rwlock_info.holding_state.is_empty() {
             // No more threads holding lock--time to transition to a new state

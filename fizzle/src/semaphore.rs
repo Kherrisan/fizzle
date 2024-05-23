@@ -16,8 +16,13 @@ impl Semaphore {
             inner: UnsafeCell::new(MaybeUninit::uninit()),
         };
 
-        let res =
-            unsafe { libc::sem_init(sem.inner.get() as *mut libc::sem_t, libc::PTHREAD_PROCESS_SHARED, value as u32) };
+        let res = unsafe {
+            libc::sem_init(
+                sem.inner.get() as *mut libc::sem_t,
+                libc::PTHREAD_PROCESS_SHARED,
+                value as u32,
+            )
+        };
         if res != 0 {
             panic!("platform does not support process-shared semaphores");
         }

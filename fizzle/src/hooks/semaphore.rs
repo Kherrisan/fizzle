@@ -1,7 +1,9 @@
 use heapless::Deque;
 
+use crate::hook_macros;
 use crate::state::{SemaphoreInfo, SemaphorePtr, WorkerId};
-use crate::{hook_macros, SemPath};
+
+use fizzle_common::path::SemPath;
 
 use std::ffi::CStr;
 use std::ptr;
@@ -17,7 +19,7 @@ hook_macros::hook! {
         // TODO: what about semaphores shared via memory across processes?
 
         if pshared != 0 {
-            
+
         }
 
         let semaphore_id = SemaphorePtr::from(sem);

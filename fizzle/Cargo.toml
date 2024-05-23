@@ -6,14 +6,19 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib"]
 
+[build-dependencies]
+toml = "0.8"
+
 [dependencies]
 env_logger = "0.11"
-libc = "0.2"
-log = "0.4"
+fizzle-common = { version = "0.1", path = "../fizzle-common" }
+fizzle-plugin = { version = "0.1", path = "../fizzle-plugin" }
 fxhash = "0.2"
 heapless = "0.8"
-toml = "0.8"
-fizzle-plugin = { version = "0.1", path = "../fizzle-plugin" }
+libc = "0.2"
+log = "0.4"
+
+
 
 # Start of Fizzle Plugin Dependencies
 

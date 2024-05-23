@@ -1,7 +1,8 @@
+mod comptime;
 pub mod fd;
 pub mod ipc;
+pub mod plugins;
 
-use std::{array, env, fs, mem, ptr, thread};
 use std::cell::{RefCell, UnsafeCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::CStr;
@@ -11,53 +12,47 @@ use std::ops::{Deref, DerefMut};
 use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::ThreadId;
+use std::{array, env, mem, ptr, thread};
 
+use fizzle_common::io::IoLocation;
+use fizzle_common::path::{FilePath, SemPath};
+use fizzle_common::storage::{RingBuffer, ValueIndex};
+
+use fizzle_plugin::{FizzlePluginObject, IoLocationId};
 use heapless::spsc::Queue;
 
 use fxhash::FxBuildHasher;
 use heapless::{Deque, FnvIndexMap};
 
 use crate::semaphore::Semaphore;
-use crate::{FilePath, RingBuffer, SemPath, ValueIndex};
+use crate::state::plugins::Plugins;
 
 use self::fd::FdInfo;
 use self::ipc::IpcMemory;
+use self::plugins::FIZZLE_MAX_PLUGINS;
 
 const FIZZLE_MEMORY_ENV: &CStr = c"FIZZLE_MEMORY";
 const FIZZLE_STRICT_ENV: &str = "FIZZLE_STRICT";
-const FIZZLE_CONFIG_ENV: &str = "FIZZLE_CONFIG";
 
 // TODO: we will assume that the main process cannot exit. This should be documented.
 // Likewise, there should exist an env variable (like `FIZZLE_NOEXIT=status_code`) that, when set,
 // ensures that the main process does not exit when passed the given status code.
 
-
 const FIZZLE_MAX_READY_PROCESSES: usize = 256;
 const FIZZLE_MAX_THREADS: usize = 256;
-
 /// The maximum number of paths to files fizzle emulates.
 const FIZZLE_MAX_FILE_PATHS: usize = 512;
 /// The maximum number of files fizzle can emulate.
 const FIZZLE_MAX_FILES: usize = 512;
-
 const FIZZLE_MAX_DIRS: usize = 256;
-
 const FIZZLE_MAX_PIPES: usize = 256;
-
 const FIZZLE_MAX_MESSAGE_QUEUES: usize = 256;
-
 const FIZZLE_BUFFER_LENGTH: usize = 262_144; // 256 KB per buffer (twice the Linux default for `/proc/sys/net/ipv4/tcp_rmem`)
-
 const FIZZLE_MAX_BUFFERS: usize = 256; // 256 * 128 KB = 64 MB total
-
 const FIZZLE_MAX_SOCKETS: usize = 256;
-
 const FIZZLE_MAX_NAMED_SEMAPHORES: usize = 128;
-
 const FIZZLE_MAX_FDS: usize = 4096;
-
 const FIZZLE_MAX_WAITING_SEMAPHORES: usize = 32;
-
 const FIZZLE_FOPEN_BUFSIZE: usize = 8192;
 
 // See `set_entered_handler` and `has_entered_handler`
@@ -186,7 +181,6 @@ fn fizzle_state_initialize(state: &mut MaybeUninit<FizzleState>, is_init: &mut b
     log::trace!("Fizzle state initialization complete");
 }
 
-
 /// The collective process/interprocess state that fizzle has global access to.
 ///
 pub struct FizzleState {
@@ -217,38 +211,29 @@ impl FizzleState {
         let mem_location_ptr = unsafe { libc::getenv(FIZZLE_MEMORY_ENV.as_ptr()) };
         if mem_location_ptr.is_null() {
             log::info!("no FIZZLE_MEMORY env variable detected--creating shared memory");
-            let global = IpcMemory::new();
+
+            let mut plugins = Plugins::new();
+            comptime::populate_plugins(&mut plugins);
+
+            let global = IpcMemory::new(plugins.io_mapping);
             let process_id = ProcessId::new(0);
-
-            
-            // TODO: pull this all out into its own function
-            let config_file = env::var(FIZZLE_STRICT_ENV).unwrap_or("./Fizzle.toml".to_string());
-            let config_info = fs::read_to_string(config_file).unwrap();
-            let config_table = config_info.parse::<toml::Table>().unwrap();
-            
-            if let Some(toml::Value::Table(io)) = config_table.get("io") {
-                
-            } else {
-
-            }
-            
-
 
             Self {
                 thread_locks,
-                local: Box::new(ProcessState::new(process_id)),
+                local: Box::new(ProcessState::new(process_id, Some(plugins.plugins))),
                 global,
             }
         } else {
-            log::info!("FIZZLE_MEMORY env variable detected--initializing child process shared memory");
+            log::info!(
+                "FIZZLE_MEMORY env variable detected--initializing child process shared memory"
+            );
             let mem_location = unsafe { CStr::from_ptr(mem_location_ptr) };
             let mut global = IpcMemory::from_identifier(mem_location);
             let process_id = global.data().assign_process_id();
 
-            
             Self {
                 thread_locks,
-                local: Box::new(ProcessState::new(process_id)),
+                local: Box::new(ProcessState::new(process_id, None)),
                 global,
             }
         }
@@ -356,11 +341,6 @@ impl FizzleState {
     }
 }
 
-// File/socket objects should be global, but file descriptors should be proc-local.
-//
-// GlobalState should have a file descriptor map area available for a forked/exec'd process to pass its non-CLOEXEC
-// fds to a child.
-
 // We do not currently support sem_init() with pshared enabled--that would require tracking shared memory
 // across processes. While this is possible, it would be a difficult and bug-ridden path to take.
 // In a similar vein, we will not
@@ -370,6 +350,11 @@ impl FizzleState {
 /// State local to the current process.
 pub struct ProcessState {
     pub process_id: ProcessId,
+    /// Plugin modules for handling I/O.
+    ///
+    /// This field is only `Some` in the parent process; all other processes must delegate control
+    /// flow to it in order to handle plugin I/O.
+    pub plugins: Option<ValueIndex<IoLocationId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>>,
     pub fds: ValueIndex<DescriptorId, FdInfo, FIZZLE_MAX_FDS>,
     pub dirs: ValueIndex<DirectoryId, FilePath, FIZZLE_MAX_DIRS>,
     pub barriers: HashMap<BarrierPtr, BarrierInfo, FxBuildHasher>,
@@ -392,19 +377,23 @@ pub struct ProcessState {
 }
 
 impl ProcessState {
-    fn new(process_id: ProcessId) -> Self {
+    fn new(
+        process_id: ProcessId,
+        plugins: Option<ValueIndex<IoLocationId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>>,
+    ) -> Self {
         let strict_mode = matches!(env::var(FIZZLE_STRICT_ENV), Ok(s) if s.as_str() == "1");
         STRICT_MODE.store(strict_mode, Ordering::Release);
 
         let mut working_dir = [0u8; 256];
-        let cwd =  unsafe { libc::getcwd(working_dir.as_mut_ptr() as *mut libc::c_char, 255) };
+        let cwd = unsafe { libc::getcwd(working_dir.as_mut_ptr() as *mut libc::c_char, 255) };
         if cwd.is_null() {
             panic!("fizzle missing working directory on startup");
         }
-        let working_directory = FilePath::from_cstr(unsafe { CStr::from_ptr(cwd)}).unwrap();
+        let working_directory = FilePath::from_cstr(unsafe { CStr::from_ptr(cwd) }).unwrap();
 
         Self {
             process_id, // TODO: increment each time new process is made
+            plugins,
             fds: Default::default(),
             dirs: Default::default(),
             barriers: HashMap::with_hasher(Default::default()),
@@ -665,6 +654,7 @@ pub struct InterprocessState {
     /// The thread identifier to be executed by the waking process.
     waking_thread_id: Option<ThreadId>,
     ready_workers: Queue<WorkerId, FIZZLE_MAX_READY_PROCESSES>,
+    pub io_mapping: FnvIndexMap<IoLocation, IoLocationId, FIZZLE_MAX_PLUGINS>,
     pub file_paths: FnvIndexMap<FilePath, FileId, FIZZLE_MAX_FILE_PATHS>,
     pub files: ValueIndex<FileId, FileInfo, FIZZLE_MAX_FILES>,
     pub sem_paths: FnvIndexMap<SemPath, SemaphoreId, FIZZLE_MAX_NAMED_SEMAPHORES>,
@@ -678,22 +668,36 @@ pub struct InterprocessState {
 
 impl InterprocessState {
     /// Takes an uninitialized InterprocessState and initializes it in place.
-    fn initialize(state: *mut MaybeUninit<InterprocessState>) {
-        unsafe {
-            let state = state as *mut InterprocessState;
-            *ptr::addr_of_mut!((*state).next_process_id) = ProcessId::new(1);
-            *ptr::addr_of_mut!((*state).waking_thread_id) = None;
-            *ptr::addr_of_mut!((*state).ready_workers) = Queue::new();
-            *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
-            ValueIndex::initialize(ptr::addr_of_mut!((*state).files) as *mut MaybeUninit<ValueIndex<FileId, FileInfo, FIZZLE_MAX_FILES>>);
-            *ptr::addr_of_mut!((*state).sem_paths) = FnvIndexMap::new();
-            ValueIndex::initialize(ptr::addr_of_mut!((*state).semaphores) as *mut MaybeUninit<ValueIndex<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>>);
-            ValueIndex::initialize(ptr::addr_of_mut!((*state).pipes) as *mut MaybeUninit<ValueIndex<PipeId, PipeInfo, FIZZLE_MAX_PIPES>>);
-            ValueIndex::initialize(ptr::addr_of_mut!((*state).message_queues) as *mut MaybeUninit<ValueIndex<MessageQueueId, MessageQueueInfo, FIZZLE_MAX_MESSAGE_QUEUES>>);
-            ValueIndex::initialize(ptr::addr_of_mut!((*state).sockets) as *mut MaybeUninit<ValueIndex<SocketId, SocketInfo, FIZZLE_MAX_SOCKETS>>);
-            ValueIndex::initialize(ptr::addr_of_mut!((*state).buffers) as *mut MaybeUninit<ValueIndex<BufferId, RingBuffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>>);
-            *ptr::addr_of_mut!((*state).transfer_fds) = None;
-        }
+    unsafe fn initialize(
+        state: *mut MaybeUninit<InterprocessState>,
+        io_mapping: FnvIndexMap<IoLocation, IoLocationId, FIZZLE_MAX_PLUGINS>,
+    ) {
+        let state = state as *mut InterprocessState;
+        *ptr::addr_of_mut!((*state).next_process_id) = ProcessId::new(1);
+        *ptr::addr_of_mut!((*state).waking_thread_id) = None;
+        *ptr::addr_of_mut!((*state).ready_workers) = Queue::new();
+        *ptr::addr_of_mut!((*state).io_mapping) = io_mapping;
+        *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).files)
+            as *mut MaybeUninit<ValueIndex<FileId, FileInfo, FIZZLE_MAX_FILES>>);
+        *ptr::addr_of_mut!((*state).sem_paths) = FnvIndexMap::new();
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).semaphores)
+            as *mut MaybeUninit<
+                ValueIndex<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>,
+            >);
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).pipes)
+            as *mut MaybeUninit<ValueIndex<PipeId, PipeInfo, FIZZLE_MAX_PIPES>>);
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).message_queues)
+            as *mut MaybeUninit<
+                ValueIndex<MessageQueueId, MessageQueueInfo, FIZZLE_MAX_MESSAGE_QUEUES>,
+            >);
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).sockets)
+            as *mut MaybeUninit<ValueIndex<SocketId, SocketInfo, FIZZLE_MAX_SOCKETS>>);
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).buffers)
+            as *mut MaybeUninit<
+                ValueIndex<BufferId, RingBuffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
+            >);
+        *ptr::addr_of_mut!((*state).transfer_fds) = None;
     }
 
     /// Assigns the next available process ID and increments it internally.

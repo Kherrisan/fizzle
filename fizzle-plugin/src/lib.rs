@@ -18,8 +18,7 @@ use std::{any::TypeId, collections::HashMap};
 /// The specific protocol, I/O location and stream that a plugin method is called for.
 #[derive(Clone, Copy, Debug)]
 pub struct Context {
-    pub protocol_id: TypeId,
-    pub io_location: IoLocation,
+    pub io_location: IoLocationId,
     pub stream_id: StreamId,
 }
 
@@ -36,7 +35,21 @@ pub struct StreamId(usize);
 /// This identifier enables multiple connections of the same stream type to be handled
 /// by a single plugin instance, thereby allowing for shared state across streams when needed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct IoLocation(usize);
+pub struct IoLocationId(usize);
+
+impl From<usize> for IoLocationId {
+    #[inline]
+    fn from(value: usize) -> Self {
+        Self(value)
+    }
+}
+
+impl Into<usize> for IoLocationId {
+    #[inline]
+    fn into(self) -> usize {
+        self.0
+    }
+}
 
 /// An error that a plugin may return during calls to [`read()`](FizzlePluginObject::read) or
 /// [`write()`](FizzlePluginObject::write).
@@ -57,7 +70,7 @@ pub enum PluginError {
 /// or even add structure- and protocol-awareness to otherwise arbitrary fuzzing inputs.
 pub trait FizzlePlugin: FizzlePluginObject {
     /// Constructs an instance of this plugin, configured with `config`.
-    fn new(config: HashMap<IoLocation, toml::Table>) -> Self;
+    fn new(config: HashMap<IoLocationId, toml::Table>) -> Self;
 }
 
 /// The object-safe subset of methods that must be implemented for a [`FizzlePlugin`].

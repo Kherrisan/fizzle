@@ -3,8 +3,13 @@ use std::mem::MaybeUninit;
 use std::os::fd::RawFd;
 use std::{mem, ptr};
 
-use crate::state::ProcessId;
+use fizzle_common::io::IoLocation;
+use fizzle_plugin::IoLocationId;
+use heapless::FnvIndexMap;
+
+use super::plugins::FIZZLE_MAX_PLUGINS;
 use super::InterprocessState;
+use crate::state::ProcessId;
 
 const FIZZLE_MAX_PROCESSES: usize = 128;
 
@@ -19,17 +24,16 @@ pub struct IpcMemory {
 }
 
 impl IpcMemory {
-    const SHMEM_LENGTH: usize =
-        (mem::size_of::<libc::sem_t>() * FIZZLE_MAX_PROCESSES) + mem::size_of::<InterprocessState>();
+    const SHMEM_LENGTH: usize = (mem::size_of::<libc::sem_t>() * FIZZLE_MAX_PROCESSES)
+        + mem::size_of::<InterprocessState>();
 
     #[inline]
-    pub fn new() -> Self {
+    pub fn new(io_mapping: FnvIndexMap<IoLocation, IoLocationId, FIZZLE_MAX_PLUGINS>) -> Self {
         log::trace!("Initializing new IpcMemory");
 
         let mut name = [0u8; 64 + 1]; //
 
-        let rand_amount =
-            unsafe { libc::getrandom(name.as_mut_ptr() as *mut libc::c_void, 64, 0) };
+        let rand_amount = unsafe { libc::getrandom(name.as_mut_ptr() as *mut libc::c_void, 64, 0) };
         if rand_amount < 64 {
             panic!("`getrandom` failed during IpcMemory initialization");
         }
@@ -56,6 +60,7 @@ impl IpcMemory {
                 libc::S_IRUSR | libc::S_IWUSR,
             )
         };
+
         if fd < 0 {
             panic!("unable to allocate shared memory for IpcMemory");
         }
@@ -89,7 +94,7 @@ impl IpcMemory {
         if ret != 0 {
             panic!("unexpected error from close");
         }
-        
+
         let ret = unsafe { libc::shm_unlink(name.as_ptr()) };
         if ret != 0 {
             panic!("unexpected error from shm_unlink");
@@ -102,14 +107,18 @@ impl IpcMemory {
                     panic!("unable to initialize per-process semaphores for IpcMemory");
                 }
 
-
                 sem_ptr = sem_ptr.add(1);
             }
         }
 
         // This is a workaround because Rust doesn't have any equivalent of `placement new`.
         // TODO: maybe turn this into a full-blown proc macro crate?
-        InterprocessState::initialize(sem_ptr as *mut MaybeUninit<InterprocessState>);
+        unsafe {
+            InterprocessState::initialize(
+                sem_ptr as *mut MaybeUninit<InterprocessState>,
+                io_mapping,
+            );
+        }
 
         Self {
             mem_start,
@@ -161,7 +170,10 @@ impl IpcMemory {
 
     /// Retrieves a mutable reference to the data held within this IPC memory.
     pub fn data(&mut self) -> &mut InterprocessState {
-        unsafe { &mut *((self.mem_start as *mut libc::sem_t).add(FIZZLE_MAX_PROCESSES) as *mut InterprocessState) }
+        unsafe {
+            &mut *((self.mem_start as *mut libc::sem_t).add(FIZZLE_MAX_PROCESSES)
+                as *mut InterprocessState)
+        }
     }
 
     /// Wakes up the process designated by `process_id`.
@@ -188,8 +200,12 @@ impl IpcMemory {
 
     #[allow(unused)]
     pub fn destroy(mut self) {
-        let ret =
-            unsafe { libc::munmap(ptr::addr_of_mut!(self.process_locks()[0]) as *mut libc::c_void, Self::SHMEM_LENGTH) };
+        let ret = unsafe {
+            libc::munmap(
+                ptr::addr_of_mut!(self.process_locks()[0]) as *mut libc::c_void,
+                Self::SHMEM_LENGTH,
+            )
+        };
         debug_assert!(ret == 0, "`munmap` failed while destroying IpcMemory");
         let ret = unsafe { libc::close(self.memfd) };
         debug_assert!(ret == 0, "`close` failed while destroying IpcMemory");
