@@ -1,4 +1,4 @@
-use std::{any::TypeId, collections::HashMap};
+use std::collections::HashMap;
 
 // TODO: can we pass through configuration options for specific streams? How would we go about
 // doing that?? The problem is that a plugin can be defined in multiple I/O locations, so the

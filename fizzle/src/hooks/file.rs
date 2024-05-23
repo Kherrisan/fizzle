@@ -3,7 +3,7 @@ use std::ptr;
 
 use crate::hook_macros;
 use crate::state::fd::{FdInfo, FdResource};
-use crate::state::{DescriptorId, FileInfo, FileObject, FilePtr};
+use crate::state::{DescriptorId, FileObject, FilePtr};
 
 use fizzle_common::path::FilePath;
 use fizzle_common::storage::RingBuffer;
@@ -92,20 +92,15 @@ hook_macros::hook! {
         // Likewise, files created during the lifetime of fizzle are stored virtually.
 
         if (flags & libc::O_CREAT) != 0 {
-            if (flags & libc::O_EXCL) != 0 && ctx.global().file_paths.contains_key(&path) {
-                *libc::__errno_location() = libc::EEXIST;
-                return -1
-            }
-
             // TODO: we ignore open mode here
 
-            let file_id = match ctx.global().file_paths.get(&path) {
-                Some(&id) => id,
-                None => {
-                    let file_id = ctx.global().files.put(FileInfo::new());
-                    ctx.global().file_paths.insert(path, file_id).unwrap();
-                    file_id
+            let file_id = match ctx.global().create_file(path) {
+                Ok(file_id) => file_id,
+                Err(_) if (flags & libc::O_EXCL) != 0 => {
+                    *libc::__errno_location() = libc::EEXIST;
+                    return -1                   
                 }
+                Err(file_id) => file_id,
             };
 
             let fd = crate::alias_fd_create();
@@ -178,13 +173,9 @@ hook_macros::hook! {
 
         // TODO: we ignore open mode here
 
-        let file_id = match ctx.global().file_paths.get(&path) {
-            Some(&id) => id,
-            None => {
-                let file_id = ctx.global().files.put(FileInfo::new());
-                ctx.global().file_paths.insert(path, file_id).unwrap();
-                file_id
-            }
+        let file_id = match ctx.global().create_file(path) {
+            Ok(file_id) => file_id, // New file
+            Err(file_id) => file_id, // Existing file
         };
 
         let fd = crate::alias_fd_create();
@@ -247,20 +238,15 @@ hook_macros::hook! {
         // Likewise, files created during the lifetime of fizzle are stored virtually.
 
         if (flags & libc::O_CREAT) != 0 {
-            if (flags & libc::O_EXCL) != 0 && ctx.global().file_paths.contains_key(&path) {
-                *libc::__errno_location() = libc::EEXIST;
-                return -1
-            }
-
             // TODO: we ignore open mode here
 
-            let file_id = match ctx.global().file_paths.get(&path) {
-                Some(&id) => id,
-                None => {
-                    let file_id = ctx.global().files.put(FileInfo::new());
-                    ctx.global().file_paths.insert(path, file_id).unwrap();
-                    file_id
+            let file_id = match ctx.global().create_file(path) {
+                Ok(file_id) => file_id,
+                Err(_) if (flags & libc::O_EXCL) != 0 => {
+                    *libc::__errno_location() = libc::EEXIST;
+                    return -1                   
                 }
+                Err(file_id) => file_id,
             };
 
             let fd = crate::alias_fd_create();

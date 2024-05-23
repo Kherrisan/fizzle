@@ -1,11 +1,10 @@
 mod comptime;
 pub mod fd;
-pub mod ipc;
 pub mod plugins;
 
 use std::cell::{RefCell, UnsafeCell};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::hash::{Hash, Hasher};
 use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
@@ -14,11 +13,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::ThreadId;
 use std::{array, env, mem, ptr, thread};
 
-use fizzle_common::io::IoLocation;
+use fizzle_common::io::SocketLocation;
 use fizzle_common::path::{FilePath, SemPath};
 use fizzle_common::storage::{RingBuffer, ValueIndex};
 
-use fizzle_plugin::{FizzlePluginObject, IoLocationId};
 use heapless::spsc::Queue;
 
 use fxhash::FxBuildHasher;
@@ -26,10 +24,10 @@ use heapless::{Deque, FnvIndexMap};
 
 use crate::constants::*;
 use crate::semaphore::Semaphore;
-use crate::state::plugins::Plugins;
+use crate::state::plugins::PluginConfig;
 
 use self::fd::FdInfo;
-use self::ipc::IpcMemory;
+use self::plugins::{PluginId, PluginMappings, PluginModules};
 
 // TODO: we will assume that the main process cannot exit. This should be documented.
 // Likewise, there should exist an env variable (like `FIZZLE_NOEXIT=status_code`) that, when set,
@@ -39,14 +37,6 @@ use self::ipc::IpcMemory;
 std::thread_local! {
     static ENTERED_HANDLER: RefCell<bool> = const { RefCell::new(false) };
 }
-
-static STRICT_MODE: AtomicBool = AtomicBool::new(false);
-
-/// Retrieves the current fizzle state.
-///
-/// SAFETY: this function MUST ONLY be called within `ld_preload.rs` or `dyld_insert_libraries.rs`.
-/// Accessing the global `FizzleState` variable multiple times in one scope will lead to UB.
-pub static FIZZLE_STATE: FizzleCell = FizzleCell::new();
 
 /// Indicates whether the thread is currently executing within a fizzle handler.
 ///
@@ -61,24 +51,28 @@ pub fn has_entered_handler() -> bool {
     entered
 }
 
+/// Marks the thread as currently executing within a fizzle handler.
 pub fn set_entered_handler(entered: bool) {
     ENTERED_HANDLER.with(|e| {
         *e.borrow_mut() = entered;
     });
 }
 
+static STRICT_MODE: AtomicBool = AtomicBool::new(false);
+
 pub fn strict_mode() -> bool {
     STRICT_MODE.load(Ordering::Relaxed)
 }
 
-/// ================================================================================================
-///                                       PUBLIC FUNCTIONS
-/// ================================================================================================
+/// Retrieves the current fizzle state.
+///
+/// SAFETY: this function MUST ONLY be called within `ld_preload.rs` or `dyld_insert_libraries.rs`.
+/// Accessing the global `FizzleState` variable multiple times in one scope will lead to UB.
+pub static FIZZLE_STATE: FizzleCell = FizzleCell::new();
 
 /// A global singleton storing fizzle data and state.
-///
 pub struct FizzleCell {
-    inner: UnsafeCell<(bool, MaybeUninit<FizzleState>)>,
+    inner: UnsafeCell<(bool, MaybeUninit<FizzleContext>)>,
 }
 
 unsafe impl Send for FizzleCell {}
@@ -134,7 +128,7 @@ unsafe impl Send for FizzleGuard<'_> {}
 unsafe impl Sync for FizzleGuard<'_> {}
 
 impl Deref for FizzleGuard<'_> {
-    type Target = FizzleState;
+    type Target = FizzleContext;
 
     fn deref(&self) -> &Self::Target {
         unsafe { (*self.cell.inner.get()).1.assume_init_ref() }
@@ -147,86 +141,190 @@ impl DerefMut for FizzleGuard<'_> {
     }
 }
 
-// Labelling this as cold and not inlining ensures the `None` branch will be marked cold
+/// This is marked as `cold` and kept un-inlined to ensure that it will not lead to frequent branch
+/// misses (other than the first time when it should be called).
 #[cold]
 #[inline(never)]
-fn fizzle_state_initialize(state: &mut MaybeUninit<FizzleState>, is_init: &mut bool) {
+fn fizzle_state_initialize(state: &mut MaybeUninit<FizzleContext>, is_init: &mut bool) {
     env_logger::init();
     log::trace!("env_logger initialized.");
     log::trace!("Running fizzle state initialization");
 
-    *state = MaybeUninit::new(FizzleState::new());
+    *state = MaybeUninit::new(FizzleContext::new());
     *is_init = true;
 
     log::trace!("Fizzle state initialization complete");
 }
 
-/// The collective process/interprocess state that fizzle has global access to.
-///
-pub struct FizzleState {
+/// All state that fizzle functions receive access to.
+pub struct FizzleContext {
     thread_locks: [Option<Semaphore>; FIZZLE_MAX_THREADS],
     /// `local`, as in local to the current executing process.
-    local: Box<ProcessState>,
+    process_state: Box<ProcessState>,
     /// `global`, as in shared across all processes in a given fizzle harness.
-    global: IpcMemory,
+    shared_memory: *mut libc::c_void,
+    // shmem_fd: RawFd,
 }
 
-impl FizzleState {
-    /// Initializes the fizzle state.
-    ///
-    /// This will be called when the first shimmed libc call is executed--only one thread
-    /// is executing at the time, and no libc calls have completed yet.
-    fn new() -> Self {
-        let mut thread_locks = array::from_fn(|_| None);
+impl FizzleContext {
+    const SHMEM_LENGTH: usize = (mem::size_of::<libc::sem_t>() * FIZZLE_MAX_PROCESSES)
+        + mem::size_of::<InterprocessState>();
 
-        // Initialize the lock for the current thread
+    fn create_thread_locks() -> [Option<Semaphore>; 256] {
         let thread_idx = index_of_thread(&thread::current().id());
         assert!(
             thread_idx == 1,
             "unexpected ThreadId value `{}` on fizzle startup",
             thread_idx
         );
-        thread_locks[thread_idx] = Some(Semaphore::new(0));
 
-        let mem_location_ptr = unsafe { libc::getenv(FIZZLE_MEMORY_ENV.as_ptr()) };
-        if mem_location_ptr.is_null() {
-            log::info!("no FIZZLE_MEMORY env variable detected--creating shared memory");
+        // Initialize the current thread's lock
+        array::from_fn(|i| if i == thread_idx { Some(Semaphore::new(0)) } else { None })
+    }
 
-            let mut plugins = Plugins::new();
-            comptime::populate_plugins(&mut plugins);
+    unsafe fn interprocess_state(shared_memory: *mut libc::c_void) -> *mut InterprocessState {
+        (shared_memory as *mut libc::sem_t).add(FIZZLE_MAX_PROCESSES)
+                as *mut InterprocessState
+    }
 
-            let global = IpcMemory::new(plugins.io_mapping);
-            let process_id = ProcessId::new(0);
+    unsafe fn open_shmem(shmem_location: *const libc::c_char, create_shmem: bool) -> *mut libc::c_void {
+        let mode = libc::S_IRUSR | libc::S_IWUSR;
+        let oflag = libc::O_RDWR | match create_shmem {
+            true => libc::O_CREAT | libc::O_EXCL,
+            false => 0,
+        };
 
-            Self {
-                thread_locks,
-                local: Box::new(ProcessState::new(process_id, Some(plugins.plugins))),
-                global,
+        let fd = unsafe { libc::shm_open(shmem_location, oflag, mode) };
+        if fd < 0 {
+            panic!("couldn't open fizzle global shared memory")
+        }
+
+        let shared_memory = unsafe {
+            libc::mmap(
+                ptr::null_mut(),
+                Self::SHMEM_LENGTH,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd,
+                0,
+            )
+        };
+
+        if shared_memory == libc::MAP_FAILED {
+            panic!("unable to memory-map fizzle global shared memory")
+        }
+
+        if unsafe { libc::ftruncate(fd, Self::SHMEM_LENGTH as libc::off_t) } != 0 {
+            panic!("unable to ftruncate fizzle global shared memory (potential out-of-memory condition)");
+        }
+
+        if unsafe { libc::close(fd) } != 0 {
+            panic!("failed to clean up fizzle global shared memory fd")
+        }
+
+        // TODO: when will this shared memory ever be unlinked? Dangling resource...
+        // let ret = unsafe { libc::shm_unlink(name.as_ptr()) }; (this shouldn't be here...)
+        // Maybe we leave the fd open but close the shmem... that way it all frees up when the process dies
+
+        shared_memory
+    }
+
+    fn create_shmem_label() -> CString {
+        let mut name = Vec::from([0u8; 64]);
+        if unsafe { libc::getrandom(name.as_mut_ptr() as *mut libc::c_void, name.len(), 0)} != name.len() as isize {
+            panic!("fizzle shared memory initialization failed due to getrandom")
+        }
+
+        for c in name.iter_mut() {
+            // Encode random characters to be [0-9?@A-Za-Z] (64 options)
+            *c /= 4; // reduce options to 0..=63
+            *c += 48;
+
+            if *c >= 58 {
+                *c += 5;
             }
-        } else {
+
+            if *c >= 91 {
+                *c += 6;
+            }
+        }
+
+        name[..15].copy_from_slice(b"/fizzle_shared_");
+
+        name.push(0u8);
+        unsafe { CString::from_vec_unchecked(name) }
+    }
+
+    unsafe fn initialize_shmem_contents(shared_memory: *mut libc::c_void) {
+        let mut sem_ptr = shared_memory as *mut libc::sem_t;
+        for _ in 0..FIZZLE_MAX_PROCESSES {
+            if libc::sem_init(sem_ptr, libc::PTHREAD_PROCESS_SHARED, 1) != 0 {
+                panic!("unable to initialize per-process semaphores for IpcMemory");
+            }
+
+            sem_ptr = sem_ptr.add(1);
+        }
+
+        InterprocessState::initialize(
+            sem_ptr as *mut MaybeUninit<InterprocessState>,
+        );
+    }
+
+    /// Initializes the fizzle state.
+    ///
+    /// This will be called when the first shimmed libc call is executed--only one thread
+    /// is executing at the time, and no libc calls have completed yet.
+    fn new() -> Self {
+        let process_id: ProcessId;
+        let shared_memory: *mut libc::c_void;
+        let plugins: Option<PluginModules>;
+
+        log::info!("initializing global shared memory");
+
+        let shmem_label = unsafe { libc::getenv(FIZZLE_MEMORY_ENV.as_ptr()) };
+        if !shmem_label.is_null() {
+            // This is a child process of a fizzle fuzzing process--don't initialize the shared memory.
             log::info!(
-                "FIZZLE_MEMORY env variable detected--initializing child process shared memory"
+                "FIZZLE_MEMORY env variable detected--opening global shared memory..."
             );
-            let mem_location = unsafe { CStr::from_ptr(mem_location_ptr) };
-            let mut global = IpcMemory::from_identifier(mem_location);
-            let process_id = global.data().assign_process_id();
+            plugins = None;
 
-            Self {
-                thread_locks,
-                local: Box::new(ProcessState::new(process_id, None)),
-                global,
+            unsafe {
+                shared_memory = Self::open_shmem(shmem_label, false);
+                process_id = (*Self::interprocess_state(shared_memory)).assign_process_id();
             }
+
+        } else {
+            process_id = ProcessId::new(1);
+
+            let mut plugin_config = PluginConfig::new();
+            comptime::populate_plugins(&mut plugin_config);
+            plugins = Some(plugin_config.modules);
+
+            let shmem_label = Self::create_shmem_label();
+            
+            unsafe {
+                shared_memory = Self::open_shmem(shmem_label.as_ptr(), true);
+                Self::initialize_shmem_contents(shared_memory);
+                (*Self::interprocess_state(shared_memory)).load_plugin_mappings(plugin_config.mappings);
+            }
+        }
+
+        Self {
+            thread_locks: Self::create_thread_locks(),
+            process_state: Box::new(ProcessState::new(process_id, plugins)),
+            shared_memory,
         }
     }
 
     /// Retrieve state specific to the process.
     pub fn local(&mut self) -> &mut ProcessState {
-        &mut self.local
+        &mut self.process_state
     }
 
     /// Retrieve state shared across processes.
     pub fn global(&mut self) -> &mut InterprocessState {
-        self.global.data()
+        unsafe { &mut (*Self::interprocess_state(self.shared_memory)) }
     }
 
     /// Pauses execution of the current thread and delegates control flow to another thread/process.
@@ -234,7 +332,7 @@ impl FizzleState {
     /// fuzzing process, which signals to the fuzzer that it is ready for the next input.
     pub fn yield_thread(&mut self) {
         // Check to see if all threads have finished execution for this process
-        if let Some(thread_id) = self.local.ready_threads.pop_front() {
+        if let Some(thread_id) = self.process_state.ready_threads.pop_front() {
             // ...if not, then run the next one.
             self.get_thread_lock(&thread_id).post();
             self.pause_current_thread();
@@ -242,7 +340,7 @@ impl FizzleState {
             // ...if all threads have finished execution, move to next process.
 
             self.global().waking_thread_id = Some(next_process_id.thread);
-            self.global.process_wake(next_process_id.process);
+            self.wake_process(next_process_id.process);
 
             // Wait for a process to delegate back to this one.
             self.pause_current_process();
@@ -283,12 +381,12 @@ impl FizzleState {
         let thread_id = thread::current().id();
 
         // Mark this thread as dead
-        self.local.terminated_threads.insert(thread_id);
+        self.process_state.terminated_threads.insert(thread_id);
 
         // Notify any threads awaiting this thread's death
-        if let Some(awaiting_threads) = self.local.awaiting_thread_death.remove(&thread_id) {
+        if let Some(awaiting_threads) = self.process_state.awaiting_thread_death.remove(&thread_id) {
             for awaiting_id in awaiting_threads {
-                self.local.ready_threads.push_back(awaiting_id);
+                self.process_state.ready_threads.push_back(awaiting_id);
             }
         }
 
@@ -304,6 +402,10 @@ impl FizzleState {
         unsafe { libc::pthread_exit(ret) }
     }
 
+    pub fn pause_current_thread(&mut self) {
+        self.get_thread_lock(&thread::current().id()).wait()
+    }
+
     /// Retrieves the semaphore associated with the thread idendified by `thread_id`.
     fn get_thread_lock(&self, thread_id: &ThreadId) -> &Semaphore {
         let thread_idx = index_of_thread(thread_id);
@@ -311,15 +413,53 @@ impl FizzleState {
         self.thread_locks[thread_idx].as_ref().unwrap()
     }
 
-    pub fn pause_current_thread(&mut self) {
-        self.get_thread_lock(&thread::current().id()).wait()
+    pub fn pause_current_process(&mut self) {
+        let process_idx: usize = self.local().process_id.into();
+        if process_idx >= FIZZLE_MAX_PROCESSES {
+            panic!("too many processes spawned for fizzle (`pause_current_process()` fatal error)")
+        }
+
+        unsafe {
+            let process_semaphore = (self.shared_memory as *mut libc::sem_t).add(process_idx);
+            while libc::sem_wait(process_semaphore) != 0 {}
+        }
     }
 
-    pub fn pause_current_process(&mut self) {
-        let current_process = self.local().process_id;
-        self.global.process_wait(current_process);
+    fn wake_process(&mut self, process_id: ProcessId) {
+        let process_idx: usize = process_id.into();
+        if process_idx >= FIZZLE_MAX_PROCESSES {
+            panic!("too many processes spawned for fizzle (`wake_process()` fatal error)")
+        }
+
+        unsafe {
+            let process_semaphore = (self.shared_memory as *mut libc::sem_t).add(process_idx);
+            if libc::sem_post(process_semaphore) != 0 {
+                panic!("fizzle internal error--unable to wake process with `sem_post()`")
+            }
+        }
     }
 }
+
+/*
+pub struct PluginModules {
+    map: ValueIndex<IoLocationId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>,
+}
+
+impl PluginModules {
+    pub fn new(plugin_mapping: ValueIndex<IoLocationId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>) -> Self {
+        Self {
+            map: plugin_mapping,
+        }
+    }
+
+    pub fn get(&self, location_id: IoLocationId) -> &dyn FizzlePluginObject {
+        self.map.get(location_id).unwrap().deref()   }
+
+    pub fn get_mut(&mut self, location_id: IoLocationId) -> &mut dyn FizzlePluginObject {
+        self.map.get_mut(location_id).unwrap().deref_mut()
+    }
+}
+*/
 
 // We do not currently support sem_init() with pshared enabled--that would require tracking shared memory
 // across processes. While this is possible, it would be a difficult and bug-ridden path to take.
@@ -334,7 +474,7 @@ pub struct ProcessState {
     ///
     /// This field is only `Some` in the parent process; all other processes must delegate control
     /// flow to it in order to handle plugin I/O.
-    pub plugins: Option<ValueIndex<IoLocationId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>>,
+    pub plugin_modules: Option<PluginModules>,
     pub fds: ValueIndex<DescriptorId, FdInfo, FIZZLE_MAX_FDS>,
     pub dirs: ValueIndex<DirectoryId, FilePath, FIZZLE_MAX_DIRS>,
     pub barriers: HashMap<BarrierPtr, BarrierInfo, FxBuildHasher>,
@@ -359,7 +499,7 @@ pub struct ProcessState {
 impl ProcessState {
     fn new(
         process_id: ProcessId,
-        plugins: Option<ValueIndex<IoLocationId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>>,
+        plugin_modules: Option<PluginModules>,
     ) -> Self {
         let strict_mode = matches!(env::var(FIZZLE_STRICT_ENV), Ok(s) if s.as_str() == "1");
         STRICT_MODE.store(strict_mode, Ordering::Release);
@@ -373,7 +513,7 @@ impl ProcessState {
 
         Self {
             process_id, // TODO: increment each time new process is made
-            plugins,
+            plugin_modules,
             fds: Default::default(),
             dirs: Default::default(),
             barriers: HashMap::with_hasher(Default::default()),
@@ -634,29 +774,30 @@ pub struct InterprocessState {
     /// The thread identifier to be executed by the waking process.
     waking_thread_id: Option<ThreadId>,
     ready_workers: Queue<WorkerId, FIZZLE_MAX_READY_PROCESSES>,
-    pub io_mapping: FnvIndexMap<IoLocation, IoLocationId, FIZZLE_MAX_PLUGINS>,
     pub file_paths: FnvIndexMap<FilePath, FileId, FIZZLE_MAX_FILE_PATHS>,
     pub files: ValueIndex<FileId, FileInfo, FIZZLE_MAX_FILES>,
     pub sem_paths: FnvIndexMap<SemPath, SemaphoreId, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub semaphores: ValueIndex<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub pipes: ValueIndex<PipeId, PipeInfo, FIZZLE_MAX_PIPES>,
     pub message_queues: ValueIndex<MessageQueueId, MessageQueueInfo, FIZZLE_MAX_MESSAGE_QUEUES>,
+    pub socket_locations: FnvIndexMap<SocketLocation, SocketId, FIZZLE_MAX_SOCKETS>,
     pub sockets: ValueIndex<SocketId, SocketInfo, FIZZLE_MAX_SOCKETS>,
     pub buffers: ValueIndex<BufferId, RingBuffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
     pub transfer_fds: Option<ValueIndex<DescriptorId, FdInfo, FIZZLE_MAX_FDS>>,
 }
 
 impl InterprocessState {
+    // TODO: initialize() is unsafe--whenever we change the fields in InterprocessState, it becomes
+    // unsound until we add the corresponding definition. We should really change it to a trait +
+    // proc macro derive.
     /// Takes an uninitialized InterprocessState and initializes it in place.
     unsafe fn initialize(
         state: *mut MaybeUninit<InterprocessState>,
-        io_mapping: FnvIndexMap<IoLocation, IoLocationId, FIZZLE_MAX_PLUGINS>,
     ) {
         let state = state as *mut InterprocessState;
         *ptr::addr_of_mut!((*state).next_process_id) = ProcessId::new(1);
         *ptr::addr_of_mut!((*state).waking_thread_id) = None;
         *ptr::addr_of_mut!((*state).ready_workers) = Queue::new();
-        *ptr::addr_of_mut!((*state).io_mapping) = io_mapping;
         *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
         ValueIndex::initialize(ptr::addr_of_mut!((*state).files)
             as *mut MaybeUninit<ValueIndex<FileId, FileInfo, FIZZLE_MAX_FILES>>);
@@ -671,6 +812,7 @@ impl InterprocessState {
             as *mut MaybeUninit<
                 ValueIndex<MessageQueueId, MessageQueueInfo, FIZZLE_MAX_MESSAGE_QUEUES>,
             >);
+        *ptr::addr_of_mut!((*state).socket_locations) = FnvIndexMap::new();
         ValueIndex::initialize(ptr::addr_of_mut!((*state).sockets)
             as *mut MaybeUninit<ValueIndex<SocketId, SocketInfo, FIZZLE_MAX_SOCKETS>>);
         ValueIndex::initialize(ptr::addr_of_mut!((*state).buffers)
@@ -678,6 +820,10 @@ impl InterprocessState {
                 ValueIndex<BufferId, RingBuffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
             >);
         *ptr::addr_of_mut!((*state).transfer_fds) = None;
+    }
+
+    fn load_plugin_mappings(&mut self, plugin_mappings: PluginMappings) {
+
     }
 
     /// Assigns the next available process ID and increments it internally.
@@ -696,6 +842,19 @@ impl InterprocessState {
     /// Marks the given process/thread pair as having further work to execute.
     pub fn mark_worker_ready(&mut self, worker_id: WorkerId) {
         self.ready_workers.enqueue(worker_id).unwrap();
+    }
+
+    /// This method returns `Ok` if the file was created, and `Err` if a file already
+    /// exists at the given path.
+    pub fn create_file(&mut self, path: FilePath) -> Result<FileId, FileId> {
+        match self.file_paths.get(&path) {
+            Some(&id) => Err(id),
+            None => {
+                let buffer_id = self.buffers.put(RingBuffer::new());
+                let file_id = self.files.put(FileInfo::new(buffer_id));
+                Ok(file_id)
+            }
+        }
     }
 }
 
@@ -823,7 +982,14 @@ pub struct BarrierInfo {
 
 #[derive(Debug)]
 pub struct FileInfo {
-    pub temporary: bool,
+    pub backend: FileBackend,
+}
+
+#[derive(Debug)]
+pub enum FileBackend {
+    /// Storage is modeled using a RingBuffer (issues with this--consider fixing...)
+    Emulated(BufferId), 
+    Plugin(PluginId),
 }
 
 #[derive(Debug)]
@@ -857,8 +1023,18 @@ pub struct MessageQueueInfo {}
 
 impl FileInfo {
     /// Creates a new temporary file.
-    pub fn new() -> Self {
-        Self { temporary: true }
+    pub fn new(buffer_id: BufferId) -> Self {
+        Self {
+            backend: FileBackend::Emulated(buffer_id)
+        }
+    }
+}
+
+impl From<PluginId> for FileInfo {
+    fn from(plugin_id: PluginId) -> Self {
+        Self {
+            backend: FileBackend::Plugin(plugin_id),
+        }
     }
 }
 

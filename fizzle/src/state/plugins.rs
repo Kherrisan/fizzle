@@ -5,6 +5,9 @@ use fizzle_common::storage::ValueIndex;
 use fizzle_plugin::{FizzlePluginObject, IoLocationId};
 use heapless::FnvIndexMap;
 
+pub type PluginModules = ValueIndex<IoLocationId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>;
+pub type PluginMappings = FnvIndexMap<IoLocation, IoLocationId, FIZZLE_MAX_PLUGINS>;
+
 /// Plugin information, populated based on the Fizzle configuration file.
 ///
 /// This is held in a special process-local area (despite its purposes being process-global).
@@ -22,16 +25,16 @@ use heapless::FnvIndexMap;
 /// process exits then a crash has occurred. Fizzle has a special FIZZLE_NOEXIT option that can be
 /// set to keep the main process alive after a call to `exit()`
 ///
-pub struct Plugins {
-    pub plugins: ValueIndex<IoLocationId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>,
-    pub io_mapping: FnvIndexMap<IoLocation, IoLocationId, FIZZLE_MAX_PLUGINS>,
+pub struct PluginConfig {
+    pub modules: PluginModules,
+    pub mappings: PluginMappings,
 }
 
-impl Plugins {
+impl PluginConfig {
     pub fn new() -> Self {
         Self {
-            plugins: Default::default(),
-            io_mapping: FnvIndexMap::new(),
+            modules: Default::default(),
+            mappings: FnvIndexMap::new(),
         }
     }
 }
