@@ -55,12 +55,12 @@ hook_macros::hook! {
             wrapped_arg: arg,
         };
 
-        ctx.local().ready_threads.push_back(thread::current().id()); // Let the scheduler know we have more to execute
+        ctx.add_ready_thread(thread::current().id()); // Let the scheduler know we have more to execute
 
         let res = hook_macros::real!(pthread_create)(thread, attr, pt_wrapper_fn, ptr::addr_of_mut!(wrapped_arg) as *mut libc::c_void);
 
         // This thread should still be able to execute afterwards
-        ctx.local().ready_threads.push_back(thread::current().id());
+        ctx.add_ready_thread(thread::current().id());
 
         // The newly-created thread executes now, so this thread pauses
         ctx.pause_current_thread();
@@ -188,7 +188,7 @@ hook_macros::hook! {
     unsafe fn pthread_yield(
     ) -> libc::c_int => fizzle_pthread_yield(ctx) {
 
-        ctx.local().ready_threads.push_back(thread::current().id());
+        ctx.add_ready_thread(thread::current().id());
         ctx.yield_thread();
 
         0
@@ -328,7 +328,7 @@ hook_macros::hook! {
         }
 
         if let Some(next_thread) = spinlock_queue.front().copied() {
-            ctx.local().ready_threads.push_back(next_thread);
+            ctx.add_ready_thread(next_thread);
         }
 
         0
@@ -479,7 +479,7 @@ hook_macros::hook! {
         }
 
         if let Some(next_thread) = mutex_queue.front().copied() {
-            ctx.local().ready_threads.push_back(next_thread);
+            ctx.add_ready_thread(next_thread);
         }
 
         0
@@ -547,8 +547,8 @@ hook_macros::hook! {
             panic!("[UB] `pthread_cond_signal` called on uninitialized condvar")
         };
 
-        if let Some(thread) = cond_queue.pop_front() {
-            ctx.local().ready_threads.push_back(thread);
+        if let Some(thread_id) = cond_queue.pop_front() {
+            ctx.add_ready_thread(thread_id);
         }
 
         0
@@ -569,7 +569,7 @@ hook_macros::hook! {
         let threads: Vec<ThreadId> = cond_queue.drain(..).collect();
 
         for thread in threads {
-            ctx.local().ready_threads.push_back(thread);
+            ctx.add_ready_thread(thread);
         }
 
         0
@@ -606,7 +606,7 @@ hook_macros::hook! {
         }
 
         if let Some(next_thread) = mutex_queue.front().copied() {
-            ctx.local().ready_threads.push_back(next_thread);
+            ctx.add_ready_thread(next_thread);
         }
 
         // Wait until the thread is signaled
@@ -660,7 +660,7 @@ hook_macros::hook! {
         }
 
         if let Some(next_thread) = mutex_queue.front().copied() {
-            ctx.local().ready_threads.push_back(next_thread);
+            ctx.add_ready_thread(next_thread);
         }
 
         // Wait until the thread is signaled
@@ -714,7 +714,7 @@ hook_macros::hook! {
         }
 
         if let Some(next_thread) = mutex_queue.front().copied() {
-            ctx.local().ready_threads.push_back(next_thread);
+            ctx.add_ready_thread(next_thread);
         }
 
         // Wait until the thread is signaled
@@ -980,7 +980,7 @@ hook_macros::hook! {
                     Some(write_thread) => {
                         rwlock_info.holding_state.insert(write_thread);
                         rwlock_info.state = RwLockState::Writing;
-                        ctx.local().ready_threads.push_back(write_thread);
+                        ctx.add_ready_thread(write_thread);
                     }
                     None => {
                         let threads: Vec<ThreadId> = rwlock_info.awaiting_read.drain(..).collect();
@@ -990,14 +990,14 @@ hook_macros::hook! {
                         }
 
                         for thread in threads {
-                            ctx.local().ready_threads.push_back(thread);
+                            ctx.add_ready_thread(thread);
                         }
                     }
                 }
                 RwLockState::Writing => if rwlock_info.awaiting_read.is_empty() {
                     if let Some(write_thread) = rwlock_info.awaiting_write.pop_front() {
                         rwlock_info.holding_state.insert(write_thread);
-                        ctx.local().ready_threads.push_back(write_thread);
+                        ctx.add_ready_thread(write_thread);
 
                     }else { // No threads waiting reads or writes
                         rwlock_info.state = RwLockState::Available;
@@ -1008,7 +1008,7 @@ hook_macros::hook! {
                     rwlock_info.state = RwLockState::Reading;
 
                     for thread in threads {
-                        ctx.local().ready_threads.push_back(thread);
+                        ctx.add_ready_thread(thread);
                     }
                 }
                 _ => ()
@@ -1071,7 +1071,7 @@ hook_macros::hook! {
             // Release all threads (including this one)
             let threads: Vec<ThreadId> = barrier_info.curr.drain(..).collect();
             for thread_id in threads {
-                ctx.local().ready_threads.push_back(thread_id);
+                ctx.add_ready_thread(thread_id);
             }
 
             -1 // TODO: replace this with `libc::PTHREAD_BARRIER_SERIAL_THREAD` once it exists

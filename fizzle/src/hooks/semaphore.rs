@@ -187,7 +187,7 @@ hook_macros::hook! {
         let semaphore_ptr = SemaphorePtr::from(sem);
         if let Some(sem_info) = ctx.local().semaphores.get_mut(&semaphore_ptr) {
             match sem_info.waiting.pop_front() {
-                Some(worker_id) => ctx.local().ready_threads.push_back(worker_id.thread),
+                Some(worker_id) => ctx.add_ready_thread(worker_id.thread_id),
                 None => sem_info.value += 1,
             }
 
@@ -228,8 +228,8 @@ hook_macros::hook! {
             Some(value) => semaphore.value = value,
             None => {
                 semaphore.waiting.push_back(WorkerId {
-                    process: process_id,
-                    thread: thread::current().id()
+                    process_id: process_id,
+                    thread_id: thread::current().id()
                 }).unwrap();
                 ctx.yield_thread()
             }
@@ -281,8 +281,8 @@ hook_macros::hook! {
             Some(value) => semaphore.value = value,
             None => {
                 semaphore.waiting.push_back(WorkerId {
-                    process: process_id,
-                    thread: thread::current().id()
+                    process_id: process_id,
+                    thread_id: thread::current().id()
                 }).unwrap();
                 ctx.yield_thread()
             }

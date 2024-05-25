@@ -284,7 +284,7 @@ impl FizzleContext {
         }
 
         InterprocessState::initialize(
-            sem_ptr as *mut MaybeUninit<InterprocessState>,
+            sem_ptr as *mut InterprocessState,
         );
     }
 
@@ -349,6 +349,73 @@ impl FizzleContext {
     /// Once all threads/processes have finished executing, this returns control flow to the primary
     /// fuzzing process, which signals to the fuzzer that it is ready for the next input.
     pub fn yield_thread(&mut self) {
+
+        // In between processes:
+        // if polled objects still have flag raised, pop first off queues and put in `ready`
+        while let Some(polled_id) = self.global().raised_events.dequeue() {
+            let event_info = self.global().polled_events.get_mut(polled_id).unwrap();
+            if let Some(poller_id) = event_info.pollers.dequeue() {
+                if !self.global().pollers.get(poller_id).unwrap().in_raised_queue {
+                    self.global().ready.enqueue(ReadyItem::Poller(poller_id)).unwrap();
+                }
+            }
+        }
+
+        let mut new_raised_events = Queue::new();
+        let mut next_worker = None;
+//         Queue<PolledId, FIZZLE_MAX_RAISED_POLL_EVENTS>       
+        // pop PollerId values off `ready_pollers` one at a time
+        while let Some(item) = self.global().ready.dequeue() {
+            match item {
+                ReadyItem::Poller(poller_id) => {
+                    let global = self.global();
+                    let poller_info = global.pollers.get(poller_id).unwrap();
+                    for &polled_id in poller_info.polled_events.iter() {
+                        let polled_info = global.polled_events.get(polled_id).unwrap();
+                        if polled_info.event_raised {
+                            new_raised_events.enqueue(polled_id).unwrap();
+                        }
+                    }
+                    // if current poller has all PolledId values that have false flags, move on to next
+                    if !new_raised_events.is_empty() {
+                        next_worker = Some(poller_info.worker_id);
+                        break
+                    }
+                }
+                ReadyItem::Worker(worker_id) => {
+                    // new_raised_events will be empty here
+                    next_worker = Some(worker_id);
+                    break
+                }
+            }
+        }
+
+        if let Some(worker_id) = next_worker {
+            self.global().waking_thread_id = Some(worker_id.thread_id);
+            if !new_raised_events.is_empty() {
+                self.global().raised_events = new_raised_events;
+            }
+
+            if worker_id.process_id != self.local().process_id {
+                self.wake_process(worker_id.process_id);
+                self.pause_current_process();
+            }
+
+            let Some(thread_id) = self.global().waking_thread_id.take() else {
+                panic!("internal fizzle error--no waking_thread_id assigned");
+            };
+
+            if thread::current().id() != thread_id {
+                self.get_thread_lock(&thread_id).post();
+                self.pause_current_thread();
+            }
+
+        } else {
+            // No events were triggered for any pollers--move on to next input
+            self.notify_complete();
+        }
+
+        /*
         // Check to see if all threads have finished execution for this process
         if let Some(thread_id) = self.process_state.ready_threads.pop_front() {
             // ...if not, then run the next one.
@@ -375,8 +442,9 @@ impl FizzleContext {
             // If no ready processes are left, notify the fuzzing engine
             self.notify_complete()
         };
+        */
 
-        // Current thread isready to execute
+        // Current thread is ready to execute
     }
 
     /// Notifies the fuzzing engine that the current round of fuzzing has finished.
@@ -394,6 +462,15 @@ impl FizzleContext {
         }
     }
 
+    /// Adds a thread from the current process to the `ready` queue.
+    pub fn add_ready_thread(&mut self, thread_id: ThreadId) {
+        let process_id = self.local().process_id;
+        self.global().ready.enqueue(ReadyItem::Worker(WorkerId {
+            process_id,
+            thread_id,
+        })).unwrap();
+    }
+
     /// Ceases execution of the current thread.
     pub fn exit_thread(&mut self, ret: *mut libc::c_void) -> ! {
         let thread_id = thread::current().id();
@@ -403,8 +480,12 @@ impl FizzleContext {
 
         // Notify any threads awaiting this thread's death
         if let Some(awaiting_threads) = self.process_state.awaiting_thread_death.remove(&thread_id) {
-            for awaiting_id in awaiting_threads {
-                self.process_state.ready_threads.push_back(awaiting_id);
+            for thread_id in awaiting_threads {
+                let process_id = self.local().process_id;
+                self.global().ready.enqueue(ReadyItem::Worker(WorkerId {
+                    process_id,
+                    thread_id,
+                })).unwrap();
             }
         }
 
@@ -486,7 +567,6 @@ pub struct ProcessState {
     pub semaphores: HashMap<SemaphorePtr, SemaphoreInfo>,
     pub spinlocks: HashMap<SpinlockPtr, VecDeque<ThreadId>, FxBuildHasher>,
     pub pthreads: HashMap<libc::pthread_t, ThreadId, FxBuildHasher>,
-    pub ready_threads: VecDeque<ThreadId>,
     pub terminated_threads: HashSet<ThreadId, FxBuildHasher>,
     /// Indicates which thread(s) are awaiting the death of a specific thread (via pthread_join)
     pub awaiting_thread_death: HashMap<ThreadId, Vec<ThreadId>, FxBuildHasher>,
@@ -526,7 +606,6 @@ impl ProcessState {
             semaphores: HashMap::with_hasher(Default::default()),
             spinlocks: HashMap::with_hasher(Default::default()),
             pthreads: HashMap::with_hasher(Default::default()),
-            ready_threads: VecDeque::new(),
             terminated_threads: HashSet::with_hasher(Default::default()),
             working_directory,
             awaiting_thread_death: HashMap::with_hasher(Default::default()),
@@ -569,6 +648,56 @@ impl From<ServerId> for usize {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PolledId(usize);
+
+impl From<usize> for PolledId {
+    fn from(value: usize) -> Self {
+        Self(value)
+    }
+}
+
+impl From<PolledId> for usize {
+    fn from(value: PolledId) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug)]
+pub struct PolledInfo {
+    pollers: Queue<PollerId, FIZZLE_MAX_PER_EVENT_QUEUED_POLLERS>,
+    event_raised: bool,
+    polled_item: PolledItem,
+}
+
+#[derive(Debug)]
+pub enum PolledItem {
+    SocketRead(SocketId),
+    SocketWrite(SocketId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PollerId(usize);
+
+impl From<usize> for PollerId {
+    fn from(value: usize) -> Self {
+        Self(value)
+    }
+}
+
+impl From<PollerId> for usize {
+    fn from(value: PollerId) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug)]
+pub struct PollerInfo {
+    worker_id: WorkerId,
+    polled_events: heapless::Vec<PolledId, FIZZLE_MAX_PER_POLLER_QUEUED_EVENTS>,
+    in_raised_queue: bool,
+}
+
 #[derive(Debug)]
 pub struct SocketLocationInfo {
     pub bound_socket: Option<SocketId>,
@@ -589,6 +718,7 @@ pub struct ClientInfo {
 }
 
 // INVARIANT: a Worker must only ever be awakened once it has actions to take.
+// We now seek to accomplish this through the polling infrastructure in InterprocessState.
 
 #[derive(Debug)]
 pub struct ServerInfo {
@@ -604,7 +734,6 @@ pub struct InterprocessState {
     next_process_id: ProcessId,
     /// The thread identifier to be executed by the waking process.
     waking_thread_id: Option<ThreadId>,
-    ready_workers: Queue<WorkerId, FIZZLE_MAX_READY_PROCESSES>,
     pub file_paths: FnvIndexMap<FilePath, FileId, FIZZLE_MAX_FILE_PATHS>,
     pub files: ValueIndex<FileId, FileInfo, FIZZLE_MAX_FILES>,
     pub sem_paths: FnvIndexMap<SemPath, SemaphoreId, FIZZLE_MAX_NAMED_SEMAPHORES>,
@@ -623,11 +752,20 @@ pub struct InterprocessState {
     pub buffers: ValueIndex<BufferId, RingBuffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
     pub transfer_fds: Option<ValueIndex<DescriptorId, FdInfo, FIZZLE_MAX_FDS>>,
     pub stdio: StdioInfo,
+    // Polling infrastructure
+    pub polled_events: ValueIndex<PolledId, PolledInfo, FIZZLE_MAX_POLLED_EVENTS>,
+    pub pollers: ValueIndex<PollerId, PollerInfo, FIZZLE_MAX_POLLERS>,
+    pub ready: Queue<ReadyItem, FIZZLE_MAX_QUEUED_READY_POLLERS>,
+    /// Events that remain raised following
+    pub raised_events: Queue<PolledId, FIZZLE_MAX_RAISED_POLL_EVENTS>,
 }
 
-// pending_clients:
-// ValueIndex of <ClientId, ClientInfo> with each ClientInfo containing an Option<ClientId>
-// a la linked list style access
+// TODO: rename...
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadyItem {
+    Poller(PollerId),
+    Worker(WorkerId),
+}
 
 impl InterprocessState {
     // TODO: initialize() is unsafe--whenever we change the fields in InterprocessState, it becomes
@@ -635,34 +773,28 @@ impl InterprocessState {
     // proc macro derive.
     /// Takes an uninitialized InterprocessState and initializes it in place.
     unsafe fn initialize(
-        state: *mut MaybeUninit<InterprocessState>,
+        state: *mut InterprocessState,
     ) {
-        let state = state as *mut InterprocessState;
         *ptr::addr_of_mut!((*state).next_process_id) = ProcessId::from(1);
         *ptr::addr_of_mut!((*state).waking_thread_id) = None;
-        *ptr::addr_of_mut!((*state).ready_workers) = Queue::new();
         *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
-        ValueIndex::initialize(ptr::addr_of_mut!((*state).files)
-            as *mut MaybeUninit<ValueIndex<FileId, FileInfo, FIZZLE_MAX_FILES>>);
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).files));
         *ptr::addr_of_mut!((*state).sem_paths) = FnvIndexMap::new();
-        ValueIndex::initialize(ptr::addr_of_mut!((*state).semaphores)
-            as *mut MaybeUninit<
-                ValueIndex<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>,
-            >);
-        ValueIndex::initialize(ptr::addr_of_mut!((*state).pipes)
-            as *mut MaybeUninit<ValueIndex<PipeId, PipeInfo, FIZZLE_MAX_PIPES>>);
-        ValueIndex::initialize(ptr::addr_of_mut!((*state).message_queues)
-            as *mut MaybeUninit<
-                ValueIndex<MessageQueueId, MessageQueueInfo, FIZZLE_MAX_MESSAGE_QUEUES>,
-            >);
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).semaphores));
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).pipes));
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).message_queues));
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).message_queues));
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).clients));
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).servers));
         *ptr::addr_of_mut!((*state).socket_locations) = FnvIndexMap::new();
-        ValueIndex::initialize(ptr::addr_of_mut!((*state).connected_sockets)
-            as *mut MaybeUninit<ValueIndex<ConnectedSocketId, ConnectedSocketInfo, FIZZLE_MAX_SOCKETS>>);
-        ValueIndex::initialize(ptr::addr_of_mut!((*state).buffers)
-            as *mut MaybeUninit<
-                ValueIndex<BufferId, RingBuffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
-            >);
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).sockets));
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).connected_sockets));
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).buffers));
         *ptr::addr_of_mut!((*state).transfer_fds) = None;
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).polled_events));
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).pollers));
+        *ptr::addr_of_mut!((*state).ready) = Queue::new();
+        *ptr::addr_of_mut!((*state).raised_events) = Queue::new();
         *ptr::addr_of_mut!((*state).stdio) = StdioInfo {
             backend: IoBackend::Sink,
         };
@@ -696,6 +828,21 @@ impl InterprocessState {
                 },
             }
         }
+    }
+
+    pub fn set_polled_event_ready(&mut self, polled_id: PolledId) {
+        let polled_info = self.polled_events.get_mut(polled_id).unwrap();
+        if polled_info.event_raised != true {
+            polled_info.event_raised = true;
+            if let Some(poller_id) = polled_info.pollers.dequeue() {
+                self.ready.enqueue(ReadyItem::Poller(poller_id)).unwrap();
+            }
+        }
+    }
+
+    pub fn set_polled_event_blocked(&mut self, polled_id: PolledId) {
+        let polled_info = self.polled_events.get_mut(polled_id).unwrap();
+        polled_info.event_raised = false;
     }
 
     pub fn add_pending_client(&mut self, transport_addr: TransportAddress, backend: Option<IoBackend>) {
@@ -763,15 +910,10 @@ impl InterprocessState {
         process_id
     }
 
-    /// Retrieves the next available process/thread pair that has work to execute.
-    pub fn next_ready_process(&mut self) -> Option<WorkerId> {
-        let worker_id = self.ready_workers.dequeue()?;
-        Some(worker_id)
-    }
 
     /// Marks the given process/thread pair as having further work to execute.
     pub fn mark_worker_ready(&mut self, worker_id: WorkerId) {
-        self.ready_workers.enqueue(worker_id).unwrap();
+        self.ready.enqueue(ReadyItem::Worker(worker_id)).unwrap();
     }
 
     /// This method returns `Ok` if the file was created, and `Err` if a file already

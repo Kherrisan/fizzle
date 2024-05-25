@@ -22,14 +22,14 @@ hook_macros::hook! {
                 let thread_id = thread::current().id();
 
                 // This thread should still be able to execute afterwards
-                ctx.local().ready_threads.push_back(thread_id);
+                ctx.add_ready_thread(thread_id);
 
                 // This process should still be able to execute afterwards
                 let process_id = ctx.local().process_id();
 
                 ctx.global().mark_worker_ready(WorkerId {
-                    process: process_id,
-                    thread: thread_id,
+                    process_id: process_id,
+                    thread_id: thread_id,
                 });
 
                 // Pause our process until it gets delegated execution again.

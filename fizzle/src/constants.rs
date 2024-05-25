@@ -34,3 +34,11 @@ pub const FIZZLE_MAX_NAMED_SEMAPHORES: usize = 128;
 pub const FIZZLE_MAX_FDS: usize = 4096;
 pub const FIZZLE_MAX_WAITING_SEMAPHORES: usize = 32;
 pub const FIZZLE_FOPEN_BUFSIZE: usize = 8192;
+
+// Polling
+pub const FIZZLE_MAX_PER_EVENT_QUEUED_POLLERS: usize = 64;
+pub const FIZZLE_MAX_PER_POLLER_QUEUED_EVENTS: usize = 64;
+pub const FIZZLE_MAX_POLLERS: usize = 128;
+pub const FIZZLE_MAX_POLLED_EVENTS: usize = 128;
+pub const FIZZLE_MAX_QUEUED_READY_POLLERS: usize = 256;
+pub const FIZZLE_MAX_RAISED_POLL_EVENTS: usize = 128;

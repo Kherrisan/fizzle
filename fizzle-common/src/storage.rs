@@ -219,8 +219,7 @@ impl<K: Sized + From<usize> + Into<usize>, V: Sized, const N: usize> ValueIndex<
         }
     }
 
-    pub unsafe fn initialize(index: *mut MaybeUninit<ValueIndex<K, V, N>>) {
-        let value_idx = index as *mut ValueIndex<K, V, N>;
+    pub unsafe fn initialize(value_idx: *mut ValueIndex<K, V, N>) {
         for i in 0..N {
             *ptr::addr_of_mut!((*value_idx).inner[i]) = None;
         }

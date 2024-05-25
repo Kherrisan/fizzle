@@ -211,8 +211,8 @@ impl From<SocketId> for usize {
 /// The unique identifying information for a given thread in a process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WorkerId {
-    pub process: ProcessId,
-    pub thread: ThreadId,
+    pub process_id: ProcessId,
+    pub thread_id: ThreadId,
 }
 
 // ==============================================
