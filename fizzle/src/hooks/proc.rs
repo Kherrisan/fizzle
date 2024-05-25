@@ -41,3 +41,44 @@ hook_macros::hook! {
         pid
     }
 }
+
+hook_macros::hook! {
+    unsafe fn exit(status: libc::c_int) => fizzle_exit(ctx) {
+        if ctx.local().suspend_on_exit {
+            // TODO: clean up any polling contexts here so that this process never gets
+            // delegated to (other than for the purpose of running modules)
+
+            // Temporary hack: whenever processes get delegated to here, just pass back to
+            // another process (i.e. ignore inputs)
+            loop {
+                ctx.yield_thread()
+            }
+        } else {
+            hook_macros::real!(exit)(status)
+        }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn _exit(status: libc::c_int) => fizzle_exit2(ctx) {
+        if ctx.local().suspend_on_exit {
+            // TODO: clean up any polling contexts here so that this process never gets
+            // delegated to (other than for the purpose of running modules)
+
+            // Temporary hack: whenever processes get delegated to here, just pass back to
+            // another process (i.e. ignore inputs)
+            loop {
+                ctx.yield_thread()
+            }
+        } else {
+            hook_macros::real!(exit)(status)
+        }
+    }
+}
+
+// We need this to ensure that our `atexit` hook is called first when FIZZLE_NOEXIT is set.
+hook_macros::hook! {
+    unsafe fn atexit(cb: extern "C" fn()) => fizzle_atexit(ctx) {
+        hook_macros::real!(atexit)(cb)
+    }
+}

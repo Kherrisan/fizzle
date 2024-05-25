@@ -8,15 +8,20 @@ max_fds = "100" # TODO: implement this in the future with build.rs
 [io]
 stdio = "fuzz" # Consume all input, produce fuzzing data as output
 "file:/dev/null" = "nullsink" # Consume all input, produce repeating 0s
-"file:./myconfig" = "feedback" # Output whatever is given as inpu
-"udp:127.0.0.1:53" = "passthrough" # Pass on to an actual network service (warning: unstable)
+"file:./myconfig" = "feedback" # Output whatever is given as input
+"udp-server:127.0.0.1:53" = "passthrough" # Pass on to an actual network service (warning: unstable)
 
-
-[io."tcp:127.0.0.1:80"]
-method = "plugin" # The means of passing I/O on the device. Can be "sink", "fuzz", "plugin" or "passthrough"
+[[io."tcp-client:127.0.0.1:80"]]
+method = "plugin" # The means of passing I/O on the device
 module = "fizzle-http" # The name of the cargo crate to source the plugin from
-plugin = "HttpServer" # The name of the `FizzlePlugin` implementation to be used
+plugin = "HttpClient" # The name of the `FizzlePlugin` implementation to be used
 
-[io."tcp:127.0.0.1:80".config]
+[io."tcp-client:127.0.0.1:80".config]
 # Arbitrary configuration options specific to `fizzle-http` go here
 # This configuration is passed
+
+# Multiple clients can be specified; they will connect to a server in the order they are specified
+[[io."tcp-client:127.0.0.1:80"]]
+method = "plugin"
+module = "fizzle-http-alt"
+plugin = "HttpClientAlt"

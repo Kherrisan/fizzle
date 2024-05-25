@@ -429,6 +429,7 @@ hook_macros::hook! {
     }
 }
 
+/*
 hook_macros::hook! {
     unsafe fn fclose(
         stream: *mut libc::FILE
@@ -463,6 +464,7 @@ hook_macros::hook! {
         }
     }
 }
+*/
 
 hook_macros::hook! {
     unsafe fn chdir(

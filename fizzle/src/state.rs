@@ -8,12 +8,13 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{CStr, CString};
 use std::hash::{Hash, Hasher};
 use std::mem::MaybeUninit;
+use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::ThreadId;
 use std::{array, env, mem, ptr, thread};
 
-use fizzle_common::io::SocketLocation;
+use fizzle_common::io::{IoEndpoint, SocketDirection, TransportAddress, TransportProtocol};
 use fizzle_common::path::{FilePath, SemPath};
 use fizzle_common::storage::{RingBuffer, ValueIndex};
 
@@ -28,7 +29,7 @@ use crate::state::plugins::PluginConfig;
 
 use self::identifiers::*;
 use self::fd::FdInfo;
-use self::plugins::{PluginId, PluginMappings, PluginModules};
+use self::plugins::{IoEmulationType, PluginEndpoints, PluginId, PluginMappings, PluginModules};
 
 // TODO: we will assume that the main process cannot exit. This should be documented.
 // Likewise, there should exist an env variable (like `FIZZLE_NOEXIT=status_code`) that, when set,
@@ -142,6 +143,16 @@ impl DerefMut for FizzleGuard<'_> {
     }
 }
 
+#[no_mangle]
+extern "C" fn fizzle_atexit_suspend() {
+    loop {
+        loop {
+            // TODO: clean up any dangling polling items here, like for `_exit()`/`exit()`
+            FIZZLE_STATE.get().yield_thread()
+        }
+    }
+}
+
 /// This is marked as `cold` and kept un-inlined to ensure that it will not lead to frequent branch
 /// misses (other than the first time when it should be called).
 #[cold]
@@ -153,6 +164,12 @@ fn fizzle_state_initialize(state: &mut MaybeUninit<FizzleContext>, is_init: &mut
 
     *state = MaybeUninit::new(FizzleContext::new());
     *is_init = true;
+
+    unsafe {
+        if state.assume_init_mut().local().suspend_on_exit {
+            libc::atexit(fizzle_atexit_suspend); // Registered before any other atexit handler...
+        }
+    }
 
     log::trace!("Fizzle state initialization complete");
 }
@@ -307,7 +324,7 @@ impl FizzleContext {
             unsafe {
                 shared_memory = Self::open_shmem(shmem_label.as_ptr(), true);
                 Self::initialize_shmem_contents(shared_memory);
-                (*Self::interprocess_state(shared_memory)).load_plugin_mappings(plugin_config.mappings);
+                (*Self::interprocess_state(shared_memory)).load_config_mappings(plugin_config.mappings, plugin_config.endpoints);
             }
         }
 
@@ -450,6 +467,7 @@ impl FizzleContext {
 /// State local to the current process.
 pub struct ProcessState {
     pub process_id: ProcessId,
+    pub suspend_on_exit: bool,
     /// Plugin modules for handling I/O.
     ///
     /// This field is only `Some` in the parent process; all other processes must delegate control
@@ -482,6 +500,7 @@ impl ProcessState {
         plugin_modules: Option<PluginModules>,
     ) -> Self {
         let strict_mode = matches!(env::var(FIZZLE_STRICT_ENV), Ok(s) if s.as_str() == "1");
+        let suspend_on_exit = matches!(env::var(FIZZLE_NOEXIT_ENV), Ok(s) if s.as_str() == "1");
         STRICT_MODE.store(strict_mode, Ordering::Release);
 
         let mut working_dir = [0u8; 256];
@@ -493,6 +512,7 @@ impl ProcessState {
 
         Self {
             process_id, // TODO: increment each time new process is made
+            suspend_on_exit,
             plugin_modules,
             fds: Default::default(),
             dirs: Default::default(),
@@ -519,6 +539,64 @@ impl ProcessState {
 }
 
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ClientId(usize);
+
+impl From<usize> for ClientId {
+    fn from(value: usize) -> Self {
+        Self(value)
+    }
+}
+
+impl From<ClientId> for usize {
+    fn from(value: ClientId) -> Self {
+        value.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ServerId(usize);
+
+impl From<usize> for ServerId {
+    fn from(value: usize) -> Self {
+        Self(value)
+    }
+}
+
+impl From<ServerId> for usize {
+    fn from(value: ServerId) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug)]
+pub struct SocketLocationInfo {
+    pub bound_socket: Option<SocketId>,
+    pub pending_client: Option<ClientId>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClientState {
+    PendingConnection,
+}
+
+#[derive(Debug)]
+pub struct ClientInfo {
+    pub awaiting_connection: Option<WorkerId>,
+    pub backend: Option<IoBackend>,
+    pub state: ClientState,
+    pub next_pending_client: Option<ClientId>,
+}
+
+// INVARIANT: a Worker must only ever be awakened once it has actions to take.
+
+#[derive(Debug)]
+pub struct ServerInfo {
+    /// For blocking cases only.
+    pub awaiting_accept: Option<WorkerId>,
+    pub backend: Option<IoBackend>,
+    // pub awaiting_connection: Option<WorkerId>,
+}
 
 /// State/data shared among all processes in a fizzle execution.
 pub struct InterprocessState {
@@ -533,11 +611,23 @@ pub struct InterprocessState {
     pub semaphores: ValueIndex<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub pipes: ValueIndex<PipeId, PipeInfo, FIZZLE_MAX_PIPES>,
     pub message_queues: ValueIndex<MessageQueueId, MessageQueueInfo, FIZZLE_MAX_MESSAGE_QUEUES>,
-    pub socket_locations: FnvIndexMap<SocketLocation, SocketId, FIZZLE_MAX_SOCKETS>,
+    /// Clients that are awaiting connection to a particular server.
+    pub clients: ValueIndex<ClientId, ClientInfo, FIZZLE_MAX_CLIENTS>,
+    /// Servers that are listening for connections (or packets, if UDP) on a specified port.
+    pub servers: ValueIndex<ServerId, ServerInfo, FIZZLE_MAX_SERVERS>,
+    // Have clients as a Map from (proto, addr) to... Queue?
+    // Problem: there can be multiple client sockets for a given server socket.
+    pub socket_locations: FnvIndexMap<TransportAddress, SocketLocationInfo, FIZZLE_MAX_SOCKADDRS>,
     pub sockets: ValueIndex<SocketId, SocketInfo, FIZZLE_MAX_SOCKETS>,
+    pub connected_sockets: ValueIndex<ConnectedSocketId, ConnectedSocketInfo, FIZZLE_MAX_CLIENTS>,
     pub buffers: ValueIndex<BufferId, RingBuffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
     pub transfer_fds: Option<ValueIndex<DescriptorId, FdInfo, FIZZLE_MAX_FDS>>,
+    pub stdio: StdioInfo,
 }
+
+// pending_clients:
+// ValueIndex of <ClientId, ClientInfo> with each ClientInfo containing an Option<ClientId>
+// a la linked list style access
 
 impl InterprocessState {
     // TODO: initialize() is unsafe--whenever we change the fields in InterprocessState, it becomes
@@ -566,17 +656,104 @@ impl InterprocessState {
                 ValueIndex<MessageQueueId, MessageQueueInfo, FIZZLE_MAX_MESSAGE_QUEUES>,
             >);
         *ptr::addr_of_mut!((*state).socket_locations) = FnvIndexMap::new();
-        ValueIndex::initialize(ptr::addr_of_mut!((*state).sockets)
-            as *mut MaybeUninit<ValueIndex<SocketId, SocketInfo, FIZZLE_MAX_SOCKETS>>);
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).connected_sockets)
+            as *mut MaybeUninit<ValueIndex<ConnectedSocketId, ConnectedSocketInfo, FIZZLE_MAX_SOCKETS>>);
         ValueIndex::initialize(ptr::addr_of_mut!((*state).buffers)
             as *mut MaybeUninit<
                 ValueIndex<BufferId, RingBuffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
             >);
         *ptr::addr_of_mut!((*state).transfer_fds) = None;
+        *ptr::addr_of_mut!((*state).stdio) = StdioInfo {
+            backend: IoBackend::Sink,
+        };
     }
 
-    fn load_plugin_mappings(&mut self, plugin_mappings: PluginMappings) {
+    fn load_config_mappings(&mut self, mappings: PluginMappings, endpoints: PluginEndpoints) {
+        for (endpoint, endpoint_id) in mappings {
+            let &emulation_type = endpoints.get(endpoint_id).unwrap();
+            let backend = match emulation_type {
+                IoEmulationType::Feedback => {
+                    let buffer_id = self.buffers.put(RingBuffer::default());
+                    IoBackend::Feedback(buffer_id)
+                },
+                IoEmulationType::Plugin(plugin_id) => IoBackend::Plugin(plugin_id),
+                IoEmulationType::Sink => IoBackend::Sink,
+                IoEmulationType::NullSink => IoBackend::NullSink,
+                IoEmulationType::Fuzz => IoBackend::Fuzz,
+            };
 
+            match endpoint {
+                IoEndpoint::Stdio => self.stdio.backend = backend,
+                IoEndpoint::File(path) => {
+                    let file_id = self.files.put(FileInfo {
+                        backend,
+                    });
+                    self.file_paths.insert(path, file_id).unwrap();
+                },
+                IoEndpoint::TransportSocket(endpoint) => match endpoint.direction {
+                    SocketDirection::Client => self.add_pending_client(endpoint.transport_addr, Some(backend)),
+                    SocketDirection::Server => self.add_server(endpoint.transport_addr, Some(backend)),
+                },
+            }
+        }
+    }
+
+    pub fn add_pending_client(&mut self, transport_addr: TransportAddress, backend: Option<IoBackend>) {
+        let client_id = self.clients.put(ClientInfo {
+            awaiting_connection: None, // TODO: this is incorrect. It should point to a specific process waiting on connection
+            backend,
+            state: ClientState::PendingConnection,
+            next_pending_client: None,
+        });
+
+        // Add the client to the pending client chain, if applicable
+        match self.socket_locations.get_mut(&transport_addr) {
+            None => {
+                self.socket_locations.insert(transport_addr, SocketLocationInfo {
+                    bound_socket: None,
+                    pending_client: Some(client_id),
+                }).unwrap();
+            },
+            Some(info) => {
+                match info.pending_client {
+                    None => info.pending_client = Some(client_id),
+                    Some(mut next_id) => {
+                        while let Some(ClientInfo { next_pending_client: Some(id), .. }) = self.clients.get(next_id) {
+                            next_id = *id;
+                        }
+                        self.clients.get_mut(next_id).unwrap().next_pending_client = Some(client_id);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn add_server(&mut self, transport_addr: TransportAddress, backend: Option<IoBackend>) {
+        let server_id = self.servers.put(ServerInfo {
+            backend,
+            awaiting_accept: None,
+        });
+
+        let socket_id = self.sockets.put(SocketInfo {
+            variant: SocketVariant::Server(server_id),
+            protocol: transport_addr.protocol,
+            family: match transport_addr.sockaddr {
+                SocketAddr::V4(_) => AddressFamily::Ipv4,
+                SocketAddr::V6(_) => AddressFamily::Ipv6,
+            },
+            local_addr: Some(transport_addr),
+            rem_addr: None,
+        });
+
+        match self.socket_locations.get_mut(&transport_addr) {
+            None => {
+                self.socket_locations.insert(transport_addr, SocketLocationInfo {
+                    bound_socket: Some(socket_id),
+                    pending_client: None,
+                }).unwrap();
+            },
+            Some(location_info) => location_info.bound_socket = Some(socket_id),
+        };   
     }
 
     /// Assigns the next available process ID and increments it internally.
@@ -666,14 +843,24 @@ pub struct BarrierInfo {
 
 #[derive(Debug)]
 pub struct FileInfo {
-    pub backend: FileBackend,
+    pub backend: IoBackend,
 }
 
 #[derive(Debug)]
-pub enum FileBackend {
-    /// Storage is modeled using a RingBuffer (issues with this--consider fixing...)
-    Emulated(BufferId), 
+pub enum IoBackend {
+    /// `read()`s will return whatever was written by prior `write()`s--acts as a virtual file.
+    Feedback(BufferId),
+    /// Uses the plugin specified by `PluginId` to decide `read()`/`write()` behavior.
     Plugin(PluginId),
+    Sink,
+    NullSink,
+    Fuzz,
+    // TODO: add Passthrough here?
+}
+
+/// Used for `stdin`/`stdout` I/O.
+pub struct StdioInfo {
+    backend: IoBackend,
 }
 
 #[derive(Debug)]
@@ -700,7 +887,7 @@ pub enum PipeMode {
 }
 
 #[derive(Debug)]
-pub struct SocketInfo {}
+pub struct ConnectedSocketInfo {}
 
 #[derive(Debug)]
 pub struct MessageQueueInfo {}
@@ -709,7 +896,7 @@ impl FileInfo {
     /// Creates a new temporary file.
     pub fn new(buffer_id: BufferId) -> Self {
         Self {
-            backend: FileBackend::Emulated(buffer_id)
+            backend: IoBackend::Feedback(buffer_id)
         }
     }
 }
@@ -717,7 +904,7 @@ impl FileInfo {
 impl From<PluginId> for FileInfo {
     fn from(plugin_id: PluginId) -> Self {
         Self {
-            backend: FileBackend::Plugin(plugin_id),
+            backend: IoBackend::Plugin(plugin_id),
         }
     }
 }
@@ -743,6 +930,31 @@ pub struct SemaphoreInfo {
     pub unlinked: bool,
     pub value: usize,
     pub waiting: Deque<WorkerId, FIZZLE_MAX_WAITING_SEMAPHORES>,
+}
+
+#[derive(Debug)]
+pub struct SocketInfo {
+    pub variant: SocketVariant,
+    pub protocol: TransportProtocol,
+    pub family: AddressFamily,
+    /// An adress that the socket is `bind()`ed to.
+    pub local_addr: Option<TransportAddress>,
+    /// An address that the socket has `connect()`ed to.
+    pub rem_addr: Option<TransportAddress>
+}
+
+#[derive(Debug)]
+pub enum AddressFamily {
+    Ipv4,
+    Ipv6,
+}
+
+#[derive(Debug)]
+pub enum SocketVariant {
+    Unassociated,
+    Client(ClientId),
+    Server(ServerId),
+    Connected(ConnectedSocketId),
 }
 
 // ---=== Helper Functions ===---

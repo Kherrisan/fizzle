@@ -5,8 +5,9 @@ use fizzle_common::storage::ValueIndex;
 use fizzle_plugin::{FizzlePluginObject, IoEndpointId};
 use heapless::FnvIndexMap;
 
-pub type PluginEndpoints = ValueIndex<IoEndpointId, PluginId, FIZZLE_MAX_PLUGINS>;
+pub type PluginEndpoints = ValueIndex<IoEndpointId, IoEmulationType, FIZZLE_MAX_PLUGINS>;
 pub type PluginModules = ValueIndex<PluginId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>;
+
 pub type PluginMappings = FnvIndexMap<IoEndpoint, IoEndpointId, FIZZLE_MAX_PLUGINS>;
 
 /// Plugin information, populated based on the Fizzle configuration file.
@@ -25,7 +26,6 @@ pub type PluginMappings = FnvIndexMap<IoEndpoint, IoEndpointId, FIZZLE_MAX_PLUGI
 /// We can keep plugin data in the first process spawned, as most fuzzers assume that if the main
 /// process exits then a crash has occurred. Fizzle has a special FIZZLE_NOEXIT option that can be
 /// set to keep the main process alive after a call to `exit()`
-///
 pub struct PluginConfig {
     pub endpoints: PluginEndpoints,
     pub modules: PluginModules,
@@ -55,4 +55,16 @@ impl Into<usize> for PluginId {
     fn into(self) -> usize {
         self.0
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum IoEmulationType {
+    /// `read()`s will return whatever was written by prior `write()`s--acts as a virtual file.
+    Feedback,
+    /// Uses the plugin specified by `PluginId` to decide `read()`/`write()` behavior.
+    Plugin(PluginId),
+    Sink,
+    NullSink,
+    Fuzz,
+    // TODO: add Passthrough here?
 }

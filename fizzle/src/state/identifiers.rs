@@ -25,6 +25,23 @@ impl From<BufferId> for usize {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ConnectedSocketId {
+    identifier: usize,
+}
+
+impl From<usize> for ConnectedSocketId {
+    fn from(value: usize) -> Self {
+        Self { identifier: value }
+    }
+}
+
+impl From<ConnectedSocketId> for usize {
+    fn from(val: ConnectedSocketId) -> Self {
+        val.identifier
+    }
+}
+
 /// An identifier used to represent a valid file descriptor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DescriptorId(usize);

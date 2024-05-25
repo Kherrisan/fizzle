@@ -23,6 +23,12 @@ pub enum FdResource {
     PassthroughFile,
     /// Anonymous pipes, such as those created with `pipe()`.
     Pipe(PipeId),
+    /// The standard input of the parent process (which may be inherited by children).
+    Stdin,
+    /// The standard output of the parent process. (which may be inherited by children).
+    Stdout,
+    /// The standard error of the parent process. (which may be inherited by children).
+    Stderr,
     /// Network sockets.
     #[allow(unused)]
     Socket(SocketId),

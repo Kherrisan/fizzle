@@ -5,10 +5,16 @@ use std::net::SocketAddr;
 use crate::path::FilePath;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct SocketLocation {
+pub struct TransportEndpoint {
     pub direction: SocketDirection,
+    pub transport_addr: TransportAddress,
+}
+
+// TODO: rename this
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TransportAddress {
     pub protocol: TransportProtocol,
-    pub address: SocketAddr,
+    pub sockaddr: SocketAddr,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -16,7 +22,6 @@ pub enum SocketDirection {
     Client,
     Server,
 }
-
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TransportProtocol {
@@ -28,6 +33,7 @@ pub enum TransportProtocol {
     Sctp,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum IoEndpoint {
     /// I/O emulating `stdin`/`stdout`.
     /// 
@@ -36,5 +42,5 @@ pub enum IoEndpoint {
     /// I/O emulating a specific file location.
     File(FilePath),
     /// I/O emulating a transport-layer socket.
-    TransportSocket(SocketLocation),
+    TransportSocket(TransportEndpoint),
 }

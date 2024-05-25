@@ -4,8 +4,15 @@ use std::ffi::CStr;
 
 pub const FIZZLE_MEMORY_ENV: &CStr = c"FIZZLE_MEMORY";
 pub const FIZZLE_STRICT_ENV: &str = "FIZZLE_STRICT";
+/// Instructs the fizzle harness to keep running if the main process would exit normally
+pub const FIZZLE_NOEXIT_ENV: &str = "FIZZLE_NOEXIT";
 
 // Static buffers
+
+pub const FIZZLE_MAX_CLIENTS: usize = 256;
+pub const FIZZLE_MAX_SERVERS: usize = 256;
+pub const FIZZLE_MAX_SOCKETS: usize = 512;
+pub const FIZZLE_MAX_SOCKADDRS: usize = 256;
 
 pub const FIZZLE_MAX_PLUGINS: usize = 128;
 
@@ -22,7 +29,7 @@ pub const FIZZLE_MAX_PIPES: usize = 256;
 pub const FIZZLE_MAX_MESSAGE_QUEUES: usize = 256;
 pub const FIZZLE_BUFFER_LENGTH: usize = 262_144; // 256 KB per buffer (twice the Linux default for `/proc/sys/net/ipv4/tcp_rmem`)
 pub const FIZZLE_MAX_BUFFERS: usize = 256; // 256 * 128 KB = 64 MB total
-pub const FIZZLE_MAX_SOCKETS: usize = 256;
+
 pub const FIZZLE_MAX_NAMED_SEMAPHORES: usize = 128;
 pub const FIZZLE_MAX_FDS: usize = 4096;
 pub const FIZZLE_MAX_WAITING_SEMAPHORES: usize = 32;
