@@ -8,16 +8,20 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{CStr, CString};
 use std::hash::{Hash, Hasher};
 use std::mem::MaybeUninit;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::ops::{Deref, DerefMut};
+use std::os::unix::ffi::OsStrExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::ThreadId;
 use std::{array, env, mem, ptr, thread};
 
-use fizzle_common::io::{IoEndpoint, SocketDirection, TransportAddress, TransportProtocol};
+use fizzle_common::io::{
+    AddressFamily, SocketDirection, TransportAddress, TransportProtocol,
+};
 use fizzle_common::path::{FilePath, SemPath};
 use fizzle_common::storage::{RingBuffer, ValueIndex};
 
+use fizzle_plugin::{IoEndpoint, StreamId};
 use heapless::spsc::Queue;
 
 use fxhash::FxBuildHasher;
@@ -27,9 +31,9 @@ use crate::constants::*;
 use crate::semaphore::Semaphore;
 use crate::state::plugins::PluginConfig;
 
-use self::identifiers::*;
 use self::fd::FdInfo;
-use self::plugins::{IoEmulationType, PluginEndpoints, PluginId, PluginMappings, PluginModules};
+use self::identifiers::*;
+use self::plugins::{IoEmulationType, PluginConfigEndpoint, PluginModules};
 
 // TODO: we will assume that the main process cannot exit. This should be documented.
 // Likewise, there should exist an env variable (like `FIZZLE_NOEXIT=status_code`) that, when set,
@@ -197,20 +201,29 @@ impl FizzleContext {
         );
 
         // Initialize the current thread's lock
-        array::from_fn(|i| if i == thread_idx { Some(Semaphore::new(0)) } else { None })
+        array::from_fn(|i| {
+            if i == thread_idx {
+                Some(Semaphore::new(0))
+            } else {
+                None
+            }
+        })
     }
 
     unsafe fn interprocess_state(shared_memory: *mut libc::c_void) -> *mut InterprocessState {
-        (shared_memory as *mut libc::sem_t).add(FIZZLE_MAX_PROCESSES)
-                as *mut InterprocessState
+        (shared_memory as *mut libc::sem_t).add(FIZZLE_MAX_PROCESSES) as *mut InterprocessState
     }
 
-    unsafe fn open_shmem(shmem_location: *const libc::c_char, create_shmem: bool) -> *mut libc::c_void {
+    unsafe fn open_shmem(
+        shmem_location: *const libc::c_char,
+        create_shmem: bool,
+    ) -> *mut libc::c_void {
         let mode = libc::S_IRUSR | libc::S_IWUSR;
-        let oflag = libc::O_RDWR | match create_shmem {
-            true => libc::O_CREAT | libc::O_EXCL,
-            false => 0,
-        };
+        let oflag = libc::O_RDWR
+            | match create_shmem {
+                true => libc::O_CREAT | libc::O_EXCL,
+                false => 0,
+            };
 
         let fd = unsafe { libc::shm_open(shmem_location, oflag, mode) };
         if fd < 0 {
@@ -249,7 +262,9 @@ impl FizzleContext {
 
     fn create_shmem_label() -> CString {
         let mut name = Vec::from([0u8; 64]);
-        if unsafe { libc::getrandom(name.as_mut_ptr() as *mut libc::c_void, name.len(), 0)} != name.len() as isize {
+        if unsafe { libc::getrandom(name.as_mut_ptr() as *mut libc::c_void, name.len(), 0) }
+            != name.len() as isize
+        {
             panic!("fizzle shared memory initialization failed due to getrandom")
         }
 
@@ -283,9 +298,7 @@ impl FizzleContext {
             sem_ptr = sem_ptr.add(1);
         }
 
-        InterprocessState::initialize(
-            sem_ptr as *mut InterprocessState,
-        );
+        InterprocessState::initialize(sem_ptr as *mut InterprocessState);
     }
 
     /// Initializes the fizzle state.
@@ -302,16 +315,13 @@ impl FizzleContext {
         let shmem_label = unsafe { libc::getenv(FIZZLE_MEMORY_ENV.as_ptr()) };
         if !shmem_label.is_null() {
             // This is a child process of a fizzle fuzzing process--don't initialize the shared memory.
-            log::info!(
-                "FIZZLE_MEMORY env variable detected--opening global shared memory..."
-            );
+            log::info!("FIZZLE_MEMORY env variable detected--opening global shared memory...");
             plugins = None;
 
             unsafe {
                 shared_memory = Self::open_shmem(shmem_label, false);
                 process_id = (*Self::interprocess_state(shared_memory)).assign_process_id();
             }
-
         } else {
             process_id = ProcessId::from(0);
 
@@ -320,11 +330,12 @@ impl FizzleContext {
             plugins = Some(plugin_config.modules);
 
             let shmem_label = Self::create_shmem_label();
-            
+
             unsafe {
                 shared_memory = Self::open_shmem(shmem_label.as_ptr(), true);
                 Self::initialize_shmem_contents(shared_memory);
-                (*Self::interprocess_state(shared_memory)).load_config_mappings(plugin_config.mappings, plugin_config.endpoints);
+                (*Self::interprocess_state(shared_memory))
+                    .load_config_mappings(plugin_config.endpoints);
             }
         }
 
@@ -349,25 +360,18 @@ impl FizzleContext {
     /// Once all threads/processes have finished executing, this returns control flow to the primary
     /// fuzzing process, which signals to the fuzzer that it is ready for the next input.
     pub fn yield_thread(&mut self) {
-
-        // In between processes:
-        // if polled objects still have flag raised, pop first off queues and put in `ready`
-        while let Some(polled_id) = self.global().raised_events.dequeue() {
-            let event_info = self.global().polled_events.get_mut(polled_id).unwrap();
-            if let Some(poller_id) = event_info.pollers.dequeue() {
-                if !self.global().pollers.get(poller_id).unwrap().in_raised_queue {
-                    self.global().ready.enqueue(ReadyItem::Poller(poller_id)).unwrap();
-                }
-            }
-        }
-
         let mut new_raised_events = Queue::new();
         let mut next_worker = None;
-//         Queue<PolledId, FIZZLE_MAX_RAISED_POLL_EVENTS>       
+
         // pop PollerId values off `ready_pollers` one at a time
         while let Some(item) = self.global().ready.dequeue() {
             match item {
-                ReadyItem::Poller(poller_id) => {
+                ReadyInfo::Worker(worker_id) => {
+                    // new_raised_events will be empty here
+                    next_worker = Some(worker_id);
+                    break;
+                }
+                ReadyInfo::Poller(poller_id) => {
                     let global = self.global();
                     let poller_info = global.pollers.get(poller_id).unwrap();
                     for &polled_id in poller_info.polled_events.iter() {
@@ -379,22 +383,15 @@ impl FizzleContext {
                     // if current poller has all PolledId values that have false flags, move on to next
                     if !new_raised_events.is_empty() {
                         next_worker = Some(poller_info.worker_id);
-                        break
+                        break;
                     }
-                }
-                ReadyItem::Worker(worker_id) => {
-                    // new_raised_events will be empty here
-                    next_worker = Some(worker_id);
-                    break
                 }
             }
         }
 
         if let Some(worker_id) = next_worker {
             self.global().waking_thread_id = Some(worker_id.thread_id);
-            if !new_raised_events.is_empty() {
-                self.global().raised_events = new_raised_events;
-            }
+            self.global().raised_events = new_raised_events;
 
             if worker_id.process_id != self.local().process_id {
                 self.wake_process(worker_id.process_id);
@@ -409,47 +406,15 @@ impl FizzleContext {
                 self.get_thread_lock(&thread_id).post();
                 self.pause_current_thread();
             }
-
         } else {
             // No events were triggered for any pollers--move on to next input
-            self.notify_complete();
+            self.fuzz_round_complete();
         }
-
-        /*
-        // Check to see if all threads have finished execution for this process
-        if let Some(thread_id) = self.process_state.ready_threads.pop_front() {
-            // ...if not, then run the next one.
-            self.get_thread_lock(&thread_id).post();
-            self.pause_current_thread();
-        } else if let Some(next_process_id) = self.global().next_ready_process() {
-            // ...if all threads have finished execution, move to next process.
-
-            self.global().waking_thread_id = Some(next_process_id.thread);
-            self.wake_process(next_process_id.process);
-
-            // Wait for a process to delegate back to this one.
-            self.pause_current_process();
-
-            let Some(thread_id) = self.global().waking_thread_id.take() else {
-                panic!("internal fizzle error--no waking_thread_id assigned");
-            };
-
-            if thread::current().id() != thread_id {
-                self.get_thread_lock(&thread_id).post();
-                self.pause_current_thread();
-            }
-        } else {
-            // If no ready processes are left, notify the fuzzing engine
-            self.notify_complete()
-        };
-        */
-
-        // Current thread is ready to execute
     }
 
     /// Notifies the fuzzing engine that the current round of fuzzing has finished.
     /// Note that
-    fn notify_complete(&mut self) {
+    fn fuzz_round_complete(&mut self) {
         // Communicate that process is finished running
 
         // Wait for input from the fuzzing engine...
@@ -460,15 +425,20 @@ impl FizzleContext {
         if false {
             self.yield_thread(); // This won't recurse as long as new inputs are received.
         }
+
+        todo!()
     }
 
     /// Adds a thread from the current process to the `ready` queue.
     pub fn add_ready_thread(&mut self, thread_id: ThreadId) {
         let process_id = self.local().process_id;
-        self.global().ready.enqueue(ReadyItem::Worker(WorkerId {
-            process_id,
-            thread_id,
-        })).unwrap();
+        self.global()
+            .ready
+            .enqueue(ReadyInfo::Worker(WorkerId {
+                process_id,
+                thread_id,
+            }))
+            .unwrap();
     }
 
     /// Ceases execution of the current thread.
@@ -479,13 +449,17 @@ impl FizzleContext {
         self.process_state.terminated_threads.insert(thread_id);
 
         // Notify any threads awaiting this thread's death
-        if let Some(awaiting_threads) = self.process_state.awaiting_thread_death.remove(&thread_id) {
+        if let Some(awaiting_threads) = self.process_state.awaiting_thread_death.remove(&thread_id)
+        {
             for thread_id in awaiting_threads {
                 let process_id = self.local().process_id;
-                self.global().ready.enqueue(ReadyItem::Worker(WorkerId {
-                    process_id,
-                    thread_id,
-                })).unwrap();
+                self.global()
+                    .ready
+                    .enqueue(ReadyInfo::Worker(WorkerId {
+                        process_id,
+                        thread_id,
+                    }))
+                    .unwrap();
             }
         }
 
@@ -524,6 +498,108 @@ impl FizzleContext {
         }
     }
 
+    /// Yields the current process until the `Polled` object delegates execution back.
+    /// This method has O(1) complexity for polling.
+    pub fn yield_poll_once(&mut self, polled_id: PolledId) {
+        let poller_id = self.new_poller();
+        self.register_poller(poller_id, polled_id);
+        self.yield_thread();
+
+        // Special variant of `delete_poller`--since we know we only polled for one event, we
+        // don't need to remove any other outstanding pollers so we can just do this.
+        self.global().pollers.remove(poller_id).unwrap();
+    }
+
+    /// Creates a new poller for the currently executing worker.
+    pub fn new_poller(&mut self) -> PollerId {
+        let worker_id = self.current_worker_id();
+
+        self.global().pollers.put(PollerInfo {
+            worker_id,
+            polled_events: heapless::Vec::new(),
+            in_raised_queue: false,
+        })
+    }
+
+    /// Markes a `Polled` instance as having an event to be consumed.
+    ///
+    /// If the `Polled` instance was not already raised, this will
+    pub fn raise_polled_event(&mut self, polled_id: PolledId) {
+        let polled_event = self.global().polled_events.get(polled_id).unwrap();
+        if !polled_event.event_raised {
+            while let Some(poller_id) = self
+                .global()
+                .polled_events
+                .get_mut(polled_id)
+                .unwrap()
+                .pollers
+                .dequeue()
+            {
+                if !self
+                    .global()
+                    .pollers
+                    .get(poller_id)
+                    .unwrap()
+                    .in_raised_queue
+                {
+                    self.global()
+                        .ready
+                        .enqueue(ReadyInfo::Poller(poller_id))
+                        .unwrap();
+                    self.global()
+                        .polled_events
+                        .get_mut(polled_id)
+                        .unwrap()
+                        .event_raised = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Marks the polled object as not having any events.
+    ///
+    /// This should only be called if a worker has consumed all input from a `Polled` object;
+    /// otherwise, `reraise_polled_event` should be called.
+    pub fn lower_polled_event(&mut self, polled_id: PolledId) {
+        self.global()
+            .polled_events
+            .get_mut(polled_id)
+            .unwrap()
+            .event_raised = false;
+    }
+
+    /// Marks the `Polled` instance as having an event to be consumed annd queues the next poller
+    /// waiting on the instance as being ready.
+    pub fn reraise_polled_event(&mut self, polled_id: PolledId) {
+        self.lower_polled_event(polled_id);
+        self.raise_polled_event(polled_id);
+    }
+
+    /// Registers `poller_id` as waiting on `polled_id`.
+    pub fn register_poller(&mut self, poller_id: PollerId, polled_id: PolledId) {
+        let poller = self.global().pollers.get_mut(poller_id).unwrap();
+        poller.polled_events.push(polled_id).unwrap();
+        let polled = self.global().polled_events.get_mut(polled_id).unwrap();
+        polled.pollers.enqueue(poller_id).unwrap();
+    }
+
+    // Ugh. This looks like O(n^2)...
+    /// Deletes the given poller, removing any references to it from `Polled` objects.
+    pub fn delete_poller(&mut self, poller_id: PollerId) {
+        let poller = self.global().pollers.remove(poller_id).unwrap();
+        if poller.in_raised_queue {
+            // TODO: remove poller from raised queue...
+        }
+    }
+
+    pub fn current_worker_id(&mut self) -> WorkerId {
+        WorkerId {
+            process_id: self.local().process_id(),
+            thread_id: thread::current().id(),
+        }
+    }
+
     fn wake_process(&mut self, process_id: ProcessId) {
         let process_idx: usize = process_id.into();
         if process_idx >= FIZZLE_MAX_PROCESSES {
@@ -538,6 +614,24 @@ impl FizzleContext {
         }
     }
 }
+
+/*
+pub struct PluginContext {
+    pub endpoints: HashMap<fizzle_plugin::IoEndpoint, PluginId>,
+    pub backends: HashMap<PluginId, BackendContext, FxBuildHasher>,
+}
+
+pub struct BackendContext {
+    pub endpoint: fizzle_plugin::IoEndpoint,
+    pub streams: Vec<BackendStream>,
+}
+
+pub struct BackendStream {
+
+}
+*/
+
+// Challenge: map a given endpoint to a (PluginId, IoEndpoint, StreamId) tuple with buffers + Polled instances for I/O
 
 // We do not currently support sem_init() with pshared enabled--that would require tracking shared memory
 // across processes. While this is possible, it would be a difficult and bug-ridden path to take.
@@ -575,10 +669,7 @@ pub struct ProcessState {
 }
 
 impl ProcessState {
-    fn new(
-        process_id: ProcessId,
-        plugin_modules: Option<PluginModules>,
-    ) -> Self {
+    fn new(process_id: ProcessId, plugin_modules: Option<PluginModules>) -> Self {
         let strict_mode = matches!(env::var(FIZZLE_STRICT_ENV), Ok(s) if s.as_str() == "1");
         let suspend_on_exit = matches!(env::var(FIZZLE_NOEXIT_ENV), Ok(s) if s.as_str() == "1");
         STRICT_MODE.store(strict_mode, Ordering::Release);
@@ -617,78 +708,49 @@ impl ProcessState {
     }
 }
 
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ClientId(usize);
-
-impl From<usize> for ClientId {
-    fn from(value: usize) -> Self {
-        Self(value)
-    }
-}
-
-impl From<ClientId> for usize {
-    fn from(value: ClientId) -> Self {
-        value.0
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ServerId(usize);
-
-impl From<usize> for ServerId {
-    fn from(value: usize) -> Self {
-        Self(value)
-    }
-}
-
-impl From<ServerId> for usize {
-    fn from(value: ServerId) -> Self {
-        value.0
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PolledId(usize);
-
-impl From<usize> for PolledId {
-    fn from(value: usize) -> Self {
-        Self(value)
-    }
-}
-
-impl From<PolledId> for usize {
-    fn from(value: PolledId) -> Self {
-        value.0
-    }
+pub struct FileObject {
+    pub descriptor_id: DescriptorId,
+    pub buf: RingBuffer<FIZZLE_FOPEN_BUFSIZE>,
 }
 
 #[derive(Debug)]
 pub struct PolledInfo {
-    pollers: Queue<PollerId, FIZZLE_MAX_PER_EVENT_QUEUED_POLLERS>,
-    event_raised: bool,
-    polled_item: PolledItem,
+    pub pollers: Queue<PollerId, FIZZLE_MAX_PER_EVENT_QUEUED_POLLERS>,
+    pub event_raised: bool,
+    pub polled_item: PolledItem,
+}
+
+impl PolledInfo {
+    pub fn new(polled_item: PolledItem) -> Self {
+        Self {
+            pollers: Queue::new(),
+            event_raised: false,
+            polled_item,
+        }
+    }
 }
 
 #[derive(Debug)]
 pub enum PolledItem {
-    SocketRead(SocketId),
-    SocketWrite(SocketId),
+    None,
+    PendingClients,
+    PluginInput(PluginId),
+    PluginOutput(PluginId),
+    Socket(SocketId),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PollerId(usize);
-
-impl From<usize> for PollerId {
-    fn from(value: usize) -> Self {
-        Self(value)
-    }
+#[derive(Debug)]
+pub struct SocketLocationInfo {
+    /// The socket bound to the given location.
+    pub bound_socket: Option<SocketId>,
+    /// Points to an optional linked list of clients that are awaiting this location to exist.
+    pub pending: Option<PendingInfo>,
 }
 
-impl From<PollerId> for usize {
-    fn from(value: PollerId) -> Self {
-        value.0
-    }
+#[derive(Debug)]
+pub struct PendingInfo {
+    pub client: SocketId,
+    pub poll: PolledId,
 }
 
 #[derive(Debug)]
@@ -698,40 +760,92 @@ pub struct PollerInfo {
     in_raised_queue: bool,
 }
 
-#[derive(Debug)]
-pub struct SocketLocationInfo {
-    pub bound_socket: Option<SocketId>,
-    pub pending_client: Option<ClientId>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ClientState {
-    PendingConnection,
-}
-
-#[derive(Debug)]
-pub struct ClientInfo {
-    pub awaiting_connection: Option<WorkerId>,
-    pub backend: Option<IoBackend>,
-    pub state: ClientState,
-    pub next_pending_client: Option<ClientId>,
-}
-
 // INVARIANT: a Worker must only ever be awakened once it has actions to take.
 // We now seek to accomplish this through the polling infrastructure in InterprocessState.
 
+// TODO: rename...
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadyInfo {
+    Poller(PollerId),
+    Worker(WorkerId),
+}
+
 #[derive(Debug)]
-pub struct ServerInfo {
-    /// For blocking cases only.
-    pub awaiting_accept: Option<WorkerId>,
+pub enum SocketState {
+    Unassociated(UnassociatedSocket),
+    Server(ServerSocket),
+    PendingConnection(PendingSocket),
+    Connecting(ConnectingSocket),
+    Connected(ConnectedSocket),
+    Error,
+}
+
+#[derive(Debug)]
+pub struct UnassociatedSocket {
+    pub local_addr: Option<TransportAddress>,
+    pub family: AddressFamily,
+    pub protocol: TransportProtocol,
+}
+
+#[derive(Debug)]
+pub struct ServerSocket {
     pub backend: Option<IoBackend>,
-    // pub awaiting_connection: Option<WorkerId>,
+    pub local_addr: TransportAddress,
+    pub connecting: Queue<SocketId, FIZZLE_SOMAXCONN>,
+    pub ready_to_connect: PolledId,
+}
+
+#[derive(Debug)]
+pub struct PendingSocket {
+    pub backend: IoBackend,
+    pub next_pending: Option<SocketId>,
+    pub rem_addr: TransportAddress,
+}
+
+#[derive(Debug)]
+pub struct ConnectingSocket {
+    pub backend: Option<IoBackend>,
+    pub polled: PolledId,
+    pub local_addr: TransportAddress,
+    pub rem_addr: TransportAddress,
+}
+
+#[derive(Debug)]
+pub struct ConnectedSocket {
+    pub local_addr: TransportAddress,
+    pub peer: ConnectedPeer,
+    pub recv_buf: BufferId,
+    pub polled: PolledId,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectedPeer {
+    Socket(SocketId),
+    Emulated(IoBackend),
+}
+
+// Runtime active plugin I/O information
+pub struct PluginInfo {
+    pub endpoint: IoEndpoint,
+    pub stream: StreamId,
+    /// Information to be passed to the plugin.
+    pub input: BufferId,
+    pub in_polled: PolledId,
+    /// Information the plugin returns to the application.
+    pub output: BufferId,
+    pub out_polled: PolledId,
+    /// The plugin module to read/write from.
+    pub module: PluginModuleId,
 }
 
 /// State/data shared among all processes in a fizzle execution.
 pub struct InterprocessState {
     /// The next process ID available to be assigned to a new process.
     next_process_id: ProcessId,
+    /// The next StreamId available to be assigned to an emulated stream.
+    next_stream_id: StreamId,
+    /// The next ephemeral port to be assigned to a socket.
+    next_ephemeral_port: u16,
     /// The thread identifier to be executed by the waking process.
     waking_thread_id: Option<ThreadId>,
     pub file_paths: FnvIndexMap<FilePath, FileId, FIZZLE_MAX_FILE_PATHS>,
@@ -740,31 +854,19 @@ pub struct InterprocessState {
     pub semaphores: ValueIndex<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub pipes: ValueIndex<PipeId, PipeInfo, FIZZLE_MAX_PIPES>,
     pub message_queues: ValueIndex<MessageQueueId, MessageQueueInfo, FIZZLE_MAX_MESSAGE_QUEUES>,
-    /// Clients that are awaiting connection to a particular server.
-    pub clients: ValueIndex<ClientId, ClientInfo, FIZZLE_MAX_CLIENTS>,
-    /// Servers that are listening for connections (or packets, if UDP) on a specified port.
-    pub servers: ValueIndex<ServerId, ServerInfo, FIZZLE_MAX_SERVERS>,
-    // Have clients as a Map from (proto, addr) to... Queue?
-    // Problem: there can be multiple client sockets for a given server socket.
+    // TODO: SO_REUSEPORT breaks this...
     pub socket_locations: FnvIndexMap<TransportAddress, SocketLocationInfo, FIZZLE_MAX_SOCKADDRS>,
-    pub sockets: ValueIndex<SocketId, SocketInfo, FIZZLE_MAX_SOCKETS>,
-    pub connected_sockets: ValueIndex<ConnectedSocketId, ConnectedSocketInfo, FIZZLE_MAX_CLIENTS>,
+    pub sockets: ValueIndex<SocketId, SocketState, FIZZLE_MAX_SOCKETS>,
     pub buffers: ValueIndex<BufferId, RingBuffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
     pub transfer_fds: Option<ValueIndex<DescriptorId, FdInfo, FIZZLE_MAX_FDS>>,
     pub stdio: StdioInfo,
     // Polling infrastructure
+    pub plugins: ValueIndex<PluginId, PluginInfo, FIZZLE_MAX_PLUGIN_STREAMS>,
     pub polled_events: ValueIndex<PolledId, PolledInfo, FIZZLE_MAX_POLLED_EVENTS>,
     pub pollers: ValueIndex<PollerId, PollerInfo, FIZZLE_MAX_POLLERS>,
-    pub ready: Queue<ReadyItem, FIZZLE_MAX_QUEUED_READY_POLLERS>,
-    /// Events that remain raised following
+    pub ready: Queue<ReadyInfo, FIZZLE_MAX_QUEUED_READY_POLLERS>,
+    /// Events that are marked as raised for the process being delegated to.
     pub raised_events: Queue<PolledId, FIZZLE_MAX_RAISED_POLL_EVENTS>,
-}
-
-// TODO: rename...
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReadyItem {
-    Poller(PollerId),
-    Worker(WorkerId),
 }
 
 impl InterprocessState {
@@ -772,10 +874,10 @@ impl InterprocessState {
     // unsound until we add the corresponding definition. We should really change it to a trait +
     // proc macro derive.
     /// Takes an uninitialized InterprocessState and initializes it in place.
-    unsafe fn initialize(
-        state: *mut InterprocessState,
-    ) {
+    unsafe fn initialize(state: *mut InterprocessState) {
         *ptr::addr_of_mut!((*state).next_process_id) = ProcessId::from(1);
+        *ptr::addr_of_mut!((*state).next_stream_id) = StreamId::from(0);
+        *ptr::addr_of_mut!((*state).next_ephemeral_port) = FIZZLE_EPHEMERAL_PORT_START;
         *ptr::addr_of_mut!((*state).waking_thread_id) = None;
         *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
         ValueIndex::initialize(ptr::addr_of_mut!((*state).files));
@@ -784,13 +886,11 @@ impl InterprocessState {
         ValueIndex::initialize(ptr::addr_of_mut!((*state).pipes));
         ValueIndex::initialize(ptr::addr_of_mut!((*state).message_queues));
         ValueIndex::initialize(ptr::addr_of_mut!((*state).message_queues));
-        ValueIndex::initialize(ptr::addr_of_mut!((*state).clients));
-        ValueIndex::initialize(ptr::addr_of_mut!((*state).servers));
         *ptr::addr_of_mut!((*state).socket_locations) = FnvIndexMap::new();
         ValueIndex::initialize(ptr::addr_of_mut!((*state).sockets));
-        ValueIndex::initialize(ptr::addr_of_mut!((*state).connected_sockets));
         ValueIndex::initialize(ptr::addr_of_mut!((*state).buffers));
         *ptr::addr_of_mut!((*state).transfer_fds) = None;
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).plugins));
         ValueIndex::initialize(ptr::addr_of_mut!((*state).polled_events));
         ValueIndex::initialize(ptr::addr_of_mut!((*state).pollers));
         *ptr::addr_of_mut!((*state).ready) = Queue::new();
@@ -800,107 +900,180 @@ impl InterprocessState {
         };
     }
 
-    fn load_config_mappings(&mut self, mappings: PluginMappings, endpoints: PluginEndpoints) {
-        for (endpoint, endpoint_id) in mappings {
-            let &emulation_type = endpoints.get(endpoint_id).unwrap();
-            let backend = match emulation_type {
-                IoEmulationType::Feedback => {
-                    let buffer_id = self.buffers.put(RingBuffer::default());
-                    IoBackend::Feedback(buffer_id)
-                },
-                IoEmulationType::Plugin(plugin_id) => IoBackend::Plugin(plugin_id),
-                IoEmulationType::Sink => IoBackend::Sink,
-                IoEmulationType::NullSink => IoBackend::NullSink,
-                IoEmulationType::Fuzz => IoBackend::Fuzz,
-            };
-
-            match endpoint {
-                IoEndpoint::Stdio => self.stdio.backend = backend,
-                IoEndpoint::File(path) => {
-                    let file_id = self.files.put(FileInfo {
-                        backend,
-                    });
-                    self.file_paths.insert(path, file_id).unwrap();
-                },
-                IoEndpoint::TransportSocket(endpoint) => match endpoint.direction {
-                    SocketDirection::Client => self.add_pending_client(endpoint.transport_addr, Some(backend)),
-                    SocketDirection::Server => self.add_server(endpoint.transport_addr, Some(backend)),
-                },
-            }
-        }
-    }
-
-    pub fn set_polled_event_ready(&mut self, polled_id: PolledId) {
-        let polled_info = self.polled_events.get_mut(polled_id).unwrap();
-        if polled_info.event_raised != true {
-            polled_info.event_raised = true;
-            if let Some(poller_id) = polled_info.pollers.dequeue() {
-                self.ready.enqueue(ReadyItem::Poller(poller_id)).unwrap();
-            }
-        }
-    }
-
-    pub fn set_polled_event_blocked(&mut self, polled_id: PolledId) {
-        let polled_info = self.polled_events.get_mut(polled_id).unwrap();
-        polled_info.event_raised = false;
-    }
-
-    pub fn add_pending_client(&mut self, transport_addr: TransportAddress, backend: Option<IoBackend>) {
-        let client_id = self.clients.put(ClientInfo {
-            awaiting_connection: None, // TODO: this is incorrect. It should point to a specific process waiting on connection
-            backend,
-            state: ClientState::PendingConnection,
-            next_pending_client: None,
-        });
-
-        // Add the client to the pending client chain, if applicable
-        match self.socket_locations.get_mut(&transport_addr) {
-            None => {
-                self.socket_locations.insert(transport_addr, SocketLocationInfo {
-                    bound_socket: None,
-                    pending_client: Some(client_id),
-                }).unwrap();
-            },
-            Some(info) => {
-                match info.pending_client {
-                    None => info.pending_client = Some(client_id),
-                    Some(mut next_id) => {
-                        while let Some(ClientInfo { next_pending_client: Some(id), .. }) = self.clients.get(next_id) {
-                            next_id = *id;
-                        }
-                        self.clients.get_mut(next_id).unwrap().next_pending_client = Some(client_id);
+    fn load_config_mappings(&mut self, endpoints: Vec<PluginConfigEndpoint>) {
+        for PluginConfigEndpoint { endpoint, emulation_type, module_id, num_streams } in endpoints {
+            for _ in 0..num_streams {
+                let backend = match emulation_type {
+                    IoEmulationType::Feedback => {
+                        let buffer_id = self.buffers.put(RingBuffer::default());
+                        IoBackend::Feedback(buffer_id)
                     }
+                    IoEmulationType::Plugin(_) => IoBackend::Plugin(self.add_plugin(endpoint.clone(), module_id.unwrap())),
+                    IoEmulationType::Sink => IoBackend::Sink,
+                    IoEmulationType::NullSink => IoBackend::NullSink,
+                    IoEmulationType::Fuzz => IoBackend::Fuzz,
+                };
+
+                match endpoint.clone() {
+                    IoEndpoint::Stdio => self.stdio.backend = backend,
+                    IoEndpoint::File(pathbuf) => {
+                        let path = FilePath::from_raw_bytes(pathbuf.as_os_str().as_bytes()).unwrap();
+                        let file_id = self.files.put(FileInfo { backend });
+                        self.file_paths.insert(path, file_id).unwrap();
+                    }
+                    IoEndpoint::TcpServer(addr) => self.add_server(TransportAddress::Tcp(addr), Some(backend)),
+                    IoEndpoint::TcpClient(addr) => self.add_pending_client(TransportAddress::Tcp(addr), backend),
+                    IoEndpoint::UdpServer(addr) => self.add_server(TransportAddress::Udp(addr), Some(backend)),
+                    IoEndpoint::UdpClient(addr) => self.add_pending_client(TransportAddress::Udp(addr), backend),
+                    IoEndpoint::SctpServer(addr) => self.add_server(TransportAddress::Sctp(addr), Some(backend)),
+                    IoEndpoint::SctpClient(addr) => self.add_pending_client(TransportAddress::Sctp(addr), backend),
+                    _ => panic!("unimplemented IoEndpoint type"),
                 }
             }
         }
     }
 
-    pub fn add_server(&mut self, transport_addr: TransportAddress, backend: Option<IoBackend>) {
-        let server_id = self.servers.put(ServerInfo {
-            backend,
-            awaiting_accept: None,
-        });
+    pub fn add_pending_client(&mut self, rem_addr: TransportAddress, backend: IoBackend) {
+        let client_socket_id = self
+            .sockets
+            .put(SocketState::PendingConnection(PendingSocket {
+                rem_addr,
+                backend,
+                next_pending: None,
+            }));
 
-        let socket_id = self.sockets.put(SocketInfo {
-            variant: SocketVariant::Server(server_id),
-            protocol: transport_addr.protocol,
-            family: match transport_addr.sockaddr {
-                SocketAddr::V4(_) => AddressFamily::Ipv4,
-                SocketAddr::V6(_) => AddressFamily::Ipv6,
+        // Add the client to the pending client chain, if applicable
+        match self.socket_locations.get_mut(&rem_addr) {
+            None => {
+                let polled_id = self
+                    .polled_events
+                    .put(PolledInfo::new(PolledItem::PendingClients));
+                self.socket_locations
+                    .insert(
+                        rem_addr,
+                        SocketLocationInfo {
+                            bound_socket: None,
+                            pending: Some(PendingInfo {
+                                client: client_socket_id,
+                                poll: polled_id,
+                            }),
+                        },
+                    )
+                    .unwrap();
+            }
+            Some(location_info) => match location_info.pending {
+                Some(PendingInfo { mut client, .. }) => {
+                    while let Some(SocketState::PendingConnection(PendingSocket {
+                        next_pending: Some(id),
+                        ..
+                    })) = self.sockets.get(client)
+                    {
+                        client = *id;
+                    }
+                    let SocketState::PendingConnection(PendingSocket {
+                        next_pending: next_awaiting,
+                        ..
+                    }) = &mut self.sockets.get_mut(client).unwrap()
+                    else {
+                        panic!("unexpected internal fizzle state--chain of awaiting clients had invalid socket variant")
+                    };
+
+                    *next_awaiting = Some(client_socket_id);
+                }
+                None => {
+                    let polled_id = self
+                        .polled_events
+                        .put(PolledInfo::new(PolledItem::PendingClients));
+                    location_info.pending = Some(PendingInfo {
+                        client: client_socket_id,
+                        poll: polled_id,
+                    });
+                }
             },
-            local_addr: Some(transport_addr),
-            rem_addr: None,
-        });
+        }
+    }
+
+    pub fn add_server(&mut self, transport_addr: TransportAddress, backend: Option<IoBackend>) {
+        // Create a new polled instance for listeners waiting to accept connections
+        let connect_polled_id = self.polled_events.put(PolledInfo::new(PolledItem::None));
+
+        let socket_id = self.sockets.put(SocketState::Server(ServerSocket {
+            backend,
+            local_addr: transport_addr,
+            connecting: Queue::new(),
+            ready_to_connect: connect_polled_id,
+        }));
+
+        self.polled_events
+            .get_mut(connect_polled_id)
+            .unwrap()
+            .polled_item = PolledItem::Socket(socket_id);
 
         match self.socket_locations.get_mut(&transport_addr) {
             None => {
-                self.socket_locations.insert(transport_addr, SocketLocationInfo {
-                    bound_socket: Some(socket_id),
-                    pending_client: None,
-                }).unwrap();
-            },
+                self.socket_locations
+                    .insert(
+                        transport_addr,
+                        SocketLocationInfo {
+                            bound_socket: Some(socket_id),
+                            pending: None,
+                        },
+                    )
+                    .unwrap();
+            }
             Some(location_info) => location_info.bound_socket = Some(socket_id),
-        };   
+        };
+    }
+
+    pub fn add_plugin(&mut self, endpoint: IoEndpoint, module_id: PluginModuleId) -> PluginId {
+        let stream = self.next_stream_id;
+        self.next_stream_id = StreamId::from(usize::from(stream) + 1);
+
+        let input_buffer = self.buffers.put(RingBuffer::default());
+        let input_polled = self.polled_events.put(PolledInfo::new(PolledItem::None));
+        let output_buffer = self.buffers.put(RingBuffer::default());
+        let output_polled = self.polled_events.put(PolledInfo::new(PolledItem::None));
+
+
+        let plugin_id = self.plugins.put(PluginInfo {
+            endpoint,
+            stream,
+            input: input_buffer,
+            in_polled: input_polled,
+            output: output_buffer,
+            out_polled: output_polled,
+            module: module_id,
+        });
+
+        self.polled_events.get_mut(input_polled).unwrap().polled_item = PolledItem::PluginInput(plugin_id);
+        self.polled_events.get_mut(output_polled).unwrap().polled_item = PolledItem::PluginOutput(plugin_id);
+
+        plugin_id
+    }
+
+    pub fn next_ephemeral_address(
+        &mut self,
+        family: AddressFamily,
+        protocol: TransportProtocol,
+    ) -> TransportAddress {
+        let addr = SocketAddr::new(
+            match family {
+                AddressFamily::Ipv4 => IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), // TODO: enable configuration to specify this address
+                AddressFamily::Ipv6 => IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
+            },
+            self.next_ephemeral_port,
+        );
+        if self.next_ephemeral_port >= FIZZLE_EPHEMERAL_PORT_END {
+            self.next_ephemeral_port = FIZZLE_EPHEMERAL_PORT_START;
+        } else {
+            self.next_ephemeral_port += 1;
+        }
+
+        match protocol {
+            TransportProtocol::Tcp => TransportAddress::Tcp(addr),
+            TransportProtocol::Udp => TransportAddress::Udp(addr),
+            TransportProtocol::Sctp => TransportAddress::Sctp(addr),
+        }
     }
 
     /// Assigns the next available process ID and increments it internally.
@@ -910,10 +1083,9 @@ impl InterprocessState {
         process_id
     }
 
-
     /// Marks the given process/thread pair as having further work to execute.
     pub fn mark_worker_ready(&mut self, worker_id: WorkerId) {
-        self.ready.enqueue(ReadyItem::Worker(worker_id)).unwrap();
+        self.ready.enqueue(ReadyInfo::Worker(worker_id)).unwrap();
     }
 
     /// This method returns `Ok` if the file was created, and `Err` if a file already
@@ -972,23 +1144,13 @@ impl Hasher for ThreadHasher {
     }
 }
 
-pub struct FileObject {
-    pub descriptor_id: DescriptorId,
-    pub buf: RingBuffer<FIZZLE_FOPEN_BUFSIZE>,
-}
-
 #[derive(Debug)]
 pub struct BarrierInfo {
     pub curr: Vec<ThreadId>,
     pub needed: usize,
 }
 
-#[derive(Debug)]
-pub struct FileInfo {
-    pub backend: IoBackend,
-}
-
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IoBackend {
     /// `read()`s will return whatever was written by prior `write()`s--acts as a virtual file.
     Feedback(BufferId),
@@ -1029,16 +1191,18 @@ pub enum PipeMode {
 }
 
 #[derive(Debug)]
-pub struct ConnectedSocketInfo {}
+pub struct MessageQueueInfo {}
 
 #[derive(Debug)]
-pub struct MessageQueueInfo {}
+pub struct FileInfo {
+    pub backend: IoBackend,
+}
 
 impl FileInfo {
     /// Creates a new temporary file.
     pub fn new(buffer_id: BufferId) -> Self {
         Self {
-            backend: IoBackend::Feedback(buffer_id)
+            backend: IoBackend::Feedback(buffer_id),
         }
     }
 }
@@ -1072,31 +1236,6 @@ pub struct SemaphoreInfo {
     pub unlinked: bool,
     pub value: usize,
     pub waiting: Deque<WorkerId, FIZZLE_MAX_WAITING_SEMAPHORES>,
-}
-
-#[derive(Debug)]
-pub struct SocketInfo {
-    pub variant: SocketVariant,
-    pub protocol: TransportProtocol,
-    pub family: AddressFamily,
-    /// An adress that the socket is `bind()`ed to.
-    pub local_addr: Option<TransportAddress>,
-    /// An address that the socket has `connect()`ed to.
-    pub rem_addr: Option<TransportAddress>
-}
-
-#[derive(Debug)]
-pub enum AddressFamily {
-    Ipv4,
-    Ipv6,
-}
-
-#[derive(Debug)]
-pub enum SocketVariant {
-    Unassociated,
-    Client(ClientId),
-    Server(ServerId),
-    Connected(ConnectedSocketId),
 }
 
 // ---=== Helper Functions ===---

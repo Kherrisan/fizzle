@@ -261,7 +261,7 @@ impl<K: Sized + From<usize> + Into<usize>, V: Sized, const N: usize> ValueIndex<
     }
 
     /// Retrieves the next available key from the value index.
-    /// 
+    ///
     /// This algorithm has an average temporal complexity of O(N/K), where N is the number of
     /// places in the ValueIndex and K is the average number of available slots at the time a key
     /// needs to be procured over many trials. So, assuming you only use half of the available
@@ -271,7 +271,8 @@ impl<K: Sized + From<usize> + Into<usize>, V: Sized, const N: usize> ValueIndex<
         let mut curr_key = self.next_key;
         while self.inner[curr_key].is_some() {
             curr_key = (curr_key + 1) % N;
-            if curr_key == self.next_key { // All keys are exhausted
+            if curr_key == self.next_key {
+                // All keys are exhausted
                 return None;
             }
         }

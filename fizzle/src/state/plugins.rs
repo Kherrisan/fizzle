@@ -1,14 +1,13 @@
 use crate::constants::*;
 
-use fizzle_common::io::IoEndpoint;
 use fizzle_common::storage::ValueIndex;
-use fizzle_plugin::{FizzlePluginObject, IoEndpointId};
+use fizzle_plugin::{FizzlePluginObject, IoEndpoint};
 use heapless::FnvIndexMap;
 
-pub type PluginEndpoints = ValueIndex<IoEndpointId, IoEmulationType, FIZZLE_MAX_PLUGINS>;
-pub type PluginModules = ValueIndex<PluginId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>;
+use super::{PluginId, PluginModuleId};
 
-pub type PluginMappings = FnvIndexMap<IoEndpoint, IoEndpointId, FIZZLE_MAX_PLUGINS>;
+pub type PluginModules =
+    ValueIndex<PluginModuleId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>;
 
 /// Plugin information, populated based on the Fizzle configuration file.
 ///
@@ -27,9 +26,15 @@ pub type PluginMappings = FnvIndexMap<IoEndpoint, IoEndpointId, FIZZLE_MAX_PLUGI
 /// process exits then a crash has occurred. Fizzle has a special FIZZLE_NOEXIT option that can be
 /// set to keep the main process alive after a call to `exit()`
 pub struct PluginConfig {
-    pub endpoints: PluginEndpoints,
+    pub endpoints: Vec<PluginConfigEndpoint>,
     pub modules: PluginModules,
-    pub mappings: PluginMappings,
+}
+
+pub struct PluginConfigEndpoint {
+    pub endpoint: IoEndpoint,
+    pub emulation_type: IoEmulationType,
+    pub module_id: Option<PluginModuleId>,
+    pub num_streams: usize,
 }
 
 impl PluginConfig {
@@ -37,23 +42,7 @@ impl PluginConfig {
         Self {
             endpoints: Default::default(),
             modules: Default::default(),
-            mappings: FnvIndexMap::new(),
         }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PluginId(usize);
-
-impl From<usize> for PluginId {
-    fn from(value: usize) -> Self {
-        Self(value)
-    }
-}
-
-impl Into<usize> for PluginId {
-    fn into(self) -> usize {
-        self.0
     }
 }
 

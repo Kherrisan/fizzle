@@ -2,10 +2,9 @@ use std::ffi::CStr;
 use std::ptr;
 
 use crate::hook_macros;
-use crate::state::FileObject;
 use crate::state::fd::{FdInfo, FdResource};
 use crate::state::identifiers::{DescriptorId, FilePtr};
-
+use crate::state::FileObject;
 
 use fizzle_common::path::FilePath;
 use fizzle_common::storage::RingBuffer;
@@ -100,7 +99,7 @@ hook_macros::hook! {
                 Ok(file_id) => file_id,
                 Err(_) if (flags & libc::O_EXCL) != 0 => {
                     *libc::__errno_location() = libc::EEXIST;
-                    return -1                   
+                    return -1
                 }
                 Err(file_id) => file_id,
             };
@@ -246,7 +245,7 @@ hook_macros::hook! {
                 Ok(file_id) => file_id,
                 Err(_) if (flags & libc::O_EXCL) != 0 => {
                     *libc::__errno_location() = libc::EEXIST;
-                    return -1                   
+                    return -1
                 }
                 Err(file_id) => file_id,
             };

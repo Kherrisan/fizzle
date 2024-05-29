@@ -11,17 +11,24 @@ stdio = "fuzz" # Consume all input, produce fuzzing data as output
 "file:./myconfig" = "feedback" # Output whatever is given as input
 "udp-server:127.0.0.1:53" = "passthrough" # Pass on to an actual network service (warning: unstable)
 
-[[io."tcp-client:127.0.0.1:80"]]
+[io."sctp-server:127.0.0.1:38412"]
+method = "plugin" # The means of passing I/O on the device
+module = "fizzle-ngap" # The name of the cargo crate to source the plugin from
+plugin = "NgapServer" # The name of the `FizzlePlugin` implementation to be used
+
+[io."tcp-client:127.0.0.1:80"]
 method = "plugin" # The means of passing I/O on the device
 module = "fizzle-http" # The name of the cargo crate to source the plugin from
 plugin = "HttpClient" # The name of the `FizzlePlugin` implementation to be used
+streams = 5 # Establishes 5 client connections with the given server.
 
 [io."tcp-client:127.0.0.1:80".config]
 # Arbitrary configuration options specific to `fizzle-http` go here
 # This configuration is passed
 
+# TODO: this will be implemented in the future
 # Multiple clients can be specified; they will connect to a server in the order they are specified
-[[io."tcp-client:127.0.0.1:80"]]
-method = "plugin"
-module = "fizzle-http-alt"
-plugin = "HttpClientAlt"
+#[[io."tcp-client:127.0.0.1:80"]]
+#method = "plugin"
+#module = "fizzle-http-alt"
+#plugin = "HttpClientAlt"

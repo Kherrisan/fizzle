@@ -1,10 +1,9 @@
-
 use std::collections::{HashSet, VecDeque};
 use std::ptr;
 use std::thread::{self, ThreadId};
 
-use crate::state::{BarrierInfo, RwLockInfo, RwLockState};
 use crate::state::identifiers::{BarrierPtr, CondVarPtr, MutexPtr, RwLockPtr, SpinlockPtr};
+use crate::state::{BarrierInfo, RwLockInfo, RwLockState};
 use crate::{hook_macros, state};
 
 type PTFunction = unsafe extern "C" fn(*mut libc::c_void) -> *mut libc::c_void;

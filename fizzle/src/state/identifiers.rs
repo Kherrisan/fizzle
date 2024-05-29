@@ -1,6 +1,5 @@
 use std::{os::fd::RawFd, thread::ThreadId};
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BufferId {
     identifier: usize,
@@ -21,23 +20,6 @@ impl From<usize> for BufferId {
 
 impl From<BufferId> for usize {
     fn from(val: BufferId) -> Self {
-        val.identifier
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ConnectedSocketId {
-    identifier: usize,
-}
-
-impl From<usize> for ConnectedSocketId {
-    fn from(value: usize) -> Self {
-        Self { identifier: value }
-    }
-}
-
-impl From<ConnectedSocketId> for usize {
-    fn from(val: ConnectedSocketId) -> Self {
         val.identifier
     }
 }
@@ -156,6 +138,70 @@ impl From<usize> for PipeId {
 impl From<PipeId> for usize {
     fn from(val: PipeId) -> Self {
         val.identifier
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PluginModuleId(usize);
+
+impl From<usize> for PluginModuleId {
+    fn from(value: usize) -> Self {
+        Self(value)
+    }
+}
+
+impl Into<usize> for PluginModuleId {
+    fn into(self) -> usize {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PluginId(usize);
+
+impl PluginId {
+    pub const INVALID: PluginId = PluginId(usize::MAX);
+}
+
+impl From<usize> for PluginId {
+    fn from(value: usize) -> Self {
+        Self(value)
+    }
+}
+
+impl Into<usize> for PluginId {
+    fn into(self) -> usize {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PolledId(usize);
+
+impl From<usize> for PolledId {
+    fn from(value: usize) -> Self {
+        Self(value)
+    }
+}
+
+impl From<PolledId> for usize {
+    fn from(value: PolledId) -> Self {
+        value.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PollerId(usize);
+
+impl From<usize> for PollerId {
+    fn from(value: usize) -> Self {
+        Self(value)
+    }
+}
+
+impl From<PollerId> for usize {
+    fn from(value: PollerId) -> Self {
+        value.0
     }
 }
 

@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::path::PathBuf;
 
 // TODO: can we pass through configuration options for specific streams? How would we go about
 // doing that?? The problem is that a plugin can be defined in multiple I/O endpoints, so the
@@ -16,9 +18,9 @@ use std::collections::HashMap;
 // later to include non-opaque info that we expose via method calls.
 
 /// The specific protocol, I/O endpoint and stream that a plugin method is called for.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Context {
-    pub endpoint: IoEndpointId,
+    pub endpoint: IoEndpoint,
     pub stream_id: StreamId,
 }
 
@@ -26,9 +28,30 @@ pub struct Context {
 ///
 /// This identifier enables multiple connections of the same stream type to be handled
 /// by a single plugin instance, thereby allowing for shared state across streams when needed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct StreamId(usize);
 
+impl From<usize> for StreamId {
+    /// Creates a new StreamId from the given value.
+    /// 
+    /// NOTE: this is an unstable API. This should NOT be used when developing plugins.
+    #[inline]
+    fn from(value: usize) -> Self {
+        StreamId(value)
+    }
+}
+
+impl From<StreamId> for usize {
+    /// Creates a new `usize` from the given `StreamId`.
+    /// 
+    /// NOTE: this is an unstable API. This should NOT be used when developing plugins.
+    #[inline]
+    fn from(value: StreamId) -> Self {
+        value.0
+    }
+}
+
+/*
 /// A unique identifier that corresponds to a single I/O endpoint defined in the `Fizzle`
 /// configuration file.
 ///
@@ -36,19 +59,21 @@ pub struct StreamId(usize);
 /// by a single plugin instance, thereby allowing for shared state across streams when needed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct IoEndpointId(usize);
+*/
 
-impl From<usize> for IoEndpointId {
-    #[inline]
-    fn from(value: usize) -> Self {
-        Self(value)
-    }
-}
-
-impl Into<usize> for IoEndpointId {
-    #[inline]
-    fn into(self) -> usize {
-        self.0
-    }
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum IoEndpoint {
+    /// Standard input/output (`stdin` and `stdout`)
+    Stdio,
+    /// A particular file.
+    File(PathBuf),
+    TcpServer(SocketAddr),
+    TcpClient(SocketAddr),
+    UdpServer(SocketAddr),
+    UdpClient(SocketAddr),
+    SctpServer(SocketAddr),
+    SctpClient(SocketAddr),
 }
 
 /// An error that a plugin may return during calls to [`read()`](FizzlePluginObject::read) or
@@ -70,7 +95,7 @@ pub enum PluginError {
 /// or even add structure- and protocol-awareness to otherwise arbitrary fuzzing inputs.
 pub trait FizzlePlugin: FizzlePluginObject {
     /// Constructs an instance of this plugin, configured with `config`.
-    fn new(config: HashMap<IoEndpointId, toml::Table>) -> Self;
+    fn new(config: HashMap<IoEndpoint, toml::Table>) -> Self;
 }
 
 /// The object-safe subset of methods that must be implemented for a [`FizzlePlugin`].
@@ -90,14 +115,14 @@ pub trait FizzlePluginObject {
     fn load_entropy(&mut self, entropy: &[u8]);
 
     /// Reads data from the service the plugin is modelling.
-    fn read(&mut self, buf: &mut [u8], ctx: Context) -> Result<usize, PluginError>;
+    fn read(&mut self, buf: &mut [u8], ctx: &Context) -> Result<usize, PluginError>;
 
     /// Writes data to the service the plugin is modelling.
-    fn write(&mut self, buf: &[u8], ctx: Context) -> Result<usize, PluginError>;
+    fn write(&mut self, buf: &[u8], ctx: &Context) -> Result<usize, PluginError>;
 
     /// Indicates to Fizzle whether the plugin has data ready to be read or not.
-    fn can_read(&self, ctx: Context) -> bool;
+    fn can_read(&self, ctx: &Context) -> bool;
 
     /// Indicates to Fizzle whether the plugin is ready to have data written to it or not.
-    fn can_write(&self, ctx: Context) -> bool;
+    fn can_write(&self, ctx: &Context) -> bool;
 }
