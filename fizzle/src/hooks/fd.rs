@@ -12,7 +12,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_close(ctx) {
         let descriptor_id = DescriptorId::new(fd);
 
-        // TODO: remove underlying resource from descriptor for each of these options
+        // TODO: remove underlying resource from descriptor for each of these options (otherwise memory leak + state error)
         match ctx.local().fds.remove(descriptor_id) {
             Some(FdInfo { resource: FdResource::Directory(_), .. }) => crate::alias_fd_destroy(fd),
             Some(FdInfo { resource: FdResource::File(_), .. }) => crate::alias_fd_destroy(fd),

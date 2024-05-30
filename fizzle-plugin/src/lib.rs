@@ -33,7 +33,7 @@ pub struct StreamId(usize);
 
 impl From<usize> for StreamId {
     /// Creates a new StreamId from the given value.
-    /// 
+    ///
     /// NOTE: this is an unstable API. This should NOT be used when developing plugins.
     #[inline]
     fn from(value: usize) -> Self {
@@ -43,7 +43,7 @@ impl From<usize> for StreamId {
 
 impl From<StreamId> for usize {
     /// Creates a new `usize` from the given `StreamId`.
-    /// 
+    ///
     /// NOTE: this is an unstable API. This should NOT be used when developing plugins.
     #[inline]
     fn from(value: StreamId) -> Self {

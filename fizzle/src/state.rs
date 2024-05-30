@@ -15,9 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::ThreadId;
 use std::{array, env, mem, ptr, thread};
 
-use fizzle_common::io::{
-    AddressFamily, SocketDirection, TransportAddress, TransportProtocol,
-};
+use fizzle_common::io::{AddressFamily, TransportAddress, TransportProtocol};
 use fizzle_common::path::{FilePath, SemPath};
 use fizzle_common::storage::{RingBuffer, ValueIndex};
 
@@ -375,9 +373,11 @@ impl FizzleContext {
                     let global = self.global();
                     let poller_info = global.pollers.get(poller_id).unwrap();
                     for &polled_id in poller_info.polled_events.iter() {
-                        let polled_info = global.polled_events.get(polled_id).unwrap();
+                        let polled_info = global.polled_events.get_mut(polled_id).unwrap();
+                        polled_info.poller_dispatched = false;
+
                         if polled_info.event_raised {
-                            new_raised_events.enqueue(polled_id).unwrap();
+                            new_raised_events.enqueue(polled_info.polled_item).unwrap();
                         }
                     }
                     // if current poller has all PolledId values that have false flags, move on to next
@@ -498,16 +498,55 @@ impl FizzleContext {
         }
     }
 
-    /// Yields the current process until the `Polled` object delegates execution back.
-    /// This method has O(1) complexity for polling.
-    pub fn yield_poll_once(&mut self, polled_id: PolledId) {
-        let poller_id = self.new_poller();
-        self.register_poller(poller_id, polled_id);
-        self.yield_thread();
+    // call this whenever waiting for a single poll event
+    pub fn poll_until_ready(&mut self, polled_id: PolledId) {
+        if !self.polled_is_ready(polled_id) {
+            let poller_id = self.new_poller();
+            self.register_poller(poller_id, polled_id);
+            self.yield_thread();
+        }
+        // Set polled.poller_dispatched = false;
+    }
 
-        // Special variant of `delete_poller`--since we know we only polled for one event, we
-        // don't need to remove any other outstanding pollers so we can just do this.
-        self.global().pollers.remove(poller_id).unwrap();
+    pub fn polled_is_ready(&mut self, polled_id: PolledId) -> bool {
+        let polled = self.global().polled_events.get(polled_id).unwrap();
+        !polled.poller_dispatched && polled.event_raised
+    }
+
+    // call this whenever new data comes into a buffer
+    pub fn raise_polled(&mut self, polled_id: PolledId) {
+        let polled = self.global().polled_events.get_mut(polled_id).unwrap();
+        polled.event_raised = true;
+        if !polled.poller_dispatched {
+            if let Some(poller_id) = polled.pollers.dequeue() {
+                polled.poller_dispatched = true;
+                self.global()
+                    .ready
+                    .enqueue(ReadyInfo::Poller(poller_id))
+                    .unwrap();
+            }
+        }
+    }
+
+    // if buffer is empty, then call this
+    pub fn lower_polled(&mut self, polled_id: PolledId) {
+        self.global()
+            .polled_events
+            .get_mut(polled_id)
+            .unwrap()
+            .event_raised = false;
+    }
+
+    // else, call this
+    pub fn enqueue_next_polled(&mut self, polled_id: PolledId) {
+        let polled = self.global().polled_events.get_mut(polled_id).unwrap();
+        if let Some(poller_id) = polled.pollers.dequeue() {
+            polled.poller_dispatched = true;
+            self.global()
+                .ready
+                .enqueue(ReadyInfo::Poller(poller_id))
+                .unwrap();
+        }
     }
 
     /// Creates a new poller for the currently executing worker.
@@ -519,61 +558,6 @@ impl FizzleContext {
             polled_events: heapless::Vec::new(),
             in_raised_queue: false,
         })
-    }
-
-    /// Markes a `Polled` instance as having an event to be consumed.
-    ///
-    /// If the `Polled` instance was not already raised, this will
-    pub fn raise_polled_event(&mut self, polled_id: PolledId) {
-        let polled_event = self.global().polled_events.get(polled_id).unwrap();
-        if !polled_event.event_raised {
-            while let Some(poller_id) = self
-                .global()
-                .polled_events
-                .get_mut(polled_id)
-                .unwrap()
-                .pollers
-                .dequeue()
-            {
-                if !self
-                    .global()
-                    .pollers
-                    .get(poller_id)
-                    .unwrap()
-                    .in_raised_queue
-                {
-                    self.global()
-                        .ready
-                        .enqueue(ReadyInfo::Poller(poller_id))
-                        .unwrap();
-                    self.global()
-                        .polled_events
-                        .get_mut(polled_id)
-                        .unwrap()
-                        .event_raised = true;
-                    break;
-                }
-            }
-        }
-    }
-
-    /// Marks the polled object as not having any events.
-    ///
-    /// This should only be called if a worker has consumed all input from a `Polled` object;
-    /// otherwise, `reraise_polled_event` should be called.
-    pub fn lower_polled_event(&mut self, polled_id: PolledId) {
-        self.global()
-            .polled_events
-            .get_mut(polled_id)
-            .unwrap()
-            .event_raised = false;
-    }
-
-    /// Marks the `Polled` instance as having an event to be consumed annd queues the next poller
-    /// waiting on the instance as being ready.
-    pub fn reraise_polled_event(&mut self, polled_id: PolledId) {
-        self.lower_polled_event(polled_id);
-        self.raise_polled_event(polled_id);
     }
 
     /// Registers `poller_id` as waiting on `polled_id`.
@@ -716,7 +700,11 @@ pub struct FileObject {
 #[derive(Debug)]
 pub struct PolledInfo {
     pub pollers: Queue<PollerId, FIZZLE_MAX_PER_EVENT_QUEUED_POLLERS>,
+    /// Indicates that the item being polled is "ready" for the `Poller`.
     pub event_raised: bool,
+    /// Indicates that a `Poller` has been sent to the ready queue from this `Polled` instance and
+    /// has not yet been executed.
+    pub poller_dispatched: bool,
     pub polled_item: PolledItem,
 }
 
@@ -725,12 +713,13 @@ impl PolledInfo {
         Self {
             pollers: Queue::new(),
             event_raised: false,
+            poller_dispatched: false,
             polled_item,
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PolledItem {
     None,
     PendingClients,
@@ -772,12 +761,23 @@ pub enum ReadyInfo {
 
 #[derive(Debug)]
 pub enum SocketState {
+    Connectionless(ConnectionlessSocket),
     Unassociated(UnassociatedSocket),
     Server(ServerSocket),
     PendingConnection(PendingSocket),
     Connecting(ConnectingSocket),
     Connected(ConnectedSocket),
     Error,
+}
+
+#[derive(Debug)]
+pub struct ConnectionlessSocket {
+    pub backend: Option<IoBackend>,
+    pub local_addr: SocketAddr,
+    pub rem_addr: Option<SocketAddr>,
+    pub recv_buf: BufferId,
+    pub read_polled: PolledId,
+    pub write_polled: PolledId,
 }
 
 #[derive(Debug)]
@@ -805,7 +805,7 @@ pub struct PendingSocket {
 #[derive(Debug)]
 pub struct ConnectingSocket {
     pub backend: Option<IoBackend>,
-    pub polled: PolledId,
+    pub connect_polled: PolledId,
     pub local_addr: TransportAddress,
     pub rem_addr: TransportAddress,
 }
@@ -813,9 +813,11 @@ pub struct ConnectingSocket {
 #[derive(Debug)]
 pub struct ConnectedSocket {
     pub local_addr: TransportAddress,
-    pub peer: ConnectedPeer,
+    pub rem_addr: TransportAddress,
+    pub peer: Option<ConnectedPeer>,
     pub recv_buf: BufferId,
-    pub polled: PolledId,
+    pub read_polled: PolledId,
+    pub write_polled: PolledId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -866,7 +868,7 @@ pub struct InterprocessState {
     pub pollers: ValueIndex<PollerId, PollerInfo, FIZZLE_MAX_POLLERS>,
     pub ready: Queue<ReadyInfo, FIZZLE_MAX_QUEUED_READY_POLLERS>,
     /// Events that are marked as raised for the process being delegated to.
-    pub raised_events: Queue<PolledId, FIZZLE_MAX_RAISED_POLL_EVENTS>,
+    pub raised_events: Queue<PolledItem, FIZZLE_MAX_RAISED_POLL_EVENTS>,
 }
 
 impl InterprocessState {
@@ -901,14 +903,31 @@ impl InterprocessState {
     }
 
     fn load_config_mappings(&mut self, endpoints: Vec<PluginConfigEndpoint>) {
-        for PluginConfigEndpoint { endpoint, emulation_type, module_id, num_streams } in endpoints {
+        for PluginConfigEndpoint {
+            endpoint,
+            emulation_type,
+            module_id,
+            num_streams,
+        } in endpoints
+        {
             for _ in 0..num_streams {
+                let is_server = match endpoint {
+                    IoEndpoint::TcpServer(_)
+                    | IoEndpoint::UdpServer(_)
+                    | IoEndpoint::SctpServer(_) => true,
+                    _ => false,
+                };
+
                 let backend = match emulation_type {
                     IoEmulationType::Feedback => {
                         let buffer_id = self.buffers.put(RingBuffer::default());
                         IoBackend::Feedback(buffer_id)
                     }
-                    IoEmulationType::Plugin(_) => IoBackend::Plugin(self.add_plugin(endpoint.clone(), module_id.unwrap())),
+                    IoEmulationType::Plugin(_) => IoBackend::Plugin(if is_server {
+                        PluginId::INVALID
+                    } else {
+                        self.add_plugin(endpoint.clone(), module_id.unwrap())
+                    }),
                     IoEmulationType::Sink => IoBackend::Sink,
                     IoEmulationType::NullSink => IoBackend::NullSink,
                     IoEmulationType::Fuzz => IoBackend::Fuzz,
@@ -917,16 +936,29 @@ impl InterprocessState {
                 match endpoint.clone() {
                     IoEndpoint::Stdio => self.stdio.backend = backend,
                     IoEndpoint::File(pathbuf) => {
-                        let path = FilePath::from_raw_bytes(pathbuf.as_os_str().as_bytes()).unwrap();
+                        let path =
+                            FilePath::from_raw_bytes(pathbuf.as_os_str().as_bytes()).unwrap();
                         let file_id = self.files.put(FileInfo { backend });
                         self.file_paths.insert(path, file_id).unwrap();
                     }
-                    IoEndpoint::TcpServer(addr) => self.add_server(TransportAddress::Tcp(addr), Some(backend)),
-                    IoEndpoint::TcpClient(addr) => self.add_pending_client(TransportAddress::Tcp(addr), backend),
-                    IoEndpoint::UdpServer(addr) => self.add_server(TransportAddress::Udp(addr), Some(backend)),
-                    IoEndpoint::UdpClient(addr) => self.add_pending_client(TransportAddress::Udp(addr), backend),
-                    IoEndpoint::SctpServer(addr) => self.add_server(TransportAddress::Sctp(addr), Some(backend)),
-                    IoEndpoint::SctpClient(addr) => self.add_pending_client(TransportAddress::Sctp(addr), backend),
+                    IoEndpoint::TcpServer(addr) => {
+                        self.add_server(TransportAddress::Tcp(addr), Some(backend))
+                    }
+                    IoEndpoint::TcpClient(addr) => {
+                        self.add_pending_client(TransportAddress::Tcp(addr), backend)
+                    }
+                    IoEndpoint::UdpServer(addr) => {
+                        self.add_server(TransportAddress::Udp(addr), Some(backend))
+                    }
+                    IoEndpoint::UdpClient(addr) => {
+                        self.add_pending_client(TransportAddress::Udp(addr), backend)
+                    }
+                    IoEndpoint::SctpServer(addr) => {
+                        self.add_server(TransportAddress::Sctp(addr), Some(backend))
+                    }
+                    IoEndpoint::SctpClient(addr) => {
+                        self.add_pending_client(TransportAddress::Sctp(addr), backend)
+                    }
                     _ => panic!("unimplemented IoEndpoint type"),
                 }
             }
@@ -1034,7 +1066,6 @@ impl InterprocessState {
         let output_buffer = self.buffers.put(RingBuffer::default());
         let output_polled = self.polled_events.put(PolledInfo::new(PolledItem::None));
 
-
         let plugin_id = self.plugins.put(PluginInfo {
             endpoint,
             stream,
@@ -1045,8 +1076,14 @@ impl InterprocessState {
             module: module_id,
         });
 
-        self.polled_events.get_mut(input_polled).unwrap().polled_item = PolledItem::PluginInput(plugin_id);
-        self.polled_events.get_mut(output_polled).unwrap().polled_item = PolledItem::PluginOutput(plugin_id);
+        self.polled_events
+            .get_mut(input_polled)
+            .unwrap()
+            .polled_item = PolledItem::PluginInput(plugin_id);
+        self.polled_events
+            .get_mut(output_polled)
+            .unwrap()
+            .polled_item = PolledItem::PluginOutput(plugin_id);
 
         plugin_id
     }
@@ -1153,6 +1190,7 @@ pub struct BarrierInfo {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IoBackend {
     /// `read()`s will return whatever was written by prior `write()`s--acts as a virtual file.
+    // TODO: need to turn this into FeedbackInfo complete with `Polled` for read/write
     Feedback(BufferId),
     /// Uses the plugin specified by `PluginId` to decide `read()`/`write()` behavior.
     Plugin(PluginId),

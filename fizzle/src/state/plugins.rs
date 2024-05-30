@@ -2,7 +2,6 @@ use crate::constants::*;
 
 use fizzle_common::storage::ValueIndex;
 use fizzle_plugin::{FizzlePluginObject, IoEndpoint};
-use heapless::FnvIndexMap;
 
 use super::{PluginId, PluginModuleId};
 

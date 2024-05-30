@@ -46,6 +46,10 @@ impl<const T: usize> Buffer<T> {
         self.len() == 0
     }
 
+    pub fn is_full(&self) -> bool {
+        self.len() == T
+    }
+
     pub fn shrink(&mut self, new_length: usize) -> Result<(), BufferError> {
         if self.data_len < new_length {
             return Err(BufferError);
@@ -135,6 +139,7 @@ impl<const T: usize> Write for RingBuffer<T> {
             ));
         }
 
+        // TODO: this (and `read()`) can both use all the I/O they've been provided; fix this!
         let end_idx = (self.data_idx + self.data_len) % T;
 
         let available = match end_idx.cmp(&self.data_idx) {
@@ -193,6 +198,10 @@ impl<const T: usize> RingBuffer<T> {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.len() == T
     }
 
     pub fn clear(&mut self) {

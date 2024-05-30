@@ -2,102 +2,18 @@
 //!
 //!
 
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
-use std::{array, mem};
+use std::mem;
 
-use crate::hook_macros;
 use crate::state::fd::{FdInfo, FdResource};
 use crate::state::identifiers::{DescriptorId, SocketId};
 use crate::state::{
-    ConnectedPeer, ConnectedSocket, ConnectingSocket, FizzleContext, IoBackend, PendingInfo, PluginInfo, PolledInfo, PolledItem, ServerSocket, SocketLocationInfo, SocketState, UnassociatedSocket
+    ConnectedPeer, ConnectedSocket, ConnectingSocket, FizzleContext, IoBackend, PendingInfo,
+    PolledInfo, PolledItem, ServerSocket, SocketLocationInfo, SocketState, UnassociatedSocket,
 };
+use crate::{decode_inet_address, hook_macros};
 use fizzle_common::io::{AddressFamily, TransportAddress, TransportProtocol};
 use fizzle_common::storage::RingBuffer;
 use heapless::spsc::Queue;
-
-pub struct SockAddrError;
-
-unsafe fn decode_inet_address(
-    addr: *const libc::sockaddr,
-    addrlen: libc::socklen_t,
-) -> Result<SocketAddr, SockAddrError> {
-    match (*addr).sa_family as i32 {
-        libc::AF_INET => {
-            let addr = addr as *const libc::sockaddr_in;
-            if addrlen as usize != mem::size_of::<libc::sockaddr_in>() {
-                return Err(SockAddrError);
-            }
-
-            // TODO: verify correctness of these conversions
-            let addr_bytes = u32::from_be((*addr).sin_addr.s_addr).to_be_bytes();
-            let port = u16::from_be((*addr).sin_port);
-            Ok(SocketAddr::V4(SocketAddrV4::new(
-                Ipv4Addr::new(addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3]),
-                port,
-            )))
-        }
-        libc::AF_INET6 => {
-            let addr = addr as *const libc::sockaddr_in6;
-            if addrlen as usize != mem::size_of::<libc::sockaddr_in6>() {
-                return Err(SockAddrError);
-            }
-
-            // TODO: verify correctness of these conversions
-            let addr_segments: [u16; 8] = array::from_fn(|i| {
-                u16::from_be_bytes(
-                    (*addr).sin6_addr.s6_addr[2 * i..(2 * i) + 2]
-                        .try_into()
-                        .unwrap(),
-                )
-            }); // TODO: replace with newer libc functions when they arrive
-            let port = u16::from_be((*addr).sin6_port);
-            let flow_info = u32::from_be((*addr).sin6_flowinfo);
-            let scope_id = u32::from_be((*addr).sin6_scope_id);
-            Ok(SocketAddr::V6(SocketAddrV6::new(
-                Ipv6Addr::new(
-                    addr_segments[0],
-                    addr_segments[1],
-                    addr_segments[2],
-                    addr_segments[3],
-                    addr_segments[4],
-                    addr_segments[5],
-                    addr_segments[6],
-                    addr_segments[7],
-                ),
-                port,
-                flow_info,
-                scope_id,
-            )))
-        }
-        _ => panic!(
-            "fizzle does not currently support address family {}",
-            (*addr).sa_family
-        ),
-    }
-}
-
-///
-/// # Safety
-///
-/// It is the responsibility of the caller to ensure that `addr` points to valid bytes that are
-/// sized according to the address family in the address (e.g., the address length for an `AF_INET`
-/// sockaddr should be equal to `mem::size_of::<libc::sockaddr_in>()`).
-unsafe fn encode_inet_address(addr: *mut libc::sockaddr, address: &SocketAddr) {
-    match address {
-        SocketAddr::V4(v4) => {
-            let addr = addr as *mut libc::sockaddr_in;
-            (*addr).sin_addr.s_addr = u32::from_be_bytes(v4.ip().octets()).to_be();
-            (*addr).sin_port = v4.port().to_be();
-        }
-        SocketAddr::V6(v6) => {
-            let addr = addr as *mut libc::sockaddr_in6;
-            (*addr).sin6_addr.s6_addr = v6.ip().octets();
-            (*addr).sin6_port = v6.port().to_be();
-            (*addr).sin6_flowinfo = v6.flowinfo().to_be();
-            (*addr).sin6_scope_id = v6.scope_id().to_be();
-        }
-    }
-}
 
 hook_macros::hook! {
     unsafe fn socket(
@@ -334,7 +250,11 @@ hook_macros::hook! {
                         },
                         IoBackend::Plugin(plugin_id) => {
                             // Create new plugin
-                            let connect_plugin_id = ctx.global().plugins.put(PluginInfo { endpoint: todo!(), stream: todo!(), input: todo!(), in_polled: todo!(), output: todo!(), out_polled: todo!(), module: todo!() });
+                            let plugin_info = ctx.global().plugins.get(plugin_id).unwrap();
+                            let endpoint = plugin_info.endpoint.clone();
+                            let module_id = plugin_info.module;
+                            let connect_plugin_id = ctx.global().add_plugin(endpoint, module_id);
+                            IoBackend::Plugin(connect_plugin_id)
                         },
                         IoBackend::Sink => IoBackend::Sink,
                         IoBackend::NullSink => IoBackend::NullSink,
@@ -343,20 +263,23 @@ hook_macros::hook! {
 
                     match ctx.global().sockets.get_mut(socket_id).unwrap() {
                         SocketState::Connecting(connecting_info) => {
-                            let polled = connecting_info.polled; // Delete the current polled instance TODO: fix to remove dangling refs
+                            let polled = connecting_info.connect_polled; // Delete the current polled instance TODO: fix to remove dangling refs
                             ctx.global().polled_events.remove(polled).unwrap();
                         },
                         _ => panic!("internal fizzle error"),
                     }
 
-                    let connect_polled = ctx.global().polled_events.put(PolledInfo::new(PolledItem::Socket(socket_id)));
+                    let read_polled = ctx.global().polled_events.put(PolledInfo::new(PolledItem::Socket(socket_id)));
+                    let write_polled = ctx.global().polled_events.put(PolledInfo::new(PolledItem::Socket(socket_id)));
                     let connect_recv_buf = ctx.global().buffers.put(RingBuffer::new());
 
                     *ctx.global().sockets.get_mut(socket_id).unwrap() = SocketState::Connected(ConnectedSocket {
                         local_addr,
-                        peer: ConnectedPeer::Emulated(backend),
-                        polled: connect_polled,
+                        rem_addr,
+                        peer: Some(ConnectedPeer::Emulated(backend)),
+                        read_polled,
                         recv_buf: connect_recv_buf,
+                        write_polled,
                     });
 
                     0
@@ -367,12 +290,12 @@ hook_macros::hook! {
                     };
 
                     let server_poll = server_info.ready_to_connect;
-                    ctx.raise_polled_event(server_poll);
+                    ctx.raise_polled(server_poll);
 
                     let client_poll = ctx.global().polled_events.put(PolledInfo::new(PolledItem::Socket(socket_id)));
                     *ctx.global().sockets.get_mut(socket_id).unwrap() = SocketState::Connecting(ConnectingSocket {
                         backend: None,
-                        polled: client_poll,
+                        connect_polled: client_poll,
                         local_addr,
                         rem_addr
                     });
@@ -381,7 +304,8 @@ hook_macros::hook! {
                         *libc::__errno_location() = libc::EINPROGRESS;
                         -1
                     } else {
-                        ctx.yield_poll_once(client_poll);
+                        ctx.poll_until_ready(client_poll); // TODO: if the server deletes this poll... UAF???
+
                         0
                     }
                 }
@@ -405,6 +329,7 @@ hook_macros::hook! {
                 *libc::__errno_location() = libc::ECONNREFUSED;
                 -1
             }
+            SocketState::Connectionless(_) => panic!("invalid fizzle state--unexpected connectionless socket being connected to")
         }
     }
 }
@@ -414,7 +339,8 @@ hook_macros::hook! {
         fd: libc::c_int,
         addr: *mut libc::sockaddr,
         addrlen: *mut libc::socklen_t
-    ) -> libc::c_int => fizzle_accept(_ctx) {
+    ) -> libc::c_int => fizzle_accept(ctx) {
+        drop(ctx);
         fizzle_accept4(fd, addr, addrlen, 0)
     }
 }
@@ -468,7 +394,7 @@ hook_macros::hook! {
                 None => ctx.global().socket_locations.get_mut(&server_addr).unwrap().pending = None,
             }
 
-            ctx.raise_polled_event(poll);
+            ctx.raise_polled(poll);
 
             return join_socket_pair(&mut ctx, server_id, client, flags)
         }
@@ -484,11 +410,11 @@ hook_macros::hook! {
             };
 
             if !addr.is_null() {
-                encode_inet_address(addr, connecting_info.local_addr.address());
+                crate::encode_inet_address(addr, connecting_info.local_addr.address());
             }
 
-            let polled = connecting_info.polled;
-            ctx.raise_polled_event(polled);
+            let polled = connecting_info.connect_polled;
+            ctx.raise_polled(polled);
 
             return join_socket_pair(&mut ctx, server_id, connecting_id, flags);
 
@@ -497,7 +423,7 @@ hook_macros::hook! {
             return -1
 
         } else { // !is_nonblocking
-            ctx.yield_poll_once(ready_to_connect);
+            ctx.poll_until_ready(ready_to_connect);
 
             // Now there's a connected socket ready
             let SocketState::Server(server_info) = ctx.global().sockets.get_mut(server_id).unwrap() else {
@@ -511,7 +437,7 @@ hook_macros::hook! {
 
             // Write the remote address of the connecting socket for the accept
             if !addr.is_null() {
-                encode_inet_address(addr, connecting_info.local_addr.address());
+                crate::encode_inet_address(addr, connecting_info.local_addr.address());
             }
 
             return join_socket_pair(&mut ctx, server_id, connecting_id, flags);
@@ -526,40 +452,58 @@ fn join_socket_pair(
     connecting_id: SocketId,
     flags: libc::c_int,
 ) -> libc::c_int {
-    let local_addr = match ctx.global().sockets.get(server_id).unwrap() {
+    let server_addr = match ctx.global().sockets.get(server_id).unwrap() {
         SocketState::Server(server_info) => server_info.local_addr,
         _ => panic!("internal fizzle state"),
     };
 
-    match ctx.global().sockets.get_mut(connecting_id).unwrap() {
+    let client_addr = match ctx.global().sockets.get_mut(connecting_id).unwrap() {
         SocketState::Connecting(connecting_info) => {
-            let polled = connecting_info.polled; // Delete the current polled instance TODO: fix to remove dangling refs
+            let client_addr = connecting_info.local_addr;
+            let polled = connecting_info.connect_polled; // Delete the current polled instance TODO: fix to remove dangling refs
             ctx.global().polled_events.remove(polled).unwrap();
+            client_addr
         }
         _ => panic!("internal fizzle error"),
-    }
+    };
 
     let accept_recv_buf = ctx.global().buffers.put(RingBuffer::new());
-    let accept_polled = ctx
+    let accept_read_polled = ctx
         .global()
         .polled_events
         .put(PolledInfo::new(PolledItem::None));
+    let accept_write_polled = ctx
+        .global()
+        .polled_events
+        .put(PolledInfo::new(PolledItem::None));
+
     let accepted_id = ctx
         .global()
         .sockets
         .put(SocketState::Connected(ConnectedSocket {
-            local_addr,
-            peer: ConnectedPeer::Socket(connecting_id),
-            polled: accept_polled,
+            local_addr: server_addr,
+            rem_addr: client_addr,
+            peer: Some(ConnectedPeer::Socket(connecting_id)),
+            read_polled: accept_read_polled,
             recv_buf: accept_recv_buf,
+            write_polled: accept_write_polled,
         }));
     ctx.global()
         .polled_events
-        .get_mut(accept_polled)
+        .get_mut(accept_read_polled)
+        .unwrap()
+        .polled_item = PolledItem::Socket(accepted_id);
+    ctx.global()
+        .polled_events
+        .get_mut(accept_write_polled)
         .unwrap()
         .polled_item = PolledItem::Socket(accepted_id);
 
-    let connect_polled = ctx
+    let connect_read_polled = ctx
+        .global()
+        .polled_events
+        .put(PolledInfo::new(PolledItem::Socket(connecting_id)));
+    let connect_write_polled = ctx
         .global()
         .polled_events
         .put(PolledInfo::new(PolledItem::Socket(connecting_id)));
@@ -567,10 +511,12 @@ fn join_socket_pair(
 
     *ctx.global().sockets.get_mut(connecting_id).unwrap() =
         SocketState::Connected(ConnectedSocket {
-            local_addr,
-            peer: ConnectedPeer::Socket(accepted_id),
-            polled: connect_polled,
+            local_addr: client_addr,
+            rem_addr: server_addr,
+            peer: Some(ConnectedPeer::Socket(accepted_id)),
+            read_polled: connect_read_polled,
             recv_buf: connect_recv_buf,
+            write_polled: connect_write_polled,
         });
 
     // The two sockets are now joined--add a file descriptor to the accepted socket
@@ -585,3 +531,5 @@ fn join_socket_pair(
 
     0 // TODO: need to account for error conditions within this function
 }
+
+// TODO: UDP sockets bound addresses (yes, even ephemeral) need to be registered

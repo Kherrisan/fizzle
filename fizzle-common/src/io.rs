@@ -68,7 +68,6 @@ pub enum AddressFamily {
     Ipv6,
 }
 
-
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum IoSource {
     /// I/O emulating `stdin`/`stdout`.
@@ -80,5 +79,3 @@ pub enum IoSource {
     /// I/O emulating a transport-layer socket.
     TransportSocket(TransportEndpoint),
 }
-
-
