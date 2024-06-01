@@ -78,7 +78,7 @@ hook_macros::hook! {
 
 // We need this to ensure that our `atexit` hook is called first when FIZZLE_NOEXIT is set.
 hook_macros::hook! {
-    unsafe fn atexit(cb: extern "C" fn()) => fizzle_atexit(ctx) {
+    unsafe fn atexit(cb: extern "C" fn()) => fizzle_atexit(_ctx) {
         hook_macros::real!(atexit)(cb)
     }
 }

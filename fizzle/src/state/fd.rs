@@ -1,4 +1,4 @@
-use super::{DirectoryId, FileId, MessageQueueId, PipeId, SocketId};
+use crate::state::identifiers::*;
 
 #[derive(Debug)]
 pub struct FdInfo {
@@ -14,13 +14,13 @@ pub struct FdInfo {
 pub enum FdResource {
     /// Files `open()`ed using O_PATH
     Directory(DirectoryId),
+    /// Epoll descriptors.
+    Epoll(EpollId),
     /// Files that are accessed via the virtual filesystem.
     File(FileId),
     /// Cross-process message queues.
     #[allow(unused)]
     MessageQueue(MessageQueueId),
-    /// Files that are accessed normally.
-    PassthroughFile,
     /// Anonymous pipes, such as those created with `pipe()`.
     Pipe(PipeId),
     /// The standard input of the parent process (which may be inherited by children).

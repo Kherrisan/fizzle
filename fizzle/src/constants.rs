@@ -9,6 +9,9 @@ pub const FIZZLE_NOEXIT_ENV: &str = "FIZZLE_NOEXIT";
 
 // Static buffers
 
+pub const FIZZLE_MAX_EPOLLS: usize = 32;
+pub const FIZZLE_MAX_EPOLL_FDS: usize = 128;
+
 pub const FIZZLE_SOMAXCONN: usize = 64;
 pub const FIZZLE_MAX_SOCKETS: usize = 512;
 pub const FIZZLE_MAX_SOCKADDRS: usize = 256;
@@ -39,7 +42,6 @@ pub const FIZZLE_MAX_PER_POLLER_QUEUED_EVENTS: usize = 64;
 pub const FIZZLE_MAX_POLLERS: usize = 128;
 pub const FIZZLE_MAX_POLLED_EVENTS: usize = 128;
 pub const FIZZLE_MAX_QUEUED_READY_POLLERS: usize = 256;
-pub const FIZZLE_MAX_RAISED_POLL_EVENTS: usize = 128;
 
 pub const FIZZLE_EPHEMERAL_PORT_START: u16 = 32768;
 pub const FIZZLE_EPHEMERAL_PORT_END: u16 = 61000;

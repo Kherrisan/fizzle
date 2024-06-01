@@ -2,6 +2,7 @@ use std::ffi::CStr;
 use std::ptr;
 
 use crate::hook_macros;
+use crate::state::backend::FileBackend;
 use crate::state::fd::{FdInfo, FdResource};
 use crate::state::identifiers::{DescriptorId, FilePtr};
 use crate::state::FileObject;
@@ -12,7 +13,7 @@ use fizzle_common::storage::RingBuffer;
 hook_macros::hook! {
     unsafe fn fdopen(
         fd: libc::c_int,
-        mode: *const libc::c_char
+        _mode: *const libc::c_char
     ) -> *mut libc::FILE => fizzle_fdopen(ctx) {
 
         let descriptor_id = DescriptorId::new(fd);
@@ -24,7 +25,6 @@ hook_macros::hook! {
         };
 
         let file = match fd_info.resource {
-            FdResource::PassthroughFile => hook_macros::real!(fdopen)(fd, mode),
             FdResource::File(_) => crate::unique_mem_create() as *mut libc::FILE,
             _ => {
                 log::debug!("`fdopen` called with unusual (non-file) file descriptor");
@@ -35,7 +35,7 @@ hook_macros::hook! {
         // TODO: parse and use `mode`
         let file_id = FilePtr::from(file);
 
-        let None = ctx.local().file_objs.insert(file_id, crate::state::FileObject { descriptor_id, buf: RingBuffer::new() }) else {
+        let None = ctx.local().file_objs.insert(file_id, FileObject { descriptor_id, buf: RingBuffer::new() }) else {
             panic!("unexpected duplicate passthrough FILE* object created");
         };
 
@@ -138,10 +138,12 @@ hook_macros::hook! {
         } else {
             let fd = hook_macros::real!(open)(pathname, flags, mode);
             if fd >= 0 {
+                let file_id = ctx.global().files.put(FileBackend::Passthrough(fd));
+
                 ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
-                    close_on_exec,
+                    close_on_exec: false,
                     nonblocking: false,
-                    resource: FdResource::PassthroughFile,
+                    resource: FdResource::File(file_id),
                 });
             }
 
@@ -284,10 +286,12 @@ hook_macros::hook! {
         } else {
             let fd = hook_macros::real!(open)(pathname, flags, mode);
             if fd >= 0 {
+                let file_id = ctx.global().files.put(FileBackend::Passthrough(fd));
+
                 ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
-                    close_on_exec,
+                    close_on_exec: false,
                     nonblocking: false,
-                    resource: FdResource::PassthroughFile,
+                    resource: FdResource::File(file_id),
                 });
             }
 
@@ -394,10 +398,12 @@ hook_macros::hook! {
         } else {
             let fd = hook_macros::real!(open)(pathname, 0, 0); // TODO: account for mode here
             if fd >= 0 {
+                let file_id = ctx.global().files.put(FileBackend::Passthrough(fd));
+
                 ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
                     close_on_exec: false,
                     nonblocking: false,
-                    resource: FdResource::PassthroughFile,
+                    resource: FdResource::File(file_id),
                 });
             }
             DescriptorId::new(fd)

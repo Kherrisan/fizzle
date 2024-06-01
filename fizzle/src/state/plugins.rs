@@ -1,7 +1,7 @@
 use crate::constants::*;
 
 use fizzle_common::storage::ValueIndex;
-use fizzle_plugin::{FizzlePluginObject, IoEndpoint};
+use fizzle_plugin::{FizzlePluginObject, IoVariant};
 
 use super::{PluginId, PluginModuleId};
 
@@ -30,7 +30,7 @@ pub struct PluginConfig {
 }
 
 pub struct PluginConfigEndpoint {
-    pub endpoint: IoEndpoint,
+    pub variant: IoVariant,
     pub emulation_type: IoEmulationType,
     pub module_id: Option<PluginModuleId>,
     pub num_streams: usize,

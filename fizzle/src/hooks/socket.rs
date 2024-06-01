@@ -4,11 +4,12 @@
 
 use std::mem;
 
+use crate::state::backend::{ConnectedBackend, ConnectingBackend, IoBackend, RegularConnected, ServerBackend, StandardFeedback, StandardPlugin};
 use crate::state::fd::{FdInfo, FdResource};
 use crate::state::identifiers::{DescriptorId, SocketId};
 use crate::state::{
-    ConnectedPeer, ConnectedSocket, ConnectingSocket, FizzleContext, IoBackend, PendingInfo,
-    PolledInfo, PolledItem, ServerSocket, SocketLocationInfo, SocketState, UnassociatedSocket,
+    ConnectedSocket, ConnectingSocket, FizzleContext, PendingInfo,
+    PolledInfo, ServerSocket, SocketLocationInfo, SocketState, UnassociatedSocket,
 };
 use crate::{decode_inet_address, hook_macros};
 use fizzle_common::io::{AddressFamily, TransportAddress, TransportProtocol};
@@ -169,15 +170,13 @@ hook_macros::hook! {
         };
 
         // Allocate server context and set up polling
-        let ready_to_connect = ctx.global().polled_events.put(PolledInfo::new(PolledItem::None));
+        let ready_to_connect = ctx.global().polled_events.put(PolledInfo::new());
         *ctx.global().sockets.get_mut(socket_id).unwrap() = SocketState::Server(ServerSocket {
-            backend: None,
+            backend: IoBackend::Regular(()),
             local_addr,
             connecting: Queue::new(),
             ready_to_connect,
         });
-
-        ctx.global().polled_events.get_mut(ready_to_connect).unwrap().polled_item = PolledItem::Socket(socket_id);
 
         0
     }
@@ -238,77 +237,85 @@ hook_macros::hook! {
                     return -1 // TODO: in the future, wait until a server does exist
                 };
 
-                if let Some(backend) = server_info.backend {
-                    // Mark the socket as connected immediately, since it's connecting to a backend
-                    // TODO: some programs may be confused by this--a connection immediately returning 0 is unusual for a transport protocol
+                let server_backend = server_info.backend.clone();
 
-                    // Duplicate the backend--we can't use the same IDs as the server, since this is a new connection
-                    let backend = match backend {
-                        IoBackend::Feedback(_) => {
-                            let new_buffer_id = ctx.global().buffers.put(RingBuffer::default());
-                            IoBackend::Feedback(new_buffer_id)
-                        },
-                        IoBackend::Plugin(plugin_id) => {
-                            // Create new plugin
-                            let plugin_info = ctx.global().plugins.get(plugin_id).unwrap();
-                            let endpoint = plugin_info.endpoint.clone();
-                            let module_id = plugin_info.module;
-                            let connect_plugin_id = ctx.global().add_plugin(endpoint, module_id);
-                            IoBackend::Plugin(connect_plugin_id)
-                        },
-                        IoBackend::Sink => IoBackend::Sink,
-                        IoBackend::NullSink => IoBackend::NullSink,
-                        IoBackend::Fuzz => IoBackend::Fuzz,
-                    };
+                // Mark the socket as connected immediately, since it's connecting to a backend
+                // NOTE: some programs may be confused by this--a connection immediately returning 0 is unusual for a transport protocol
 
-                    match ctx.global().sockets.get_mut(socket_id).unwrap() {
-                        SocketState::Connecting(connecting_info) => {
-                            let polled = connecting_info.connect_polled; // Delete the current polled instance TODO: fix to remove dangling refs
-                            ctx.global().polled_events.remove(polled).unwrap();
-                        },
-                        _ => panic!("internal fizzle error"),
-                    }
+                // TODO: write polled instances need to be raised by default in quite a few places...
 
-                    let read_polled = ctx.global().polled_events.put(PolledInfo::new(PolledItem::Socket(socket_id)));
-                    let write_polled = ctx.global().polled_events.put(PolledInfo::new(PolledItem::Socket(socket_id)));
-                    let connect_recv_buf = ctx.global().buffers.put(RingBuffer::new());
-
-                    *ctx.global().sockets.get_mut(socket_id).unwrap() = SocketState::Connected(ConnectedSocket {
-                        local_addr,
-                        rem_addr,
-                        peer: Some(ConnectedPeer::Emulated(backend)),
-                        read_polled,
-                        recv_buf: connect_recv_buf,
-                        write_polled,
-                    });
-
-                    0
-                } else {
-                    let Ok(_) = server_info.connecting.enqueue(socket_id) else {
-                        *libc::__errno_location() = libc::ECONNREFUSED;
-                        return -1
-                    };
-
-                    let server_poll = server_info.ready_to_connect;
-                    ctx.raise_polled(server_poll);
-
-                    let client_poll = ctx.global().polled_events.put(PolledInfo::new(PolledItem::Socket(socket_id)));
-                    *ctx.global().sockets.get_mut(socket_id).unwrap() = SocketState::Connecting(ConnectingSocket {
-                        backend: None,
-                        connect_polled: client_poll,
-                        local_addr,
-                        rem_addr
-                    });
-
-                    if is_nonblocking {
-                        *libc::__errno_location() = libc::EINPROGRESS;
-                        -1
-                    } else {
-                        ctx.poll_until_ready(client_poll); // TODO: if the server deletes this poll... UAF???
-
-                        0
-                    }
+                match ctx.global().sockets.get_mut(socket_id).unwrap() {
+                    SocketState::Connecting(connecting_info) => {
+                        let polled = connecting_info.connect_polled; // Delete the current polled instance TODO: fix to remove dangling refs
+                        ctx.global().polled_events.remove(polled).unwrap();
+                    },
+                    _ => panic!("internal fizzle error"),
                 }
+
+                let connected_backend = match server_backend {
+                    ServerBackend::Passthrough(_) => unimplemented!(),
+                    ServerBackend::Regular(()) => {
+                        let SocketState::Server(server_info) = ctx.global().sockets.get_mut(server_socket_id).unwrap() else {
+                            *libc::__errno_location() = libc::ECONNREFUSED;
+                            return -1 // TODO: in the future, wait until a server does exist
+                        };
+
+                        // Don't actually create a connected backend--
+                        let Ok(_) = server_info.connecting.enqueue(socket_id) else {
+                            *libc::__errno_location() = libc::ECONNREFUSED;
+                            return -1
+                        };
+
+                        let server_poll = server_info.ready_to_connect;
+                        ctx.raise_polled(server_poll);
+
+                        let client_poll = ctx.global().polled_events.put(PolledInfo::new());
+                        *ctx.global().sockets.get_mut(socket_id).unwrap() = SocketState::Connecting(ConnectingSocket {
+                            backend: ConnectingBackend::Regular(()),
+                            connect_polled: client_poll,
+                            local_addr,
+                            rem_addr
+                        });
+
+                        return if is_nonblocking {
+                            *libc::__errno_location() = libc::EINPROGRESS;
+                            -1
+                        } else {
+                            ctx.poll_until_ready(client_poll); // TODO: if the server deletes this poll... UAF???
+                            0
+                        }
+                    }
+                    ServerBackend::Plugin(plugin_id) => {
+                        // Create new plugin
+                        let plugin_info = ctx.global().plugins.get(plugin_id).unwrap();
+                        let endpoint = plugin_info.endpoint.clone();
+                        let module_id = plugin_info.module_id;
+                        let connect_plugin_id = ctx.global().add_plugin(endpoint, module_id);
+                        ConnectedBackend::Plugin(StandardPlugin {
+                            plugin_id: connect_plugin_id,
+                            read_buf: ctx.global().buffers.put(RingBuffer::new()),
+                            read_polled: ctx.global().polled_events.put(PolledInfo::new()),
+                            write_buf: ctx.global().buffers.put(RingBuffer::new()),
+                            write_polled: ctx.global().polled_events.put(PolledInfo::new_raised()),
+                        })
+                    },
+                    ServerBackend::Sink => ConnectedBackend::Sink,
+                    ServerBackend::Fuzz(_) => ConnectedBackend::Fuzz(0),
+                    ServerBackend::NullSink => ConnectedBackend::NullSink,
+                    ServerBackend::Feedback(()) => ConnectedBackend::Feedback(StandardFeedback {
+                            buf: ctx.global().buffers.put(RingBuffer::new()),
+                            read_polled: ctx.global().polled_events.put(PolledInfo::new()),
+                            write_polled: ctx.global().polled_events.put(PolledInfo::new_raised()),
+                    })
+                };
+
+                *ctx.global().sockets.get_mut(socket_id).unwrap() = SocketState::Connected(ConnectedSocket {
+                    backend: connected_backend,
+                    local_addr,
+                    rem_addr,
+                });
+
+                0
             },
             SocketState::Server(_) => {
                 panic!("unexpected fizzle state--`connect()` called on listening socket")
@@ -452,30 +459,57 @@ fn join_socket_pair(
     connecting_id: SocketId,
     flags: libc::c_int,
 ) -> libc::c_int {
-    let server_addr = match ctx.global().sockets.get(server_id).unwrap() {
-        SocketState::Server(server_info) => server_info.local_addr,
+    let (server_addr, server_backend) = match ctx.global().sockets.get(server_id).unwrap() {
+        SocketState::Server(server_info) => (server_info.local_addr, server_info.backend),
         _ => panic!("internal fizzle state"),
     };
 
-    let client_addr = match ctx.global().sockets.get_mut(connecting_id).unwrap() {
-        SocketState::Connecting(connecting_info) => {
-            let client_addr = connecting_info.local_addr;
-            let polled = connecting_info.connect_polled; // Delete the current polled instance TODO: fix to remove dangling refs
-            ctx.global().polled_events.remove(polled).unwrap();
-            client_addr
-        }
-        _ => panic!("internal fizzle error"),
+    let accept_backend = match server_backend {
+        IoBackend::Passthrough(_) => unimplemented!(),
+        IoBackend::Regular(_) => ConnectedBackend::Regular(RegularConnected {
+            peer: Some(connecting_id),
+            recv_buf: ctx.global().buffers.put(RingBuffer::new()),
+            read_polled: ctx.global().polled_events.put(PolledInfo::new()),
+            write_polled: ctx.global().polled_events.put(PolledInfo::new_raised()),
+        }),
+        _ => unreachable!(),
     };
 
-    let accept_recv_buf = ctx.global().buffers.put(RingBuffer::new());
-    let accept_read_polled = ctx
-        .global()
-        .polled_events
-        .put(PolledInfo::new(PolledItem::None));
-    let accept_write_polled = ctx
-        .global()
-        .polled_events
-        .put(PolledInfo::new(PolledItem::None));
+    let (client_addr, connect_backend) = match ctx.global().sockets.get_mut(connecting_id).unwrap() {
+        SocketState::Connecting(connecting_info) => {
+            let client_addr = connecting_info.local_addr;
+            let connect_backend = connecting_info.backend.clone();
+            let polled = connecting_info.connect_polled; // Delete the current polled instance TODO: fix to remove dangling refs
+            ctx.global().polled_events.remove(polled).unwrap();
+            (client_addr, connect_backend)
+        }
+        _ => unreachable!(),
+    };
+
+    let connect_backend = match connect_backend {
+        IoBackend::Passthrough(_fd) => unimplemented!(),
+        IoBackend::Regular(()) => ConnectedBackend::Regular(RegularConnected {
+            peer: Some(connecting_id),
+            recv_buf: ctx.global().buffers.put(RingBuffer::new()),
+            read_polled: ctx.global().polled_events.put(PolledInfo::new()),
+            write_polled: ctx.global().polled_events.put(PolledInfo::new_raised()),
+        }),
+        IoBackend::Feedback(()) => ConnectedBackend::Feedback(StandardFeedback {
+            buf: ctx.global().buffers.put(RingBuffer::new()),
+            read_polled: ctx.global().polled_events.put(PolledInfo::new()),
+            write_polled: ctx.global().polled_events.put(PolledInfo::new_raised()),
+        }),
+        IoBackend::Plugin(plugin_id) => ConnectedBackend::Plugin(StandardPlugin {
+            plugin_id,
+            read_buf: ctx.global().buffers.put(RingBuffer::new()),
+            write_buf: ctx.global().buffers.put(RingBuffer::new()),
+            read_polled: ctx.global().polled_events.put(PolledInfo::new()),
+            write_polled: ctx.global().polled_events.put(PolledInfo::new_raised()),
+        }),
+        IoBackend::Sink => ConnectedBackend::Sink,
+        IoBackend::NullSink => ConnectedBackend::NullSink,
+        IoBackend::Fuzz(_) => ConnectedBackend::Fuzz(0),
+    };
 
     let accepted_id = ctx
         .global()
@@ -483,40 +517,14 @@ fn join_socket_pair(
         .put(SocketState::Connected(ConnectedSocket {
             local_addr: server_addr,
             rem_addr: client_addr,
-            peer: Some(ConnectedPeer::Socket(connecting_id)),
-            read_polled: accept_read_polled,
-            recv_buf: accept_recv_buf,
-            write_polled: accept_write_polled,
+            backend: accept_backend,
         }));
-    ctx.global()
-        .polled_events
-        .get_mut(accept_read_polled)
-        .unwrap()
-        .polled_item = PolledItem::Socket(accepted_id);
-    ctx.global()
-        .polled_events
-        .get_mut(accept_write_polled)
-        .unwrap()
-        .polled_item = PolledItem::Socket(accepted_id);
-
-    let connect_read_polled = ctx
-        .global()
-        .polled_events
-        .put(PolledInfo::new(PolledItem::Socket(connecting_id)));
-    let connect_write_polled = ctx
-        .global()
-        .polled_events
-        .put(PolledInfo::new(PolledItem::Socket(connecting_id)));
-    let connect_recv_buf = ctx.global().buffers.put(RingBuffer::new());
-
+    
     *ctx.global().sockets.get_mut(connecting_id).unwrap() =
         SocketState::Connected(ConnectedSocket {
             local_addr: client_addr,
             rem_addr: server_addr,
-            peer: Some(ConnectedPeer::Socket(accepted_id)),
-            read_polled: connect_read_polled,
-            recv_buf: connect_recv_buf,
-            write_polled: connect_write_polled,
+            backend: connect_backend,
         });
 
     // The two sockets are now joined--add a file descriptor to the accepted socket

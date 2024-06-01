@@ -1,26 +1,21 @@
 use std::{os::fd::RawFd, thread::ThreadId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct BufferId {
-    identifier: usize,
-}
+pub struct BufferId(usize);
 
 impl BufferId {
-    #[allow(unused)]
-    pub fn new(ident: usize) -> Self {
-        Self { identifier: ident }
-    }
+    pub const INVALID: BufferId = BufferId(usize::MAX);
 }
 
 impl From<usize> for BufferId {
     fn from(value: usize) -> Self {
-        Self { identifier: value }
+        Self(value)
     }
 }
 
 impl From<BufferId> for usize {
-    fn from(val: BufferId) -> Self {
-        val.identifier
+    fn from(value: BufferId) -> Self {
+        value.0
     }
 }
 
@@ -57,6 +52,21 @@ impl From<usize> for DirectoryId {
 
 impl From<DirectoryId> for usize {
     fn from(val: DirectoryId) -> Self {
+        val.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EpollId(usize);
+
+impl From<usize> for EpollId {
+    fn from(value: usize) -> Self {
+        Self(value)
+    }
+}
+
+impl From<EpollId> for usize {
+    fn from(val: EpollId) -> Self {
         val.0
     }
 }
@@ -159,10 +169,6 @@ impl Into<usize> for PluginModuleId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PluginId(usize);
 
-impl PluginId {
-    pub const INVALID: PluginId = PluginId(usize::MAX);
-}
-
 impl From<usize> for PluginId {
     fn from(value: usize) -> Self {
         Self(value)
@@ -177,6 +183,10 @@ impl Into<usize> for PluginId {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PolledId(usize);
+
+impl PolledId {
+    pub const INVALID: PolledId = PolledId(usize::MAX);
+}
 
 impl From<usize> for PolledId {
     fn from(value: usize) -> Self {

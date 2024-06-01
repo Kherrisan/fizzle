@@ -1,4 +1,5 @@
-mod comptime;
+pub mod backend;
+pub mod comptime;
 pub mod fd;
 pub mod identifiers;
 pub mod plugins;
@@ -6,10 +7,12 @@ pub mod plugins;
 use std::cell::{RefCell, UnsafeCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{CStr, CString};
+use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::mem::MaybeUninit;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::ops::{Deref, DerefMut};
+use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::ThreadId;
@@ -19,7 +22,7 @@ use fizzle_common::io::{AddressFamily, TransportAddress, TransportProtocol};
 use fizzle_common::path::{FilePath, SemPath};
 use fizzle_common::storage::{RingBuffer, ValueIndex};
 
-use fizzle_plugin::{IoEndpoint, StreamId};
+use fizzle_plugin::{IoVariant, StreamId};
 use heapless::spsc::Queue;
 
 use fxhash::FxBuildHasher;
@@ -29,6 +32,7 @@ use crate::constants::*;
 use crate::semaphore::Semaphore;
 use crate::state::plugins::PluginConfig;
 
+use self::backend::{ConnectedBackend, ConnectingBackend, ConnectionlessBackend, FileBackend, PendingBackend, ServerBackend, StandardFeedback, StandardPlugin, StdioBackend};
 use self::fd::FdInfo;
 use self::identifiers::*;
 use self::plugins::{IoEmulationType, PluginConfigEndpoint, PluginModules};
@@ -358,7 +362,6 @@ impl FizzleContext {
     /// Once all threads/processes have finished executing, this returns control flow to the primary
     /// fuzzing process, which signals to the fuzzer that it is ready for the next input.
     pub fn yield_thread(&mut self) {
-        let mut new_raised_events = Queue::new();
         let mut next_worker = None;
 
         // pop PollerId values off `ready_pollers` one at a time
@@ -374,24 +377,20 @@ impl FizzleContext {
                     let poller_info = global.pollers.get(poller_id).unwrap();
                     for &polled_id in poller_info.polled_events.iter() {
                         let polled_info = global.polled_events.get_mut(polled_id).unwrap();
-                        polled_info.poller_dispatched = false;
-
                         if polled_info.event_raised {
-                            new_raised_events.enqueue(polled_info.polled_item).unwrap();
+                            next_worker = Some(poller_info.worker_id);
+                            break
                         }
+                        
                     }
                     // if current poller has all PolledId values that have false flags, move on to next
-                    if !new_raised_events.is_empty() {
-                        next_worker = Some(poller_info.worker_id);
-                        break;
-                    }
                 }
             }
         }
 
         if let Some(worker_id) = next_worker {
             self.global().waking_thread_id = Some(worker_id.thread_id);
-            self.global().raised_events = new_raised_events;
+            // self.global().raised_events = new_raised_events;
 
             if worker_id.process_id != self.local().process_id {
                 self.wake_process(worker_id.process_id);
@@ -504,26 +503,25 @@ impl FizzleContext {
             let poller_id = self.new_poller();
             self.register_poller(poller_id, polled_id);
             self.yield_thread();
+            self.delete_poller(poller_id);
         }
         // Set polled.poller_dispatched = false;
     }
 
     pub fn polled_is_ready(&mut self, polled_id: PolledId) -> bool {
         let polled = self.global().polled_events.get(polled_id).unwrap();
-        !polled.poller_dispatched && polled.event_raised
+        polled.event_raised
     }
 
     // call this whenever new data comes into a buffer
     pub fn raise_polled(&mut self, polled_id: PolledId) {
-        let polled = self.global().polled_events.get_mut(polled_id).unwrap();
-        polled.event_raised = true;
-        if !polled.poller_dispatched {
-            if let Some(poller_id) = polled.pollers.dequeue() {
-                polled.poller_dispatched = true;
-                self.global()
-                    .ready
-                    .enqueue(ReadyInfo::Poller(poller_id))
-                    .unwrap();
+        let polled = self.global().polled_events.get(polled_id).unwrap();
+        if !polled.event_raised {
+            let pollers = polled.pollers.clone();
+            for poller in pollers {
+                if !self.global().pollers.get(poller).unwrap().in_raised_queue {
+                    self.global().ready.enqueue(ReadyInfo::Poller(poller)).unwrap();
+                }
             }
         }
     }
@@ -537,6 +535,7 @@ impl FizzleContext {
             .event_raised = false;
     }
 
+    /*
     // else, call this
     pub fn enqueue_next_polled(&mut self, polled_id: PolledId) {
         let polled = self.global().polled_events.get_mut(polled_id).unwrap();
@@ -548,6 +547,7 @@ impl FizzleContext {
                 .unwrap();
         }
     }
+    */
 
     /// Creates a new poller for the currently executing worker.
     pub fn new_poller(&mut self) -> PollerId {
@@ -565,7 +565,7 @@ impl FizzleContext {
         let poller = self.global().pollers.get_mut(poller_id).unwrap();
         poller.polled_events.push(polled_id).unwrap();
         let polled = self.global().polled_events.get_mut(polled_id).unwrap();
-        polled.pollers.enqueue(poller_id).unwrap();
+        polled.pollers.push(poller_id).unwrap();
     }
 
     // Ugh. This looks like O(n^2)...
@@ -599,21 +599,7 @@ impl FizzleContext {
     }
 }
 
-/*
-pub struct PluginContext {
-    pub endpoints: HashMap<fizzle_plugin::IoEndpoint, PluginId>,
-    pub backends: HashMap<PluginId, BackendContext, FxBuildHasher>,
-}
 
-pub struct BackendContext {
-    pub endpoint: fizzle_plugin::IoEndpoint,
-    pub streams: Vec<BackendStream>,
-}
-
-pub struct BackendStream {
-
-}
-*/
 
 // Challenge: map a given endpoint to a (PluginId, IoEndpoint, StreamId) tuple with buffers + Polled instances for I/O
 
@@ -697,28 +683,36 @@ pub struct FileObject {
     pub buf: RingBuffer<FIZZLE_FOPEN_BUFSIZE>,
 }
 
+// Each time a Polled is *raised* (i.e., goes from `event_raised: false` to `event_raised: true`),
+// the PolledInfo will move all of its `pollers` into the ready queue (if they are not already there).
 #[derive(Debug)]
 pub struct PolledInfo {
-    pub pollers: Queue<PollerId, FIZZLE_MAX_PER_EVENT_QUEUED_POLLERS>,
+    /// Pollers that this Polled instance is meant to awaken
+    pub pollers: heapless::Vec<PollerId, FIZZLE_MAX_PER_EVENT_QUEUED_POLLERS>,
     /// Indicates that the item being polled is "ready" for the `Poller`.
     pub event_raised: bool,
-    /// Indicates that a `Poller` has been sent to the ready queue from this `Polled` instance and
-    /// has not yet been executed.
-    pub poller_dispatched: bool,
-    pub polled_item: PolledItem,
+    // /// Indicates that a `Poller` has been sent to the ready queue from this `Polled` instance and
+    // /// has not yet been executed.
+    // pub poller_dispatched: bool,
 }
 
 impl PolledInfo {
-    pub fn new(polled_item: PolledItem) -> Self {
+    pub fn new() -> Self {
         Self {
-            pollers: Queue::new(),
+            pollers: heapless::Vec::new(),
             event_raised: false,
-            poller_dispatched: false,
-            polled_item,
+        }
+    }
+
+    pub fn new_raised() -> Self {
+        Self {
+            pollers: heapless::Vec::new(),
+            event_raised: true,
         }
     }
 }
 
+/*
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PolledItem {
     None,
@@ -727,6 +721,7 @@ pub enum PolledItem {
     PluginOutput(PluginId),
     Socket(SocketId),
 }
+*/
 
 #[derive(Debug)]
 pub struct SocketLocationInfo {
@@ -772,12 +767,9 @@ pub enum SocketState {
 
 #[derive(Debug)]
 pub struct ConnectionlessSocket {
-    pub backend: Option<IoBackend>,
+    pub backend: ConnectionlessBackend,
     pub local_addr: SocketAddr,
     pub rem_addr: Option<SocketAddr>,
-    pub recv_buf: BufferId,
-    pub read_polled: PolledId,
-    pub write_polled: PolledId,
 }
 
 #[derive(Debug)]
@@ -789,7 +781,7 @@ pub struct UnassociatedSocket {
 
 #[derive(Debug)]
 pub struct ServerSocket {
-    pub backend: Option<IoBackend>,
+    pub backend: ServerBackend,
     pub local_addr: TransportAddress,
     pub connecting: Queue<SocketId, FIZZLE_SOMAXCONN>,
     pub ready_to_connect: PolledId,
@@ -797,14 +789,14 @@ pub struct ServerSocket {
 
 #[derive(Debug)]
 pub struct PendingSocket {
-    pub backend: IoBackend,
+    pub backend: PendingBackend,
     pub next_pending: Option<SocketId>,
     pub rem_addr: TransportAddress,
 }
 
 #[derive(Debug)]
 pub struct ConnectingSocket {
-    pub backend: Option<IoBackend>,
+    pub backend: ConnectingBackend,
     pub connect_polled: PolledId,
     pub local_addr: TransportAddress,
     pub rem_addr: TransportAddress,
@@ -812,37 +804,59 @@ pub struct ConnectingSocket {
 
 #[derive(Debug)]
 pub struct ConnectedSocket {
+    pub backend: ConnectedBackend,
     pub local_addr: TransportAddress,
     pub rem_addr: TransportAddress,
-    pub peer: Option<ConnectedPeer>,
-    pub recv_buf: BufferId,
-    pub read_polled: PolledId,
-    pub write_polled: PolledId,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ConnectedPeer {
-    Socket(SocketId),
-    Emulated(IoBackend),
 }
 
 // Runtime active plugin I/O information
 pub struct PluginInfo {
-    pub endpoint: IoEndpoint,
+    pub endpoint: IoVariant,
     pub stream: StreamId,
     /// Information to be passed to the plugin.
-    pub input: BufferId,
-    pub in_polled: PolledId,
+    pub write_buf: BufferId,
+    pub write_polled: PolledId,
     /// Information the plugin returns to the application.
-    pub output: BufferId,
-    pub out_polled: PolledId,
+    pub read_buf: BufferId,
+    pub read_polled: PolledId,
     /// The plugin module to read/write from.
-    pub module: PluginModuleId,
+    pub module_id: PluginModuleId,
 }
 
-/// State/data shared among all processes in a fizzle execution.
+#[derive(Debug)]
+pub struct EpollInfo {
+    pub interests: FnvIndexMap<DescriptorId, EpollInterest, FIZZLE_MAX_EPOLL_FDS>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct EpollInterest {
+    pub direction: EpollDirection,
+    pub descriptor: RawFd,
+    pub user_data: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EpollDirection {
+    None,
+    Read(PolledStatus),
+    Write(PolledStatus),
+    Both(PolledStatus, PolledStatus),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PolledStatus {
+    Pollable(PolledId),
+    /// The requested object to be polled has had its peer closed.
+//    Shutdown,
+    /// The file descriptor was invalid.
+    BadFd,
+    /// The requested object will never return polled output (such as attempting to read `stdout`).
+    NotPollable,
+    /// The requested object will immediately return polled output (such as writing to `stderr`).
+    ImmediatelyPollable,
+}
+
 pub struct InterprocessState {
-    /// The next process ID available to be assigned to a new process.
     next_process_id: ProcessId,
     /// The next StreamId available to be assigned to an emulated stream.
     next_stream_id: StreamId,
@@ -850,8 +864,9 @@ pub struct InterprocessState {
     next_ephemeral_port: u16,
     /// The thread identifier to be executed by the waking process.
     waking_thread_id: Option<ThreadId>,
+    pub epolls: ValueIndex<EpollId, EpollInfo, FIZZLE_MAX_EPOLLS>,
     pub file_paths: FnvIndexMap<FilePath, FileId, FIZZLE_MAX_FILE_PATHS>,
-    pub files: ValueIndex<FileId, FileInfo, FIZZLE_MAX_FILES>,
+    pub files: ValueIndex<FileId, FileBackend, FIZZLE_MAX_FILES>,
     pub sem_paths: FnvIndexMap<SemPath, SemaphoreId, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub semaphores: ValueIndex<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub pipes: ValueIndex<PipeId, PipeInfo, FIZZLE_MAX_PIPES>,
@@ -861,14 +876,12 @@ pub struct InterprocessState {
     pub sockets: ValueIndex<SocketId, SocketState, FIZZLE_MAX_SOCKETS>,
     pub buffers: ValueIndex<BufferId, RingBuffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
     pub transfer_fds: Option<ValueIndex<DescriptorId, FdInfo, FIZZLE_MAX_FDS>>,
-    pub stdio: StdioInfo,
+    pub stdio: StdioBackend,
     // Polling infrastructure
     pub plugins: ValueIndex<PluginId, PluginInfo, FIZZLE_MAX_PLUGIN_STREAMS>,
     pub polled_events: ValueIndex<PolledId, PolledInfo, FIZZLE_MAX_POLLED_EVENTS>,
     pub pollers: ValueIndex<PollerId, PollerInfo, FIZZLE_MAX_POLLERS>,
     pub ready: Queue<ReadyInfo, FIZZLE_MAX_QUEUED_READY_POLLERS>,
-    /// Events that are marked as raised for the process being delegated to.
-    pub raised_events: Queue<PolledItem, FIZZLE_MAX_RAISED_POLL_EVENTS>,
 }
 
 impl InterprocessState {
@@ -881,6 +894,7 @@ impl InterprocessState {
         *ptr::addr_of_mut!((*state).next_stream_id) = StreamId::from(0);
         *ptr::addr_of_mut!((*state).next_ephemeral_port) = FIZZLE_EPHEMERAL_PORT_START;
         *ptr::addr_of_mut!((*state).waking_thread_id) = None;
+        ValueIndex::initialize(ptr::addr_of_mut!((*state).epolls));
         *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
         ValueIndex::initialize(ptr::addr_of_mut!((*state).files));
         *ptr::addr_of_mut!((*state).sem_paths) = FnvIndexMap::new();
@@ -896,67 +910,117 @@ impl InterprocessState {
         ValueIndex::initialize(ptr::addr_of_mut!((*state).polled_events));
         ValueIndex::initialize(ptr::addr_of_mut!((*state).pollers));
         *ptr::addr_of_mut!((*state).ready) = Queue::new();
-        *ptr::addr_of_mut!((*state).raised_events) = Queue::new();
-        *ptr::addr_of_mut!((*state).stdio) = StdioInfo {
-            backend: IoBackend::Sink,
-        };
+        *ptr::addr_of_mut!((*state).stdio) = StdioBackend::Sink;
+
     }
 
     fn load_config_mappings(&mut self, endpoints: Vec<PluginConfigEndpoint>) {
-        for PluginConfigEndpoint {
-            endpoint,
-            emulation_type,
-            module_id,
-            num_streams,
-        } in endpoints
-        {
-            for _ in 0..num_streams {
-                let is_server = match endpoint {
-                    IoEndpoint::TcpServer(_)
-                    | IoEndpoint::UdpServer(_)
-                    | IoEndpoint::SctpServer(_) => true,
-                    _ => false,
-                };
-
-                let backend = match emulation_type {
-                    IoEmulationType::Feedback => {
-                        let buffer_id = self.buffers.put(RingBuffer::default());
-                        IoBackend::Feedback(buffer_id)
-                    }
-                    IoEmulationType::Plugin(_) => IoBackend::Plugin(if is_server {
-                        PluginId::INVALID
-                    } else {
-                        self.add_plugin(endpoint.clone(), module_id.unwrap())
-                    }),
-                    IoEmulationType::Sink => IoBackend::Sink,
-                    IoEmulationType::NullSink => IoBackend::NullSink,
-                    IoEmulationType::Fuzz => IoBackend::Fuzz,
-                };
-
-                match endpoint.clone() {
-                    IoEndpoint::Stdio => self.stdio.backend = backend,
-                    IoEndpoint::File(pathbuf) => {
+        for endpoint in endpoints {
+            for _ in 0..endpoint.num_streams {
+                match endpoint.variant.clone() {
+                    IoVariant::Stdio => self.stdio = match endpoint.emulation_type {
+                        IoEmulationType::Feedback => StdioBackend::Feedback(StandardFeedback {
+                            buf: self.buffers.put(RingBuffer::new()),
+                            read_polled: self.polled_events.put(PolledInfo::new()),
+                            write_polled: self.polled_events.put(PolledInfo::new_raised()),
+                        }),
+                        IoEmulationType::Plugin(plugin_id) => StdioBackend::Plugin(StandardPlugin {
+                            plugin_id,
+                            read_buf: self.buffers.put(RingBuffer::new()),
+                            read_polled: self.polled_events.put(PolledInfo::new()),
+                            write_buf: self.buffers.put(RingBuffer::new()),
+                            write_polled: self.polled_events.put(PolledInfo::new_raised()),
+                        }),
+                        IoEmulationType::Sink =>StdioBackend::Sink,
+                        IoEmulationType::NullSink => StdioBackend::NullSink,
+                        IoEmulationType::Fuzz => StdioBackend::Fuzz(0),
+                    },
+                    IoVariant::File(pathbuf) => {
                         let path =
                             FilePath::from_raw_bytes(pathbuf.as_os_str().as_bytes()).unwrap();
-                        let file_id = self.files.put(FileInfo { backend });
+                        let file_id = self.files.put(match endpoint.emulation_type {
+                            IoEmulationType::Feedback => FileBackend::Feedback(StandardFeedback {
+                                buf: self.buffers.put(RingBuffer::new()),
+                                read_polled: self.polled_events.put(PolledInfo::new()),
+                                write_polled: self.polled_events.put(PolledInfo::new_raised()),
+                            }),
+                            IoEmulationType::Plugin(plugin_id) => FileBackend::Plugin(StandardPlugin {
+                                plugin_id,
+                                read_buf: self.buffers.put(RingBuffer::new()),
+                                read_polled: self.polled_events.put(PolledInfo::new()),
+                                write_buf: self.buffers.put(RingBuffer::new()),
+                                write_polled: self.polled_events.put(PolledInfo::new_raised()),
+                            }),
+                            IoEmulationType::Sink => FileBackend::Sink,
+                            IoEmulationType::NullSink => FileBackend::NullSink,
+                            IoEmulationType::Fuzz => FileBackend::Fuzz(0),
+                        });
                         self.file_paths.insert(path, file_id).unwrap();
                     }
-                    IoEndpoint::TcpServer(addr) => {
-                        self.add_server(TransportAddress::Tcp(addr), Some(backend))
+                    IoVariant::TcpServer(addr) => {
+                        let backend = match endpoint.emulation_type {
+                            IoEmulationType::Feedback => ServerBackend::Feedback(()),
+                            IoEmulationType::Plugin(plugin_id) => ServerBackend::Plugin(plugin_id),
+                            IoEmulationType::Sink => ServerBackend::Sink,
+                            IoEmulationType::NullSink => ServerBackend::NullSink,
+                            IoEmulationType::Fuzz => ServerBackend::Fuzz(0),
+                        };
+
+                        self.add_server(TransportAddress::Tcp(addr), backend)
                     }
-                    IoEndpoint::TcpClient(addr) => {
+                    IoVariant::TcpClient(addr) => {
+                        let backend = match endpoint.emulation_type {
+                            IoEmulationType::Feedback => PendingBackend::Feedback(()),
+                            IoEmulationType::Plugin(plugin_id) => PendingBackend::Plugin(plugin_id),
+                            IoEmulationType::Sink => PendingBackend::Sink,
+                            IoEmulationType::NullSink => PendingBackend::NullSink,
+                            IoEmulationType::Fuzz => PendingBackend::Fuzz(0),
+                        };
+
                         self.add_pending_client(TransportAddress::Tcp(addr), backend)
                     }
-                    IoEndpoint::UdpServer(addr) => {
-                        self.add_server(TransportAddress::Udp(addr), Some(backend))
+                    IoVariant::UdpServer(addr) => {
+                        let backend = match endpoint.emulation_type {
+                            IoEmulationType::Feedback => ServerBackend::Feedback(()),
+                            IoEmulationType::Plugin(plugin_id) => ServerBackend::Plugin(plugin_id),
+                            IoEmulationType::Sink => ServerBackend::Sink,
+                            IoEmulationType::NullSink => ServerBackend::NullSink,
+                            IoEmulationType::Fuzz => ServerBackend::Fuzz(0),
+                        };
+
+                        self.add_server(TransportAddress::Udp(addr), backend)
                     }
-                    IoEndpoint::UdpClient(addr) => {
+                    IoVariant::UdpClient(addr) => {
+                        let backend = match endpoint.emulation_type {
+                            IoEmulationType::Feedback => PendingBackend::Feedback(()),
+                            IoEmulationType::Plugin(plugin_id) => PendingBackend::Plugin(plugin_id),
+                            IoEmulationType::Sink => PendingBackend::Sink,
+                            IoEmulationType::NullSink => PendingBackend::NullSink,
+                            IoEmulationType::Fuzz => PendingBackend::Fuzz(0),
+                        };
+
                         self.add_pending_client(TransportAddress::Udp(addr), backend)
                     }
-                    IoEndpoint::SctpServer(addr) => {
-                        self.add_server(TransportAddress::Sctp(addr), Some(backend))
+                    IoVariant::SctpServer(addr) => {
+                        let backend = match endpoint.emulation_type {
+                            IoEmulationType::Feedback => ServerBackend::Feedback(()),
+                            IoEmulationType::Plugin(plugin_id) => ServerBackend::Plugin(plugin_id),
+                            IoEmulationType::Sink => ServerBackend::Sink,
+                            IoEmulationType::NullSink => ServerBackend::NullSink,
+                            IoEmulationType::Fuzz => ServerBackend::Fuzz(0),
+                        };
+
+                        self.add_server(TransportAddress::Sctp(addr), backend)
                     }
-                    IoEndpoint::SctpClient(addr) => {
+                    IoVariant::SctpClient(addr) => {
+                        let backend = match endpoint.emulation_type {
+                            IoEmulationType::Feedback => PendingBackend::Feedback(()),
+                            IoEmulationType::Plugin(plugin_id) => PendingBackend::Plugin(plugin_id),
+                            IoEmulationType::Sink => PendingBackend::Sink,
+                            IoEmulationType::NullSink => PendingBackend::NullSink,
+                            IoEmulationType::Fuzz => PendingBackend::Fuzz(0),
+                        };
+
                         self.add_pending_client(TransportAddress::Sctp(addr), backend)
                     }
                     _ => panic!("unimplemented IoEndpoint type"),
@@ -965,7 +1029,7 @@ impl InterprocessState {
         }
     }
 
-    pub fn add_pending_client(&mut self, rem_addr: TransportAddress, backend: IoBackend) {
+    pub fn add_pending_client(&mut self, rem_addr: TransportAddress, backend: PendingBackend) {
         let client_socket_id = self
             .sockets
             .put(SocketState::PendingConnection(PendingSocket {
@@ -979,7 +1043,7 @@ impl InterprocessState {
             None => {
                 let polled_id = self
                     .polled_events
-                    .put(PolledInfo::new(PolledItem::PendingClients));
+                    .put(PolledInfo::new());
                 self.socket_locations
                     .insert(
                         rem_addr,
@@ -1015,7 +1079,7 @@ impl InterprocessState {
                 None => {
                     let polled_id = self
                         .polled_events
-                        .put(PolledInfo::new(PolledItem::PendingClients));
+                        .put(PolledInfo::new());
                     location_info.pending = Some(PendingInfo {
                         client: client_socket_id,
                         poll: polled_id,
@@ -1025,9 +1089,9 @@ impl InterprocessState {
         }
     }
 
-    pub fn add_server(&mut self, transport_addr: TransportAddress, backend: Option<IoBackend>) {
+    pub fn add_server(&mut self, transport_addr: TransportAddress, backend: ServerBackend) {
         // Create a new polled instance for listeners waiting to accept connections
-        let connect_polled_id = self.polled_events.put(PolledInfo::new(PolledItem::None));
+        let connect_polled_id = self.polled_events.put(PolledInfo::new());
 
         let socket_id = self.sockets.put(SocketState::Server(ServerSocket {
             backend,
@@ -1035,11 +1099,6 @@ impl InterprocessState {
             connecting: Queue::new(),
             ready_to_connect: connect_polled_id,
         }));
-
-        self.polled_events
-            .get_mut(connect_polled_id)
-            .unwrap()
-            .polled_item = PolledItem::Socket(socket_id);
 
         match self.socket_locations.get_mut(&transport_addr) {
             None => {
@@ -1057,33 +1116,24 @@ impl InterprocessState {
         };
     }
 
-    pub fn add_plugin(&mut self, endpoint: IoEndpoint, module_id: PluginModuleId) -> PluginId {
+    pub fn add_plugin(&mut self, endpoint: IoVariant, module_id: PluginModuleId) -> PluginId {
         let stream = self.next_stream_id;
         self.next_stream_id = StreamId::from(usize::from(stream) + 1);
 
-        let input_buffer = self.buffers.put(RingBuffer::default());
-        let input_polled = self.polled_events.put(PolledInfo::new(PolledItem::None));
-        let output_buffer = self.buffers.put(RingBuffer::default());
-        let output_polled = self.polled_events.put(PolledInfo::new(PolledItem::None));
+        let read_buf = self.buffers.put(RingBuffer::default());
+        let read_polled = self.polled_events.put(PolledInfo::new());
+        let write_buf = self.buffers.put(RingBuffer::default());
+        let write_polled = self.polled_events.put(PolledInfo::new_raised());
 
         let plugin_id = self.plugins.put(PluginInfo {
             endpoint,
             stream,
-            input: input_buffer,
-            in_polled: input_polled,
-            output: output_buffer,
-            out_polled: output_polled,
-            module: module_id,
+            write_buf,
+            write_polled,
+            read_buf,
+            read_polled,
+            module_id,
         });
-
-        self.polled_events
-            .get_mut(input_polled)
-            .unwrap()
-            .polled_item = PolledItem::PluginInput(plugin_id);
-        self.polled_events
-            .get_mut(output_polled)
-            .unwrap()
-            .polled_item = PolledItem::PluginOutput(plugin_id);
 
         plugin_id
     }
@@ -1131,8 +1181,14 @@ impl InterprocessState {
         match self.file_paths.get(&path) {
             Some(&id) => Err(id),
             None => {
-                let buffer_id = self.buffers.put(RingBuffer::new());
-                let file_id = self.files.put(FileInfo::new(buffer_id));
+                let buf = self.buffers.put(RingBuffer::new());
+                let read_polled = self.polled_events.put(PolledInfo::new());
+                let write_polled = self.polled_events.put(PolledInfo::new_raised());
+                let file_id = self.files.put(FileBackend::Feedback(StandardFeedback {
+                    buf,
+                    read_polled,
+                    write_polled,
+                }));
                 Ok(file_id)
             }
         }
@@ -1187,23 +1243,7 @@ pub struct BarrierInfo {
     pub needed: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum IoBackend {
-    /// `read()`s will return whatever was written by prior `write()`s--acts as a virtual file.
-    // TODO: need to turn this into FeedbackInfo complete with `Polled` for read/write
-    Feedback(BufferId),
-    /// Uses the plugin specified by `PluginId` to decide `read()`/`write()` behavior.
-    Plugin(PluginId),
-    Sink,
-    NullSink,
-    Fuzz,
-    // TODO: add Passthrough here?
-}
 
-/// Used for `stdin`/`stdout` I/O.
-pub struct StdioInfo {
-    backend: IoBackend,
-}
 
 #[derive(Debug)]
 pub struct PipeInfo {
@@ -1231,27 +1271,6 @@ pub enum PipeMode {
 #[derive(Debug)]
 pub struct MessageQueueInfo {}
 
-#[derive(Debug)]
-pub struct FileInfo {
-    pub backend: IoBackend,
-}
-
-impl FileInfo {
-    /// Creates a new temporary file.
-    pub fn new(buffer_id: BufferId) -> Self {
-        Self {
-            backend: IoBackend::Feedback(buffer_id),
-        }
-    }
-}
-
-impl From<PluginId> for FileInfo {
-    fn from(plugin_id: PluginId) -> Self {
-        Self {
-            backend: IoBackend::Plugin(plugin_id),
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct RwLockInfo {

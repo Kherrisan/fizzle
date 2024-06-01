@@ -1,9 +1,8 @@
 use std::cmp::Ordering;
 use std::hash::Hash;
-use std::io::{Read, Write};
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
-use std::{array, cmp, io, mem, ptr};
+use std::{array, cmp, mem, ptr};
 
 #[derive(Debug, Clone, Eq)]
 pub struct Buffer<const T: usize> {
@@ -130,59 +129,6 @@ impl<const T: usize> Default for RingBuffer<T> {
     }
 }
 
-impl<const T: usize> Write for RingBuffer<T> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        if self.data_len == T {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "no more room left in RingBuffer to have any data written",
-            ));
-        }
-
-        // TODO: this (and `read()`) can both use all the I/O they've been provided; fix this!
-        let end_idx = (self.data_idx + self.data_len) % T;
-
-        let available = match end_idx.cmp(&self.data_idx) {
-            Ordering::Greater | Ordering::Equal => T - end_idx,
-            Ordering::Less => self.data_idx - end_idx,
-        };
-
-        let written = cmp::min(available, buf.len());
-
-        self.data[end_idx..end_idx + written].copy_from_slice(unsafe {
-            &*(&buf[..written] as *const [u8] as *const [MaybeUninit<u8>])
-        });
-        self.data_len += written;
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<const T: usize> Read for RingBuffer<T> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.data_len == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "no more data left in RingBuffer to read",
-            ));
-        }
-
-        let available = cmp::min(self.data_len, T - self.data_idx);
-        let read = cmp::min(available, buf.len());
-
-        buf[..read].copy_from_slice(unsafe {
-            &*(&self.data[self.data_idx..self.data_idx + read] as *const [MaybeUninit<u8>]
-                as *const [u8])
-        });
-        self.data_idx = (self.data_idx + read) % T;
-
-        Ok(read)
-    }
-}
-
 impl<const T: usize> RingBuffer<T> {
     pub fn new() -> Self {
         Self {
@@ -207,6 +153,45 @@ impl<const T: usize> RingBuffer<T> {
     pub fn clear(&mut self) {
         self.data_idx = 0;
         self.data_len = 0;
+    }
+
+    pub fn write(&mut self, buf: &[u8]) -> usize {
+        if self.data_len == T {
+            return 0
+        }
+
+        // TODO: this (and `read()`) can both use all the I/O they've been provided; fix this!
+        let end_idx = (self.data_idx + self.data_len) % T;
+
+        let available = match end_idx.cmp(&self.data_idx) {
+            Ordering::Greater | Ordering::Equal => T - end_idx,
+            Ordering::Less => self.data_idx - end_idx,
+        };
+
+        let written = cmp::min(available, buf.len());
+
+        self.data[end_idx..end_idx + written].copy_from_slice(unsafe {
+            &*(&buf[..written] as *const [u8] as *const [MaybeUninit<u8>])
+        });
+        self.data_len += written;
+        written
+    }
+
+    pub fn read(&mut self, buf: &mut [u8]) -> usize {
+        if self.data_len == 0 {
+            return 0
+        }
+
+        let available = cmp::min(self.data_len, T - self.data_idx);
+        let read = cmp::min(available, buf.len());
+
+        buf[..read].copy_from_slice(unsafe {
+            &*(&self.data[self.data_idx..self.data_idx + read] as *const [MaybeUninit<u8>]
+                as *const [u8])
+        });
+        self.data_idx = (self.data_idx + read) % T;
+
+        read
     }
 }
 

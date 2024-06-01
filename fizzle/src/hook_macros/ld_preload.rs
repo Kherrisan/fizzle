@@ -70,6 +70,7 @@ macro_rules! hook {
         }
 
         pub unsafe fn $hook_fn ( $($v : $t),*) -> $r {
+            #[allow(unused_mut)]
             let mut $state = crate::state::FIZZLE_STATE.get();
             $body
         }
