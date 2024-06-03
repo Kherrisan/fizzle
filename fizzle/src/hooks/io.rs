@@ -98,7 +98,41 @@ hook_macros::hook! {
                 FileBackend::Fuzz(_) => len as libc::ssize_t,
             }
             FdResource::MessageQueue(_) => todo!(),
-            FdResource::Pipe(_) => todo!(),
+            FdResource::Pipe(pipe_id) => {
+                let Some(peer_id) = ctx.global().pipes.get(pipe_id).unwrap().peer else {
+                    *libc::__errno_location() = libc::EPIPE;
+                    return -1
+                };
+
+                let peer_info = ctx.global().pipes.get(peer_id).unwrap();
+                let buffer_id = peer_info.read_buf;
+                let write_polled = peer_info.write_polled;
+                let read_polled = peer_info.read_polled;
+                
+                if !ctx.polled_is_ready(write_polled) {
+                    if is_nonblocking {
+                        unsafe { *libc::__errno_location() = libc::EAGAIN };
+                        return -1
+                    } else {
+                        ctx.poll_until_ready(write_polled);
+                    }
+                }
+
+                // We need to verify that this connection has not shut down before writing to the same buffer_id
+                if ctx.global().pipes.get(pipe_id).unwrap().peer.is_none() {
+                    unsafe { *libc::__errno_location() = libc::EPIPE };
+                    return -1
+                };
+
+                let buf = ctx.global().buffers.get_mut(buffer_id).unwrap();
+                let written = buf.write(data);
+                if buf.is_full() {
+                    ctx.lower_polled(write_polled);
+                }
+                ctx.raise_polled(read_polled);
+
+                return written as isize
+            },
             FdResource::Stdin => 0,
             FdResource::Stdout => match ctx.global().stdio {
                 StdioBackend::Passthrough(_) => unreachable!(),
@@ -290,7 +324,39 @@ hook_macros::hook! {
                 crate::state::backend::IoBackend::Fuzz(_) => todo!(),
             }
             FdResource::MessageQueue(_) => todo!(),
-            FdResource::Pipe(_) => todo!(),
+            FdResource::Pipe(pipe_id) => {
+                let pipe_info = ctx.global().pipes.get(pipe_id).unwrap();
+                let peer_is_closed = pipe_info.peer.is_none();
+
+                let buffer_id = pipe_info.read_buf;
+                let write_polled = pipe_info.write_polled;
+                let read_polled = pipe_info.read_polled;
+                
+                if !ctx.polled_is_ready(write_polled) {
+                    if peer_is_closed {
+                        return 0
+                    } else if is_nonblocking {
+                        unsafe { *libc::__errno_location() = libc::EAGAIN };
+                        return -1
+                    } else {
+                        ctx.poll_until_ready(write_polled);
+                    }
+                }
+
+                if ctx.global().pipes.get(pipe_id).unwrap().peer.is_none() {
+                    return 0
+                }
+
+                let buf = ctx.global().buffers.get_mut(buffer_id).unwrap();
+                let amount_written = buf.read(data);
+                
+                if buf.is_empty() {
+                    ctx.lower_polled(read_polled);
+                }
+                ctx.raise_polled(write_polled);
+
+                return amount_written as isize
+            },
             FdResource::Stdin => match ctx.global().stdio {
                 StdioBackend::Passthrough(_) => unreachable!(),
                 StdioBackend::Regular(_) => unreachable!(),
@@ -640,7 +706,7 @@ fn send_connectionless_socket(
             // Re-doing all this accounts for a nasty (though unlikely) TOCTOU bug that could show up if the
             // destination UDP server disconnects and another takes it place while this thread is polling.
             if !ctx.polled_is_ready(write_polled) {
-                return data.len() as libc::ssize_t
+                return data.len() as libc::ssize_t // Drop packet
             }
 
             let buf = ctx.global().buffers.get_mut(buffer_id).unwrap();

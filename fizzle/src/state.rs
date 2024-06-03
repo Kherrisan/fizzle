@@ -405,6 +405,11 @@ impl FizzleContext {
                 self.get_thread_lock(&thread_id).post();
                 self.pause_current_thread();
             }
+        } else if self::plugins::run_plugins() { // Plugins have queued more workers as ready
+            // This shouldn't lead to a stack overflow unless `run_plugins` erroneously
+            // returns `true` but doesn't schedule new workers.
+            self.yield_thread();
+        
         } else {
             // No events were triggered for any pollers--move on to next input
             self.fuzz_round_complete();
@@ -1257,6 +1262,8 @@ pub struct PipeInfo {
     pub peer: Option<PipeId>,
     /// The buffer this pipe reads in data from.
     pub read_buf: BufferId,
+    pub read_polled: PolledId,
+    pub write_polled: PolledId,
 }
 
 /// The mode of operation by which data is passed over the pipe.

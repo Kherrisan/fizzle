@@ -20,9 +20,10 @@ hook_macros::hook! {
             Some(FdInfo { resource: FdResource::Socket(_), .. }) => return hook_macros::real!(close)(fd),
             Some(FdInfo { resource: FdResource::MessageQueue(_), .. }) => crate::alias_fd_destroy(fd),
             Some(FdInfo { resource: FdResource::Pipe(_), .. }) => crate::alias_fd_destroy(fd),
-            Some(FdInfo { resource: FdResource::Stdin, .. }) => crate::alias_fd_destroy(fd),
-            Some(FdInfo { resource: FdResource::Stdout, .. }) => crate::alias_fd_destroy(fd),
-            Some(FdInfo { resource: FdResource::Stderr, .. }) => crate::alias_fd_destroy(fd),
+            // TODO: mark stdin as closed after this...
+            Some(FdInfo { resource: FdResource::Stdin, .. }) => return hook_macros::real!(close)(fd),
+            Some(FdInfo { resource: FdResource::Stdout, .. }) => return hook_macros::real!(close)(fd),
+            Some(FdInfo { resource: FdResource::Stderr, .. }) => return hook_macros::real!(close)(fd),
             None => {
                 *libc::__errno_location() = libc::EBADFD;
                 return -1

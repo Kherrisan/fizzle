@@ -56,3 +56,8 @@ pub enum IoEmulationType {
     Fuzz,
     // TODO: add Passthrough here?
 }
+
+
+pub fn run_plugins() -> bool {
+    
+}

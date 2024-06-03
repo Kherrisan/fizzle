@@ -29,7 +29,7 @@ pub fn fd_to_pollin(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
             }
         },
         FdResource::MessageQueue(_) => todo!(),
-        FdResource::Pipe(_) => todo!(),
+        FdResource::Pipe(pipe_id) => PolledStatus::Pollable(ctx.global().pipes.get(pipe_id).unwrap().read_polled),
         FdResource::Stdin => match ctx.global().stdio {
             StdioBackend::Passthrough(_) => unreachable!(),
             StdioBackend::Regular(_) => unreachable!(),
@@ -88,7 +88,13 @@ pub fn fd_to_pollout(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
             }
         },
         FdResource::MessageQueue(_) => todo!(),
-        FdResource::Pipe(_) => todo!(),
+        FdResource::Pipe(pipe_id) => {
+            if let Some(peer_id) = ctx.global().pipes.get(pipe_id).unwrap().peer {
+                PolledStatus::Pollable(ctx.global().pipes.get(peer_id).unwrap().write_polled)
+            } else {
+                PolledStatus::ImmediatelyPollable
+            }
+        },
         FdResource::Stdin => PolledStatus::NotPollable,
         FdResource::Stdout => match ctx.global().stdio {
             StdioBackend::Passthrough(_) => unreachable!(),
