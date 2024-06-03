@@ -818,12 +818,6 @@ pub struct ConnectedSocket {
 pub struct PluginInfo {
     pub endpoint: IoEndpointVariant,
     pub stream: StreamId,
-    /// Information to be passed to the plugin.
-    pub write_buf: BufferId,
-    pub write_polled: PolledId,
-    /// Information the plugin returns to the application.
-    pub read_buf: BufferId,
-    pub read_polled: PolledId,
     /// The plugin module to read/write from.
     pub module_id: PluginModuleId,
 }
@@ -922,15 +916,16 @@ impl InterprocessState {
     fn load_config_mappings(&mut self, endpoints: Vec<PluginConfigEndpoint>) {
         for endpoint in endpoints {
             for _ in 0..endpoint.num_streams {
-                match endpoint.endpoint_variant.clone() {
+            let endpoint_variant = endpoint.endpoint_variant.clone();
+                match endpoint_variant {
                     IoEndpointVariant::Stdio => self.stdio = match endpoint.emulation_type {
                         IoEmulationType::Feedback => StdioBackend::Feedback(StandardFeedback {
                             buf: self.buffers.put(RingBuffer::new()),
                             read_polled: self.polled_events.put(PolledInfo::new()),
                             write_polled: self.polled_events.put(PolledInfo::new_raised()),
                         }),
-                        IoEmulationType::Plugin(plugin_id) => StdioBackend::Plugin(StandardPlugin {
-                            plugin_id,
+                        IoEmulationType::Plugin(module_id) => StdioBackend::Plugin(StandardPlugin {
+                            plugin_id: self.add_plugin(endpoint_variant.clone(), module_id),
                             read_buf: self.buffers.put(RingBuffer::new()),
                             read_polled: self.polled_events.put(PolledInfo::new()),
                             write_buf: self.buffers.put(RingBuffer::new()),
@@ -944,30 +939,37 @@ impl InterprocessState {
                     IoEndpointVariant::File(pathbuf) => {
                         let path =
                             FilePath::from_raw_bytes(pathbuf.as_os_str().as_bytes()).unwrap();
-                        let file_id = self.files.put(match endpoint.emulation_type {
-                            IoEmulationType::Feedback => FileBackend::Feedback(StandardFeedback {
-                                buf: self.buffers.put(RingBuffer::new()),
-                                read_polled: self.polled_events.put(PolledInfo::new()),
-                                write_polled: self.polled_events.put(PolledInfo::new_raised()),
-                            }),
-                            IoEmulationType::Plugin(plugin_id) => FileBackend::Plugin(StandardPlugin {
-                                plugin_id,
-                                read_buf: self.buffers.put(RingBuffer::new()),
-                                read_polled: self.polled_events.put(PolledInfo::new()),
-                                write_buf: self.buffers.put(RingBuffer::new()),
-                                write_polled: self.polled_events.put(PolledInfo::new_raised()),
-                            }),
-                            IoEmulationType::Sink => FileBackend::Sink,
-                            IoEmulationType::NullSink => FileBackend::NullSink,
-                            IoEmulationType::Fuzz => FileBackend::Fuzz(0),
-                            IoEmulationType::Passthrough => FileBackend::Passthrough,
-                        });
+
+                        let file_id = match endpoint.emulation_type {
+                            IoEmulationType::Feedback => {
+                                self.files.put(FileBackend::Feedback(StandardFeedback {
+                                    buf: self.buffers.put(RingBuffer::new()),
+                                    read_polled: self.polled_events.put(PolledInfo::new()),
+                                    write_polled: self.polled_events.put(PolledInfo::new_raised()),
+                                }))
+                            }
+                            IoEmulationType::Plugin(module_id) => {
+                                let backend = FileBackend::Plugin(StandardPlugin {
+                                    plugin_id: self.add_plugin(endpoint.endpoint_variant.clone(), module_id),
+                                    read_buf: self.buffers.put(RingBuffer::new()),
+                                    read_polled: self.polled_events.put(PolledInfo::new()),
+                                    write_buf: self.buffers.put(RingBuffer::new()),
+                                    write_polled: self.polled_events.put(PolledInfo::new_raised()),
+                                });
+                                self.files.put(backend)
+                            }
+                            IoEmulationType::Sink => self.files.put(FileBackend::Sink),
+                            IoEmulationType::NullSink => self.files.put(FileBackend::NullSink),
+                            IoEmulationType::Fuzz => self.files.put(FileBackend::Fuzz(0)),
+                            IoEmulationType::Passthrough => self.files.put(FileBackend::Passthrough),
+                        };
+
                         self.file_paths.insert(path, file_id).unwrap();
                     }
                     IoEndpointVariant::TcpServer(addr) => {
                         let backend = match endpoint.emulation_type {
                             IoEmulationType::Feedback => ServerBackend::Feedback(()),
-                            IoEmulationType::Plugin(plugin_id) => ServerBackend::Plugin(plugin_id),
+                            IoEmulationType::Plugin(module_id) => ServerBackend::Plugin(self.add_plugin(endpoint_variant.clone(), module_id)),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
                             IoEmulationType::Fuzz => ServerBackend::Fuzz(0),
@@ -979,7 +981,7 @@ impl InterprocessState {
                     IoEndpointVariant::TcpClient(addr) => {
                         let backend = match endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
-                            IoEmulationType::Plugin(plugin_id) => PendingBackend::Plugin(plugin_id),
+                            IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(self.add_plugin(endpoint_variant.clone(), module_id)),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
                             IoEmulationType::Fuzz => PendingBackend::Fuzz(0),
@@ -991,7 +993,7 @@ impl InterprocessState {
                     IoEndpointVariant::UdpServer(addr) => {
                         let backend = match endpoint.emulation_type {
                             IoEmulationType::Feedback => ServerBackend::Feedback(()),
-                            IoEmulationType::Plugin(plugin_id) => ServerBackend::Plugin(plugin_id),
+                            IoEmulationType::Plugin(module_id) => ServerBackend::Plugin(self.add_plugin(endpoint_variant.clone(), module_id)),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
                             IoEmulationType::Fuzz => ServerBackend::Fuzz(0),
@@ -1003,7 +1005,7 @@ impl InterprocessState {
                     IoEndpointVariant::UdpClient(addr) => {
                         let backend = match endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
-                            IoEmulationType::Plugin(plugin_id) => PendingBackend::Plugin(plugin_id),
+                            IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(self.add_plugin(endpoint_variant.clone(), module_id)),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
                             IoEmulationType::Fuzz => PendingBackend::Fuzz(0),
@@ -1015,7 +1017,7 @@ impl InterprocessState {
                     IoEndpointVariant::SctpServer(addr) => {
                         let backend = match endpoint.emulation_type {
                             IoEmulationType::Feedback => ServerBackend::Feedback(()),
-                            IoEmulationType::Plugin(plugin_id) => ServerBackend::Plugin(plugin_id),
+                            IoEmulationType::Plugin(module_id) => ServerBackend::Plugin(self.add_plugin(endpoint_variant.clone(), module_id)),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
                             IoEmulationType::Fuzz => ServerBackend::Fuzz(0),
@@ -1027,7 +1029,7 @@ impl InterprocessState {
                     IoEndpointVariant::SctpClient(addr) => {
                         let backend = match endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
-                            IoEmulationType::Plugin(plugin_id) => PendingBackend::Plugin(plugin_id),
+                            IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(self.add_plugin(endpoint_variant.clone(), module_id)),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
                             IoEmulationType::Fuzz => PendingBackend::Fuzz(0),
@@ -1133,18 +1135,9 @@ impl InterprocessState {
         let stream = self.next_stream_id;
         self.next_stream_id = StreamId::from(usize::from(stream) + 1);
 
-        let read_buf = self.buffers.put(RingBuffer::default());
-        let read_polled = self.polled_events.put(PolledInfo::new());
-        let write_buf = self.buffers.put(RingBuffer::default());
-        let write_polled = self.polled_events.put(PolledInfo::new_raised());
-
         let plugin_id = self.plugins.put(PluginInfo {
             endpoint,
             stream,
-            write_buf,
-            write_polled,
-            read_buf,
-            read_polled,
             module_id,
         });
 

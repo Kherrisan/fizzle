@@ -169,7 +169,7 @@ fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
             },
             IoInputVariant::Basic(IoBasicMethod::Nullsink) => quote::quote! {
                 let num_streams = 1;
-                let emulation_type = IoEmulationType::Fuzz;
+                let emulation_type = IoEmulationType::NullSink;
             },
             IoInputVariant::Basic(IoBasicMethod::Passthrough) => quote::quote! {
                 let num_streams = 1;
@@ -185,28 +185,36 @@ fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
                 let plugin = &plugin_config.plugin;
                 let mod_plug = (module.clone(), plugin.clone());
                 
-                if let Some(config) = plugin_config.config.clone() {
+                let plugin_module_id = if let Some(config) = plugin_config.config.clone() {
                     match modules.entry(mod_plug) {
                         Entry::Occupied(mut o) => {
                             o.get_mut().1.insert(endpoint.clone(), config);
+                            o.get().0
                         },
                         Entry::Vacant(v) => {
                             let mut m = HashMap::new();
-                            m.insert(endpoint.clone(), config);
-                            v.insert((next_module_id, m));
+                            let plugin_module_id = next_module_id;
                             next_module_id += 1;
+                            m.insert(endpoint.clone(), config);
+                            v.insert((plugin_module_id, m));
+                            plugin_module_id
                         },
                     }
                 } else {
-                    if let Entry::Vacant(v) = modules.entry(mod_plug) {
-                        v.insert((next_module_id, HashMap::new()));
-                        next_module_id += 1;
+                    match modules.entry(mod_plug) {
+                        Entry::Vacant(v) => {
+                            let plugin_module_id = next_module_id;
+                            next_module_id += 1;
+                            v.insert((plugin_module_id, HashMap::new()));
+                            plugin_module_id
+                        }
+                        Entry::Occupied(o) => o.get().0,
                     }
-                }
+                };
 
                 quote::quote! {
                     let num_streams = #num_streams;
-                    let emulation_type = IoEmulationType::Plugin(PluginId::INVALID);
+                    let emulation_type = IoEmulationType::Plugin(PluginModuleId::from(#plugin_module_id));
                 }
             }
         };

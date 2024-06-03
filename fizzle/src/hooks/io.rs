@@ -9,9 +9,11 @@ use crate::hook_macros;
 use crate::constants::FIZZLE_BUFFER_LENGTH;
 use crate::state::backend::{ConnectedBackend, ConnectionlessBackend, FileBackend, IoBackend, RegularConnected, StdioBackend};
 use crate::state::identifiers::{BufferId, PolledId, SocketId};
-use crate::state::{ConnectedSocket, ConnectionlessSocket, FizzleContext, SocketLocationInfo, SocketState};
+use crate::state::{ConnectedSocket, ConnectionlessSocket, FizzleContext, PipeMode, SocketLocationInfo, SocketState};
 use crate::state::fd::FdResource;
 use crate::state::identifiers::DescriptorId;
+
+const PIPE_BUF: usize = 4096;
 
 fn read_from_buffer(ctx: &mut FizzleContext, data: &mut [u8], buffer_id: BufferId, read_polled: PolledId, write_polled: Option<PolledId>, is_nonblocking: bool) -> libc::ssize_t {
     if !ctx.global().polled_events.get(read_polled).unwrap().event_raised {
@@ -108,7 +110,9 @@ hook_macros::hook! {
                 let buffer_id = peer_info.read_buf;
                 let write_polled = peer_info.write_polled;
                 let read_polled = peer_info.read_polled;
-                
+
+                let pipe_mode = peer_info.mode;
+
                 if !ctx.polled_is_ready(write_polled) {
                     if is_nonblocking {
                         unsafe { *libc::__errno_location() = libc::EAGAIN };
@@ -125,13 +129,26 @@ hook_macros::hook! {
                 };
 
                 let buf = ctx.global().buffers.get_mut(buffer_id).unwrap();
-                let written = buf.write(data);
-                if buf.is_full() {
+                let amount_written = match pipe_mode {
+                    PipeMode::Direct => {
+                        let packet_len = cmp::min(data.len(), 4096);
+                        buf.write(&(packet_len as u16).to_be_bytes());
+                        buf.write(&data[..packet_len])
+                    },
+                    PipeMode::Streamed => buf.write(data),
+                };
+
+                let buf_is_full = match pipe_mode {
+                    PipeMode::Direct => FIZZLE_BUFFER_LENGTH - buf.len() < PIPE_BUF + 2,
+                    PipeMode::Streamed => buf.is_full(),
+                };
+
+                if buf_is_full {
                     ctx.lower_polled(write_polled);
                 }
                 ctx.raise_polled(read_polled);
 
-                return written as isize
+                return amount_written as isize
             },
             FdResource::Stdin => 0,
             FdResource::Stdout => match ctx.global().stdio {
@@ -331,6 +348,8 @@ hook_macros::hook! {
                 let buffer_id = pipe_info.read_buf;
                 let write_polled = pipe_info.write_polled;
                 let read_polled = pipe_info.read_polled;
+
+                let pipe_mode = pipe_info.mode;
                 
                 if !ctx.polled_is_ready(write_polled) {
                     if peer_is_closed {
@@ -348,14 +367,21 @@ hook_macros::hook! {
                 }
 
                 let buf = ctx.global().buffers.get_mut(buffer_id).unwrap();
-                let amount_written = buf.read(data);
-                
+                let amount_read = match pipe_mode {
+                    PipeMode::Direct => {
+                        let mut packet_len_bytes = [0u8; 2];
+                        assert!(buf.read(&mut packet_len_bytes) == 2);
+                        buf.read(&mut data[..cmp::min(u16::from_be_bytes(packet_len_bytes) as usize, PIPE_BUF)])
+                    },
+                    PipeMode::Streamed => buf.read(data),
+                };
+
                 if buf.is_empty() {
                     ctx.lower_polled(read_polled);
                 }
                 ctx.raise_polled(write_polled);
 
-                return amount_written as isize
+                return amount_read as isize
             },
             FdResource::Stdin => match ctx.global().stdio {
                 StdioBackend::Passthrough => unreachable!(),

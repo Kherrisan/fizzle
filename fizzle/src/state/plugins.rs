@@ -51,7 +51,7 @@ pub enum IoEmulationType {
     /// `read()`s will return whatever was written by prior `write()`s--acts as a virtual file.
     Feedback,
     /// Uses the plugin specified by `PluginId` to decide `read()`/`write()` behavior.
-    Plugin(PluginId),
+    Plugin(PluginModuleId),
     Sink,
     NullSink,
     Fuzz,
