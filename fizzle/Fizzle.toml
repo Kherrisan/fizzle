@@ -8,8 +8,8 @@
 [io]
 stdio = "fuzz" # Consume all input, produce fuzzing data as output
 "file:/dev/null" = "nullsink" # Consume all input, produce repeating 0s
-"file:./myconfig" = "feedback" # Output whatever is given as input
-"udp-server:127.0.0.1:53" = "passthrough" # Pass on to an actual network service (warning: unstable)
+#"file:./myconfig" = "feedback" # Output whatever is given as input
+#"udp-server:127.0.0.1:53" = "passthrough" # Pass on to an actual network service (warning: unstable)
 
 #[io."sctp-server:127.0.0.1:38412"]
 #method = "plugin" # The means of passing I/O on the device
@@ -33,10 +33,3 @@ stdio = "fuzz" # Consume all input, produce fuzzing data as output
 #[io."tcp-client:127.0.0.1:8080".config]
 # Arbitrary configuration options specific to `fizzle-http` go here
 # This configuration is passed
-
-# TODO: this will be implemented in the future
-# Multiple clients can be specified; they will connect to a server in the order they are specified
-#[[io."tcp-client:127.0.0.1:80"]]
-#method = "plugin"
-#module = "fizzle-http-alt"
-#plugin = "HttpClientAlt"
