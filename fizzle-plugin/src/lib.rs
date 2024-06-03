@@ -20,7 +20,7 @@ use std::path::PathBuf;
 /// The specific protocol, I/O endpoint and stream that a plugin method is called for.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Context {
-    pub endpoint: IoVariant,
+    pub endpoint: IoEndpointVariant,
     pub stream_id: StreamId,
 }
 
@@ -63,7 +63,7 @@ pub struct IoEndpointId(usize);
 
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum IoVariant {
+pub enum IoEndpointVariant {
     /// Standard input/output (`stdin` and `stdout`)
     Stdio,
     /// A particular file.
@@ -95,7 +95,7 @@ pub enum PluginError {
 /// or even add structure- and protocol-awareness to otherwise arbitrary fuzzing inputs.
 pub trait FizzlePlugin: FizzlePluginObject {
     /// Constructs an instance of this plugin, configured with `config`.
-    fn new(config: HashMap<IoVariant, toml::Table>) -> Self;
+    fn new(config: HashMap<IoEndpointVariant, toml::Table>) -> Self;
 }
 
 /// The object-safe subset of methods that must be implemented for a [`FizzlePlugin`].

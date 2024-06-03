@@ -1,5 +1,4 @@
 use std::fmt::Debug;
-use std::os::fd::RawFd;
 
 use crate::state::identifiers::*;
 
@@ -12,7 +11,7 @@ mod private {
 
 #[derive(Clone, Copy, Debug)]
 pub enum IoBackend<R: Clone + Copy + Debug, F: Clone + Copy + Debug, P: Clone + Copy + Debug> {
-    Passthrough(RawFd),
+    Passthrough,
     /// Handles I/O regularly.
     Regular(R),
     /// `read()`s will return whatever was written by prior `write()`s--acts as a virtual file.

@@ -22,7 +22,7 @@ use fizzle_common::io::{AddressFamily, TransportAddress, TransportProtocol};
 use fizzle_common::path::{FilePath, SemPath};
 use fizzle_common::storage::{RingBuffer, ValueIndex};
 
-use fizzle_plugin::{IoVariant, StreamId};
+use fizzle_plugin::{IoEndpointVariant, StreamId};
 use heapless::spsc::Queue;
 
 use fxhash::FxBuildHasher;
@@ -816,7 +816,7 @@ pub struct ConnectedSocket {
 
 // Runtime active plugin I/O information
 pub struct PluginInfo {
-    pub endpoint: IoVariant,
+    pub endpoint: IoEndpointVariant,
     pub stream: StreamId,
     /// Information to be passed to the plugin.
     pub write_buf: BufferId,
@@ -922,8 +922,8 @@ impl InterprocessState {
     fn load_config_mappings(&mut self, endpoints: Vec<PluginConfigEndpoint>) {
         for endpoint in endpoints {
             for _ in 0..endpoint.num_streams {
-                match endpoint.variant.clone() {
-                    IoVariant::Stdio => self.stdio = match endpoint.emulation_type {
+                match endpoint.endpoint_variant.clone() {
+                    IoEndpointVariant::Stdio => self.stdio = match endpoint.emulation_type {
                         IoEmulationType::Feedback => StdioBackend::Feedback(StandardFeedback {
                             buf: self.buffers.put(RingBuffer::new()),
                             read_polled: self.polled_events.put(PolledInfo::new()),
@@ -939,8 +939,9 @@ impl InterprocessState {
                         IoEmulationType::Sink =>StdioBackend::Sink,
                         IoEmulationType::NullSink => StdioBackend::NullSink,
                         IoEmulationType::Fuzz => StdioBackend::Fuzz(0),
+                        IoEmulationType::Passthrough => StdioBackend::Passthrough,
                     },
-                    IoVariant::File(pathbuf) => {
+                    IoEndpointVariant::File(pathbuf) => {
                         let path =
                             FilePath::from_raw_bytes(pathbuf.as_os_str().as_bytes()).unwrap();
                         let file_id = self.files.put(match endpoint.emulation_type {
@@ -959,71 +960,78 @@ impl InterprocessState {
                             IoEmulationType::Sink => FileBackend::Sink,
                             IoEmulationType::NullSink => FileBackend::NullSink,
                             IoEmulationType::Fuzz => FileBackend::Fuzz(0),
+                            IoEmulationType::Passthrough => FileBackend::Passthrough,
                         });
                         self.file_paths.insert(path, file_id).unwrap();
                     }
-                    IoVariant::TcpServer(addr) => {
+                    IoEndpointVariant::TcpServer(addr) => {
                         let backend = match endpoint.emulation_type {
                             IoEmulationType::Feedback => ServerBackend::Feedback(()),
                             IoEmulationType::Plugin(plugin_id) => ServerBackend::Plugin(plugin_id),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
                             IoEmulationType::Fuzz => ServerBackend::Fuzz(0),
+                            IoEmulationType::Passthrough => ServerBackend::Passthrough,
                         };
 
                         self.add_server(TransportAddress::Tcp(addr), backend)
                     }
-                    IoVariant::TcpClient(addr) => {
+                    IoEndpointVariant::TcpClient(addr) => {
                         let backend = match endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
                             IoEmulationType::Plugin(plugin_id) => PendingBackend::Plugin(plugin_id),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
                             IoEmulationType::Fuzz => PendingBackend::Fuzz(0),
+                            IoEmulationType::Passthrough => PendingBackend::Passthrough,
                         };
 
                         self.add_pending_client(TransportAddress::Tcp(addr), backend)
                     }
-                    IoVariant::UdpServer(addr) => {
+                    IoEndpointVariant::UdpServer(addr) => {
                         let backend = match endpoint.emulation_type {
                             IoEmulationType::Feedback => ServerBackend::Feedback(()),
                             IoEmulationType::Plugin(plugin_id) => ServerBackend::Plugin(plugin_id),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
                             IoEmulationType::Fuzz => ServerBackend::Fuzz(0),
+                            IoEmulationType::Passthrough => ServerBackend::Passthrough,
                         };
 
                         self.add_server(TransportAddress::Udp(addr), backend)
                     }
-                    IoVariant::UdpClient(addr) => {
+                    IoEndpointVariant::UdpClient(addr) => {
                         let backend = match endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
                             IoEmulationType::Plugin(plugin_id) => PendingBackend::Plugin(plugin_id),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
                             IoEmulationType::Fuzz => PendingBackend::Fuzz(0),
+                            IoEmulationType::Passthrough => PendingBackend::Passthrough,
                         };
 
                         self.add_pending_client(TransportAddress::Udp(addr), backend)
                     }
-                    IoVariant::SctpServer(addr) => {
+                    IoEndpointVariant::SctpServer(addr) => {
                         let backend = match endpoint.emulation_type {
                             IoEmulationType::Feedback => ServerBackend::Feedback(()),
                             IoEmulationType::Plugin(plugin_id) => ServerBackend::Plugin(plugin_id),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
                             IoEmulationType::Fuzz => ServerBackend::Fuzz(0),
+                            IoEmulationType::Passthrough => ServerBackend::Passthrough,
                         };
 
                         self.add_server(TransportAddress::Sctp(addr), backend)
                     }
-                    IoVariant::SctpClient(addr) => {
+                    IoEndpointVariant::SctpClient(addr) => {
                         let backend = match endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
                             IoEmulationType::Plugin(plugin_id) => PendingBackend::Plugin(plugin_id),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
                             IoEmulationType::Fuzz => PendingBackend::Fuzz(0),
+                            IoEmulationType::Passthrough => PendingBackend::Passthrough,
                         };
 
                         self.add_pending_client(TransportAddress::Sctp(addr), backend)
@@ -1121,7 +1129,7 @@ impl InterprocessState {
         };
     }
 
-    pub fn add_plugin(&mut self, endpoint: IoVariant, module_id: PluginModuleId) -> PluginId {
+    pub fn add_plugin(&mut self, endpoint: IoEndpointVariant, module_id: PluginModuleId) -> PluginId {
         let stream = self.next_stream_id;
         self.next_stream_id = StreamId::from(usize::from(stream) + 1);
 

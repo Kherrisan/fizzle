@@ -253,7 +253,7 @@ hook_macros::hook! {
                 }
 
                 let connected_backend = match server_backend {
-                    ServerBackend::Passthrough(_) => unimplemented!(),
+                    ServerBackend::Passthrough => unimplemented!(),
                     ServerBackend::Regular(()) => {
                         let SocketState::Server(server_info) = ctx.global().sockets.get_mut(server_socket_id).unwrap() else {
                             *libc::__errno_location() = libc::ECONNREFUSED;
@@ -465,7 +465,7 @@ fn join_socket_pair(
     };
 
     let accept_backend = match server_backend {
-        IoBackend::Passthrough(_) => unimplemented!(),
+        IoBackend::Passthrough => unimplemented!(),
         IoBackend::Regular(_) => ConnectedBackend::Regular(RegularConnected {
             peer: Some(connecting_id),
             recv_buf: ctx.global().buffers.put(RingBuffer::new()),
@@ -487,7 +487,7 @@ fn join_socket_pair(
     };
 
     let connect_backend = match connect_backend {
-        IoBackend::Passthrough(_fd) => unimplemented!(),
+        IoBackend::Passthrough => unimplemented!(),
         IoBackend::Regular(()) => ConnectedBackend::Regular(RegularConnected {
             peer: Some(connecting_id),
             recv_buf: ctx.global().buffers.put(RingBuffer::new()),

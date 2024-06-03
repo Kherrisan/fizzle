@@ -19,7 +19,7 @@ pub fn fd_to_pollin(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
         FdResource::Directory(_) => PolledStatus::NotPollable,
         FdResource::File(file_id) => {
             match ctx.global().files.get(file_id).unwrap() {
-                FileBackend::Passthrough(_) => PolledStatus::ImmediatelyPollable, // TODO: should we `poll()` here instead?
+                FileBackend::Passthrough => PolledStatus::ImmediatelyPollable, // TODO: should we `poll()` here instead?
                 FileBackend::Regular(_) => unreachable!(),
                 FileBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.read_polled),
                 FileBackend::Plugin(plugin) => PolledStatus::Pollable(plugin.read_polled),
@@ -31,7 +31,7 @@ pub fn fd_to_pollin(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
         FdResource::MessageQueue(_) => todo!(),
         FdResource::Pipe(pipe_id) => PolledStatus::Pollable(ctx.global().pipes.get(pipe_id).unwrap().read_polled),
         FdResource::Stdin => match ctx.global().stdio {
-            StdioBackend::Passthrough(_) => unreachable!(),
+            StdioBackend::Passthrough => unreachable!(),
             StdioBackend::Regular(_) => unreachable!(),
             StdioBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.read_polled),
             StdioBackend::Plugin(plugin) => PolledStatus::Pollable(plugin.read_polled),
@@ -43,7 +43,7 @@ pub fn fd_to_pollin(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
         FdResource::Stderr => PolledStatus::NotPollable,
         FdResource::Socket(socket_id) => match ctx.global().sockets.get(socket_id).unwrap() {
             SocketState::Connectionless(connectionless) => match connectionless.backend {
-                ConnectionlessBackend::Passthrough(_) => unreachable!(),
+                ConnectionlessBackend::Passthrough => unreachable!(),
                 ConnectionlessBackend::Regular(regular) => PolledStatus::Pollable(regular.read_polled),
                 ConnectionlessBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.read_polled),
                 ConnectionlessBackend::Plugin(plugin) => PolledStatus::Pollable(plugin.read_polled),
@@ -56,7 +56,7 @@ pub fn fd_to_pollin(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
             SocketState::PendingConnection(_) => PolledStatus::NotPollable,
             SocketState::Connecting(_) => PolledStatus::NotPollable, // Need to select for writing, not reading
             SocketState::Connected(connected) => match connected.backend {
-                ConnectedBackend::Passthrough(_) => unreachable!(),
+                ConnectedBackend::Passthrough => unreachable!(),
                 ConnectedBackend::Regular(regular) => PolledStatus::Pollable(regular.read_polled),
                 ConnectedBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.read_polled),
                 ConnectedBackend::Plugin(plugin) => PolledStatus::Pollable(plugin.read_polled),
@@ -78,7 +78,7 @@ pub fn fd_to_pollout(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
         FdResource::Directory(_) => PolledStatus::NotPollable,
         FdResource::File(file_id) => {
             match ctx.global().files.get(file_id).unwrap() {
-                FileBackend::Passthrough(_) => PolledStatus::ImmediatelyPollable, // TODO: should we `poll()` here instead?
+                FileBackend::Passthrough => PolledStatus::ImmediatelyPollable, // TODO: should we `poll()` here instead?
                 FileBackend::Regular(_) => unreachable!(),
                 FileBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.write_polled),
                 FileBackend::Plugin(plugin) => PolledStatus::Pollable(plugin.write_polled),
@@ -97,7 +97,7 @@ pub fn fd_to_pollout(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
         },
         FdResource::Stdin => PolledStatus::NotPollable,
         FdResource::Stdout => match ctx.global().stdio {
-            StdioBackend::Passthrough(_) => unreachable!(),
+            StdioBackend::Passthrough => unreachable!(),
             StdioBackend::Regular(_) => unreachable!(),
             StdioBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.write_polled),
             StdioBackend::Plugin(plugin) => PolledStatus::Pollable(plugin.write_polled),
@@ -108,7 +108,7 @@ pub fn fd_to_pollout(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
         FdResource::Stderr => PolledStatus::NotPollable,
         FdResource::Socket(socket_id) => match ctx.global().sockets.get(socket_id).unwrap() {
             SocketState::Connectionless(connectionless) => match connectionless.backend {
-                ConnectionlessBackend::Passthrough(_) => unreachable!(),
+                ConnectionlessBackend::Passthrough => unreachable!(),
                 ConnectionlessBackend::Regular(regular) => PolledStatus::Pollable(regular.write_polled),
                 ConnectionlessBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.write_polled),
                 ConnectionlessBackend::Plugin(plugin) => PolledStatus::Pollable(plugin.write_polled),
@@ -121,7 +121,7 @@ pub fn fd_to_pollout(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
             SocketState::PendingConnection(_) => PolledStatus::NotPollable,
             SocketState::Connecting(connecting) => PolledStatus::Pollable(connecting.connect_polled),
             SocketState::Connected(connected) => match connected.backend {
-                ConnectedBackend::Passthrough(_) => unreachable!(),
+                ConnectedBackend::Passthrough => unreachable!(),
                 ConnectedBackend::Regular(regular) => PolledStatus::Pollable(regular.write_polled),
                 ConnectedBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.write_polled),
                 ConnectedBackend::Plugin(plugin) => PolledStatus::Pollable(plugin.write_polled),

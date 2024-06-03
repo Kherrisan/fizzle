@@ -1,7 +1,7 @@
 use crate::constants::*;
 
 use fizzle_common::storage::ValueIndex;
-use fizzle_plugin::{FizzlePluginObject, IoVariant};
+use fizzle_plugin::{FizzlePluginObject, IoEndpointVariant};
 
 use super::{PluginId, PluginModuleId};
 
@@ -30,9 +30,9 @@ pub struct PluginConfig {
 }
 
 pub struct PluginConfigEndpoint {
-    pub variant: IoVariant,
+    pub endpoint_variant: IoEndpointVariant,
     pub emulation_type: IoEmulationType,
-    pub module_id: Option<PluginModuleId>,
+//    pub module_id: Option<PluginModuleId>,
     pub num_streams: usize,
 }
 
@@ -47,6 +47,7 @@ impl PluginConfig {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum IoEmulationType {
+    Passthrough,
     /// `read()`s will return whatever was written by prior `write()`s--acts as a virtual file.
     Feedback,
     /// Uses the plugin specified by `PluginId` to decide `read()`/`write()` behavior.
@@ -54,10 +55,9 @@ pub enum IoEmulationType {
     Sink,
     NullSink,
     Fuzz,
-    // TODO: add Passthrough here?
 }
 
 
 pub fn run_plugins() -> bool {
-    
+    todo!()
 }

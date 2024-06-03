@@ -78,7 +78,7 @@ hook_macros::hook! {
                 return -1
             },
             FdResource::File(file_id) => match ctx.global().files.get(file_id).unwrap() {
-                FileBackend::Passthrough(fd) => hook_macros::real!(write)(*fd, buf, len),
+                FileBackend::Passthrough => hook_macros::real!(write)(fd, buf, len),
                 FileBackend::Regular(_) => unreachable!(),
                 FileBackend::Feedback(feedback) => {
                     let buffer_id = feedback.buf;
@@ -135,7 +135,7 @@ hook_macros::hook! {
             },
             FdResource::Stdin => 0,
             FdResource::Stdout => match ctx.global().stdio {
-                StdioBackend::Passthrough(_) => unreachable!(),
+                StdioBackend::Passthrough => unreachable!(),
                 StdioBackend::Regular(_) => unreachable!(),
                 StdioBackend::Feedback(feedback) => {
                     let buffer_id = feedback.buf;
@@ -299,7 +299,7 @@ hook_macros::hook! {
                 return -1
             },
             FdResource::File(file_id) => match ctx.global().files.get(file_id).unwrap() {
-                crate::state::backend::IoBackend::Passthrough(fd) => hook_macros::real!(read)(*fd, buf, len),
+                crate::state::backend::IoBackend::Passthrough => hook_macros::real!(read)(fd, buf, len),
                 crate::state::backend::IoBackend::Regular(_) => unreachable!(),
                 crate::state::backend::IoBackend::Feedback(feedback) => {
                     let buffer_id = feedback.buf;
@@ -358,7 +358,7 @@ hook_macros::hook! {
                 return amount_written as isize
             },
             FdResource::Stdin => match ctx.global().stdio {
-                StdioBackend::Passthrough(_) => unreachable!(),
+                StdioBackend::Passthrough => unreachable!(),
                 StdioBackend::Regular(_) => unreachable!(),
                 StdioBackend::Feedback(feedback) => {
                     let buffer_id = feedback.buf;
@@ -531,7 +531,7 @@ fn send_connected_socket(
 
     // TODO: potentially make this more DRY
     match peer_info.backend {
-        ConnectedBackend::Passthrough(_) => unimplemented!(),
+        ConnectedBackend::Passthrough => unimplemented!(),
         ConnectedBackend::Regular(regular_peer) => {
             let buffer_id = regular_peer.recv_buf;
             let write_polled = regular_peer.write_polled;
@@ -667,7 +667,7 @@ fn send_connectionless_socket(
     };
 
     match peer_info.backend {
-        ConnectionlessBackend::Passthrough(_) => unimplemented!(),
+        ConnectionlessBackend::Passthrough => unimplemented!(),
         ConnectionlessBackend::Regular(regular_peer) => {
             let write_polled = regular_peer.write_polled;
 

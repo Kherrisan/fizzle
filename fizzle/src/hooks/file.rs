@@ -138,7 +138,7 @@ hook_macros::hook! {
         } else {
             let fd = hook_macros::real!(open)(pathname, flags, mode);
             if fd >= 0 {
-                let file_id = ctx.global().files.put(FileBackend::Passthrough(fd));
+                let file_id = ctx.global().files.put(FileBackend::Passthrough);
 
                 ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
                     close_on_exec: false,
@@ -286,7 +286,7 @@ hook_macros::hook! {
         } else {
             let fd = hook_macros::real!(open)(pathname, flags, mode);
             if fd >= 0 {
-                let file_id = ctx.global().files.put(FileBackend::Passthrough(fd));
+                let file_id = ctx.global().files.put(FileBackend::Passthrough);
 
                 ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
                     close_on_exec: false,
@@ -398,7 +398,7 @@ hook_macros::hook! {
         } else {
             let fd = hook_macros::real!(open)(pathname, 0, 0); // TODO: account for mode here
             if fd >= 0 {
-                let file_id = ctx.global().files.put(FileBackend::Passthrough(fd));
+                let file_id = ctx.global().files.put(FileBackend::Passthrough);
 
                 ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
                     close_on_exec: false,
