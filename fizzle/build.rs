@@ -1,4 +1,5 @@
 use std::collections::hash_map::Entry;
+use std::error::Error;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::Command;
@@ -90,7 +91,7 @@ impl<'de> de::Visitor<'de> for IoEndpointVisitor {
     }
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo::rerun-if-changed=Cargo.toml");
     println!("cargo::rerun-if-env-changed={}", FIZZLE_CONFIG_ENV);
 
@@ -101,8 +102,8 @@ fn main() {
 
     println!("cargo::rerun-if-changed={}", config_path);
 
-    let config_string = fs::read_to_string(config_path).unwrap();
-    let config: FizzleConfiguration = toml::from_str(&config_string).unwrap();
+    let config_string = fs::read_to_string(config_path)?;
+    let config: FizzleConfiguration = toml::from_str(&config_string)?;
     let includes = extract_includes(&config);
     let plugins_impl = gen_populate_plugins(&config);
 
@@ -126,8 +127,10 @@ fn main() {
             #plugins_impl
         }
     };
-    fs::write("src/state/comptime.rs", final_tokens.to_string()).unwrap();
-    Command::new("rustfmt").arg("src/state/comptime.rs").output().unwrap();
+    fs::write("src/state/comptime.rs", final_tokens.to_string())?;
+    Command::new("rustfmt").arg("src/state/comptime.rs").output()?;
+
+    Ok(())
 }
 
 fn extract_includes(config: &FizzleConfiguration) -> TokenStream {
