@@ -4,7 +4,7 @@
 
 use std::mem;
 
-use crate::state::backend::{ConnectedBackend, ConnectingBackend, IoBackend, RegularConnected, ServerBackend, StandardFeedback, StandardPlugin};
+use crate::state::backend::{ConnectedBackend, ConnectingBackend, IoBackend, RegularConnected, ServerBackend, StandardFeedback};
 use crate::state::fd::{FdInfo, FdResource};
 use crate::state::identifiers::{DescriptorId, SocketId};
 use crate::state::{
@@ -13,7 +13,7 @@ use crate::state::{
 };
 use crate::{decode_inet_address, hook_macros};
 use fizzle_common::io::{AddressFamily, TransportAddress, TransportProtocol};
-use fizzle_common::storage::RingBuffer;
+use fizzle_common::storage::Buffer;
 use heapless::spsc::Queue;
 
 hook_macros::hook! {
@@ -274,7 +274,6 @@ hook_macros::hook! {
                             backend: ConnectingBackend::Regular(()),
                             connect_polled: client_poll,
                             local_addr,
-                            rem_addr
                         });
 
                         return if is_nonblocking {
@@ -291,19 +290,13 @@ hook_macros::hook! {
                         let endpoint = plugin_info.endpoint.clone();
                         let module_id = plugin_info.module_id;
                         let connect_plugin_id = ctx.global().add_plugin(endpoint, module_id);
-                        ConnectedBackend::Plugin(StandardPlugin {
-                            plugin_id: connect_plugin_id,
-                            read_buf: ctx.global().buffers.put(RingBuffer::new()),
-                            read_polled: ctx.global().polled_events.put(PolledInfo::new()),
-                            write_buf: ctx.global().buffers.put(RingBuffer::new()),
-                            write_polled: ctx.global().polled_events.put(PolledInfo::new_raised()),
-                        })
+                        ConnectedBackend::Plugin(connect_plugin_id)
                     },
                     ServerBackend::Sink => ConnectedBackend::Sink,
                     ServerBackend::Fuzz(_) => ConnectedBackend::Fuzz(0),
                     ServerBackend::NullSink => ConnectedBackend::NullSink,
                     ServerBackend::Feedback(()) => ConnectedBackend::Feedback(StandardFeedback {
-                            buf: ctx.global().buffers.put(RingBuffer::new()),
+                            buf: ctx.global().buffers.put(Buffer::new()),
                             read_polled: ctx.global().polled_events.put(PolledInfo::new()),
                             write_polled: ctx.global().polled_events.put(PolledInfo::new_raised()),
                     })
@@ -311,7 +304,6 @@ hook_macros::hook! {
 
                 *ctx.global().sockets.get_mut(socket_id).unwrap() = SocketState::Connected(ConnectedSocket {
                     backend: connected_backend,
-                    local_addr,
                     rem_addr,
                 });
 
@@ -468,7 +460,7 @@ fn join_socket_pair(
         IoBackend::Passthrough => unimplemented!(),
         IoBackend::Regular(_) => ConnectedBackend::Regular(RegularConnected {
             peer: Some(connecting_id),
-            recv_buf: ctx.global().buffers.put(RingBuffer::new()),
+            recv_buf: ctx.global().buffers.put(Buffer::new()),
             read_polled: ctx.global().polled_events.put(PolledInfo::new()),
             write_polled: ctx.global().polled_events.put(PolledInfo::new_raised()),
         }),
@@ -476,6 +468,13 @@ fn join_socket_pair(
     };
 
     let (client_addr, connect_backend) = match ctx.global().sockets.get_mut(connecting_id).unwrap() {
+        SocketState::PendingConnection(pending_info) => {
+            let backend = pending_info.backend.clone();
+            let protocol = pending_info.rem_addr.protocol();
+            let family = pending_info.rem_addr.family();
+            let local_addr = ctx.global().next_ephemeral_address(family, protocol);
+            (local_addr, backend)
+        }
         SocketState::Connecting(connecting_info) => {
             let client_addr = connecting_info.local_addr;
             let connect_backend = connecting_info.backend.clone();
@@ -490,22 +489,16 @@ fn join_socket_pair(
         IoBackend::Passthrough => unimplemented!(),
         IoBackend::Regular(()) => ConnectedBackend::Regular(RegularConnected {
             peer: Some(connecting_id),
-            recv_buf: ctx.global().buffers.put(RingBuffer::new()),
+            recv_buf: ctx.global().buffers.put(Buffer::new()),
             read_polled: ctx.global().polled_events.put(PolledInfo::new()),
             write_polled: ctx.global().polled_events.put(PolledInfo::new_raised()),
         }),
         IoBackend::Feedback(()) => ConnectedBackend::Feedback(StandardFeedback {
-            buf: ctx.global().buffers.put(RingBuffer::new()),
+            buf: ctx.global().buffers.put(Buffer::new()),
             read_polled: ctx.global().polled_events.put(PolledInfo::new()),
             write_polled: ctx.global().polled_events.put(PolledInfo::new_raised()),
         }),
-        IoBackend::Plugin(plugin_id) => ConnectedBackend::Plugin(StandardPlugin {
-            plugin_id,
-            read_buf: ctx.global().buffers.put(RingBuffer::new()),
-            write_buf: ctx.global().buffers.put(RingBuffer::new()),
-            read_polled: ctx.global().polled_events.put(PolledInfo::new()),
-            write_polled: ctx.global().polled_events.put(PolledInfo::new_raised()),
-        }),
+        IoBackend::Plugin(plugin_id) => ConnectedBackend::Plugin(plugin_id),
         IoBackend::Sink => ConnectedBackend::Sink,
         IoBackend::NullSink => ConnectedBackend::NullSink,
         IoBackend::Fuzz(_) => ConnectedBackend::Fuzz(0),
@@ -515,14 +508,12 @@ fn join_socket_pair(
         .global()
         .sockets
         .put(SocketState::Connected(ConnectedSocket {
-            local_addr: server_addr,
             rem_addr: client_addr,
             backend: accept_backend,
         }));
     
     *ctx.global().sockets.get_mut(connecting_id).unwrap() =
         SocketState::Connected(ConnectedSocket {
-            local_addr: client_addr,
             rem_addr: server_addr,
             backend: connect_backend,
         });

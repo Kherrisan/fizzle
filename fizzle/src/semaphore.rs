@@ -1,25 +1,20 @@
-use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 
-/// A wrapper for a POSIX semaphore, suitable for use in inter-process shared memory.
-///
-/// This API is "leaky" by default; `Semaphore`s that go out of scope will not be destroyed.
-/// This is to accomadate shared memory, as multiple processes may claim "ownership" of the same `Semaphore`.
-/// To clean up a semaphore, use [`destroy()`](Semaphore::destroy).
+/// A wrapper for a POSIX semaphore.
 pub struct Semaphore {
-    inner: UnsafeCell<MaybeUninit<libc::sem_t>>,
+    inner: Box<MaybeUninit<libc::sem_t>>,
 }
 
 impl Semaphore {
     pub fn new(value: u16) -> Self {
-        let sem = Self {
-            inner: UnsafeCell::new(MaybeUninit::uninit()),
+        let mut sem = Self {
+            inner: Box::new(MaybeUninit::uninit()),
         };
 
         let res = unsafe {
             libc::sem_init(
-                sem.inner.get() as *mut libc::sem_t,
-                libc::PTHREAD_PROCESS_SHARED,
+                sem.inner.as_mut_ptr() as *mut libc::sem_t,
+                libc::PTHREAD_PROCESS_PRIVATE,
                 value as u32,
             )
         };
@@ -30,9 +25,9 @@ impl Semaphore {
         sem
     }
 
-    pub fn wait(&self) {
+    pub fn wait(&mut self) {
         loop {
-            let res = unsafe { libc::sem_wait(self.inner.get() as *mut libc::sem_t) };
+            let res = unsafe { libc::sem_wait(self.inner.as_mut_ptr() as *mut libc::sem_t) };
             if res == 0 {
                 break;
             } else if unsafe { *libc::__errno_location() } != libc::EINTR {
@@ -41,35 +36,18 @@ impl Semaphore {
         }
     }
 
-    pub fn post(&self) {
-        let res = unsafe { libc::sem_post(self.inner.get() as *mut libc::sem_t) };
+    pub fn post(&mut self) {
+        let res = unsafe { libc::sem_post(self.inner.as_mut_ptr() as *mut libc::sem_t) };
         if res != 0 {
             panic!("semaphore internal error during post()");
         }
     }
-
-    /// Deallocates the POSIX semaphore.
-    ///
-    /// # Safety
-    ///
-    /// This method must only be called once on a given semaphore. Multiple processes calling
-    /// `destroy()` on the same semaphore may result in undefined behavior.
-    ///
-    /// This method must only be called once no other processes or threads are waiting on the
-    /// semaphore (see [wait()](Semaphore::wait)); destroying a semaphore that is being waited on
-    /// may result in undefined behavior.
-    pub unsafe fn destroy(self) {
-        let res = unsafe { libc::sem_destroy(self.inner.get() as *mut libc::sem_t) };
-        if res != 0 {
-            panic!("semaphore internal error during destroy()");
-        }
-    }
 }
 
-/*
+
 impl Drop for Semaphore {
     fn drop(&mut self) {
-        unsafe { libc::sem_destroy(self.inner.get()) };
+        unsafe { libc::sem_destroy(self.inner.as_mut_ptr() as *mut libc::sem_t) };
     }
 }
-*/
+

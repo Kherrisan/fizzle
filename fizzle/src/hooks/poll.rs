@@ -22,7 +22,10 @@ pub fn fd_to_pollin(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
                 FileBackend::Passthrough => PolledStatus::ImmediatelyPollable, // TODO: should we `poll()` here instead?
                 FileBackend::Regular(_) => unreachable!(),
                 FileBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.read_polled),
-                FileBackend::Plugin(plugin) => PolledStatus::Pollable(plugin.read_polled),
+                FileBackend::Plugin(plugin_id) => {
+                    let plugin_id = *plugin_id;
+                    PolledStatus::Pollable(ctx.global().plugins.get(plugin_id).unwrap().read_polled)
+                }
                 FileBackend::Sink => PolledStatus::NotPollable,
                 FileBackend::NullSink => PolledStatus::ImmediatelyPollable,
                 FileBackend::Fuzz(_) => todo!(),
@@ -34,7 +37,7 @@ pub fn fd_to_pollin(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
             StdioBackend::Passthrough => unreachable!(),
             StdioBackend::Regular(_) => unreachable!(),
             StdioBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.read_polled),
-            StdioBackend::Plugin(plugin) => PolledStatus::Pollable(plugin.read_polled),
+            StdioBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global().plugins.get(plugin_id).unwrap().read_polled),
             StdioBackend::Sink => PolledStatus::NotPollable,
             StdioBackend::NullSink => PolledStatus::ImmediatelyPollable,
             StdioBackend::Fuzz(_) => todo!(),
@@ -46,7 +49,7 @@ pub fn fd_to_pollin(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
                 ConnectionlessBackend::Passthrough => unreachable!(),
                 ConnectionlessBackend::Regular(regular) => PolledStatus::Pollable(regular.read_polled),
                 ConnectionlessBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.read_polled),
-                ConnectionlessBackend::Plugin(plugin) => PolledStatus::Pollable(plugin.read_polled),
+                ConnectionlessBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global().plugins.get(plugin_id).unwrap().read_polled),
                 ConnectionlessBackend::Sink => PolledStatus::NotPollable,
                 ConnectionlessBackend::NullSink => PolledStatus::ImmediatelyPollable,
                 ConnectionlessBackend::Fuzz(_) => todo!(),
@@ -59,7 +62,7 @@ pub fn fd_to_pollin(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
                 ConnectedBackend::Passthrough => unreachable!(),
                 ConnectedBackend::Regular(regular) => PolledStatus::Pollable(regular.read_polled),
                 ConnectedBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.read_polled),
-                ConnectedBackend::Plugin(plugin) => PolledStatus::Pollable(plugin.read_polled),
+                ConnectedBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global().plugins.get(plugin_id).unwrap().read_polled),
                 ConnectedBackend::Sink => PolledStatus::NotPollable,
                 ConnectedBackend::NullSink => PolledStatus::ImmediatelyPollable,
                 ConnectedBackend::Fuzz(_) => todo!(),
@@ -81,7 +84,10 @@ pub fn fd_to_pollout(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
                 FileBackend::Passthrough => PolledStatus::ImmediatelyPollable, // TODO: should we `poll()` here instead?
                 FileBackend::Regular(_) => unreachable!(),
                 FileBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.write_polled),
-                FileBackend::Plugin(plugin) => PolledStatus::Pollable(plugin.write_polled),
+                FileBackend::Plugin(plugin_id) => {
+                    let plugin_id = *plugin_id;
+                    PolledStatus::Pollable(ctx.global().plugins.get(plugin_id).unwrap().write_polled)
+                }
                 FileBackend::Sink => PolledStatus::ImmediatelyPollable,
                 FileBackend::NullSink => PolledStatus::ImmediatelyPollable,
                 FileBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
@@ -100,7 +106,7 @@ pub fn fd_to_pollout(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
             StdioBackend::Passthrough => unreachable!(),
             StdioBackend::Regular(_) => unreachable!(),
             StdioBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.write_polled),
-            StdioBackend::Plugin(plugin) => PolledStatus::Pollable(plugin.write_polled),
+            StdioBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global().plugins.get(plugin_id).unwrap().write_polled),
             StdioBackend::Sink => PolledStatus::ImmediatelyPollable,
             StdioBackend::NullSink => PolledStatus::ImmediatelyPollable,
             StdioBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
@@ -111,7 +117,7 @@ pub fn fd_to_pollout(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
                 ConnectionlessBackend::Passthrough => unreachable!(),
                 ConnectionlessBackend::Regular(regular) => PolledStatus::Pollable(regular.write_polled),
                 ConnectionlessBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.write_polled),
-                ConnectionlessBackend::Plugin(plugin) => PolledStatus::Pollable(plugin.write_polled),
+                ConnectionlessBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global().plugins.get(plugin_id).unwrap().write_polled),
                 ConnectionlessBackend::Sink => PolledStatus::ImmediatelyPollable,
                 ConnectionlessBackend::NullSink => PolledStatus::ImmediatelyPollable,
                 ConnectionlessBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
@@ -124,7 +130,7 @@ pub fn fd_to_pollout(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
                 ConnectedBackend::Passthrough => unreachable!(),
                 ConnectedBackend::Regular(regular) => PolledStatus::Pollable(regular.write_polled),
                 ConnectedBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.write_polled),
-                ConnectedBackend::Plugin(plugin) => PolledStatus::Pollable(plugin.write_polled),
+                ConnectedBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global().plugins.get(plugin_id).unwrap().write_polled),
                 ConnectedBackend::Sink => PolledStatus::ImmediatelyPollable,
                 ConnectedBackend::NullSink => PolledStatus::ImmediatelyPollable,
                 ConnectedBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
@@ -471,7 +477,6 @@ hook_macros::hook! {
                 let epoll_info = ctx.global().epolls.get_mut(epoll_id).unwrap();
                 epoll_info.interests.insert(descriptor_id, EpollInterest {
                     direction,
-                    descriptor: fd,
                     user_data: (*event).u64,
                 }).unwrap();
 
@@ -605,7 +610,9 @@ hook_macros::hook! {
                 EpollDirection::Read(PolledStatus::ImmediatelyPollable) => {
                     if total_ready < maxevents as usize {
                         let event = &mut (*events.add(total_ready));
+                        
                         event.events = libc::EPOLLIN as u32;
+                        event.u64 = interest.user_data;
                     }
                     total_ready += 1;
                 },
@@ -613,6 +620,7 @@ hook_macros::hook! {
                     if total_ready < maxevents as usize {
                         let event = &mut (*events.add(total_ready));
                         event.events = libc::EPOLLIN as u32;
+                        event.u64 = interest.user_data;
                     }
                     total_ready += 1;
                 } else if total_ready == 0 {
@@ -624,6 +632,7 @@ hook_macros::hook! {
                     if total_ready < maxevents as usize {
                         let event = &mut (*events.add(total_ready));
                         event.events = libc::EPOLLOUT as u32;
+                        event.u64 = interest.user_data;
                     }
                     total_ready += 1;
                 },
@@ -631,6 +640,7 @@ hook_macros::hook! {
                     if total_ready < maxevents as usize {
                         let event = &mut (*events.add(total_ready));
                         event.events = libc::EPOLLOUT as u32;
+                        event.u64 = interest.user_data;
                     }
                     total_ready += 1;
                 } else if total_ready == 0 {
@@ -640,6 +650,7 @@ hook_macros::hook! {
                     let event = &mut (*events.add(total_ready));
                     let mut is_ready = false;
                     event.events = 0;
+                    event.u64 = interest.user_data;
 
                     match read_status {
                         PolledStatus::NotPollable => (),
@@ -666,12 +677,14 @@ hook_macros::hook! {
                         PolledStatus::ImmediatelyPollable => {
                             if total_ready < maxevents as usize {
                                 event.events |= libc::EPOLLOUT as u32;
+                                event.u64 = interest.user_data;
                             }
                             is_ready = true;
                         },
                         PolledStatus::Pollable(polled_id) => if ctx.polled_is_ready(polled_id) {
                             if total_ready < maxevents as usize {
                                 event.events |= libc::EPOLLOUT as u32;
+                                event.u64 = interest.user_data;
                             }
                             is_ready = true;
                         } else if total_ready == 0 {
@@ -706,6 +719,7 @@ hook_macros::hook! {
                     if total_ready < maxevents as usize {
                         let event = &mut (*events.add(total_ready));
                         event.events = libc::EPOLLIN as u32;
+                        event.u64 = interest.user_data;
                     }
                     total_ready += 1;
                 }
@@ -714,6 +728,7 @@ hook_macros::hook! {
                     if total_ready < maxevents as usize {
                         let event = &mut (*events.add(total_ready));
                         event.events = libc::EPOLLOUT as u32;
+                        event.u64 = interest.user_data;
                     }
                     total_ready += 1;
                 }
@@ -722,6 +737,7 @@ hook_macros::hook! {
                     let event = &mut (*events.add(total_ready));
                     let mut is_ready = false;
                     event.events = 0;
+                    event.u64 = interest.user_data;
 
                     if let PolledStatus::Pollable(polled_id) = read_status {
                         if ctx.polled_is_ready(polled_id) {

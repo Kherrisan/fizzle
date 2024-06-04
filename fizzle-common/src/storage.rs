@@ -1,25 +1,38 @@
-use std::cmp::Ordering;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
-use std::{array, cmp, mem, ptr};
+use std::{array, cmp, mem, ptr, slice};
 
-#[derive(Debug, Clone, Eq)]
+unsafe fn slice_init(slice: &[MaybeUninit<u8>]) -> &[u8] {
+    slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len())
+}
+
+unsafe fn slice_init_mut(slice: &mut [MaybeUninit<u8>]) -> &mut [u8] {
+    slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut u8, slice.len())
+}
+
+#[derive(Debug, Clone)]
 pub struct Buffer<const T: usize> {
-    data: [u8; T],
-    data_len: usize,
+    data: [MaybeUninit<u8>; T],
+    data_start: usize,
+    data_end: usize,
 }
 
 impl<const T: usize> PartialEq for Buffer<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.data[..self.data_len] == other.data[..other.data_len]
+        unsafe {
+            slice_init(&self.data[self.data_start..self.data_end]) == slice_init(&other.data[other.data_start..other.data_end])
+        }
     }
 }
 
+impl<const T: usize> Eq for Buffer<T> {}
+
 impl<const T: usize> Hash for Buffer<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.data[..self.data_len].hash(state);
-        self.data_len.hash(state);
+        unsafe {
+            slice_init(&self.data[self.data_start..self.data_end]).hash(state);
+        }
     }
 }
 
@@ -29,16 +42,17 @@ impl<const T: usize> Default for Buffer<T> {
     }
 }
 
-impl<const T: usize> Buffer<T> {
+impl<const N: usize> Buffer<N> {
     pub fn new() -> Self {
         Self {
-            data: [0u8; T],
-            data_len: 0,
+            data: unsafe { MaybeUninit::uninit().assume_init() },
+            data_start: 0,
+            data_end: 0,
         }
     }
 
     pub fn len(&self) -> usize {
-        self.data_len
+        self.data_end - self.data_start
     }
 
     pub fn is_empty(&self) -> bool {
@@ -46,59 +60,127 @@ impl<const T: usize> Buffer<T> {
     }
 
     pub fn is_full(&self) -> bool {
-        self.len() == T
+        self.len() == N
     }
 
     pub fn shrink(&mut self, new_length: usize) -> Result<(), BufferError> {
-        if self.data_len < new_length {
+        if (self.data_end - self.data_start) < new_length {
             return Err(BufferError);
         }
 
-        self.data_len = new_length;
+        self.data_end -= (self.data_end - self.data_start) - new_length;
         Ok(())
     }
 
+    pub fn write_available(&self) -> usize {
+        N - self.data_end
+    }
+
+    pub fn remaining_mut(&mut self) -> &mut [MaybeUninit<u8>] {
+        &mut self.data[self.data_end..]
+    }
+
     pub fn data(&self) -> &[u8] {
-        &self.data[..self.data_len]
+        unsafe {
+            slice_init(&self.data[self.data_start..self.data_end])
+        }
+    }
+
+    pub fn did_read(&mut self, amount: usize) {
+        match amount.cmp(&(self.data_end - self.data_start)) {
+            cmp::Ordering::Less => self.data_start += amount,
+            cmp::Ordering::Equal => {
+                self.data_start = 0;
+                self.data_end = 0;
+            },
+            cmp::Ordering::Greater => panic!("`did_read()` called with too large an amount"),
+        }
+    }
+
+    pub fn write(&mut self, buf: &[u8]) -> usize {
+        let amount = cmp::min(N - self.data_end, buf.len());
+        unsafe {
+            let data_ptr = (self.data.as_mut_ptr() as *mut u8).add(self.data_end);
+            let buf_ptr = buf.as_ptr();
+            ptr::copy_nonoverlapping(buf_ptr, data_ptr, amount);
+        }
+        self.data_end += amount;
+        amount
+    }
+
+    pub fn did_write(&mut self, amount: usize) {
+        assert!(amount <= N - self.data_end);
+        self.data_end += amount;
+    }
+
+    pub fn read(&mut self, buf: &mut [u8]) -> usize {
+        let amount = cmp::min(self.data_end - self.data_start, buf.len());
+        unsafe {
+            let data_ptr = (self.data.as_mut_ptr() as *mut u8).add(self.data_start);
+            let buf_ptr = buf.as_ptr();
+            ptr::copy_nonoverlapping(buf_ptr, data_ptr, amount);
+        }
+        if amount == self.data_end - self.data_start {
+            self.data_start = 0;
+            self.data_end = 0;
+        } else {
+            self.data_start += amount;
+        }
+        amount
     }
 
     pub fn data_mut(&mut self) -> &mut [u8] {
-        &mut self.data[..self.data_len]
+        unsafe {
+            slice_init_mut(&mut self.data[self.data_start..self.data_end])
+        }
     }
 
     /// Places `data` in the buffer, clearing out any prior data in the process.
-    pub fn put(&mut self, data: &[u8]) -> Result<(), BufferError> {
-        self.data[..data.len()].copy_from_slice(data);
-        self.data_len = data.len();
+    pub fn replace(&mut self, data: &[u8]) -> Result<(), BufferError> {
+        unsafe {
+            slice_init_mut(&mut self.data[..data.len()]).copy_from_slice(data);
+        }
+        self.data_start = 0;
+        self.data_end = data.len();
         Ok(())
     }
 
     /// Attempts to place `data` in the buffer, clearing out any prior data in the process.
-    pub fn try_put(&mut self, data: &[u8]) -> Result<(), BufferError> {
+    pub fn try_replace(&mut self, data: &[u8]) -> Result<(), BufferError> {
         let Some(write_slice) = self.data.get_mut(..data.len()) else {
             return Err(BufferError);
         };
 
-        write_slice.copy_from_slice(data);
-        self.data_len = data.len();
+        unsafe {
+            slice_init_mut(write_slice).copy_from_slice(data);
+        }
+        self.data_start = 0;
+        self.data_end = data.len();
         Ok(())
     }
 
     pub fn append(&mut self, data: &[u8]) {
-        self.data[self.data_len..self.data_len + data.len()].copy_from_slice(data);
-        self.data_len += data.len();
+        unsafe {
+            slice_init_mut(&mut self.data[self.data_end..self.data_end + data.len()]).copy_from_slice(data);
+        }
+        self.data_end += data.len();
     }
 
     pub fn try_append(&mut self, data: &[u8]) -> Result<(), BufferError> {
-        let Some(write_slice) = self.data.get_mut(self.data_len..self.data_len + data.len()) else {
+        let Some(write_slice) = self.data.get_mut(self.data_end..self.data_end + data.len()) else {
             return Err(BufferError);
         };
 
-        write_slice.copy_from_slice(data);
-        self.data_len += data.len();
+        unsafe {
+            slice_init_mut(write_slice).copy_from_slice(data);
+        }
+
+        self.data_end += data.len();
         Ok(())
     }
 }
+
+/*
 
 #[derive(Debug, Clone)]
 pub struct RingBuffer<const T: usize> {
@@ -123,7 +205,7 @@ impl<const T: usize> Hash for RingBuffer<T> {
     }
 }
 
-impl<const T: usize> Default for RingBuffer<T> {
+impl<const T: usize> Default for Buffer<T> {
     fn default() -> Self {
         Self::new()
     }
@@ -194,6 +276,7 @@ impl<const T: usize> RingBuffer<T> {
         read
     }
 }
+*/
 
 /// A set of values that can be indexed into by a key of type `K`.
 ///
@@ -201,13 +284,15 @@ impl<const T: usize> RingBuffer<T> {
 pub struct ValueIndex<K: Sized + From<usize> + Into<usize>, V: Sized, const N: usize> {
     inner: [Option<V>; N],
     next_key: usize,
+    max_key: usize,
     _phantom: PhantomData<K>,
 }
 
-impl<K: Sized + From<usize> + Into<usize>, V: Sized, const N: usize> ValueIndex<K, V, N> {
+impl<K: Sized + From<usize> + Into<usize> + Copy, V: Sized, const N: usize> ValueIndex<K, V, N> {
     pub fn new() -> Self {
         Self {
             inner: array::from_fn(|_| None),
+            max_key: 0usize,
             next_key: 0usize,
             _phantom: Default::default(),
         }
@@ -219,6 +304,10 @@ impl<K: Sized + From<usize> + Into<usize>, V: Sized, const N: usize> ValueIndex<
         }
         *ptr::addr_of_mut!((*value_idx).next_key) = 0;
         *ptr::addr_of_mut!((*value_idx)._phantom) = Default::default();
+    }
+
+    pub fn max_key(&self) -> usize {
+        self.max_key
     }
 
     pub fn get(&self, key: K) -> Option<&V> {
@@ -234,6 +323,7 @@ impl<K: Sized + From<usize> + Into<usize>, V: Sized, const N: usize> ValueIndex<
     }
 
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        self.max_key = cmp::max(self.max_key, key.into());
         let mut res = Some(value);
         mem::swap(&mut res, &mut self.inner[key.into()]);
         res
@@ -243,6 +333,7 @@ impl<K: Sized + From<usize> + Into<usize>, V: Sized, const N: usize> ValueIndex<
         let Some(key) = self.next_key() else {
             panic!("ValueIndex structure out of space");
         };
+        self.max_key = cmp::max(self.max_key, key);
 
         self.inner[key] = Some(value);
         K::from(key)
@@ -275,7 +366,7 @@ impl<K: Sized + From<usize> + Into<usize>, V: Sized, const N: usize> ValueIndex<
     }
 }
 
-impl<K: Sized + From<usize> + Into<usize>, V: Sized, const N: usize> Default
+impl<K: Sized + From<usize> + Into<usize> + Copy, V: Sized, const N: usize> Default
     for ValueIndex<K, V, N>
 {
     fn default() -> Self {
@@ -289,6 +380,7 @@ impl<K: Sized + From<usize> + Into<usize> + Clone, V: Sized + Clone, const N: us
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
+            max_key: self.max_key,
             next_key: self.next_key,
             _phantom: self._phantom,
         }

@@ -3,7 +3,7 @@ use crate::state::fd::{FdInfo, FdResource};
 use crate::state::identifiers::DescriptorId;
 use crate::state::{PipeInfo, PipeMode, PolledInfo};
 
-use fizzle_common::storage::RingBuffer;
+use fizzle_common::storage::Buffer;
 
 hook_macros::hook! {
     unsafe fn pipe(
@@ -34,7 +34,7 @@ hook_macros::hook! {
         let first_pipe = PipeInfo {
             mode,
             peer: None,
-            read_buf: ctx.global().buffers.put(RingBuffer::new()),
+            read_buf: ctx.global().buffers.put(Buffer::new()),
             read_polled: ctx.global().polled_events.put(PolledInfo::new()),
             write_polled: ctx.global().polled_events.put(PolledInfo::new_raised()),
         };
@@ -44,7 +44,7 @@ hook_macros::hook! {
         let second_pipe = PipeInfo {
             mode,
             peer: Some(first_pipe_id),
-            read_buf: ctx.global().buffers.put(RingBuffer::new()),
+            read_buf: ctx.global().buffers.put(Buffer::new()),
             read_polled: ctx.global().polled_events.put(PolledInfo::new()),
             write_polled: ctx.global().polled_events.put(PolledInfo::new_raised()),
         };

@@ -8,7 +8,7 @@ use crate::state::identifiers::{DescriptorId, FilePtr};
 use crate::state::FileObject;
 
 use fizzle_common::path::FilePath;
-use fizzle_common::storage::RingBuffer;
+use fizzle_common::storage::Buffer;
 
 hook_macros::hook! {
     unsafe fn fdopen(
@@ -35,7 +35,7 @@ hook_macros::hook! {
         // TODO: parse and use `mode`
         let file_id = FilePtr::from(file);
 
-        let None = ctx.local().file_objs.insert(file_id, FileObject { descriptor_id, buf: RingBuffer::new() }) else {
+        let None = ctx.local().file_objs.insert(file_id, FileObject { descriptor_id, buf: Buffer::new() }) else {
             panic!("unexpected duplicate passthrough FILE* object created");
         };
 
@@ -411,7 +411,7 @@ hook_macros::hook! {
 
         let file = crate::unique_mem_create() as *mut libc::FILE;
 
-        let None = ctx.local().file_objs.insert(FilePtr::from(file), FileObject { descriptor_id, buf: RingBuffer::new() }) else {
+        let None = ctx.local().file_objs.insert(FilePtr::from(file), FileObject { descriptor_id, buf: Buffer::new() }) else {
             panic!("fizzle acquired non-unique virtual file handle");
         };
 

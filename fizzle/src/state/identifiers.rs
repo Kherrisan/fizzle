@@ -169,10 +169,6 @@ impl Into<usize> for PluginModuleId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PluginId(usize);
 
-impl PluginId {
-    pub const INVALID: PluginId = PluginId(usize::MAX);
-}
-
 impl From<usize> for PluginId {
     fn from(value: usize) -> Self {
         Self(value)

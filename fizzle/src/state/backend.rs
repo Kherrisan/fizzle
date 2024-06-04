@@ -10,7 +10,7 @@ mod private {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum IoBackend<R: Clone + Copy + Debug, F: Clone + Copy + Debug, P: Clone + Copy + Debug> {
+pub enum IoBackend<R: Clone + Copy + Debug, F: Clone + Copy + Debug> {
     Passthrough,
     /// Handles I/O regularly.
     Regular(R),
@@ -18,7 +18,7 @@ pub enum IoBackend<R: Clone + Copy + Debug, F: Clone + Copy + Debug, P: Clone + 
     // TODO: need to turn this into FeedbackInfo complete with `Polled` for read/write
     Feedback(F),
     /// Uses the plugin specified by `PluginId` to decide `read()`/`write()` behavior.
-    Plugin(P),
+    Plugin(PluginId),
     Sink,
     NullSink,
     /// Indicates that fuzzing input should be passed directly through the I/O Endpoint.
@@ -36,14 +36,12 @@ pub struct StandardFeedback {
     pub write_polled: PolledId,
 }
 
+/*
 #[derive(Clone, Copy, Debug)]
 pub struct StandardPlugin {
     pub plugin_id: PluginId,
-    pub read_buf: BufferId,
-    pub read_polled: PolledId,
-    pub write_buf: BufferId,
-    pub write_polled: PolledId
 }
+*/
 
 #[derive(Clone, Copy, Debug)]
 pub struct RegularConnected {
@@ -61,20 +59,20 @@ pub struct RegularConnectionless {
 }
 
 
-pub type PendingBackend = IoBackend<(), (), PluginId>;
+pub type PendingBackend = IoBackend<(), ()>;
 
-pub type ConnectingBackend = IoBackend<(), (), PluginId>;
+pub type ConnectingBackend = IoBackend<(), ()>;
 
 /// The backend for a connected socket.
-pub type ConnectedBackend = IoBackend<RegularConnected, StandardFeedback, StandardPlugin>;
+pub type ConnectedBackend = IoBackend<RegularConnected, StandardFeedback>;
 
 /// The backend for a connectionless socket.
-pub type ConnectionlessBackend = IoBackend<RegularConnectionless, StandardFeedback, StandardPlugin>;
+pub type ConnectionlessBackend = IoBackend<RegularConnectionless, StandardFeedback>;
 
-pub type FileBackend = IoBackend<Sealed, StandardFeedback, StandardPlugin>;
+pub type FileBackend = IoBackend<Sealed, StandardFeedback>;
 
-pub type ServerBackend = IoBackend<(), (), PluginId>;
+pub type ServerBackend = IoBackend<(), ()>;
 
-pub type StdioBackend = IoBackend<Sealed, StandardFeedback, StandardPlugin>;
+pub type StdioBackend = IoBackend<Sealed, StandardFeedback>;
 
 

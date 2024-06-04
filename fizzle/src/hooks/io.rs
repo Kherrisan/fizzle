@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::{cmp, mem, ptr, slice};
 
 use fizzle_common::io::TransportAddress;
-use fizzle_common::storage::RingBuffer;
+use fizzle_common::storage::Buffer;
 
 use crate::hook_macros;
 use crate::constants::FIZZLE_BUFFER_LENGTH;
@@ -89,9 +89,11 @@ hook_macros::hook! {
 
                     write_to_buffer(&mut ctx, data, buffer_id, write_polled, Some(read_polled), is_nonblocking)
                 }
-                FileBackend::Plugin(plugin) => {
-                    let buffer_id = plugin.write_buf;
-                    let write_polled = plugin.write_polled;
+                FileBackend::Plugin(plugin_id) => {
+                    let plugin_id = *plugin_id;
+                    let plugin_info = ctx.global().plugins.get(plugin_id).unwrap();
+                    let buffer_id = plugin_info.write_buf;
+                    let write_polled = plugin_info.write_polled;
 
                     write_to_buffer(&mut ctx, data, buffer_id, write_polled, None, is_nonblocking)
                 },
@@ -161,9 +163,10 @@ hook_macros::hook! {
 
                     write_to_buffer(&mut ctx, data, buffer_id, write_polled, Some(read_polled), is_nonblocking)
                 },
-                StdioBackend::Plugin(plugin) => {
-                    let buffer_id = plugin.write_buf;
-                    let write_polled = plugin.write_polled;
+                StdioBackend::Plugin(plugin_id) => {
+                    let plugin_info = ctx.global().plugins.get(plugin_id).unwrap();
+                    let buffer_id = plugin_info.write_buf;
+                    let write_polled = plugin_info.write_polled;
 
                     write_to_buffer(&mut ctx, data, buffer_id, write_polled, None, is_nonblocking)
                 },
@@ -316,29 +319,31 @@ hook_macros::hook! {
                 return -1
             },
             FdResource::File(file_id) => match ctx.global().files.get(file_id).unwrap() {
-                crate::state::backend::IoBackend::Passthrough => hook_macros::real!(read)(fd, buf, len),
-                crate::state::backend::IoBackend::Regular(_) => unreachable!(),
-                crate::state::backend::IoBackend::Feedback(feedback) => {
+                FileBackend::Passthrough => hook_macros::real!(read)(fd, buf, len),
+                FileBackend::Regular(_) => unreachable!(),
+                FileBackend::Feedback(feedback) => {
                     let buffer_id = feedback.buf;
                     let read_polled = feedback.read_polled;
                     let write_polled = feedback.write_polled;
 
                     read_from_buffer(&mut ctx, data, buffer_id, read_polled, Some(write_polled), is_nonblocking)
                 },
-                crate::state::backend::IoBackend::Plugin(plugin) => {
-                    let buffer_id = plugin.read_buf;
-                    let read_polled = plugin.read_polled;
+                FileBackend::Plugin(plugin_id) => {
+                    let plugin_id = *plugin_id;
+                    let plugin_info = ctx.global().plugins.get(plugin_id).unwrap();
+                    let buffer_id = plugin_info.read_buf;
+                    let read_polled = plugin_info.read_polled;
 
                     read_from_buffer(&mut ctx, data, buffer_id, read_polled, None, is_nonblocking)                   
                 },
-                crate::state::backend::IoBackend::Sink => 0 as libc::ssize_t,
-                crate::state::backend::IoBackend::NullSink => {
+                FileBackend::Sink => 0 as libc::ssize_t,
+                FileBackend::NullSink => {
                     for b in data.iter_mut() {
                         *b = 0;
                     }
                     data.len() as libc::ssize_t
                 },
-                crate::state::backend::IoBackend::Fuzz(_) => todo!(),
+                FileBackend::Fuzz(_) => todo!(),
             }
             FdResource::MessageQueue(_) => todo!(),
             FdResource::Pipe(pipe_id) => {
@@ -393,9 +398,10 @@ hook_macros::hook! {
 
                     read_from_buffer(&mut ctx, data, buffer_id, read_polled, Some(write_polled), is_nonblocking)
                 },
-                StdioBackend::Plugin(plugin) => {
-                    let buffer_id = plugin.write_buf;
-                    let read_polled = plugin.read_polled;
+                StdioBackend::Plugin(plugin_id) => {
+                    let plugin_info = ctx.global().plugins.get(plugin_id).unwrap();
+                    let buffer_id = plugin_info.write_buf;
+                    let read_polled = plugin_info.read_polled;
 
                     read_from_buffer(&mut ctx, data, buffer_id, read_polled, None, is_nonblocking)
                 },
@@ -503,7 +509,7 @@ hook_macros::hook! {
 }
 
 fn write_datagram<const N: usize>(
-    send_buf: &mut RingBuffer<N>,
+    send_buf: &mut Buffer<N>,
     data: &[u8],
     addr: &SocketAddr,
 ) -> libc::ssize_t {
@@ -614,10 +620,11 @@ fn send_connected_socket(
 
             return written as isize
         },
-        ConnectedBackend::Plugin(plugin) => {
-            let buffer_id = plugin.write_buf;
-            let write_polled = plugin.write_polled;
-            let read_polled = plugin.read_polled;
+        ConnectedBackend::Plugin(plugin_id) => {
+            let plugin_info = ctx.global().plugins.get(plugin_id).unwrap();
+            let buffer_id = plugin_info.write_buf;
+            let write_polled = plugin_info.write_polled;
+            let read_polled = plugin_info.read_polled;
 
             if !ctx.polled_is_ready(write_polled) {
                 if is_nonblocking {
@@ -771,9 +778,10 @@ fn send_connectionless_socket(
 
             return amount_written as isize
         },
-        ConnectionlessBackend::Plugin(plugin) => {
-            let buffer_id = plugin.write_buf;
-            let write_polled = plugin.write_polled;
+        ConnectionlessBackend::Plugin(plugin_id) => {
+            let plugin_info = ctx.global().plugins.get(plugin_id).unwrap();
+            let buffer_id = plugin_info.write_buf;
+            let write_polled = plugin_info.write_polled;
 
             if !ctx.polled_is_ready(write_polled) {
                 if is_nonblocking {
@@ -802,7 +810,7 @@ fn send_connectionless_socket(
 }
 
 fn read_datagram<const N: usize>(
-    recv_buf: &mut RingBuffer<N>,
+    recv_buf: &mut Buffer<N>,
     data: &mut [u8],
     addr: *mut libc::sockaddr,
     addrlen: *mut libc::socklen_t,

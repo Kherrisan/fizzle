@@ -12,7 +12,6 @@ use std::hash::{Hash, Hasher};
 use std::mem::MaybeUninit;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::ops::{Deref, DerefMut};
-use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::ThreadId;
@@ -20,7 +19,7 @@ use std::{array, env, mem, ptr, thread};
 
 use fizzle_common::io::{AddressFamily, TransportAddress, TransportProtocol};
 use fizzle_common::path::{FilePath, SemPath};
-use fizzle_common::storage::{RingBuffer, ValueIndex};
+use fizzle_common::storage::{Buffer, ValueIndex};
 
 use fizzle_plugin::{IoEndpointVariant, StreamId};
 use heapless::spsc::Queue;
@@ -32,8 +31,8 @@ use crate::constants::*;
 use crate::semaphore::Semaphore;
 use crate::state::plugins::PluginConfig;
 
-use self::backend::{ConnectedBackend, ConnectingBackend, ConnectionlessBackend, FileBackend, PendingBackend, ServerBackend, StandardFeedback, StandardPlugin, StdioBackend};
-use self::fd::FdInfo;
+use self::backend::{ConnectedBackend, ConnectingBackend, ConnectionlessBackend, FileBackend, PendingBackend, ServerBackend, StandardFeedback, StdioBackend};
+use self::fd::{FdInfo, FdResource};
 use self::identifiers::*;
 use self::plugins::{IoEmulationType, PluginConfigEndpoint, PluginModules};
 
@@ -182,11 +181,11 @@ fn fizzle_state_initialize(state: &mut MaybeUninit<FizzleContext>, is_init: &mut
 
 /// All state that fizzle functions receive access to.
 pub struct FizzleContext {
-    thread_locks: [Option<Semaphore>; FIZZLE_MAX_THREADS],
+    pub thread_locks: [Option<Semaphore>; FIZZLE_MAX_THREADS], // TODO: sem_init moved address _is_ undefined behavior
     /// `local`, as in local to the current executing process.
-    process_state: Box<ProcessState>,
+    pub process_state: Box<ProcessState>,
     /// `global`, as in shared across all processes in a given fizzle harness.
-    shared_memory: *mut libc::c_void,
+    pub shared_memory: *mut libc::c_void,
     // shmem_fd: RawFd,
 }
 
@@ -212,7 +211,7 @@ impl FizzleContext {
         })
     }
 
-    unsafe fn interprocess_state(shared_memory: *mut libc::c_void) -> *mut InterprocessState {
+    pub unsafe fn interprocess_state(shared_memory: *mut libc::c_void) -> *mut InterprocessState {
         (shared_memory as *mut libc::sem_t).add(FIZZLE_MAX_PROCESSES) as *mut InterprocessState
     }
 
@@ -405,7 +404,7 @@ impl FizzleContext {
                 self.get_thread_lock(&thread_id).post();
                 self.pause_current_thread();
             }
-        } else if self::plugins::run_plugins() { // Plugins have queued more workers as ready
+        } else if self::plugins::run_plugins(self) { // Plugins have queued more workers as ready
             // This shouldn't lead to a stack overflow unless `run_plugins` erroneously
             // returns `true` but doesn't schedule new workers.
             self.yield_thread();
@@ -473,7 +472,7 @@ impl FizzleContext {
             &mut sem,
             &mut self.thread_locks[index_of_thread(&thread_id)],
         );
-        unsafe { sem.unwrap().destroy() };
+        // Semaphore dropped here
 
         // Finally, exit the thread properly
         unsafe { libc::pthread_exit(ret) }
@@ -484,10 +483,10 @@ impl FizzleContext {
     }
 
     /// Retrieves the semaphore associated with the thread idendified by `thread_id`.
-    fn get_thread_lock(&self, thread_id: &ThreadId) -> &Semaphore {
+    fn get_thread_lock(&mut self, thread_id: &ThreadId) -> &mut Semaphore {
         let thread_idx = index_of_thread(thread_id);
         assert!(thread_idx < self.thread_locks.len(), "too many threads spawned during fizzle execution (ThreadID out of range)--increase FIZZLE_MAX_THREADS constant during fizzle compilation");
-        self.thread_locks[thread_idx].as_ref().unwrap()
+        self.thread_locks[thread_idx].as_mut().unwrap()
     }
 
     pub fn pause_current_process(&mut self) {
@@ -540,20 +539,6 @@ impl FizzleContext {
             .event_raised = false;
     }
 
-    /*
-    // else, call this
-    pub fn enqueue_next_polled(&mut self, polled_id: PolledId) {
-        let polled = self.global().polled_events.get_mut(polled_id).unwrap();
-        if let Some(poller_id) = polled.pollers.dequeue() {
-            polled.poller_dispatched = true;
-            self.global()
-                .ready
-                .enqueue(ReadyInfo::Poller(poller_id))
-                .unwrap();
-        }
-    }
-    */
-
     /// Creates a new poller for the currently executing worker.
     pub fn new_poller(&mut self) -> PollerId {
         let worker_id = self.current_worker_id();
@@ -604,16 +589,6 @@ impl FizzleContext {
     }
 }
 
-
-
-// Challenge: map a given endpoint to a (PluginId, IoEndpoint, StreamId) tuple with buffers + Polled instances for I/O
-
-// We do not currently support sem_init() with pshared enabled--that would require tracking shared memory
-// across processes. While this is possible, it would be a difficult and bug-ridden path to take.
-// In a similar vein, we will not
-
-// We will, however, support named process-shared semaphores.
-
 /// State local to the current process.
 pub struct ProcessState {
     pub process_id: ProcessId,
@@ -655,12 +630,28 @@ impl ProcessState {
             panic!("fizzle missing working directory on startup");
         }
         let working_directory = FilePath::from_cstr(unsafe { CStr::from_ptr(cwd) }).unwrap();
-
+        let mut fds = ValueIndex::default();
+        fds.insert(DescriptorId::from(0), FdInfo {
+            close_on_exec: false,
+            nonblocking: false,
+            resource: FdResource::Stdin,
+        });
+        fds.insert(DescriptorId::from(1), FdInfo {
+            close_on_exec: false,
+            nonblocking: false,
+            resource: FdResource::Stdout,
+        });
+        fds.insert(DescriptorId::from(2), FdInfo {
+            close_on_exec: false,
+            nonblocking: false,
+            resource: FdResource::Stderr,
+        });
+        
         Self {
             process_id, // TODO: increment each time new process is made
             suspend_on_exit,
             plugin_modules,
-            fds: Default::default(),
+            fds,
             dirs: Default::default(),
             barriers: HashMap::with_hasher(Default::default()),
             condvars: HashMap::with_hasher(Default::default()),
@@ -685,7 +676,7 @@ impl ProcessState {
 
 pub struct FileObject {
     pub descriptor_id: DescriptorId,
-    pub buf: RingBuffer<FIZZLE_FOPEN_BUFSIZE>,
+    pub buf: Buffer<FIZZLE_FOPEN_BUFSIZE>,
 }
 
 // Each time a Polled is *raised* (i.e., goes from `event_raised: false` to `event_raised: true`),
@@ -716,17 +707,6 @@ impl PolledInfo {
         }
     }
 }
-
-/*
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PolledItem {
-    None,
-    PendingClients,
-    PluginInput(PluginId),
-    PluginOutput(PluginId),
-    Socket(SocketId),
-}
-*/
 
 #[derive(Debug)]
 pub struct SocketLocationInfo {
@@ -804,13 +784,11 @@ pub struct ConnectingSocket {
     pub backend: ConnectingBackend,
     pub connect_polled: PolledId,
     pub local_addr: TransportAddress,
-    pub rem_addr: TransportAddress,
 }
 
 #[derive(Debug)]
 pub struct ConnectedSocket {
     pub backend: ConnectedBackend,
-    pub local_addr: TransportAddress,
     pub rem_addr: TransportAddress,
 }
 
@@ -820,6 +798,10 @@ pub struct PluginInfo {
     pub stream: StreamId,
     /// The plugin module to read/write from.
     pub module_id: PluginModuleId,
+    pub read_buf: BufferId,
+    pub read_polled: PolledId,
+    pub write_buf: BufferId,
+    pub write_polled: PolledId
 }
 
 #[derive(Debug)]
@@ -830,7 +812,6 @@ pub struct EpollInfo {
 #[derive(Clone, Copy, Debug)]
 pub struct EpollInterest {
     pub direction: EpollDirection,
-    pub descriptor: RawFd,
     pub user_data: u64,
 }
 
@@ -845,8 +826,6 @@ pub enum EpollDirection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PolledStatus {
     Pollable(PolledId),
-    /// The requested object to be polled has had its peer closed.
-//    Shutdown,
     /// The file descriptor was invalid.
     BadFd,
     /// The requested object will never return polled output (such as attempting to read `stdout`).
@@ -873,7 +852,7 @@ pub struct InterprocessState {
     // TODO: SO_REUSEPORT breaks this...
     pub socket_locations: FnvIndexMap<TransportAddress, SocketLocationInfo, FIZZLE_MAX_SOCKADDRS>,
     pub sockets: ValueIndex<SocketId, SocketState, FIZZLE_MAX_SOCKETS>,
-    pub buffers: ValueIndex<BufferId, RingBuffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
+    pub buffers: ValueIndex<BufferId, Buffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
     pub transfer_fds: Option<ValueIndex<DescriptorId, FdInfo, FIZZLE_MAX_FDS>>,
     pub stdio: StdioBackend,
     // Polling infrastructure
@@ -920,17 +899,11 @@ impl InterprocessState {
                 match endpoint_variant {
                     IoEndpointVariant::Stdio => self.stdio = match endpoint.emulation_type {
                         IoEmulationType::Feedback => StdioBackend::Feedback(StandardFeedback {
-                            buf: self.buffers.put(RingBuffer::new()),
+                            buf: self.buffers.put(Buffer::new()),
                             read_polled: self.polled_events.put(PolledInfo::new()),
                             write_polled: self.polled_events.put(PolledInfo::new_raised()),
                         }),
-                        IoEmulationType::Plugin(module_id) => StdioBackend::Plugin(StandardPlugin {
-                            plugin_id: self.add_plugin(endpoint_variant.clone(), module_id),
-                            read_buf: self.buffers.put(RingBuffer::new()),
-                            read_polled: self.polled_events.put(PolledInfo::new()),
-                            write_buf: self.buffers.put(RingBuffer::new()),
-                            write_polled: self.polled_events.put(PolledInfo::new_raised()),
-                        }),
+                        IoEmulationType::Plugin(module_id) => StdioBackend::Plugin(self.add_plugin(endpoint.endpoint_variant.clone(), module_id)),
                         IoEmulationType::Sink =>StdioBackend::Sink,
                         IoEmulationType::NullSink => StdioBackend::NullSink,
                         IoEmulationType::Fuzz => StdioBackend::Fuzz(0),
@@ -943,19 +916,13 @@ impl InterprocessState {
                         let file_id = match endpoint.emulation_type {
                             IoEmulationType::Feedback => {
                                 self.files.put(FileBackend::Feedback(StandardFeedback {
-                                    buf: self.buffers.put(RingBuffer::new()),
+                                    buf: self.buffers.put(Buffer::new()),
                                     read_polled: self.polled_events.put(PolledInfo::new()),
                                     write_polled: self.polled_events.put(PolledInfo::new_raised()),
                                 }))
                             }
                             IoEmulationType::Plugin(module_id) => {
-                                let backend = FileBackend::Plugin(StandardPlugin {
-                                    plugin_id: self.add_plugin(endpoint.endpoint_variant.clone(), module_id),
-                                    read_buf: self.buffers.put(RingBuffer::new()),
-                                    read_polled: self.polled_events.put(PolledInfo::new()),
-                                    write_buf: self.buffers.put(RingBuffer::new()),
-                                    write_polled: self.polled_events.put(PolledInfo::new_raised()),
-                                });
+                                let backend = FileBackend::Plugin(self.add_plugin(endpoint.endpoint_variant.clone(), module_id));
                                 self.files.put(backend)
                             }
                             IoEmulationType::Sink => self.files.put(FileBackend::Sink),
@@ -1134,11 +1101,19 @@ impl InterprocessState {
     pub fn add_plugin(&mut self, endpoint: IoEndpointVariant, module_id: PluginModuleId) -> PluginId {
         let stream = self.next_stream_id;
         self.next_stream_id = StreamId::from(usize::from(stream) + 1);
+        let read_buf = self.buffers.put(Buffer::new());
+        let read_polled = self.polled_events.put(PolledInfo::new());
+        let write_buf = self.buffers.put(Buffer::new());
+        let write_polled = self.polled_events.put(PolledInfo::new_raised());
 
         let plugin_id = self.plugins.put(PluginInfo {
             endpoint,
             stream,
             module_id,
+            read_buf,
+            read_polled,
+            write_buf,
+            write_polled,
         });
 
         plugin_id
@@ -1187,7 +1162,7 @@ impl InterprocessState {
         match self.file_paths.get(&path) {
             Some(&id) => Err(id),
             None => {
-                let buf = self.buffers.put(RingBuffer::new());
+                let buf = self.buffers.put(Buffer::new());
                 let read_polled = self.polled_events.put(PolledInfo::new());
                 let write_polled = self.polled_events.put(PolledInfo::new_raised());
                 let file_id = self.files.put(FileBackend::Feedback(StandardFeedback {

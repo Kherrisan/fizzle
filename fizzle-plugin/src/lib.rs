@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::{cmp, ptr};
 
 // TODO: can we pass through configuration options for specific streams? How would we go about
 // doing that?? The problem is that a plugin can be defined in multiple I/O endpoints, so the
@@ -78,12 +80,13 @@ pub enum IoEndpointVariant {
 
 /// An error that a plugin may return during calls to [`read()`](FizzlePluginObject::read) or
 /// [`write()`](FizzlePluginObject::write).
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PluginError {
-    /// No data could be read from/written to the plugin.
+    /// No data could be read into/written from the plugin, as it was waiting on other events.
     NotReady,
-    /// An unexpected error occurred within the plugin.
-    InternalError,
+    // /// An unexpected error occurred within the plugin.
+    // InternalError,
     // NOTE: replaced by a read/write that returns 0
     // /// The underlying data transport medium the plugin communicates on should be closed.
     // Disconnect,
@@ -96,6 +99,18 @@ pub enum PluginError {
 pub trait FizzlePlugin: FizzlePluginObject {
     /// Constructs an instance of this plugin, configured with `config`.
     fn new(config: HashMap<IoEndpointVariant, toml::Table>) -> Self;
+}
+
+/// Helper function to safely write data to the uninitialized buffer passed in
+/// [`write()`](FizzlePluginObject::write).
+pub fn write_to_uninit(data: &[u8], buf: &mut [MaybeUninit<u8>]) -> usize {
+    let amount = cmp::min(data.len(), buf.len());
+    unsafe {
+        let data_ptr = data.as_ptr();
+        let buf_ptr = buf.as_mut_ptr() as *mut u8;
+        ptr::copy_nonoverlapping(data_ptr, buf_ptr, amount);
+    }
+    amount
 }
 
 /// The object-safe subset of methods that must be implemented for a [`FizzlePlugin`].
@@ -114,15 +129,15 @@ pub trait FizzlePluginObject {
     /// entropy input to preserve deterministic behavior during fuzzing/dynamic analysis.
     fn load_entropy(&mut self, entropy: &[u8]);
 
-    /// Reads data from the service the plugin is modelling.
-    fn read(&mut self, buf: &mut [u8], ctx: &Context) -> Result<usize, PluginError>;
+    /// Reads data in to the service the plugin is modelling.
+    fn read(&mut self, buf: &[u8], ctx: &Context) -> Result<usize, PluginError>;
 
-    /// Writes data to the service the plugin is modelling.
-    fn write(&mut self, buf: &[u8], ctx: &Context) -> Result<usize, PluginError>;
+    /// Writes data out from the service the plugin is modelling.
+    fn write(&mut self, buf: &mut [MaybeUninit<u8>], ctx: &Context) -> Result<usize, PluginError>;
 
-    /// Indicates to Fizzle whether the plugin has data ready to be read or not.
+    /// Indicates to Fizzle whether the plugin is ready to read in data.
     fn can_read(&self, ctx: &Context) -> bool;
 
-    /// Indicates to Fizzle whether the plugin is ready to have data written to it or not.
+    /// Indicates to Fizzle whether the plugin is ready to write out data.
     fn can_write(&self, ctx: &Context) -> bool;
 }

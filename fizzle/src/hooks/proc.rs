@@ -14,7 +14,9 @@ hook_macros::hook! {
         match pid {
             0 => {
                 // Child process--fix all of the local state
-                panic!("`fork` unimplemented");
+                ctx.local().plugin_modules = None;
+
+                // TODO: upref all reference-counted global variables here
             }
             1.. => {
                 // Parent process--await execution
