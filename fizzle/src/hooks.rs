@@ -1,6 +1,8 @@
+pub mod entropy;
 pub mod fd;
 pub mod file;
 pub mod io;
+pub mod io_uring;
 pub mod pipe;
 pub mod poll;
 pub mod proc;
