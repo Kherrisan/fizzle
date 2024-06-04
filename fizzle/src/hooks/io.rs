@@ -508,6 +508,110 @@ hook_macros::hook! {
     }
 }
 
+hook_macros::hook! {
+    unsafe fn pread(
+        fd: libc::c_int,
+        buf: *mut libc::c_void,
+        count: libc::size_t,
+        offset: libc::off_t
+    ) -> libc::ssize_t => fizzle_pread(_ctx) {
+
+        crate::report_strict_failure("`pread` unimplemented");
+        hook_macros::real!(pread)(fd, buf, count, offset)
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn pwrite(
+        fd: libc::c_int,
+        buf: *const libc::c_void,
+        count: libc::size_t,
+        offset: libc::off_t
+    ) -> libc::ssize_t => fizzle_pwrite(_ctx) {
+
+        crate::report_strict_failure("`pwrite` unimplemented");
+        hook_macros::real!(pwrite)(fd, buf, count, offset)
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn readv(
+        fd: libc::c_int,
+        iov: *const libc::iovec,
+        iovcnt: libc::c_int
+    ) -> libc::ssize_t => fizzle_readv(_ctx) {
+
+        crate::report_strict_failure("`readv` unimplemented");
+        hook_macros::real!(readv)(fd, iov, iovcnt)
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn writev(
+        fd: libc::c_int,
+        iov: *const libc::iovec,
+        iovcnt: libc::c_int
+    ) -> libc::ssize_t => fizzle_writev(_ctx) {
+
+        crate::report_strict_failure("`writev` unimplemented");
+        hook_macros::real!(writev)(fd, iov, iovcnt)
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn preadv(
+        fd: libc::c_int,
+        iov: *const libc::iovec,
+        iovcnt: libc::c_int,
+        offset: libc::off_t
+    ) -> libc::ssize_t => fizzle_preadv(_ctx) {
+
+        crate::report_strict_failure("`preadv` unimplemented");
+        hook_macros::real!(preadv)(fd, iov, iovcnt, offset)
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn pwritev(
+        fd: libc::c_int,
+        iov: *const libc::iovec,
+        iovcnt: libc::c_int,
+        offset: libc::off_t
+    ) -> libc::ssize_t => fizzle_pwritev(_ctx) {
+
+        crate::report_strict_failure("`pwritev` unimplemented");
+        hook_macros::real!(pwritev)(fd, iov, iovcnt, offset)
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn preadv2(
+        fd: libc::c_int,
+        iov: *const libc::iovec,
+        iovcnt: libc::c_int,
+        offset: libc::off_t,
+        flags: libc::c_int
+    ) -> libc::ssize_t => fizzle_preadv2(_ctx) {
+
+        crate::report_strict_failure("`preadv2` unimplemented");
+        hook_macros::real!(preadv2)(fd, iov, iovcnt, offset, flags)
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn pwritev2(
+        fd: libc::c_int,
+        iov: *const libc::iovec,
+        iovcnt: libc::c_int,
+        offset: libc::off_t,
+        flags: libc::c_int
+    ) -> libc::ssize_t => fizzle_pwritev2(_ctx) {
+
+        crate::report_strict_failure("`pwritev2` unimplemented");
+        hook_macros::real!(pwritev2)(fd, iov, iovcnt, offset, flags)
+    }
+}
+
 fn write_datagram<const N: usize>(
     send_buf: &mut Buffer<N>,
     data: &[u8],
@@ -938,3 +1042,5 @@ fn recv_connectionless_socket(
 
     read_len
 }
+
+
