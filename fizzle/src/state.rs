@@ -340,9 +340,11 @@ impl FizzleContext {
             }
         }
 
+        let fds = unsafe { (*Self::interprocess_state(shared_memory)).transfer_fds.take() };
+
         Self {
             thread_locks: Self::create_thread_locks(),
-            process_state: Box::new(ProcessState::new(process_id, plugins)),
+            process_state: Box::new(ProcessState::new(process_id, plugins, fds)),
             shared_memory,
         }
     }
@@ -574,6 +576,18 @@ impl FizzleContext {
         }
     }
 
+    pub fn copy_exec_fds(&mut self) {
+        let mut fds = self.local().fds.clone();
+
+        for i in 0..fds.max_key() {
+            if let Some(FdInfo { close_on_exec: true, .. }) = fds.get(DescriptorId::from(i)) {
+                fds.remove(DescriptorId::from(i)).unwrap();
+            }
+        }
+
+        self.global().transfer_fds = Some(fds);
+    }
+
     fn wake_process(&mut self, process_id: ProcessId) {
         let process_idx: usize = process_id.into();
         if process_idx >= FIZZLE_MAX_PROCESSES {
@@ -618,7 +632,7 @@ pub struct ProcessState {
 }
 
 impl ProcessState {
-    fn new(process_id: ProcessId, plugin_modules: Option<PluginModules>) -> Self {
+    fn new(process_id: ProcessId, plugin_modules: Option<PluginModules>, transfer_fds: Option<ValueIndex<DescriptorId, FdInfo, FIZZLE_MAX_FDS>>) -> Self {
         let strict_mode = matches!(env::var(FIZZLE_STRICT_ENV), Ok(s) if s.as_str() == "1");
         let suspend_on_exit = matches!(env::var(FIZZLE_NOEXIT_ENV), Ok(s) if s.as_str() == "1");
         STRICT_MODE.store(strict_mode, Ordering::Release);
@@ -629,22 +643,29 @@ impl ProcessState {
             panic!("fizzle missing working directory on startup");
         }
         let working_directory = FilePath::from_cstr(unsafe { CStr::from_ptr(cwd) }).unwrap();
-        let mut fds = ValueIndex::default();
-        fds.insert(DescriptorId::from(0), FdInfo {
-            close_on_exec: false,
-            nonblocking: false,
-            resource: FdResource::Stdin,
-        });
-        fds.insert(DescriptorId::from(1), FdInfo {
-            close_on_exec: false,
-            nonblocking: false,
-            resource: FdResource::Stdout,
-        });
-        fds.insert(DescriptorId::from(2), FdInfo {
-            close_on_exec: false,
-            nonblocking: false,
-            resource: FdResource::Stderr,
-        });
+
+        let fds = match transfer_fds {
+            Some(fds) => fds,
+            None => {
+                let mut fds = ValueIndex::default();
+                fds.insert(DescriptorId::from(0), FdInfo {
+                    close_on_exec: false,
+                    nonblocking: false,
+                    resource: FdResource::Stdin,
+                });
+                fds.insert(DescriptorId::from(1), FdInfo {
+                    close_on_exec: false,
+                    nonblocking: false,
+                    resource: FdResource::Stdout,
+                });
+                fds.insert(DescriptorId::from(2), FdInfo {
+                    close_on_exec: false,
+                    nonblocking: false,
+                    resource: FdResource::Stderr,
+                });
+                fds
+            }
+        };
         
         Self {
             process_id, // TODO: increment each time new process is made

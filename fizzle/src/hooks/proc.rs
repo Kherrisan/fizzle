@@ -126,6 +126,7 @@ hook_macros::hook! {
     unsafe fn execv(pathname: *const libc::c_char, argv: *const *const libc::c_char) -> libc::c_int => fizzle_execv(ctx) {
         // env is inherited, so no variables need to be defined
         assert!(ctx.local().plugin_modules.is_none()); // TODO: handle this edge case (parent is `exec`d)
+        ctx.copy_exec_fds();
         hook_macros::real!(execv)(pathname, argv)
     }
 }
@@ -134,6 +135,7 @@ hook_macros::hook! {
      unsafe fn execvp(file: *const libc::c_char, argv: *const *const libc::c_char) -> libc::c_int => fizzle_execvp(ctx) {
         // env is inherited, so no variables need to be defined
         assert!(ctx.local().plugin_modules.is_none()); // TODO: handle this edge case (parent is `exec`d)
+        ctx.copy_exec_fds();
         hook_macros::real!(execvp)(file, argv)
     }
 }
@@ -167,6 +169,7 @@ hook_macros::hook! {
             panic!("`execve` exceeded maximum number of env variables")
         }
 
+        ctx.copy_exec_fds();
         hook_macros::real!(execve)(pathname, argv, ptr::addr_of!(env) as *const *const libc::c_char)
     }
 }
@@ -174,6 +177,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn execveat(dirfd: libc::c_int, pathname: *const libc::c_char, argv: *const *const libc::c_char, envp: *const *const libc::c_char, flags: libc::c_int) -> libc::c_int => fizzle_execveat(ctx) {
         crate::report_strict_failure("unimplemented `execveat`");
+        ctx.copy_exec_fds();
         hook_macros::real!(execveat)(dirfd, pathname, argv, envp, flags)
     }
 }
@@ -181,6 +185,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn fexecve(fd: libc::c_int, argv: *const *const libc::c_char, envp: *const *const libc::c_char) -> libc::c_int => fizzle_fexecve(ctx) {
         crate::report_strict_failure("unimplemented `fexecve`");
+        ctx.copy_exec_fds();
         hook_macros::real!(fexecve)(fd, argv, envp)
     }
 }
@@ -214,6 +219,7 @@ hook_macros::hook! {
             panic!("`execve` exceeded maximum number of env variables")
         }
 
+        ctx.copy_exec_fds();
         hook_macros::real!(execvpe)(file, argv, ptr::addr_of!(env) as *const *const libc::c_char)
     }
 }

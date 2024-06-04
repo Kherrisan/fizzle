@@ -1,6 +1,6 @@
 use crate::state::identifiers::*;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct FdInfo {
     /// Whether the file descriptor associated with closes on calls to `exec()`.
     pub close_on_exec: bool,
@@ -10,7 +10,7 @@ pub struct FdInfo {
     pub resource: FdResource,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum FdResource {
     /// Files `open()`ed using O_PATH
     Directory(DirectoryId),

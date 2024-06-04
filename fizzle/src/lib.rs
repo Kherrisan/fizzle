@@ -10,7 +10,6 @@ mod state;
 mod streams;
 
 pub(crate) use hook_macros::hook;
-pub(crate) use hook_macros::va_args_hook;
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::RawFd;
