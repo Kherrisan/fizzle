@@ -3,8 +3,12 @@ name = "fizzle"
 version = "0.1.0"
 edition = "2021"
 
+[profile.release]
+panic = "abort"
+
 [lib]
 crate-type = ["cdylib"]
+
 
 [build-dependencies]
 proc-macro2 = { version = "1.0" }

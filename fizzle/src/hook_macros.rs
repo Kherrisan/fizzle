@@ -3,6 +3,8 @@
 #[cfg(any(target_env = "gnu", target_os = "android"))]
 pub(crate) mod ld_preload;
 
+pub(crate) use ld_preload::va_args_hook;
+
 #[cfg(any(target_env = "gnu", target_os = "android"))]
 pub(crate) use ld_preload::hook;
 #[cfg(any(target_env = "gnu", target_os = "android"))]
