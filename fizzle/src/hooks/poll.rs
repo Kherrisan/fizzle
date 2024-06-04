@@ -67,7 +67,7 @@ pub fn fd_to_pollin(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
                 ConnectedBackend::NullSink => PolledStatus::ImmediatelyPollable,
                 ConnectedBackend::Fuzz(_) => todo!(),
             },
-            SocketState::Error => PolledStatus::ImmediatelyPollable,
+            // SocketState::Error => PolledStatus::ImmediatelyPollable,
         }
     }
 }
@@ -135,7 +135,7 @@ pub fn fd_to_pollout(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
                 ConnectedBackend::NullSink => PolledStatus::ImmediatelyPollable,
                 ConnectedBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
             },
-            SocketState::Error => PolledStatus::ImmediatelyPollable,
+            // SocketState::Error => PolledStatus::ImmediatelyPollable,
         }
     }
 }

@@ -681,6 +681,8 @@ fn send_connectionless_socket(
         return -1;
     };
 
+    let local_addr = sock_info.local_addr;
+
     let Some(SocketLocationInfo {
         bound_socket: Some(peer_sock_id),
         ..
@@ -769,7 +771,7 @@ fn send_connectionless_socket(
             // We don't need to verify that this connection has not shut down, as it's a Feedback endpoint
 
             let buf = ctx.global().buffers.get_mut(buffer_id).unwrap();
-            let amount_written = write_datagram(buf, data, &rem_addr);
+            let amount_written = write_datagram(buf, data, &local_addr);
 
             if FIZZLE_BUFFER_LENGTH - buf.len() < MAX_INTERNAL_DATAGRAM {
                 ctx.lower_polled(write_polled);

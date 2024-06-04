@@ -605,7 +605,6 @@ pub struct ProcessState {
     pub named_semaphores: HashMap<SemaphorePtr, SemaphoreId>,
     /// Files specifically designated as being emulated.
     pub file_objs: HashMap<FilePtr, FileObject, FxBuildHasher>,
-    pub passthrough_file_objs: HashMap<FilePtr, DescriptorId>,
     pub mutexes: HashMap<MutexPtr, VecDeque<ThreadId>, FxBuildHasher>,
     pub rwlocks: HashMap<RwLockPtr, RwLockInfo, FxBuildHasher>,
     pub semaphores: HashMap<SemaphorePtr, SemaphoreInfo>,
@@ -656,7 +655,6 @@ impl ProcessState {
             barriers: HashMap::with_hasher(Default::default()),
             condvars: HashMap::with_hasher(Default::default()),
             file_objs: HashMap::with_hasher(Default::default()),
-            passthrough_file_objs: HashMap::with_hasher(Default::default()),
             mutexes: HashMap::with_hasher(Default::default()),
             named_semaphores: HashMap::with_hasher(Default::default()),
             rwlocks: HashMap::with_hasher(Default::default()),
@@ -747,7 +745,7 @@ pub enum SocketState {
     PendingConnection(PendingSocket),
     Connecting(ConnectingSocket),
     Connected(ConnectedSocket),
-    Error,
+//    Error,
 }
 
 #[derive(Debug)]

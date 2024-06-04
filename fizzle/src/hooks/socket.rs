@@ -4,12 +4,11 @@
 
 use std::mem;
 
-use crate::state::backend::{ConnectedBackend, ConnectingBackend, IoBackend, RegularConnected, ServerBackend, StandardFeedback};
+use crate::state::backend::{ConnectedBackend, ConnectingBackend, ConnectionlessBackend, IoBackend, RegularConnected, RegularConnectionless, ServerBackend, StandardFeedback};
 use crate::state::fd::{FdInfo, FdResource};
 use crate::state::identifiers::{DescriptorId, SocketId};
 use crate::state::{
-    ConnectedSocket, ConnectingSocket, FizzleContext, PendingInfo,
-    PolledInfo, ServerSocket, SocketLocationInfo, SocketState, UnassociatedSocket,
+    ConnectedSocket, ConnectingSocket, ConnectionlessSocket, FizzleContext, PendingInfo, PolledInfo, ServerSocket, SocketLocationInfo, SocketState, UnassociatedSocket
 };
 use crate::{decode_inet_address, hook_macros};
 use fizzle_common::io::{AddressFamily, TransportAddress, TransportProtocol};
@@ -37,18 +36,36 @@ hook_macros::hook! {
             _ => panic!("unsupported socket address family {}",  domain),
         };
 
-        let protocol = match protocol {
-            libc::IPPROTO_TCP => TransportProtocol::Tcp,
-            libc::IPPROTO_SCTP => TransportProtocol::Sctp,
-            libc::IPPROTO_UDP => TransportProtocol::Udp,
+        let socket_id = match protocol {
+            libc::IPPROTO_TCP => ctx.global().sockets.put(SocketState::Unassociated(UnassociatedSocket {
+                local_addr: None,
+                family,
+                protocol: TransportProtocol::Tcp,
+            })),
+            libc::IPPROTO_SCTP => ctx.global().sockets.put(SocketState::Unassociated(UnassociatedSocket {
+                local_addr: None,
+                family,
+                protocol: TransportProtocol::Tcp,
+            })),
+            libc::IPPROTO_UDP => {
+                let local_addr = ctx.global().next_ephemeral_address(family, TransportProtocol::Udp).address().clone();
+                let recv_buf = ctx.global().buffers.put(Buffer::new());
+                let read_polled = ctx.global().polled_events.put(PolledInfo::new());
+                let write_polled = ctx.global().polled_events.put(PolledInfo::new_raised());
+
+                ctx.global().sockets.put(SocketState::Connectionless(ConnectionlessSocket {
+                    backend: ConnectionlessBackend::Regular(RegularConnectionless {
+                        recv_buf,
+                        read_polled,
+                        write_polled,
+                    }),
+                    local_addr,
+                    rem_addr: None,
+                }))
+            }
             _ => panic!("unsupported transport protocol {}", protocol),
         };
 
-        let socket_id = ctx.global().sockets.put(SocketState::Unassociated(UnassociatedSocket {
-            local_addr: None,
-            family,
-            protocol,
-        }));
 
         ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
             close_on_exec,
@@ -324,10 +341,12 @@ hook_macros::hook! {
                 *libc::__errno_location() = libc::EISCONN;
                 -1
             }
+            /*
             SocketState::Error => {
                 *libc::__errno_location() = libc::ECONNREFUSED;
                 -1
             }
+            */
             SocketState::Connectionless(_) => panic!("invalid fizzle state--unexpected connectionless socket being connected to")
         }
     }
