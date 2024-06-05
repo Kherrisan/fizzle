@@ -20,6 +20,10 @@ hook_macros::hook! {
                 // Child process--fix all of the local state
                 ctx.local().plugin_modules = None;
 
+                // Assign a new process ID
+                let process_id = ctx.global().assign_process_id();
+                ctx.local().process_id = process_id;
+
                 // TODO: upref all reference-counted global variables here
                 // For now we just don't free global variables so it's fine...
             }
@@ -126,6 +130,10 @@ hook_macros::hook! {
     unsafe fn execv(pathname: *const libc::c_char, argv: *const *const libc::c_char) -> libc::c_int => fizzle_execv(ctx) {
         // env is inherited, so no variables need to be defined
         assert!(ctx.local().plugin_modules.is_none()); // TODO: handle this edge case (parent is `exec`d)
+
+        // Ensure process ID gets passed through correctly
+        let process_id = ctx.local().process_id;
+        ctx.global().passthrough_process_id = process_id;
         ctx.copy_exec_fds();
         hook_macros::real!(execv)(pathname, argv)
     }
@@ -135,6 +143,8 @@ hook_macros::hook! {
      unsafe fn execvp(file: *const libc::c_char, argv: *const *const libc::c_char) -> libc::c_int => fizzle_execvp(ctx) {
         // env is inherited, so no variables need to be defined
         assert!(ctx.local().plugin_modules.is_none()); // TODO: handle this edge case (parent is `exec`d)
+        let process_id = ctx.local().process_id;
+        ctx.global().passthrough_process_id = process_id;
         ctx.copy_exec_fds();
         hook_macros::real!(execvp)(file, argv)
     }
@@ -169,6 +179,8 @@ hook_macros::hook! {
             panic!("`execve` exceeded maximum number of env variables")
         }
 
+        let process_id = ctx.local().process_id;
+        ctx.global().passthrough_process_id = process_id;
         ctx.copy_exec_fds();
         hook_macros::real!(execve)(pathname, argv, ptr::addr_of!(env) as *const *const libc::c_char)
     }
@@ -177,6 +189,8 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn execveat(dirfd: libc::c_int, pathname: *const libc::c_char, argv: *const *const libc::c_char, envp: *const *const libc::c_char, flags: libc::c_int) -> libc::c_int => fizzle_execveat(ctx) {
         crate::report_strict_failure("unimplemented `execveat`");
+        let process_id = ctx.local().process_id;
+        ctx.global().passthrough_process_id = process_id;
         ctx.copy_exec_fds();
         hook_macros::real!(execveat)(dirfd, pathname, argv, envp, flags)
     }
@@ -185,6 +199,8 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn fexecve(fd: libc::c_int, argv: *const *const libc::c_char, envp: *const *const libc::c_char) -> libc::c_int => fizzle_fexecve(ctx) {
         crate::report_strict_failure("unimplemented `fexecve`");
+        let process_id = ctx.local().process_id;
+        ctx.global().passthrough_process_id = process_id;
         ctx.copy_exec_fds();
         hook_macros::real!(fexecve)(fd, argv, envp)
     }
@@ -219,6 +235,8 @@ hook_macros::hook! {
             panic!("`execve` exceeded maximum number of env variables")
         }
 
+        let process_id = ctx.local().process_id;
+        ctx.global().passthrough_process_id = process_id;
         ctx.copy_exec_fds();
         hook_macros::real!(execvpe)(file, argv, ptr::addr_of!(env) as *const *const libc::c_char)
     }

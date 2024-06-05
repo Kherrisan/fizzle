@@ -321,7 +321,7 @@ impl FizzleContext {
 
             unsafe {
                 shared_memory = Self::open_shmem(shmem_label, false);
-                process_id = (*Self::interprocess_state(shared_memory)).assign_process_id();
+                process_id = (*Self::interprocess_state(shared_memory)).passthrough_process_id;
             }
         } else {
             process_id = ProcessId::from(0);
@@ -865,6 +865,7 @@ pub struct InterprocessState {
     next_ephemeral_port: u16,
     /// The thread identifier to be executed by the waking process.
     waking_thread_id: Option<ThreadId>,
+    pub passthrough_process_id: ProcessId,
     pub epolls: ValueIndex<EpollId, EpollInfo, FIZZLE_MAX_EPOLLS>,
     pub file_paths: FnvIndexMap<FilePath, FileId, FIZZLE_MAX_FILE_PATHS>,
     pub files: ValueIndex<FileId, FileBackend, FIZZLE_MAX_FILES>,
@@ -892,6 +893,7 @@ impl InterprocessState {
     /// Takes an uninitialized InterprocessState and initializes it in place.
     unsafe fn initialize(state: *mut InterprocessState) {
         *ptr::addr_of_mut!((*state).next_process_id) = ProcessId::from(1);
+        *ptr::addr_of_mut!((*state).passthrough_process_id) = ProcessId::from(1);
         *ptr::addr_of_mut!((*state).next_stream_id) = StreamId::from(0);
         *ptr::addr_of_mut!((*state).next_ephemeral_port) = FIZZLE_EPHEMERAL_PORT_START;
         *ptr::addr_of_mut!((*state).waking_thread_id) = None;
