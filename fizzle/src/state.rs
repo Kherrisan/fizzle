@@ -893,10 +893,10 @@ impl InterprocessState {
     /// Takes an uninitialized InterprocessState and initializes it in place.
     unsafe fn initialize(state: *mut InterprocessState) {
         *ptr::addr_of_mut!((*state).next_process_id) = ProcessId::from(1);
-        *ptr::addr_of_mut!((*state).passthrough_process_id) = ProcessId::from(1);
         *ptr::addr_of_mut!((*state).next_stream_id) = StreamId::from(0);
         *ptr::addr_of_mut!((*state).next_ephemeral_port) = FIZZLE_EPHEMERAL_PORT_START;
         *ptr::addr_of_mut!((*state).waking_thread_id) = None;
+        *ptr::addr_of_mut!((*state).passthrough_process_id) = ProcessId::from(1);
         ValueIndex::initialize(ptr::addr_of_mut!((*state).epolls));
         *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
         ValueIndex::initialize(ptr::addr_of_mut!((*state).files));
@@ -904,17 +904,15 @@ impl InterprocessState {
         ValueIndex::initialize(ptr::addr_of_mut!((*state).semaphores));
         ValueIndex::initialize(ptr::addr_of_mut!((*state).pipes));
         ValueIndex::initialize(ptr::addr_of_mut!((*state).message_queues));
-        ValueIndex::initialize(ptr::addr_of_mut!((*state).message_queues));
         *ptr::addr_of_mut!((*state).socket_locations) = FnvIndexMap::new();
         ValueIndex::initialize(ptr::addr_of_mut!((*state).sockets));
         ValueIndex::initialize(ptr::addr_of_mut!((*state).buffers));
         *ptr::addr_of_mut!((*state).transfer_fds) = None;
+        *ptr::addr_of_mut!((*state).stdio) = StdioBackend::Sink;
         ValueIndex::initialize(ptr::addr_of_mut!((*state).plugins));
         ValueIndex::initialize(ptr::addr_of_mut!((*state).polled_events));
         ValueIndex::initialize(ptr::addr_of_mut!((*state).pollers));
         *ptr::addr_of_mut!((*state).ready) = Queue::new();
-        *ptr::addr_of_mut!((*state).stdio) = StdioBackend::Sink;
-
     }
 
     fn load_config_mappings(&mut self, endpoints: Vec<PluginConfigEndpoint>) {
