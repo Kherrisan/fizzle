@@ -551,3 +551,30 @@ fn join_socket_pair(
 }
 
 // TODO: UDP sockets bound addresses (yes, even ephemeral) need to be registered
+
+
+hook_macros::hook! {
+    unsafe fn getsockopt(
+        sockfd: libc::c_int,
+        level: libc::c_int,
+        optname: libc::c_int,
+        optval: *mut libc::c_void,
+        optlen: *mut libc::socklen_t
+    ) -> libc::c_int => fizzle_getsockopt(ctx) {
+        drop(ctx);
+        hook_macros::real!(getsockopt)(sockfd, level, optname, optval, optlen)
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn setsockopt(
+        sockfd: libc::c_int,
+        level: libc::c_int,
+        optname: libc::c_int,
+        optval: *const libc::c_void,
+        optlen: libc::socklen_t
+    ) -> libc::c_int => fizzle_setsockopt(ctx) {
+        drop(ctx);
+        hook_macros::real!(setsockopt)(sockfd, level, optname, optval, optlen)
+    }
+}

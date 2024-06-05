@@ -35,3 +35,14 @@ hook_macros::hook! {
         0
     }
 }
+
+// GNU libc unconditionally pulls a void* from va_args, so we should (hypothetically?) be okay doing this.
+hook_macros::hook! {
+    unsafe fn fcntl(
+        fd: libc::c_int,
+        cmd: libc::c_int,
+        arg: *mut libc::c_void
+    ) -> libc::c_int => fizzle_fcntl(ctx) {
+        hook_macros::real!(fcntl)(fd, cmd, arg)
+    }
+}

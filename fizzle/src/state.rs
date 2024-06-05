@@ -521,8 +521,9 @@ impl FizzleContext {
 
     // call this whenever new data comes into a buffer
     pub fn raise_polled(&mut self, polled_id: PolledId) {
-        let polled = self.global().polled_events.get(polled_id).unwrap();
+        let polled = self.global().polled_events.get_mut(polled_id).unwrap();
         if !polled.event_raised {
+            polled.event_raised = true;
             let pollers = polled.pollers.clone();
             for poller in pollers {
                 if !self.global().pollers.get(poller).unwrap().in_raised_queue {
