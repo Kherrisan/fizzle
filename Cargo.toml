@@ -1,3 +1,9 @@
 [workspace]
 members = ["fizzle", "fizzle-common", "fizzle-plugin"]
 resolver = "2"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
