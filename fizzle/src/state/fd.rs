@@ -6,11 +6,12 @@ pub struct FdInfo {
     pub close_on_exec: bool,
     /// Whether the descriptor is configured to block on input or not.
     pub nonblocking: bool,
+    pub is_passthrough: bool,
     /// The resource the file descriptor points to.
     pub resource: FdResource,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum FdResource {
     /// Files `open()`ed using O_PATH
     Directory(DirectoryId),

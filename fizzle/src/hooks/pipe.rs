@@ -57,12 +57,14 @@ hook_macros::hook! {
         let fd1_info = FdInfo {
             close_on_exec,
             nonblocking,
+            is_passthrough: false,
             resource: FdResource::Pipe(first_pipe_id),
         };
 
         let fd2_info = FdInfo {
             close_on_exec,
             nonblocking,
+            is_passthrough: false,
             resource: FdResource::Pipe(second_pipe_id),
         };
 

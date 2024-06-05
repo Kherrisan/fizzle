@@ -411,6 +411,7 @@ hook_macros::hook! {
         ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
             close_on_exec: (flags & libc::EPOLL_CLOEXEC) != 0,
             nonblocking: false,
+            is_passthrough: false,
             resource: FdResource::Epoll(epoll_id),
         });
 

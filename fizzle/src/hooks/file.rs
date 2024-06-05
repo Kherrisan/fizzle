@@ -109,6 +109,7 @@ hook_macros::hook! {
             ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
                 close_on_exec,
                 nonblocking: false,
+                is_passthrough: false,
                 resource: FdResource::File(file_id)
             });
 
@@ -121,6 +122,7 @@ hook_macros::hook! {
             ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
                 close_on_exec,
                 nonblocking: false,
+                is_passthrough: true,
                 resource: FdResource::Directory(dir_id)
             });
 
@@ -131,6 +133,7 @@ hook_macros::hook! {
             ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
                 close_on_exec,
                 nonblocking: false,
+                is_passthrough: true,
                 resource: FdResource::File(file_id),
             });
             fd
@@ -143,6 +146,7 @@ hook_macros::hook! {
                 ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
                     close_on_exec: false,
                     nonblocking: false,
+                    is_passthrough: true,
                     resource: FdResource::File(file_id),
                 });
             }
@@ -186,6 +190,7 @@ hook_macros::hook! {
         ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
             close_on_exec: false,
             nonblocking: false,
+            is_passthrough: false,
             resource: FdResource::File(file_id)
         });
 
@@ -257,6 +262,7 @@ hook_macros::hook! {
             ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
                 close_on_exec,
                 nonblocking: false,
+                is_passthrough: false,
                 resource: FdResource::File(file_id)
             });
 
@@ -269,6 +275,7 @@ hook_macros::hook! {
             ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
                 close_on_exec,
                 nonblocking: false,
+                is_passthrough: true,
                 resource: FdResource::Directory(dir_id)
             });
 
@@ -279,6 +286,7 @@ hook_macros::hook! {
             ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
                 close_on_exec,
                 nonblocking: false,
+                is_passthrough: true,
                 resource: FdResource::File(file_id),
             });
             fd
@@ -291,6 +299,7 @@ hook_macros::hook! {
                 ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
                     close_on_exec: false,
                     nonblocking: false,
+                    is_passthrough: true,
                     resource: FdResource::File(file_id),
                 });
             }
@@ -391,6 +400,7 @@ hook_macros::hook! {
             ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
                 close_on_exec: false,
                 nonblocking: false,
+                is_passthrough: false,
                 resource: FdResource::File(file_id),
             });
             DescriptorId::new(fd)
@@ -403,6 +413,7 @@ hook_macros::hook! {
                 ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
                     close_on_exec: false,
                     nonblocking: false,
+                    is_passthrough: true,
                     resource: FdResource::File(file_id),
                 });
             }

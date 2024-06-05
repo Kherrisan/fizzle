@@ -70,6 +70,7 @@ hook_macros::hook! {
         ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
             close_on_exec,
             nonblocking,
+            is_passthrough: false,
             resource: FdResource::Socket(socket_id)
         });
 
@@ -542,6 +543,7 @@ fn join_socket_pair(
         DescriptorId::new(crate::alias_fd_create()),
         FdInfo {
             close_on_exec: (flags & libc::O_CLOEXEC) != 0,
+            is_passthrough: false,
             nonblocking: (flags & libc::O_NONBLOCK) != 0,
             resource: FdResource::Socket(accepted_id),
         },

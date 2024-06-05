@@ -652,16 +652,19 @@ impl ProcessState {
                 fds.insert(DescriptorId::from(0), FdInfo {
                     close_on_exec: false,
                     nonblocking: false,
+                    is_passthrough: false,
                     resource: FdResource::Stdin,
                 });
                 fds.insert(DescriptorId::from(1), FdInfo {
                     close_on_exec: false,
                     nonblocking: false,
+                    is_passthrough: false,
                     resource: FdResource::Stdout,
                 });
                 fds.insert(DescriptorId::from(2), FdInfo {
                     close_on_exec: false,
                     nonblocking: false,
+                    is_passthrough: false,
                     resource: FdResource::Stderr,
                 });
                 fds

@@ -377,7 +377,8 @@ hook_macros::hook! {
         let mutex = MutexPtr::from(lock);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
-            panic!("[UB] `pthread_mutex_lock` called on uninitialized mutex")
+            *libc::__errno_location() = libc::EINVAL;
+            return -1
         };
 
         let available = mutex_queue.is_empty();
@@ -399,7 +400,8 @@ hook_macros::hook! {
         let mutex = MutexPtr::from(lock);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
-            panic!("[UB] `pthread_mutex_trylock` called on uninitialized mutex")
+            *libc::__errno_location() = libc::EINVAL;
+            return -1
         };
 
         if !mutex_queue.is_empty() {
@@ -421,7 +423,8 @@ hook_macros::hook! {
         let mutex = MutexPtr::from(lock);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
-            panic!("[UB] `pthread_mutex_timedlock` called on uninitialized mutex")
+            *libc::__errno_location() = libc::EINVAL;
+            return -1
         };
 
         if !mutex_queue.is_empty() {
@@ -446,7 +449,8 @@ hook_macros::hook! {
         let mutex = MutexPtr::from(lock);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
-            panic!("[UB] `pthread_mutex_clocklock` called on uninitialized mutex")
+            *libc::__errno_location() = libc::EINVAL;
+            return -1
         };
 
         if !mutex_queue.is_empty() {
@@ -466,7 +470,8 @@ hook_macros::hook! {
         let mutex = MutexPtr::from(lock);
 
         let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
-            panic!("[UB] `pthread_mutex_unlock` called on uninitialized mutex")
+            *libc::__errno_location() = libc::EINVAL;
+            return -1
         };
 
         let Some(popped_thread) = mutex_queue.pop_front() else {
