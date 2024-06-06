@@ -109,19 +109,49 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn pthread_cancel(
         thread: libc::pthread_t
-    ) => fizzle_pthread_cancel(_ctx) {
+    ) -> libc::c_int => fizzle_pthread_cancel(ctx) {
+        // TODO: Right now we assume PTHREAD_CANCEL_ENABLE is the cancel state.
 
-        crate::report_strict_failure("`pthread_cancel` unimplemented");
+        let Some(thread_id) = ctx.local().pthreads.remove(&thread) else {
+            *libc::__errno_location() = libc::ESRCH;
+            return -1
+        };
 
-        hook_macros::real!(pthread_cancel)(thread);
+        ctx.local().terminated_threads.insert(thread_id);
+        if let Some(awaiting_threads) = ctx.local().awaiting_thread_death.remove(&thread_id) {
+            for thread_id in awaiting_threads {
+                ctx.add_ready_thread(thread_id);
+            }
+        }
+
+        // Now actually kill the thread
+        let ret = hook_macros::real!(pthread_cancel)(thread);
+        if ret != 0 {
+            panic!("pthread_cancel failed to actually kill thread");
+        }
+        
+        0
     }
 }
+
+hook_macros::hook! {
+    unsafe fn pthread_setcancelstate(
+        state: libc::c_int,
+        oldstate: *mut libc::c_int
+    ) -> libc::c_int => fizzle_setcancelstate(ctx) {
+        crate::report_strict_failure("`pthread_setcancelstate` unimplemented");
+        hook_macros::real!(pthread_setcancelstate)(state, oldstate)
+    }
+}
+
+
 
 hook_macros::hook! {
     unsafe fn pthread_tryjoin_np(
         thread: libc::pthread_t,
         retval: *mut *mut libc::c_void
     ) -> libc::c_int => fizzle_pthread_tryjoin_np(_ctx) {
+        crate::report_strict_failure("`pthread_tryjoin_np` unimplemented");
         hook_macros::real!(pthread_tryjoin_np)(thread, retval)
     }
 }
@@ -134,7 +164,6 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_pthread_timedjoin_np(_ctx) {
 
         crate::report_strict_failure("`pthread_timedjoin_np` unimplemented");
-
         hook_macros::real!(pthread_timedjoin_np)(thread, retval, abstime)
     }
 }
@@ -148,7 +177,6 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_pthread_clockjoin_np(_ctx) {
 
         crate::report_strict_failure("`pthread_clockjoin_np` unimplemented");
-
         hook_macros::real!(pthread_clockjoin_np)(thread, retval, clock_id, abstime)
     }
 }
@@ -159,7 +187,6 @@ hook_macros::hook! {
     ) => fizzle_pthread_detach(_ctx) {
 
         crate::report_strict_failure("`pthread_detach` unimplemented");
-
         hook_macros::real!(pthread_detach)(thread);
     }
 }
@@ -171,7 +198,6 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_pthread_kill(_ctx) {
 
         crate::report_strict_failure("`pthread_kill` unimplemented");
-
         hook_macros::real!(pthread_kill)(thread, sig)
     }
 }
