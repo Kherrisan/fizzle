@@ -574,13 +574,19 @@ hook_macros::hook! {
 
         let cond = CondVarPtr::from(lock);
 
-        let Some(condvar_queue) = ctx.local().condvars.remove(&cond) else {
-            panic!("[UB] `pthread_cond_destroy` called on uninitialized condvar")
+        let cond_queue = match ctx.local().condvars.remove(&cond) {
+            Some(queue) => {
+                if !queue.is_empty() {
+                    panic!("[UB] `pthread_cond_destroy` called on locked condvar")
+                }
+            }
+            None => {
+                let res = libc::pthread_cond_signal(lock);
+                if res < 0 {
+                    panic!("[UB] `pthread_cond_destroy` called on uninitialized condvar")
+                }
+            }
         };
-
-        if !condvar_queue.is_empty() {
-            panic!("[UB] `pthread_cond_destroy` called on locked condvar")
-        }
 
         0
     }
@@ -593,8 +599,18 @@ hook_macros::hook! {
 
         let cond = CondVarPtr::from(lock);
 
-        let Some(cond_queue) = ctx.local().condvars.get_mut(&cond) else {
-            panic!("[UB] `pthread_cond_signal` called on uninitialized condvar")
+        let cond_queue = match ctx.local().condvars.get_mut(&cond) {
+            Some(queue) => queue,
+            None => {
+                let res = libc::pthread_cond_signal(lock);
+                if res < 0 {
+                    panic!("[UB] `pthread_cond_signal` called on uninitialized condvar")
+                } else {
+                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
+                    ctx.local().condvars.insert(cond, VecDeque::new());
+                    ctx.local().condvars.get_mut(&cond).unwrap()
+                }
+            }
         };
 
         if let Some(thread_id) = cond_queue.pop_front() {
@@ -612,8 +628,18 @@ hook_macros::hook! {
 
         let cond = CondVarPtr::from(lock);
 
-        let Some(cond_queue) = ctx.local().condvars.get_mut(&cond) else {
-            panic!("[UB] `pthread_cond_broadcast` called on uninitialized condvar")
+        let cond_queue = match ctx.local().condvars.get_mut(&cond) {
+            Some(queue) => queue,
+            None => {
+                let res = libc::pthread_cond_signal(lock);
+                if res < 0 {
+                    panic!("[UB] `pthread_cond_broadcast` called on uninitialized condvar")
+                } else {
+                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
+                    ctx.local().condvars.insert(cond, VecDeque::new());
+                    ctx.local().condvars.get_mut(&cond).unwrap()
+                }
+            }
         };
 
         let threads: Vec<ThreadId> = cond_queue.drain(..).collect();
@@ -634,8 +660,18 @@ hook_macros::hook! {
 
         let cond = CondVarPtr::from(lock);
 
-        let Some(cond_queue) = ctx.local().condvars.get_mut(&cond) else {
-            panic!("[UB] `pthread_cond_wait` called on uninitialized condvar")
+        let cond_queue = match ctx.local().condvars.get_mut(&cond) {
+            Some(queue) => queue,
+            None => {
+                let res = libc::pthread_cond_signal(lock);
+                if res < 0 {
+                    panic!("[UB] `pthread_cond_wait` called on uninitialized condvar")
+                } else {
+                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
+                    ctx.local().condvars.insert(cond, VecDeque::new());
+                    ctx.local().condvars.get_mut(&cond).unwrap()
+                }
+            }
         };
 
         cond_queue.push_back(thread::current().id());
@@ -688,8 +724,18 @@ hook_macros::hook! {
 
         let cond = CondVarPtr::from(lock);
 
-        let Some(cond_queue) = ctx.local().condvars.get_mut(&cond) else {
-            panic!("[UB] `pthread_cond_timedwait` called on uninitialized condvar")
+        let cond_queue = match ctx.local().condvars.get_mut(&cond) {
+            Some(queue) => queue,
+            None => {
+                let res = libc::pthread_cond_signal(lock);
+                if res < 0 {
+                    panic!("[UB] `pthread_cond_timedwait` called on uninitialized condvar")
+                } else {
+                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
+                    ctx.local().condvars.insert(cond, VecDeque::new());
+                    ctx.local().condvars.get_mut(&cond).unwrap()
+                }
+            }
         };
 
         cond_queue.push_back(thread::current().id());
@@ -742,8 +788,18 @@ hook_macros::hook! {
         // TODO: timeout is infinite by default
         let cond = CondVarPtr::from(lock);
 
-        let Some(cond_queue) = ctx.local().condvars.get_mut(&cond) else {
-            panic!("[UB] `pthread_cond_clockwait` called on uninitialized condvar")
+        let cond_queue = match ctx.local().condvars.get_mut(&cond) {
+            Some(queue) => queue,
+            None => {
+                let res = libc::pthread_cond_signal(lock);
+                if res < 0 {
+                    panic!("[UB] `pthread_cond_clockwait` called on uninitialized condvar")
+                } else {
+                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
+                    ctx.local().condvars.insert(cond, VecDeque::new());
+                    ctx.local().condvars.get_mut(&cond).unwrap()
+                }
+            }
         };
 
         cond_queue.push_back(thread::current().id());
