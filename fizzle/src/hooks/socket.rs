@@ -564,6 +564,14 @@ fn join_socket_pair(
 // TODO: UDP sockets bound addresses (yes, even ephemeral) need to be registered
 
 
+#[repr(C)]
+struct SctpRtoInfo {
+    srto_assoc_id: libc::sctp_assoc_t,
+    srto_initial: u32,
+    srto_max: u32,
+    srto_min: u32,
+}
+
 const SOL_SCTP: i32 = 132;
 
 hook_macros::hook! {
@@ -814,9 +822,20 @@ hook_macros::hook! {
             // TODO: implement SO_RXQ_OVFL, SO_TIMESTAMP, when implementing `cmsg`s
             (SOL_SCTP, libc::SCTP_RTOINFO) => {
                 // libc::sctp_rtoinfo not defined...
+                // TODO: is libc this strict, or not?
+                if *optlen as usize != mem::size_of::<SctpRtoInfo>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
 
-                *libc::__errno_location() = libc::EINVAL;
-                -1
+                // Never any timeouts among sockets
+                *(optval as *mut SctpRtoInfo) = SctpRtoInfo {
+                    srto_assoc_id: 0,
+                    srto_initial: 3000,
+                    srto_max: 60000,
+                    srto_min: 1000,
+                }; // based on default values for Debian 12/Linux 6.XX
+                0
             }
             (SOL_SCTP, libc::SCTP_ASSOCINFO) => {
                 // libc::sctp_assocparams not defined...
