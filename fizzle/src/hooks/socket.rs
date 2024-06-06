@@ -37,7 +37,7 @@ hook_macros::hook! {
         };
 
         let socket_id = match protocol {
-            libc::IPPROTO_TCP => ctx.global().sockets.put(SocketState::Unassociated(UnassociatedSocket {
+            0 | libc::IPPROTO_TCP => ctx.global().sockets.put(SocketState::Unassociated(UnassociatedSocket {
                 local_addr: None,
                 family,
                 protocol: TransportProtocol::Tcp,

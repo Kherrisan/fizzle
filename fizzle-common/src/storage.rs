@@ -51,6 +51,11 @@ impl<const N: usize> Buffer<N> {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.data_start = 0;
+        self.data_end = 0;
+    }
+
     pub fn len(&self) -> usize {
         self.data_end - self.data_start
     }

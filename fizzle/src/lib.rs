@@ -15,6 +15,10 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::RawFd;
 use std::{array, mem, ptr};
 
+extern "C" {
+    pub fn __afl_manual_init();
+}
+
 pub fn report_strict_failure(explanation: &'static str) {
     if state::strict_mode() {
         panic!("{}", explanation);

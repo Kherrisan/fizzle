@@ -15,8 +15,6 @@ struct PTWrapperArgs {
 }
 
 unsafe extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void {
-    log::trace!("entering `pt_wrapper_fn`");
-
     let wrapped_arg = (arg as *mut PTWrapperArgs).as_mut().unwrap();
 
     // Before we do ANYTHING, we need to set this to avoid accidental preload hook recursion
@@ -57,9 +55,6 @@ hook_macros::hook! {
         ctx.add_ready_thread(thread::current().id()); // Let the scheduler know we have more to execute
 
         let res = hook_macros::real!(pthread_create)(thread, attr, pt_wrapper_fn, ptr::addr_of_mut!(wrapped_arg) as *mut libc::c_void);
-
-        // This thread should still be able to execute afterwards
-        ctx.add_ready_thread(thread::current().id());
 
         // The newly-created thread executes now, so this thread pauses
         ctx.pause_current_thread();
@@ -358,7 +353,7 @@ hook_macros::hook! {
         let mutex = MutexPtr::from(lock);
 
         let Some(mutex_queue) = ctx.local().mutexes.remove(&mutex) else {
-            panic!("[UB] `pthread_mutex_destroy` called on uninitialized mutex")
+            return 0
         };
 
         if !mutex_queue.is_empty() {
@@ -376,10 +371,31 @@ hook_macros::hook! {
 
         let mutex = MutexPtr::from(lock);
 
-        let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
+        let mutex_queue = match ctx.local().mutexes.get_mut(&mutex) {
+            Some(queue) => queue,
+            None => {
+                let res = libc::pthread_mutex_lock(lock);
+                if res < 0 {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                } else {
+                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
+                    ctx.local().mutexes.insert(mutex, VecDeque::new());
+                    ctx.local().mutexes.get_mut(&mutex).unwrap()
+                }
+            }
         };
+        
+        // TODO: PTHREAD_MUTEX_INITIALIZER
+        //   { 0, 0, 0, 0, __PTHREAD_MUTEX_TIMED, 0, { { 0, 0 } } }
+        // 
+        // typedef union
+        // {
+        //   struct __pthread_mutex_s __data;
+        //   char __size[__SIZEOF_PTHREAD_MUTEX_T];
+        //   long int __align;
+        // } pthread_mutex_t;
+        
 
         let available = mutex_queue.is_empty();
         mutex_queue.push_back(thread::current().id());
@@ -399,9 +415,19 @@ hook_macros::hook! {
 
         let mutex = MutexPtr::from(lock);
 
-        let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
+        let mutex_queue = match ctx.local().mutexes.get_mut(&mutex) {
+            Some(queue) => queue,
+            None => {
+                let res = libc::pthread_mutex_lock(lock);
+                if res < 0 {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                } else {
+                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
+                    ctx.local().mutexes.insert(mutex, VecDeque::new());
+                    ctx.local().mutexes.get_mut(&mutex).unwrap()
+                }
+            }
         };
 
         if !mutex_queue.is_empty() {
@@ -422,9 +448,19 @@ hook_macros::hook! {
 
         let mutex = MutexPtr::from(lock);
 
-        let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
+        let mutex_queue = match ctx.local().mutexes.get_mut(&mutex) {
+            Some(queue) => queue,
+            None => {
+                let res = libc::pthread_mutex_lock(lock);
+                if res < 0 {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                } else {
+                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
+                    ctx.local().mutexes.insert(mutex, VecDeque::new());
+                    ctx.local().mutexes.get_mut(&mutex).unwrap()
+                }
+            }
         };
 
         if !mutex_queue.is_empty() {
@@ -448,9 +484,19 @@ hook_macros::hook! {
 
         let mutex = MutexPtr::from(lock);
 
-        let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
+        let mutex_queue = match ctx.local().mutexes.get_mut(&mutex) {
+            Some(queue) => queue,
+            None => {
+                let res = libc::pthread_mutex_lock(lock);
+                if res < 0 {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                } else {
+                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
+                    ctx.local().mutexes.insert(mutex, VecDeque::new());
+                    ctx.local().mutexes.get_mut(&mutex).unwrap()
+                }
+            }
         };
 
         if !mutex_queue.is_empty() {
@@ -606,7 +652,7 @@ hook_macros::hook! {
         };
 
         if popped_thread != thread::current().id() {
-            panic!("[UB] `pthread_cond_wait` called by a thread not currently holding the lock")
+            panic!("[UB] `pthread_cond_wait` called by a thread not currently holding the mutex lock")
         }
 
         if let Some(next_thread) = mutex_queue.front().copied() {

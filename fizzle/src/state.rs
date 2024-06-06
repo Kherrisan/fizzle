@@ -26,6 +26,8 @@ use heapless::spsc::Queue;
 
 use fxhash::FxBuildHasher;
 use heapless::{Deque, FnvIndexMap};
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
 
 use crate::constants::*;
 use crate::semaphore::Semaphore;
@@ -298,6 +300,7 @@ impl FizzleContext {
 
             sem_ptr = sem_ptr.add(1);
         }
+        log::trace!("Shared memory process semaphores initialized");
 
         InterprocessState::initialize(sem_ptr as *mut InterprocessState);
     }
@@ -332,12 +335,14 @@ impl FizzleContext {
 
             let shmem_label = Self::create_shmem_label();
 
+            log::debug!("opening and initializing shared memory...");
             unsafe {
                 shared_memory = Self::open_shmem(shmem_label.as_ptr(), true);
                 Self::initialize_shmem_contents(shared_memory);
                 (*Self::interprocess_state(shared_memory))
                     .load_config_mappings(plugin_config.endpoints);
             }
+            log::debug!("shared memory initialized.");
         }
 
         let fds = unsafe { (*Self::interprocess_state(shared_memory)).transfer_fds.take() };
@@ -391,13 +396,13 @@ impl FizzleContext {
 
         if let Some(worker_id) = next_worker {
             self.global().waking_thread_id = Some(worker_id.thread_id);
-            // self.global().raised_events = new_raised_events;
 
             if worker_id.process_id != self.local().process_id {
                 self.wake_process(worker_id.process_id);
                 self.pause_current_process();
             }
 
+            // Now it's this process's turn to execute
             let Some(thread_id) = self.global().waking_thread_id.take() else {
                 panic!("internal fizzle error--no waking_thread_id assigned");
             };
@@ -406,6 +411,7 @@ impl FizzleContext {
                 self.get_thread_lock(&thread_id).post();
                 self.pause_current_thread();
             }
+            // Now it's this thread's turn to execute
         } else if self::plugins::run_plugins(self) { // Plugins have queued more workers as ready
             // This shouldn't lead to a stack overflow unless `run_plugins` erroneously
             // returns `true` but doesn't schedule new workers.
@@ -421,8 +427,23 @@ impl FizzleContext {
     /// Note that
     fn fuzz_round_complete(&mut self) {
         // Communicate that process is finished running
+        unsafe {
+            crate::__afl_manual_init(); // For AFL++
+        }
 
         // Wait for input from the fuzzing engine...
+        // For AFL++, fuzzing input comes from stdin
+        self.global().fuzz_input.clear();
+        let fuzz_buffer = self.global().fuzz_input.remaining_mut();
+        let mut fuzz_length = fuzz_buffer.len();
+        unsafe {
+            let amount_read = libc::read(1, fuzz_buffer.as_mut_ptr() as *mut libc::c_void, fuzz_length);
+            if amount_read <= 0 {
+                panic!("fuzzing input not received correctly from AFL++ (stdin `read` failed)");
+            }
+            fuzz_length = amount_read as usize;
+        }
+        self.global().fuzz_input.did_write(fuzz_length);
 
         // Mark appropriate processes/threads as ready to receive input
 
@@ -884,6 +905,8 @@ pub struct InterprocessState {
     pub polled_events: ValueIndex<PolledId, PolledInfo, FIZZLE_MAX_POLLED_EVENTS>,
     pub pollers: ValueIndex<PollerId, PollerInfo, FIZZLE_MAX_POLLERS>,
     pub ready: Queue<ReadyInfo, FIZZLE_MAX_QUEUED_READY_POLLERS>,
+    pub fuzz_input: Buffer<FIZZLE_MAX_FUZZ_INPUT>,
+    pub prefuzz_rng: rand::rngs::SmallRng,
 }
 
 impl InterprocessState {
@@ -913,6 +936,8 @@ impl InterprocessState {
         ValueIndex::initialize(ptr::addr_of_mut!((*state).polled_events));
         ValueIndex::initialize(ptr::addr_of_mut!((*state).pollers));
         *ptr::addr_of_mut!((*state).ready) = Queue::new();
+        *ptr::addr_of_mut!((*state).fuzz_input) = Buffer::new();
+        *ptr::addr_of_mut!((*state).prefuzz_rng) = SmallRng::seed_from_u64(0xA_BAD_5EED_A_BAD_5EEDu64); // TODO: enable custom seed loading
     }
 
     fn load_config_mappings(&mut self, endpoints: Vec<PluginConfigEndpoint>) {
@@ -1031,6 +1056,31 @@ impl InterprocessState {
                     _ => panic!("unimplemented IoEndpoint type"),
                 }
             }
+        }
+    }
+
+    pub fn gen_random_bytes(&mut self, input: &mut [MaybeUninit<u8>]) {
+        if self.fuzz_input.is_empty() {
+            
+            for b in input {
+                *b = MaybeUninit::new(self.prefuzz_rng.gen());
+            }
+        } else {
+            let data = self.fuzz_input.data();
+            let mut idx = 0usize;
+            for b in input {
+                *b = MaybeUninit::new(data[idx]);
+                idx = (idx + 1) % data.len();
+            }
+        }
+    }
+
+    pub fn gen_random_array<const N: usize>(&mut self) -> [u8; N] {
+        if self.fuzz_input.is_empty() {
+            array::from_fn(|_| self.prefuzz_rng.gen())
+        } else {
+            let data = self.fuzz_input.data();
+            array::from_fn(|i| data[i % data.len()])
         }
     }
 

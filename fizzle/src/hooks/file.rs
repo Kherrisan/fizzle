@@ -368,7 +368,7 @@ hook_macros::hook! {
         let file_id = FilePtr::from(stream);
         match ctx.local().file_objs.get_mut(&file_id) {
             Some(_fd) => 0, // TODO: read from emulated file
-            None => hook_macros::real!(fwrite)(ptr, size, nmemb, stream),
+            None => hook_macros::real!(fread)(ptr, size, nmemb, stream),
         }
     }
 }

@@ -1,13 +1,14 @@
 use std::ffi::CStr;
 
 // Environment variables
-
 pub const FIZZLE_MEMORY_ENV: &CStr = c"FIZZLE_MEMORY";
 pub const FIZZLE_STRICT_ENV: &str = "FIZZLE_STRICT";
 /// Instructs the fizzle harness to keep running if the main process would exit normally
 pub const FIZZLE_NOEXIT_ENV: &str = "FIZZLE_NOEXIT";
 
 // Static buffers
+
+pub const FIZZLE_MAX_FUZZ_INPUT: usize = 262_144; // 256 KB. This can be manually changed if desired, though using plugins that derive entropy from this input is preferred.`
 
 pub const FIZZLE_MAX_EPOLLS: usize = 32;
 pub const FIZZLE_MAX_EPOLL_FDS: usize = 128;
