@@ -426,6 +426,7 @@ impl FizzleContext {
     /// Notifies the fuzzing engine that the current round of fuzzing has finished.
     /// Note that
     fn fuzz_round_complete(&mut self) {
+        panic!("TODO: fuzz_round_complete");
         // Communicate that process is finished running
         unsafe {
             crate::__afl_manual_init(); // For AFL++
