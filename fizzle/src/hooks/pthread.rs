@@ -23,6 +23,8 @@ unsafe extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void 
     let mut ctx = state::FIZZLE_STATE.get();
     ctx.local().pthreads.insert(unsafe { libc::pthread_self() }, thread::current().id());
     ctx.initialize_thread_lock(&thread::current().id());
+    let mut old = 0i32;
+    hook_macros::real!(pthread_setcanceltype)(1, ptr::addr_of_mut!(old)); // TODO: 1 == libc::PTHREAD_CANCEL_ASYNCHRONOUS
 
     // Now enable preload hooks to actually work during this thread's execution
     state::set_entered_handler(false);
@@ -112,7 +114,8 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_pthread_cancel(ctx) {
         // TODO: Right now we assume PTHREAD_CANCEL_ENABLE is the cancel state.
 
-        let Some(thread_id) = ctx.local().pthreads.remove(&thread) else {
+        let Some(&thread_id) = ctx.local().pthreads.get(&thread) else {
+            log::warn!("pthread_cancel failed with ESRCH");
             *libc::__errno_location() = libc::ESRCH;
             return -1
         };
@@ -133,18 +136,6 @@ hook_macros::hook! {
         0
     }
 }
-
-hook_macros::hook! {
-    unsafe fn pthread_setcancelstate(
-        state: libc::c_int,
-        oldstate: *mut libc::c_int
-    ) -> libc::c_int => fizzle_setcancelstate(ctx) {
-        crate::report_strict_failure("`pthread_setcancelstate` unimplemented");
-        hook_macros::real!(pthread_setcancelstate)(state, oldstate)
-    }
-}
-
-
 
 hook_macros::hook! {
     unsafe fn pthread_tryjoin_np(

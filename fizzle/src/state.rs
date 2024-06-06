@@ -696,6 +696,10 @@ impl ProcessState {
                 fds
             }
         };
+
+        // Insert the current (main) pthread into `pthreads`
+        let mut pthreads = HashMap::with_hasher(Default::default());
+        pthreads.insert(unsafe { libc::pthread_self() }, thread::current().id());
         
         Self {
             process_id, // TODO: increment each time new process is made
@@ -711,7 +715,7 @@ impl ProcessState {
             rwlocks: HashMap::with_hasher(Default::default()),
             semaphores: HashMap::with_hasher(Default::default()),
             spinlocks: HashMap::with_hasher(Default::default()),
-            pthreads: HashMap::with_hasher(Default::default()),
+            pthreads,
             terminated_threads: HashSet::with_hasher(Default::default()),
             working_directory,
             awaiting_thread_death: HashMap::with_hasher(Default::default()),
