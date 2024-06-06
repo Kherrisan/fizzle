@@ -103,13 +103,13 @@ hook_macros::hook! {
         };
 
         let transport_addr = match ctx.global().sockets.get(socket_id).unwrap() {
+            SocketState::Connectionless(_) => TransportAddress::Udp(socket_addr),
             SocketState::Unassociated(UnassociatedSocket { local_addr: Some(_), .. }) => {
                 // Socket is already bound
                 *libc::__errno_location() = libc::EINVAL;
                 return -1
             },
             SocketState::Unassociated(UnassociatedSocket { protocol: TransportProtocol::Tcp, .. }) => TransportAddress::Tcp(socket_addr),
-            SocketState::Unassociated(UnassociatedSocket { protocol: TransportProtocol::Udp, .. }) => TransportAddress::Udp(socket_addr),
             SocketState::Unassociated(UnassociatedSocket { protocol: TransportProtocol::Sctp, .. }) => TransportAddress::Sctp(socket_addr),
             _ => {
                 *libc::__errno_location() = libc::EINVAL;
@@ -131,7 +131,8 @@ hook_macros::hook! {
                 let SocketState::Unassociated(UnassociatedSocket { local_addr, .. }) = ctx.global().sockets.get_mut(socket_id).unwrap() else {
                     panic!("internal state error in fizzle--unreachable code reached");
                 };
-                *local_addr = Some(transport_addr);
+                // TODO: what if local_addr already had address? leak here...
+                local_addr.replace(transport_addr);
 
                 0
             },
