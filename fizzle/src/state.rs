@@ -512,6 +512,10 @@ impl FizzleContext {
         self.thread_locks[thread_idx].as_mut().unwrap()
     }
 
+    pub fn initialize_thread_lock(&mut self, thread_id: &ThreadId) {
+        self.thread_locks[index_of_thread(&thread_id)] = Some(Semaphore::new(0));
+    }
+
     pub fn pause_current_process(&mut self) {
         let process_idx: usize = self.local().process_id.into();
         if process_idx >= FIZZLE_MAX_PROCESSES {

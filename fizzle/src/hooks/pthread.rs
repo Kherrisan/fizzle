@@ -20,11 +20,9 @@ unsafe extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void 
     // Before we do ANYTHING, we need to set this to avoid accidental preload hook recursion
     state::set_entered_handler(true);
 
-    state::FIZZLE_STATE
-        .get()
-        .local()
-        .pthreads
-        .insert(unsafe { libc::pthread_self() }, thread::current().id());
+    let mut ctx = state::FIZZLE_STATE.get();
+    ctx.local().pthreads.insert(unsafe { libc::pthread_self() }, thread::current().id());
+    ctx.initialize_thread_lock(&thread::current().id());
 
     // Now enable preload hooks to actually work during this thread's execution
     state::set_entered_handler(false);
@@ -574,7 +572,7 @@ hook_macros::hook! {
 
         let cond = CondVarPtr::from(lock);
 
-        let cond_queue = match ctx.local().condvars.remove(&cond) {
+        match ctx.local().condvars.remove(&cond) {
             Some(queue) => {
                 if !queue.is_empty() {
                     panic!("[UB] `pthread_cond_destroy` called on locked condvar")
