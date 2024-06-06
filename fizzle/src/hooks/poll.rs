@@ -438,8 +438,9 @@ hook_macros::hook! {
         };
 
         let Some(_) = ctx.local().fds.get(DescriptorId::new(fd)) else {
-            *libc::__errno_location() = libc::EBADF;
-            return -1
+            return 0 // TODO: fix fopen rather than this workaround
+            //*libc::__errno_location() = libc::EBADF;
+            //return -1
         };
 
         if epfd == fd {
