@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::ptr;
 use std::thread::{self, ThreadId};
 

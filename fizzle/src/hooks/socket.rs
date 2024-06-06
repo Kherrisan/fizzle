@@ -3,7 +3,9 @@
 //!
 
 use std::mem;
+use std::net::SocketAddr;
 
+use crate::constants::FIZZLE_BUFFER_LENGTH;
 use crate::state::backend::{ConnectedBackend, ConnectingBackend, ConnectionlessBackend, IoBackend, RegularConnected, RegularConnectionless, ServerBackend, StandardFeedback};
 use crate::state::fd::{FdInfo, FdResource};
 use crate::state::identifiers::{DescriptorId, SocketId};
@@ -562,6 +564,8 @@ fn join_socket_pair(
 // TODO: UDP sockets bound addresses (yes, even ephemeral) need to be registered
 
 
+const SOL_SCTP: i32 = 132;
+
 hook_macros::hook! {
     unsafe fn getsockopt(
         sockfd: libc::c_int,
@@ -570,8 +574,364 @@ hook_macros::hook! {
         optval: *mut libc::c_void,
         optlen: *mut libc::socklen_t
     ) -> libc::c_int => fizzle_getsockopt(ctx) {
-        drop(ctx);
-        hook_macros::real!(getsockopt)(sockfd, level, optname, optval, optlen)
+
+        let descriptor_id = DescriptorId::new(sockfd);
+        let Some(fd_info) = ctx.local().fds.get(descriptor_id) else {
+            *libc::__errno_location() = libc::EBADF;
+            return -1
+        };
+
+        let FdResource::Socket(socket_id) = fd_info.resource else {
+            *libc::__errno_location() = libc::ENOTSOCK;
+            return -1
+        };
+
+        match (level, optname) {
+            (libc::SOL_SOCKET, libc::SO_ACCEPTCONN) => {
+                let is_listening = match ctx.global().sockets.get(socket_id).unwrap() {
+                    SocketState::Server(_) => 1,
+                    _ => 0
+                };
+
+                // TODO: is libc this strict, or not?
+                if *optlen as usize != mem::size_of::<libc::c_int>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
+
+                *(optval as *mut libc::c_int) = is_listening;
+                0
+            }
+            (libc::SOL_SOCKET, libc::SO_ATTACH_FILTER | libc::SO_LOCK_FILTER | libc::SO_ATTACH_BPF | libc::SO_ATTACH_REUSEPORT_CBPF | libc::SO_ATTACH_REUSEPORT_EBPF) => {
+                crate::report_strict_failure("unsupported BPF `getsockopt` option requested");
+                *libc::__errno_location() = libc::EINVAL;
+                -1
+            }
+            (libc::SOL_SOCKET, libc::SO_BINDTODEVICE) => {
+                crate::report_strict_failure("unsupported SO_BINDTODEVICE `getsockopt` option requested");
+                *libc::__errno_location() = libc::EINVAL;
+                -1
+            }
+            (libc::SOL_SOCKET, libc::SO_BROADCAST) => {
+                crate::report_strict_failure("unsupported SO_BROADCAST `getsockopt` option requested");
+                *libc::__errno_location() = libc::EINVAL;
+                -1
+            }
+            // SO_DEBUG, SO_DETACH_FILTER, SO_DONTROUTE, SO_INCOMING_CPU, SO_INCOMING_NAPI_ID
+            (libc::SOL_SOCKET, libc::SO_DOMAIN) => {
+                let domain = match ctx.global().sockets.get(socket_id).unwrap() {
+                    SocketState::Connectionless(sock_info) => match sock_info.local_addr {
+                        SocketAddr::V4(_) => libc::AF_INET,
+                        SocketAddr::V6(_) => libc::AF_INET6,
+                    },
+                    SocketState::Unassociated(sock_info) => match sock_info.family {
+                        AddressFamily::Ipv4 => libc::AF_INET,
+                        AddressFamily::Ipv6 => libc::AF_INET6,
+                    },
+                    SocketState::Server(server_info) => match server_info.local_addr.address() {
+                        SocketAddr::V4(_) => libc::AF_INET,
+                        SocketAddr::V6(_) => libc::AF_INET6,
+                    },
+                    SocketState::PendingConnection(pending_info) => match pending_info.rem_addr.address() {
+                        SocketAddr::V4(_) => libc::AF_INET,
+                        SocketAddr::V6(_) => libc::AF_INET6,
+                    },
+                    SocketState::Connecting(connecting_info) => match connecting_info.local_addr.address() {
+                        SocketAddr::V4(_) => libc::AF_INET,
+                        SocketAddr::V6(_) => libc::AF_INET6,
+                    },
+                    SocketState::Connected(connected_info) => match connected_info.rem_addr.address() {
+                        SocketAddr::V4(_) => libc::AF_INET,
+                        SocketAddr::V6(_) => libc::AF_INET6,
+                    },
+                };
+
+                // TODO: is libc this strict, or not?
+                if *optlen as usize != mem::size_of::<libc::c_int>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
+
+                *(optval as *mut libc::c_int) = domain;
+                0
+            }
+            (libc::SOL_SOCKET, libc::SO_ERROR) => {
+                // TODO: is libc this strict, or not?
+                if *optlen as usize != mem::size_of::<libc::c_int>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
+
+                // TODO: update this value if legitimate errors ever occur during polling.
+                *(optval as *mut libc::c_int) = 0;
+                0
+            }
+            (libc::SOL_SOCKET, libc::SO_KEEPALIVE) => {
+                // TODO: is libc this strict, or not?
+                if *optlen as usize != mem::size_of::<libc::c_int>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
+
+                // Pretend keepalive is enabled
+                *(optval as *mut libc::c_int) = 1;
+                0
+            }
+            (libc::SOL_SOCKET, libc::SO_LINGER) => {
+                // TODO: is libc this strict, or not?
+                if *optlen as usize != mem::size_of::<libc::linger>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
+
+                // Pretend linger is disabled
+                *(optval as *mut libc::linger) = libc::linger { l_onoff: 0, l_linger: 0 };
+                0
+            }
+            // SO_MARK
+            (libc::SOL_SOCKET, libc::SO_OOBINLINE) => {
+                // TODO: is libc this strict, or not?
+                if *optlen as usize != mem::size_of::<libc::c_int>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
+
+                // Pretend in-line OOB is enabled
+                *(optval as *mut libc::c_int) = 1;
+                0
+            }
+            // SO_PASSCRED, SO_PASSSEC, SO_PEEK_OFF, SO_PEERCRED, SO_PEERSEC
+            (libc::SOL_SOCKET, libc::SO_PRIORITY) => {
+                // TODO: is libc this strict, or not?
+                if *optlen as usize != mem::size_of::<libc::c_int>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
+
+                // Pretend the priority of all sockets is always 6
+                *(optval as *mut libc::c_int) = 6;
+                0
+            }
+            (libc::SOL_SOCKET, libc::SO_PROTOCOL) => {
+                // TODO: is libc this strict, or not?
+                if *optlen as usize != mem::size_of::<libc::c_int>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
+
+                let protocol = match ctx.global().sockets.get(socket_id).unwrap() {
+                    SocketState::Connectionless(_) => libc::IPPROTO_UDP,
+                    SocketState::Unassociated(unassociated_info) => match unassociated_info.protocol {
+                        TransportProtocol::Tcp => libc::IPPROTO_TCP,
+                        TransportProtocol::Udp => libc::IPPROTO_UDP,
+                        TransportProtocol::Sctp => libc::IPPROTO_SCTP,
+                    },
+                    SocketState::Server(server_info) => match server_info.local_addr {
+                        TransportAddress::Tcp(_) => libc::IPPROTO_TCP,
+                        TransportAddress::Udp(_) => libc::IPPROTO_UDP,
+                        TransportAddress::Sctp(_) => libc::IPPROTO_SCTP,
+                    },
+                    SocketState::PendingConnection(pending_info) => match pending_info.rem_addr {
+                        TransportAddress::Tcp(_) => libc::IPPROTO_TCP,
+                        TransportAddress::Udp(_) => libc::IPPROTO_UDP,
+                        TransportAddress::Sctp(_) => libc::IPPROTO_SCTP,
+                    },
+                    SocketState::Connecting(connecting_info) => match connecting_info.local_addr {
+                        TransportAddress::Tcp(_) => libc::IPPROTO_TCP,
+                        TransportAddress::Udp(_) => libc::IPPROTO_UDP,
+                        TransportAddress::Sctp(_) => libc::IPPROTO_SCTP,
+                    },
+                    SocketState::Connected(connected_info) => match connected_info.rem_addr {
+                        TransportAddress::Tcp(_) => libc::IPPROTO_TCP,
+                        TransportAddress::Udp(_) => libc::IPPROTO_UDP,
+                        TransportAddress::Sctp(_) => libc::IPPROTO_SCTP,
+                    },
+                };
+
+                // Pretend the priority of all sockets is always 6
+                *(optval as *mut libc::c_int) = protocol;
+                0
+            }
+            (libc::SOL_SOCKET, libc::SO_RCVBUF) => {
+                // TODO: is libc this strict, or not?
+                if *optlen as usize != mem::size_of::<libc::c_int>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
+
+                // Buffers are fixed size, always.
+                *(optval as *mut libc::c_int) = FIZZLE_BUFFER_LENGTH as libc::c_int;
+                0
+            }
+            (libc::SOL_SOCKET, libc::SO_SNDLOWAT | libc::SO_RCVLOWAT) => {
+                // TODO: is libc this strict, or not?
+                if *optlen as usize != mem::size_of::<libc::c_int>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
+
+                // Buffers are immediately received once one byte of data has been written.
+                *(optval as *mut libc::c_int) = 1;
+                0
+            }
+            (libc::SOL_SOCKET, libc::SO_RCVTIMEO | libc::SO_SNDTIMEO) => {
+                // TODO: is libc this strict, or not?
+                if *optlen as usize != mem::size_of::<libc::timeval>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
+
+                // Never any timeouts among sockets
+                *(optval as *mut libc::timeval) = libc::timeval {
+                    tv_sec: 0,
+                    tv_usec: 0,
+                };
+                0
+            }
+            (libc::SOL_SOCKET, libc::SO_REUSEADDR) => {
+                // TODO: is libc this strict, or not?
+                if *optlen as usize != mem::size_of::<libc::c_int>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
+
+                // Never any timeouts among sockets
+                *(optval as *mut libc::c_int) = 1;
+                0
+            }
+            (libc::SOL_SOCKET, libc::SO_REUSEPORT) => {
+                // TODO: is libc this strict, or not?
+                if *optlen as usize != mem::size_of::<libc::c_int>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
+
+                // Never any timeouts among sockets
+                *(optval as *mut libc::c_int) = 0;
+                0
+            }
+            (libc::SOL_SOCKET, _) => panic!("unrecognized getsockopt SOL_SOCKET, optname {}", optname),
+            // TODO: implement SO_RXQ_OVFL, SO_TIMESTAMP, when implementing `cmsg`s
+            (SOL_SCTP, libc::SCTP_RTOINFO) => {
+                // libc::sctp_rtoinfo not defined...
+
+                *libc::__errno_location() = libc::EINVAL;
+                -1
+            }
+            (SOL_SCTP, libc::SCTP_ASSOCINFO) => {
+                // libc::sctp_assocparams not defined...
+
+                *libc::__errno_location() = libc::EINVAL;
+                -1
+            }
+            (SOL_SCTP, libc::SCTP_INITMSG) => {
+                // libc::sctp_initmsg not defined...
+
+                *libc::__errno_location() = libc::EINVAL;
+                -1
+            }
+            (SOL_SCTP, libc::SCTP_NODELAY) => {
+                // TODO: is libc this strict, or not?
+                if *optlen as usize != mem::size_of::<libc::c_int>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
+
+                // NODELAY always enabled
+                *(optval as *mut libc::c_int) = 1;
+                0
+            }
+            (SOL_SCTP, libc::SCTP_AUTOCLOSE) => {
+                // TODO: is libc this strict, or not?
+                if *optlen as usize != mem::size_of::<libc::c_int>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
+
+                // autoclose always disabled
+                *(optval as *mut libc::c_int) = 0;
+                0
+            }
+            (SOL_SCTP, libc::SCTP_SET_PEER_PRIMARY_ADDR) => {
+                // Set option only...
+                *libc::__errno_location() = libc::EINVAL;
+                -1
+            }
+            (SOL_SCTP, libc::SCTP_PRIMARY_ADDR) => {
+                // libc::sctp_prim not defined...
+                *libc::__errno_location() = libc::EINVAL;
+                -1
+            }
+            (SOL_SCTP, libc::SCTP_DISABLE_FRAGMENTS) => {
+                // TODO: is libc this strict, or not?
+                if *optlen as usize != mem::size_of::<libc::c_int>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
+
+                // fragments always enabled
+                *(optval as *mut libc::c_int) = 0;
+                0
+            }
+            (SOL_SCTP, libc::SCTP_PEER_ADDR_PARAMS) => {
+                // libc::sctp_paddrparams not defined...
+                *libc::__errno_location() = libc::EINVAL;
+                -1
+            }
+            (SOL_SCTP, libc::SCTP_DEFAULT_SEND_PARAM) => {
+                // libc::sctp_sndrcvinfo not defined...
+                *libc::__errno_location() = libc::EINVAL;
+                -1
+            }
+            (SOL_SCTP, libc::SCTP_EVENTS) => {
+                // libc::sctp_event_subscribe not defined...
+                *libc::__errno_location() = libc::EINVAL;
+                -1
+            }
+            (SOL_SCTP, libc::SCTP_I_WANT_MAPPED_V4_ADDR) => {
+                // TODO: is libc this strict, or not?
+                if *optlen as usize != mem::size_of::<libc::c_int>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
+
+                // Mapped IPv4 always disabled
+                *(optval as *mut libc::c_int) = 0;
+                0
+            }
+            (SOL_SCTP, libc::SCTP_MAXSEG) => {
+                // TODO: is libc this strict, or not?
+                if *optlen as usize != mem::size_of::<libc::c_int>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
+
+                // Fragmentation not limited
+                *(optval as *mut libc::c_int) = 0;
+                0
+            }
+            (SOL_SCTP, libc::SCTP_STATUS) => {
+                // libc::sctp_status not defined...
+                *libc::__errno_location() = libc::EINVAL;
+                -1
+            }
+            (SOL_SCTP, libc::SCTP_GET_PEER_ADDR_INFO) => {
+                // libc::sctp_paddrinfo not defined...
+                *libc::__errno_location() = libc::EINVAL;
+                -1
+            }
+            (SOL_SCTP, 112) => { // libc::SCTP_GET_ASSOC_STATS
+                // libc::sctp_assoc_stats not defined...
+                *libc::__errno_location() = libc::EINVAL;
+                -1
+            }
+            (SOL_SCTP, _) => {
+                panic!("Unrecognized socket option: SOL_SCTP, optname {}", optname);
+            }
+            _ => {
+                panic!("Unrecognized socket option: level {}, optname {}", level, optname);
+            }
+        }
     }
 }
 
@@ -580,10 +940,88 @@ hook_macros::hook! {
         sockfd: libc::c_int,
         level: libc::c_int,
         optname: libc::c_int,
-        optval: *const libc::c_void,
+        _optval: *const libc::c_void,
         optlen: libc::socklen_t
     ) -> libc::c_int => fizzle_setsockopt(ctx) {
-        drop(ctx);
-        hook_macros::real!(setsockopt)(sockfd, level, optname, optval, optlen)
+
+        let descriptor_id = DescriptorId::new(sockfd);
+        let Some(fd_info) = ctx.local().fds.get(descriptor_id) else {
+            *libc::__errno_location() = libc::EBADF;
+            return -1
+        };
+
+        let FdResource::Socket(_socket_id) = fd_info.resource else {
+            *libc::__errno_location() = libc::ENOTSOCK;
+            return -1
+        };
+
+        match (level, optname) {
+            // Socket options that are readonly
+            (libc::SOL_SOCKET, libc::SO_ACCEPTCONN | libc::SO_DOMAIN | libc::SO_ERROR | libc::SO_PROTOCOL) => {
+                *libc::__errno_location() = libc::EINVAL;
+                return -1
+            }
+            // Socket options that we pretend to support (but don't)
+            (libc::SOL_SOCKET, libc::SO_KEEPALIVE | libc::SO_OOBINLINE | libc::SO_PRIORITY | libc::SO_RCVBUF | libc::SO_SNDLOWAT | libc::SO_RCVLOWAT | libc::SO_RCVTIMEO | libc::SO_SNDTIMEO | libc::SO_REUSEADDR | libc::SO_REUSEPORT) => {
+                // TODO: is libc this strict, or not?
+                if optlen as usize != mem::size_of::<libc::c_int>() {
+                    *libc::__errno_location() = libc::EINVAL; 
+                    return -1
+                }
+
+                // Ignore received value
+                0
+            }
+            (libc::SOL_SOCKET, libc::SO_ATTACH_FILTER | libc::SO_LOCK_FILTER | libc::SO_ATTACH_BPF | libc::SO_ATTACH_REUSEPORT_CBPF | libc::SO_ATTACH_REUSEPORT_EBPF) => {
+                crate::report_strict_failure("unsupported BPF `getsockopt` option requested");
+                *libc::__errno_location() = libc::EINVAL;
+                -1
+            }
+            (libc::SOL_SOCKET, libc::SO_BINDTODEVICE) => {
+                crate::report_strict_failure("unsupported SO_BINDTODEVICE `getsockopt` option requested");
+                *libc::__errno_location() = libc::EINVAL;
+                -1
+            }
+            (libc::SOL_SOCKET, libc::SO_BROADCAST) => {
+                crate::report_strict_failure("unsupported SO_BROADCAST `getsockopt` option requested");
+                *libc::__errno_location() = libc::EINVAL;
+                -1
+            }
+
+            (libc::SOL_SOCKET, libc::SO_LINGER) => {
+                // TODO: is libc this strict, or not?
+                if optlen as usize != mem::size_of::<libc::linger>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
+
+                // Pretend linger is disabled
+                0
+            }
+            // TODO: implement SO_RXQ_OVFL, SO_TIMESTAMP, when implementing `cmsg`s
+            (libc::SOL_SOCKET, _) => {
+                panic!("Unrecognized socket option: SOL_SOCKET, optname {}", optname);
+            }
+            (SOL_SCTP, libc::SCTP_RTOINFO | libc::SCTP_ASSOCINFO | libc::SCTP_INITMSG | libc::SCTP_NODELAY | libc::SCTP_AUTOCLOSE | libc::SCTP_DISABLE_FRAGMENTS | libc::SCTP_PEER_ADDR_PARAMS | libc::SCTP_DEFAULT_SEND_PARAM | libc::SCTP_EVENTS | libc::SCTP_MAXSEG) => {
+                // Ignore received value
+                0
+            }
+            (SOL_SCTP, libc::SCTP_SET_PEER_PRIMARY_ADDR | libc::SCTP_PRIMARY_ADDR | libc::SCTP_I_WANT_MAPPED_V4_ADDR) => {
+                // Ignoring received value would cause issues
+                *libc::__errno_location() = libc::EINVAL;
+                -1
+            }
+            (SOL_SCTP, libc::SCTP_STATUS | libc::SCTP_GET_PEER_ADDR_INFO | 112) => { // libc::SCTP_GET_ASSOC_STATS
+                // readonly option
+                *libc::__errno_location() = libc::EINVAL;
+                -1
+            }
+            (SOL_SCTP, _) => {
+                panic!("Unrecognized socket option: SOL_SCTP, optname {}", optname);
+            }
+            _ => {
+                panic!("Unrecognized socket option: level {}, optname {}", level, optname);
+            }
+        }
     }
 }
