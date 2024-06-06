@@ -8,4 +8,5 @@ pub mod poll;
 pub mod proc;
 pub mod pthread;
 pub mod semaphore;
+pub mod sleep;
 pub mod socket;
