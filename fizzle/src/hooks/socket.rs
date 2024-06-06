@@ -128,11 +128,17 @@ hook_macros::hook! {
                     pending: None,
                 }).unwrap();
 
-                let SocketState::Unassociated(UnassociatedSocket { local_addr, .. }) = ctx.global().sockets.get_mut(socket_id).unwrap() else {
-                    panic!("internal state error in fizzle--unreachable code reached");
+                match ctx.global().sockets.get_mut(socket_id).unwrap() {
+                    SocketState::Unassociated(UnassociatedSocket { local_addr, .. }) => {
+                        local_addr.replace(transport_addr);
+                    }
+                    SocketState::Connectionless(ConnectionlessSocket { local_addr, .. }) => {
+                        // TODO: what if local_addr already had address? leak here...
+                        *local_addr = socket_addr;
+                    }
+                    _ => panic!("internal state error in fizzle--unreachable code reached"),
                 };
-                // TODO: what if local_addr already had address? leak here...
-                local_addr.replace(transport_addr);
+
 
                 0
             },
