@@ -373,6 +373,7 @@ hook_macros::hook! {
     }
 }
 
+/*
 hook_macros::hook! {
     unsafe fn fopen(
         pathname: *const libc::c_char,
@@ -430,6 +431,7 @@ hook_macros::hook! {
     }
 }
 
+
 hook_macros::hook! {
     unsafe fn __fsetlocking(
         stream: *mut libc::FILE,
@@ -444,6 +446,7 @@ hook_macros::hook! {
         }
     }
 }
+*/
 
 /*
 hook_macros::hook! {
