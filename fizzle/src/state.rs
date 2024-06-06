@@ -1341,6 +1341,17 @@ pub struct RwLockInfo {
     pub holding_state: HashSet<ThreadId, FxBuildHasher>,
 }
 
+impl Default for RwLockInfo {
+    fn default() -> Self {
+        Self {
+            state: RwLockState::Available,
+            awaiting_read: VecDeque::new(),
+            awaiting_write: VecDeque::new(),
+            holding_state: HashSet::with_hasher(Default::default()),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RwLockState {
     Available,

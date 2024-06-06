@@ -372,7 +372,7 @@ hook_macros::hook! {
         let mutex_queue = match ctx.local().mutexes.get_mut(&mutex) {
             Some(queue) => queue,
             None => {
-                let res = libc::pthread_mutex_lock(lock);
+                let res = libc::pthread_mutex_trylock(lock);
                 if res < 0 {
                     *libc::__errno_location() = libc::EINVAL;
                     return -1
@@ -848,12 +848,7 @@ hook_macros::hook! {
 
         let rwlock = RwLockPtr::from(lock);
 
-        if ctx.local().rwlocks.insert(rwlock, RwLockInfo {
-            state: RwLockState::Available,
-            awaiting_read: VecDeque::new(),
-            awaiting_write: VecDeque::new(),
-            holding_state: HashSet::with_hasher(Default::default())
-        }).is_some() {
+        if ctx.local().rwlocks.insert(rwlock, RwLockInfo::default()).is_some() {
             panic!("[UB] `pthread_rwlock_init` called twice on one rwlock");
         }
 
@@ -868,17 +863,23 @@ hook_macros::hook! {
 
         let rwlock = RwLockPtr::from(lock);
 
-        let Some(rwlock_info) = ctx.local().rwlocks.remove(&rwlock) else {
-            panic!("[UB] `pthread_rwlock_destroy` called on uninitialized rwlock")
+        match ctx.local().rwlocks.remove(&rwlock) {
+            Some(rwlock_info) => {
+                if rwlock_info.state != RwLockState::Available {
+                    panic!("[UB] `pthread_rwlock_destroy` called on locked rwlock") // Undefined behavior
+                }
+
+                if !rwlock_info.awaiting_read.is_empty() || !rwlock_info.awaiting_read.is_empty() || !rwlock_info.awaiting_read.is_empty() {
+                    panic!("inconsistent fizzle RwLock state in `pthread_rwlock_destroy`");
+                }
+            },
+            None => {
+                let res = libc::pthread_rwlock_trywrlock(lock);
+                if res < 0 {
+                    panic!("[UB] `pthread_rwlock_destroy` called on uninitialized rwlock")
+                }
+            }
         };
-
-        if rwlock_info.state != RwLockState::Available {
-            panic!("[UB] `pthread_rwlock_destroy` called on locked rwlock") // Undefined behavior
-        }
-
-        if !rwlock_info.awaiting_read.is_empty() || !rwlock_info.awaiting_read.is_empty() || !rwlock_info.awaiting_read.is_empty() {
-            panic!("inconsistent fizzle RwLock state in `pthread_rwlock_destroy`");
-        }
 
         0
     }
@@ -891,8 +892,18 @@ hook_macros::hook! {
 
         let rwlock = RwLockPtr::from(lock);
 
-        let Some(rwlock_info) = ctx.local().rwlocks.get_mut(&rwlock) else {
-            panic!("[UB] `pthread_rwlock_rdlock` called on uninitialized rwlock")
+        let rwlock_info = match ctx.local().rwlocks.get_mut(&rwlock) {
+            Some(rwlock_info) => rwlock_info,
+            None => {
+                let res = libc::pthread_rwlock_trywrlock(lock);
+                if res < 0 {
+                    panic!("[UB] `pthread_rwlock_rdlock` called on uninitialized rwlock")
+                } else {
+                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
+                    ctx.local().rwlocks.insert(rwlock, RwLockInfo::default());
+                    ctx.local().rwlocks.get_mut(&rwlock).unwrap()
+                }
+            }
         };
 
         match rwlock_info.state {
@@ -931,8 +942,18 @@ hook_macros::hook! {
 
         let rwlock = RwLockPtr::from(lock);
 
-        let Some(rwlock_info) = ctx.local().rwlocks.get_mut(&rwlock) else {
-            panic!("[UB] `pthread_rwlock_tryrdlock` called on uninitialized rwlock");
+        let rwlock_info = match ctx.local().rwlocks.get_mut(&rwlock) {
+            Some(rwlock_info) => rwlock_info,
+            None => {
+                let res = libc::pthread_rwlock_trywrlock(lock);
+                if res < 0 {
+                    panic!("[UB] `pthread_rwlock_tryrdlock` called on uninitialized rwlock")
+                } else {
+                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
+                    ctx.local().rwlocks.insert(rwlock, RwLockInfo::default());
+                    ctx.local().rwlocks.get_mut(&rwlock).unwrap()
+                }
+            }
         };
 
         match rwlock_info.state {
@@ -985,8 +1006,18 @@ hook_macros::hook! {
 
         let rwlock = RwLockPtr::from(lock);
 
-        let Some(rwlock_info) = ctx.local().rwlocks.get_mut(&rwlock) else {
-            panic!("[UB] `pthread_rwlock_wrlock` called on uninitialized rwlock")
+        let rwlock_info = match ctx.local().rwlocks.get_mut(&rwlock) {
+            Some(rwlock_info) => rwlock_info,
+            None => {
+                let res = libc::pthread_rwlock_trywrlock(lock);
+                if res < 0 {
+                    panic!("[UB] `pthread_rwlock_wrlock` called on uninitialized rwlock")
+                } else {
+                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
+                    ctx.local().rwlocks.insert(rwlock, RwLockInfo::default());
+                    ctx.local().rwlocks.get_mut(&rwlock).unwrap()
+                }
+            }
         };
 
         match rwlock_info.state {
@@ -1016,8 +1047,18 @@ hook_macros::hook! {
 
         let rwlock = RwLockPtr::from(lock);
 
-        let Some(rwlock_info) = ctx.local().rwlocks.get_mut(&rwlock) else {
-            panic!("[UB] `pthread_rwlock_trywrlock` called on uninitialized rwlock")
+        let rwlock_info = match ctx.local().rwlocks.get_mut(&rwlock) {
+            Some(rwlock_info) => rwlock_info,
+            None => {
+                let res = libc::pthread_rwlock_trywrlock(lock);
+                if res < 0 {
+                    panic!("[UB] `pthread_rwlock_trywrlock` called on uninitialized rwlock")
+                } else {
+                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
+                    ctx.local().rwlocks.insert(rwlock, RwLockInfo::default());
+                    ctx.local().rwlocks.get_mut(&rwlock).unwrap()
+                }
+            }
         };
 
         match rwlock_info.state {
