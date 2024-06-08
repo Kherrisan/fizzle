@@ -20,11 +20,8 @@ extern "C" {
 }
 
 pub fn report_strict_failure(explanation: &'static str) {
-    if state::strict_mode() {
-        panic!("{}", explanation);
-    } else {
-        log::error!("{}", explanation);
-    }
+    debug_assert!(false, "{}", explanation);
+    log::error!("{}", explanation);
 }
 
 /// Creates a new location in memory that is guaranteed to be unique to others.

@@ -3,28 +3,28 @@ use std::{collections::HashMap, os::fd::RawFd, ptr};
 
 use fxhash::FxBuildHasher;
 
-use crate::hook_macros;
+use crate::{hook_macros, state};
 use crate::state::backend::{ConnectedBackend, ConnectionlessBackend, FileBackend, StdioBackend};
-use crate::state::{EpollDirection, EpollInfo, EpollInterest, FizzleContext, PolledStatus, SocketState};
+use crate::state::{EpollDirection, EpollInfo, EpollInterest, FizzState, PolledStatus, SocketState};
 use crate::state::fd::{FdInfo, FdResource};
 use crate::state::identifiers::{DescriptorId, PolledId};
 
 /// Polled for read() operations
-pub fn fd_to_pollin(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
-    let Some(fd_info) = ctx.local().fds.get(DescriptorId::new(fd)) else {
+pub fn fd_to_pollin(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
+    let Some(fd_info) = ctx.local.fds.get(DescriptorId::new(fd)) else {
         return PolledStatus::BadFd
     };
     match fd_info.resource {
         FdResource::Epoll(_) => panic!("polling an epoll descriptor not supported"),
         FdResource::Directory(_) => PolledStatus::NotPollable,
         FdResource::File(file_id) => {
-            match ctx.global().files.get(file_id).unwrap() {
+            match ctx.global.files.get(file_id).unwrap() {
                 FileBackend::Passthrough => PolledStatus::ImmediatelyPollable, // TODO: should we `poll()` here instead?
                 FileBackend::Regular(_) => unreachable!(),
                 FileBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.read_polled),
                 FileBackend::Plugin(plugin_id) => {
                     let plugin_id = *plugin_id;
-                    PolledStatus::Pollable(ctx.global().plugins.get(plugin_id).unwrap().read_polled)
+                    PolledStatus::Pollable(ctx.global.plugins.get(plugin_id).unwrap().read_polled)
                 }
                 FileBackend::Sink => PolledStatus::NotPollable,
                 FileBackend::NullSink => PolledStatus::ImmediatelyPollable,
@@ -32,24 +32,24 @@ pub fn fd_to_pollin(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
             }
         },
         FdResource::MessageQueue(_) => todo!(),
-        FdResource::Pipe(pipe_id) => PolledStatus::Pollable(ctx.global().pipes.get(pipe_id).unwrap().read_polled),
-        FdResource::Stdin => match ctx.global().stdio {
+        FdResource::Pipe(pipe_id) => PolledStatus::Pollable(ctx.global.pipes.get(pipe_id).unwrap().read_polled),
+        FdResource::Stdin => match ctx.global.stdio {
             StdioBackend::Passthrough => unreachable!(),
             StdioBackend::Regular(_) => unreachable!(),
             StdioBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.read_polled),
-            StdioBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global().plugins.get(plugin_id).unwrap().read_polled),
+            StdioBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global.plugins.get(plugin_id).unwrap().read_polled),
             StdioBackend::Sink => PolledStatus::NotPollable,
             StdioBackend::NullSink => PolledStatus::ImmediatelyPollable,
             StdioBackend::Fuzz(_) => todo!(),
         }
         FdResource::Stdout => PolledStatus::NotPollable,
         FdResource::Stderr => PolledStatus::NotPollable,
-        FdResource::Socket(socket_id) => match ctx.global().sockets.get(socket_id).unwrap() {
+        FdResource::Socket(socket_id) => match ctx.global.sockets.get(socket_id).unwrap() {
             SocketState::Connectionless(connectionless) => match connectionless.backend {
                 ConnectionlessBackend::Passthrough => unreachable!(),
                 ConnectionlessBackend::Regular(regular) => PolledStatus::Pollable(regular.read_polled),
                 ConnectionlessBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.read_polled),
-                ConnectionlessBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global().plugins.get(plugin_id).unwrap().read_polled),
+                ConnectionlessBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global.plugins.get(plugin_id).unwrap().read_polled),
                 ConnectionlessBackend::Sink => PolledStatus::NotPollable,
                 ConnectionlessBackend::NullSink => PolledStatus::ImmediatelyPollable,
                 ConnectionlessBackend::Fuzz(_) => todo!(),
@@ -62,7 +62,7 @@ pub fn fd_to_pollin(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
                 ConnectedBackend::Passthrough => unreachable!(),
                 ConnectedBackend::Regular(regular) => PolledStatus::Pollable(regular.read_polled),
                 ConnectedBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.read_polled),
-                ConnectedBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global().plugins.get(plugin_id).unwrap().read_polled),
+                ConnectedBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global.plugins.get(plugin_id).unwrap().read_polled),
                 ConnectedBackend::Sink => PolledStatus::NotPollable,
                 ConnectedBackend::NullSink => PolledStatus::ImmediatelyPollable,
                 ConnectedBackend::Fuzz(_) => todo!(),
@@ -72,21 +72,21 @@ pub fn fd_to_pollin(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
     }
 }
 
-pub fn fd_to_pollout(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
-    let Some(fd_info) = ctx.local().fds.get(DescriptorId::new(fd)) else {
+pub fn fd_to_pollout(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
+    let Some(fd_info) = ctx.local.fds.get(DescriptorId::new(fd)) else {
         return PolledStatus::BadFd
     };
     match fd_info.resource {
         FdResource::Epoll(_) => panic!("polling an epoll descriptor not supported"),
         FdResource::Directory(_) => PolledStatus::NotPollable,
         FdResource::File(file_id) => {
-            match ctx.global().files.get(file_id).unwrap() {
+            match ctx.global.files.get(file_id).unwrap() {
                 FileBackend::Passthrough => PolledStatus::ImmediatelyPollable, // TODO: should we `poll()` here instead?
                 FileBackend::Regular(_) => unreachable!(),
                 FileBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.write_polled),
                 FileBackend::Plugin(plugin_id) => {
                     let plugin_id = *plugin_id;
-                    PolledStatus::Pollable(ctx.global().plugins.get(plugin_id).unwrap().write_polled)
+                    PolledStatus::Pollable(ctx.global.plugins.get(plugin_id).unwrap().write_polled)
                 }
                 FileBackend::Sink => PolledStatus::ImmediatelyPollable,
                 FileBackend::NullSink => PolledStatus::ImmediatelyPollable,
@@ -95,29 +95,29 @@ pub fn fd_to_pollout(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
         },
         FdResource::MessageQueue(_) => todo!(),
         FdResource::Pipe(pipe_id) => {
-            if let Some(peer_id) = ctx.global().pipes.get(pipe_id).unwrap().peer {
-                PolledStatus::Pollable(ctx.global().pipes.get(peer_id).unwrap().write_polled)
+            if let Some(peer_id) = ctx.global.pipes.get(pipe_id).unwrap().peer {
+                PolledStatus::Pollable(ctx.global.pipes.get(peer_id).unwrap().write_polled)
             } else {
                 PolledStatus::ImmediatelyPollable
             }
         },
         FdResource::Stdin => PolledStatus::NotPollable,
-        FdResource::Stdout => match ctx.global().stdio {
+        FdResource::Stdout => match ctx.global.stdio {
             StdioBackend::Passthrough => unreachable!(),
             StdioBackend::Regular(_) => unreachable!(),
             StdioBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.write_polled),
-            StdioBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global().plugins.get(plugin_id).unwrap().write_polled),
+            StdioBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global.plugins.get(plugin_id).unwrap().write_polled),
             StdioBackend::Sink => PolledStatus::ImmediatelyPollable,
             StdioBackend::NullSink => PolledStatus::ImmediatelyPollable,
             StdioBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
         }
         FdResource::Stderr => PolledStatus::NotPollable,
-        FdResource::Socket(socket_id) => match ctx.global().sockets.get(socket_id).unwrap() {
+        FdResource::Socket(socket_id) => match ctx.global.sockets.get(socket_id).unwrap() {
             SocketState::Connectionless(connectionless) => match connectionless.backend {
                 ConnectionlessBackend::Passthrough => unreachable!(),
                 ConnectionlessBackend::Regular(regular) => PolledStatus::Pollable(regular.write_polled),
                 ConnectionlessBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.write_polled),
-                ConnectionlessBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global().plugins.get(plugin_id).unwrap().write_polled),
+                ConnectionlessBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global.plugins.get(plugin_id).unwrap().write_polled),
                 ConnectionlessBackend::Sink => PolledStatus::ImmediatelyPollable,
                 ConnectionlessBackend::NullSink => PolledStatus::ImmediatelyPollable,
                 ConnectionlessBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
@@ -130,7 +130,7 @@ pub fn fd_to_pollout(ctx: &mut FizzleContext, fd: RawFd) -> PolledStatus {
                 ConnectedBackend::Passthrough => unreachable!(),
                 ConnectedBackend::Regular(regular) => PolledStatus::Pollable(regular.write_polled),
                 ConnectedBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.write_polled),
-                ConnectedBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global().plugins.get(plugin_id).unwrap().write_polled),
+                ConnectedBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global.plugins.get(plugin_id).unwrap().write_polled),
                 ConnectedBackend::Sink => PolledStatus::ImmediatelyPollable,
                 ConnectedBackend::NullSink => PolledStatus::ImmediatelyPollable,
                 ConnectedBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
@@ -241,7 +241,9 @@ hook_macros::hook! {
             ctx.register_poller(poller_id, polled_id);
         }
 
-        ctx.yield_thread();
+        drop(ctx);
+        state::FIZZLE_STATE.yield_thread();
+        let mut ctx = state::FIZZLE_STATE.acquire();
 
         ctx.delete_poller(poller_id);
 
@@ -370,7 +372,9 @@ hook_macros::hook! {
             ctx.register_poller(poller_id, polled_id);
         }
 
-        ctx.yield_thread();
+        drop(ctx);
+        state::FIZZLE_STATE.yield_thread();
+        let mut ctx = state::FIZZLE_STATE.acquire();
 
         ctx.delete_poller(poller_id);
 
@@ -407,8 +411,8 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_epoll_create1(ctx) {
 
         let fd = crate::alias_fd_create();
-        let epoll_id = ctx.global().epolls.put(EpollInfo { interests: Default::default() });
-        ctx.local().fds.insert(DescriptorId::new(fd), FdInfo {
+        let epoll_id = ctx.global.epolls.put(EpollInfo { interests: Default::default() });
+        ctx.local.fds.insert(DescriptorId::new(fd), FdInfo {
             close_on_exec: (flags & libc::EPOLL_CLOEXEC) != 0,
             nonblocking: false,
             is_passthrough: false,
@@ -427,7 +431,7 @@ hook_macros::hook! {
         event: *mut libc::epoll_event
     ) -> libc::c_int => fizzle_epoll_ctl(ctx) {
 
-        let Some(epfd_info) = ctx.local().fds.get(DescriptorId::new(epfd)) else {
+        let Some(epfd_info) = ctx.local.fds.get(DescriptorId::new(epfd)) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
         };
@@ -437,7 +441,7 @@ hook_macros::hook! {
             return -1
         };
 
-        let Some(_) = ctx.local().fds.get(DescriptorId::new(fd)) else {
+        let Some(_) = ctx.local.fds.get(DescriptorId::new(fd)) else {
             return 0 // TODO: fix fopen rather than this workaround
             //*libc::__errno_location() = libc::EBADF;
             //return -1
@@ -448,7 +452,7 @@ hook_macros::hook! {
             return -1
         }
         
-        let epoll_info = ctx.global().epolls.get_mut(epoll_id).unwrap();
+        let epoll_info = ctx.global.epolls.get_mut(epoll_id).unwrap();
         match op {
             libc::EPOLL_CTL_ADD => {
                 assert!(!event.is_null());
@@ -476,7 +480,7 @@ hook_macros::hook! {
                     (Some(read_status), Some(write_status)) => EpollDirection::Both(read_status, write_status),
                 };
                 
-                let epoll_info = ctx.global().epolls.get_mut(epoll_id).unwrap();
+                let epoll_info = ctx.global.epolls.get_mut(epoll_id).unwrap();
                 epoll_info.interests.insert(descriptor_id, EpollInterest {
                     direction,
                     user_data: (*event).u64,
@@ -513,7 +517,7 @@ hook_macros::hook! {
                     (Some(read_status), Some(write_status)) => EpollDirection::Both(read_status, write_status),
                 };
 
-                let epoll_info = ctx.global().epolls.get_mut(epoll_id).unwrap();
+                let epoll_info = ctx.global.epolls.get_mut(epoll_id).unwrap();
                 let Some(interest) = epoll_info.interests.get_mut(&DescriptorId::new(fd)) else {
                     *libc::__errno_location() = libc::ENOENT;
                     return -1
@@ -589,7 +593,7 @@ hook_macros::hook! {
             crate::report_strict_failure("sigmask unsupported in epoll_pwait or epoll_pwait2");
         }
 
-        let Some(epfd_info) = ctx.local().fds.get(DescriptorId::new(epfd)) else {
+        let Some(epfd_info) = ctx.local.fds.get(DescriptorId::new(epfd)) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
         };
@@ -603,7 +607,7 @@ hook_macros::hook! {
 
         let poller_id = ctx.new_poller();
 
-        let epoll_info = ctx.global().epolls.get(epoll_id).unwrap();
+        let epoll_info = ctx.global.epolls.get(epoll_id).unwrap();
         for interest in epoll_info.interests.clone().values() {
             match interest.direction {
                 EpollDirection::None => (),
@@ -706,7 +710,9 @@ hook_macros::hook! {
             return total_ready as libc::c_int
         }
 
-        ctx.yield_thread();
+        drop(ctx);
+        state::FIZZLE_STATE.yield_thread();
+        let mut ctx = state::FIZZLE_STATE.acquire();
 
         // It's unfortunate that we have to delete the poller each time.
         // This is a worst-case O(m*n) operation, though most times m=1 so it isn't unacceptable performance per se.
@@ -714,7 +720,7 @@ hook_macros::hook! {
         // behavior if we kept the poller saved between calls.
         ctx.delete_poller(poller_id);
 
-        let epoll_info = ctx.global().epolls.get(epoll_id).unwrap();
+        let epoll_info = ctx.global.epolls.get(epoll_id).unwrap();
         for interest in epoll_info.interests.clone().values() {
             match interest.direction {
                 EpollDirection::Read(PolledStatus::Pollable(polled_id)) => if ctx.polled_is_ready(polled_id) {

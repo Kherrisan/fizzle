@@ -1,8 +1,9 @@
-use std::ffi::CStr;
-
 // Environment variables
-pub const FIZZLE_MEMORY_ENV: &CStr = c"FIZZLE_MEMORY";
-pub const FIZZLE_STRICT_ENV: &str = "FIZZLE_STRICT";
+/// Indicates the shared memory key that child processes should access
+pub const FIZZLE_MEMORY_ENV: &str = "FIZZLE_MEMORY";
+/// Indicates that the user will be fuzzing a single-process application
+pub const FIZZLE_MULTIPROCESS_ENV: &str = "FIZZLE_MULTIPROCESS";
+
 /// Instructs the fizzle harness to keep running if the main process would exit normally
 pub const FIZZLE_NOEXIT_ENV: &str = "FIZZLE_NOEXIT";
 

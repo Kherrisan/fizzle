@@ -11,6 +11,17 @@ pub struct FdInfo {
     pub resource: FdResource,
 }
 
+impl FdInfo {
+    pub fn new(resource: FdResource) -> Self {
+        Self {
+            close_on_exec: false,
+            nonblocking: false,
+            is_passthrough: false,
+            resource,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum FdResource {
     /// Files `open()`ed using O_PATH

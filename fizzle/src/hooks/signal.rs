@@ -1,4 +1,5 @@
 use crate::hook_macros;
+use crate::state;
 
 hook_macros::hook! {
     unsafe fn sigwait(
@@ -6,7 +7,8 @@ hook_macros::hook! {
         _sig: *mut libc::c_int
     ) -> libc::c_int => fizzle_sigwait(ctx) {
         // TODO: handle signals in the future
-        ctx.yield_thread();
+        drop(ctx);
+        state::FIZZLE_STATE.yield_thread();
 
         libc::EINVAL
     }

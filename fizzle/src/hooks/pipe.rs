@@ -34,25 +34,25 @@ hook_macros::hook! {
         let first_pipe = PipeInfo {
             mode,
             peer: None,
-            read_buf: ctx.global().buffers.put(Buffer::new()),
-            read_polled: ctx.global().polled_events.put(PolledInfo::new()),
-            write_polled: ctx.global().polled_events.put(PolledInfo::new_raised()),
+            read_buf: ctx.global.buffers.put(Buffer::new()),
+            read_polled: ctx.global.polled_events.put(PolledInfo::new()),
+            write_polled: ctx.global.polled_events.put(PolledInfo::new_raised()),
         };
 
-        let first_pipe_id = ctx.global().pipes.put(first_pipe);
+        let first_pipe_id = ctx.global.pipes.put(first_pipe);
 
         let second_pipe = PipeInfo {
             mode,
             peer: Some(first_pipe_id),
-            read_buf: ctx.global().buffers.put(Buffer::new()),
-            read_polled: ctx.global().polled_events.put(PolledInfo::new()),
-            write_polled: ctx.global().polled_events.put(PolledInfo::new_raised()),
+            read_buf: ctx.global.buffers.put(Buffer::new()),
+            read_polled: ctx.global.polled_events.put(PolledInfo::new()),
+            write_polled: ctx.global.polled_events.put(PolledInfo::new_raised()),
         };
 
-        let second_pipe_id = ctx.global().pipes.put(second_pipe);
+        let second_pipe_id = ctx.global.pipes.put(second_pipe);
 
         // `unwrap()` guaranteed to succeed--we *just* inserted the pipe
-        ctx.global().pipes.get_mut(first_pipe_id).unwrap().peer = Some(second_pipe_id);
+        ctx.global.pipes.get_mut(first_pipe_id).unwrap().peer = Some(second_pipe_id);
 
         let fd1_info = FdInfo {
             close_on_exec,
@@ -69,8 +69,8 @@ hook_macros::hook! {
         };
 
         // Now add the fd -> pipe_id mapping
-        ctx.local().fds.insert(DescriptorId::new(fd1), fd1_info).unwrap();
-        ctx.local().fds.insert(DescriptorId::new(fd2), fd2_info).unwrap();
+        ctx.local.fds.insert(DescriptorId::new(fd1), fd1_info).unwrap();
+        ctx.local.fds.insert(DescriptorId::new(fd2), fd2_info).unwrap();
 
         *pipefd = fd1;
         *(pipefd.add(1)) = fd2;

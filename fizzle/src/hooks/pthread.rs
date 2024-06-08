@@ -3,10 +3,10 @@ use std::ptr;
 use std::thread::{self, ThreadId};
 
 use crate::state::identifiers::{BarrierPtr, CondVarPtr, MutexPtr, RwLockPtr, SpinlockPtr};
-use crate::state::{BarrierInfo, RwLockInfo, RwLockState};
+use crate::state::{set_entered_handler, BarrierInfo, PThreadDestructor, PThreadRoutine, RwLockInfo, RwLockState, ThreadTermination};
 use crate::{hook_macros, state};
 
-type PTFunction = unsafe extern "C" fn(*mut libc::c_void) -> *mut libc::c_void;
+pub type PTFunction = unsafe extern "C" fn(*mut libc::c_void) -> *mut libc::c_void;
 
 #[repr(C)]
 struct PTWrapperArgs {
@@ -20,11 +20,7 @@ unsafe extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void 
     // Before we do ANYTHING, we need to set this to avoid accidental preload hook recursion
     state::set_entered_handler(true);
 
-    let mut ctx = state::FIZZLE_STATE.get();
-    ctx.local().pthreads.insert(unsafe { libc::pthread_self() }, thread::current().id());
-    ctx.initialize_thread_lock(&thread::current().id());
-    let mut old = 0i32;
-    hook_macros::real!(pthread_setcanceltype)(1, ptr::addr_of_mut!(old)); // TODO: 1 == libc::PTHREAD_CANCEL_ASYNCHRONOUS
+    state::FIZZLE_STATE.init_new_thread();
 
     // Now enable preload hooks to actually work during this thread's execution
     state::set_entered_handler(false);
@@ -35,8 +31,7 @@ unsafe extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void 
     // Once again, avoid accidental preload hook recursion
     state::set_entered_handler(true);
 
-    let mut ctx = state::FIZZLE_STATE.get(); // ONLY use this here and in ld_preload hooks
-    ctx.exit_thread(res);
+    state::FIZZLE_STATE.terminate_thread(ThreadTermination::Exit(res))
 }
 
 hook_macros::hook! {
@@ -52,12 +47,14 @@ hook_macros::hook! {
             wrapped_arg: arg,
         };
 
-        ctx.add_ready_thread(thread::current().id()); // Let the scheduler know we have more to execute
+        // Let the scheduler know we have more to execute
+        ctx.mark_thread_ready(thread::current().id());
+        drop(ctx);
 
         let res = hook_macros::real!(pthread_create)(thread, attr, pt_wrapper_fn, ptr::addr_of_mut!(wrapped_arg) as *mut libc::c_void);
 
         // The newly-created thread executes now, so this thread pauses
-        ctx.pause_current_thread();
+        state::FIZZLE_STATE.pause_current_thread();
 
         res
     }
@@ -67,8 +64,8 @@ hook_macros::hook! {
     unsafe fn pthread_exit(
         retval: *mut libc::c_void
     ) => fizzle_pthread_exit(ctx) {
-
-        ctx.exit_thread(retval);
+        drop(ctx);
+        state::FIZZLE_STATE.terminate_thread(ThreadTermination::Exit(retval))
     }
 }
 
@@ -83,17 +80,18 @@ hook_macros::hook! {
         retval: *mut *mut libc::c_void
     ) => fizzle_pthread_join(ctx) {
 
-        let target_id = ctx.local().pthreads.remove(&thread).unwrap();
-        if !ctx.local().terminated_threads.contains(&target_id) {
+        let target_id = ctx.local.pthreads.remove(&thread).unwrap();
+        if !ctx.local.terminated_threads.contains(&target_id) {
             // Target thread has not yet terminated--add it to list of threads awaiting death of target
-            match ctx.local().awaiting_thread_death.entry(target_id) {
+            match ctx.local.awaiting_thread_death.entry(target_id) {
                 std::collections::hash_map::Entry::Occupied(mut o) => o.get_mut().push(thread::current().id()),
                 std::collections::hash_map::Entry::Vacant(v) => {
                     v.insert(vec![ thread::current().id() ]);
                 }
             }
 
-            ctx.yield_thread();
+            drop(ctx);
+            state::FIZZLE_STATE.yield_thread();
         }
         // Waiting thread has now terminated--join properly
 
@@ -103,7 +101,7 @@ hook_macros::hook! {
 
 // TODO: pthread_cancel
 // Save pthread_t and pthread_setcancel_state values
-// When a thread tries to cancel another, check cancel ctx.local(). If thread is cancellable, set a
+// When a thread tries to cancel another, check cancel ctx.local. If thread is cancellable, set a
 // variable that indicates to the scheduler that it should shut down that thread.
 // TODO: deferred cancellation as well--have to hook all known cancellation points and go from there
 // TODO: handle cancellation cleanup handlers
@@ -114,26 +112,94 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_pthread_cancel(ctx) {
         // TODO: Right now we assume PTHREAD_CANCEL_ENABLE is the cancel state.
 
-        let Some(&thread_id) = ctx.local().pthreads.get(&thread) else {
+        if thread == libc::pthread_self() {
+            drop(ctx);
+            state::FIZZLE_STATE.terminate_thread(ThreadTermination::Cancellation)
+        }
+
+        let Some(&thread_id) = ctx.local.pthreads.get(&thread) else {
             log::warn!("pthread_cancel failed with ESRCH");
             *libc::__errno_location() = libc::ESRCH;
             return -1
         };
 
-        ctx.local().terminated_threads.insert(thread_id);
-        if let Some(awaiting_threads) = ctx.local().awaiting_thread_death.remove(&thread_id) {
-            for thread_id in awaiting_threads {
-                ctx.add_ready_thread(thread_id);
+        ctx.local.cancelling_threads.insert(thread_id);
+
+        ctx.mark_thread_ready(thread::current().id());
+        drop(ctx);
+        // Invariant: the cancelled thread will be waiting on its per-thread lock rather than the
+        // process lock, as our thread is currently executing (i.e. the process is active).
+        state::FIZZLE_STATE.get_thread_lock(&thread_id).post();
+        state::FIZZLE_STATE.pause_current_thread();
+
+        0
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn pthread_cleanup_push(
+        routine: PThreadDestructor,
+        arg: *mut libc::c_void 
+    ) => fizzle_pthread_cleanup_push(ctx) {
+        ctx.local.pthread_cleanup.get_mut(&thread::current().id()).unwrap().push_back(PThreadRoutine {
+            function: routine,
+            arg: Some(arg),
+        });
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn pthread_cleanup_pop(
+        execute: libc::c_int
+    ) => fizzle_pthread_cleanup_pop(ctx) {
+        if let Some(routine) = ctx.local.pthread_cleanup.get_mut(&thread::current().id()).unwrap().pop_front() {
+            if execute != 0 {
+                drop(ctx);
+                set_entered_handler(false);
+                routine.call();
+                set_entered_handler(true);
             }
         }
+    }
+}
 
-        // Now actually kill the thread
-        let ret = hook_macros::real!(pthread_cancel)(thread);
-        if ret != 0 {
-            panic!("pthread_cancel failed to actually kill thread");
-        }
-        
-        0
+#[no_mangle]
+unsafe extern "C" fn fizzle_do_nothing(_: *mut libc::c_void) {}
+
+hook_macros::hook! {
+    unsafe fn pthread_key_create(
+        key: *mut libc::pthread_key_t,
+        destructor: PThreadDestructor
+    ) => fizzle_pthread_key_create(ctx) {
+        hook_macros::real!(pthread_key_create)(key, fizzle_do_nothing);
+        ctx.local.pthread_keys.insert(*key, PThreadRoutine { function: destructor, arg: None });
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn pthread_key_delete(
+        key: libc::pthread_key_t
+    ) => fizzle_pthread_key_delete(ctx) {
+        hook_macros::real!(pthread_key_delete)(key);
+        ctx.local.pthread_keys.remove(&key);
+        ctx.local.pthread_key_values.remove(&key);
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn pthread_key_setspecific(
+        key: libc::pthread_key_t,
+        pointer: *mut libc::c_void // NOTE: this is actually `*const libc::c_void` in the function definition.
+    ) => fizzle_pthread_key_setspecific(ctx) {
+        ctx.local.pthread_key_values.get_mut(&key).unwrap().insert(thread::current().id(), pointer);
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn pthread_key_getspecific(
+        key: libc::pthread_key_t
+    ) -> *mut libc::c_void => fizzle_pthread_key_getspecific(ctx) {
+        *ctx.local.pthread_key_values.get_mut(&key).unwrap().get_mut(&thread::current().id()).unwrap_or(&mut ptr::null_mut())
     }
 }
 
@@ -197,8 +263,9 @@ hook_macros::hook! {
     unsafe fn pthread_yield(
     ) -> libc::c_int => fizzle_pthread_yield(ctx) {
 
-        ctx.add_ready_thread(thread::current().id());
-        ctx.yield_thread();
+        ctx.mark_thread_ready(thread::current().id());
+        drop(ctx);
+        state::FIZZLE_STATE.yield_thread();
 
         0
     }
@@ -248,7 +315,7 @@ hook_macros::hook! {
 
         let spinlock = SpinlockPtr::from(lock);
 
-        if ctx.local().spinlocks.insert(spinlock, VecDeque::new()).is_some() {
+        if ctx.local.spinlocks.insert(spinlock, VecDeque::new()).is_some() {
             panic!("[UB] `pthread_spin_init` called twice on one spinlock");
         }
 
@@ -263,7 +330,7 @@ hook_macros::hook! {
 
         let spinlock = SpinlockPtr::from(lock);
 
-        let Some(spinlock_queue) = ctx.local().spinlocks.remove(&spinlock) else {
+        let Some(spinlock_queue) = ctx.local.spinlocks.remove(&spinlock) else {
             panic!("[UB] `pthread_spin_destroy` called on uninitialized spinlock");
         };
 
@@ -282,7 +349,7 @@ hook_macros::hook! {
 
         let spinlock = SpinlockPtr::from(lock);
 
-        let Some(spinlock_queue) = ctx.local().spinlocks.get_mut(&spinlock) else {
+        let Some(spinlock_queue) = ctx.local.spinlocks.get_mut(&spinlock) else {
             panic!("[UB] `pthread_spin_lock` called on uninitialized spinlock")
         };
 
@@ -290,7 +357,8 @@ hook_macros::hook! {
         spinlock_queue.push_back(thread::current().id());
 
         if !available {
-            ctx.yield_thread();
+            drop(ctx);
+            state::FIZZLE_STATE.yield_thread();
         }
 
         0
@@ -304,7 +372,7 @@ hook_macros::hook! {
 
         let spinlock = SpinlockPtr::from(lock);
 
-        let Some(spinlock_queue) = ctx.local().spinlocks.get_mut(&spinlock) else {
+        let Some(spinlock_queue) = ctx.local.spinlocks.get_mut(&spinlock) else {
             panic!("[UB] `pthread_spin_trylock` called on uninitialized spinlock")
         };
 
@@ -324,7 +392,7 @@ hook_macros::hook! {
 
         let spinlock = SpinlockPtr::from(lock);
 
-        let Some(spinlock_queue) = ctx.local().spinlocks.get_mut(&spinlock) else {
+        let Some(spinlock_queue) = ctx.local.spinlocks.get_mut(&spinlock) else {
             panic!("[UB] `pthread_spin_unlock` called on uninitialized spinlock")
         };
 
@@ -337,7 +405,7 @@ hook_macros::hook! {
         }
 
         if let Some(next_thread) = spinlock_queue.front().copied() {
-            ctx.add_ready_thread(next_thread);
+            ctx.mark_thread_ready(next_thread);
         }
 
         0
@@ -352,7 +420,7 @@ hook_macros::hook! {
 
         let mutex = MutexPtr::from(lock);
 
-        if ctx.local().mutexes.insert(mutex, VecDeque::new()).is_some() {
+        if ctx.local.mutexes.insert(mutex, VecDeque::new()).is_some() {
             panic!("[UB] `pthread_mutex_init` called twice on one mutex");
         }
 
@@ -367,7 +435,7 @@ hook_macros::hook! {
 
         let mutex = MutexPtr::from(lock);
 
-        let Some(mutex_queue) = ctx.local().mutexes.remove(&mutex) else {
+        let Some(mutex_queue) = ctx.local.mutexes.remove(&mutex) else {
             return 0
         };
 
@@ -386,7 +454,7 @@ hook_macros::hook! {
 
         let mutex = MutexPtr::from(lock);
 
-        let mutex_queue = match ctx.local().mutexes.get_mut(&mutex) {
+        let mutex_queue = match ctx.local.mutexes.get_mut(&mutex) {
             Some(queue) => queue,
             None => {
                 let res = libc::pthread_mutex_trylock(lock);
@@ -395,8 +463,8 @@ hook_macros::hook! {
                     return -1
                 } else {
                     // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    ctx.local().mutexes.insert(mutex, VecDeque::new());
-                    ctx.local().mutexes.get_mut(&mutex).unwrap()
+                    ctx.local.mutexes.insert(mutex, VecDeque::new());
+                    ctx.local.mutexes.get_mut(&mutex).unwrap()
                 }
             }
         };
@@ -416,7 +484,8 @@ hook_macros::hook! {
         mutex_queue.push_back(thread::current().id());
 
         if !available {
-            ctx.yield_thread();
+            drop(ctx);
+            state::FIZZLE_STATE.yield_thread();
         }
 
         0
@@ -430,7 +499,7 @@ hook_macros::hook! {
 
         let mutex = MutexPtr::from(lock);
 
-        let mutex_queue = match ctx.local().mutexes.get_mut(&mutex) {
+        let mutex_queue = match ctx.local.mutexes.get_mut(&mutex) {
             Some(queue) => queue,
             None => {
                 let res = libc::pthread_mutex_lock(lock);
@@ -439,8 +508,8 @@ hook_macros::hook! {
                     return -1
                 } else {
                     // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    ctx.local().mutexes.insert(mutex, VecDeque::new());
-                    ctx.local().mutexes.get_mut(&mutex).unwrap()
+                    ctx.local.mutexes.insert(mutex, VecDeque::new());
+                    ctx.local.mutexes.get_mut(&mutex).unwrap()
                 }
             }
         };
@@ -463,7 +532,7 @@ hook_macros::hook! {
 
         let mutex = MutexPtr::from(lock);
 
-        let mutex_queue = match ctx.local().mutexes.get_mut(&mutex) {
+        let mutex_queue = match ctx.local.mutexes.get_mut(&mutex) {
             Some(queue) => queue,
             None => {
                 let res = libc::pthread_mutex_lock(lock);
@@ -472,8 +541,8 @@ hook_macros::hook! {
                     return -1
                 } else {
                     // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    ctx.local().mutexes.insert(mutex, VecDeque::new());
-                    ctx.local().mutexes.get_mut(&mutex).unwrap()
+                    ctx.local.mutexes.insert(mutex, VecDeque::new());
+                    ctx.local.mutexes.get_mut(&mutex).unwrap()
                 }
             }
         };
@@ -499,7 +568,7 @@ hook_macros::hook! {
 
         let mutex = MutexPtr::from(lock);
 
-        let mutex_queue = match ctx.local().mutexes.get_mut(&mutex) {
+        let mutex_queue = match ctx.local.mutexes.get_mut(&mutex) {
             Some(queue) => queue,
             None => {
                 let res = libc::pthread_mutex_lock(lock);
@@ -508,8 +577,8 @@ hook_macros::hook! {
                     return -1
                 } else {
                     // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    ctx.local().mutexes.insert(mutex, VecDeque::new());
-                    ctx.local().mutexes.get_mut(&mutex).unwrap()
+                    ctx.local.mutexes.insert(mutex, VecDeque::new());
+                    ctx.local.mutexes.get_mut(&mutex).unwrap()
                 }
             }
         };
@@ -530,7 +599,7 @@ hook_macros::hook! {
 
         let mutex = MutexPtr::from(lock);
 
-        let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
+        let Some(mutex_queue) = ctx.local.mutexes.get_mut(&mutex) else {
             *libc::__errno_location() = libc::EINVAL;
             return -1
         };
@@ -544,7 +613,7 @@ hook_macros::hook! {
         }
 
         if let Some(next_thread) = mutex_queue.front().copied() {
-            ctx.add_ready_thread(next_thread);
+            ctx.mark_thread_ready(next_thread);
         }
 
         0
@@ -574,7 +643,7 @@ hook_macros::hook! {
 
         let cond = CondVarPtr::from(lock);
 
-        if ctx.local().condvars.insert(cond, VecDeque::new()).is_some() {
+        if ctx.local.condvars.insert(cond, VecDeque::new()).is_some() {
             panic!("[UB] `pthread_cond_init` called twice on one condvar");
         }
 
@@ -589,7 +658,7 @@ hook_macros::hook! {
 
         let cond = CondVarPtr::from(lock);
 
-        match ctx.local().condvars.remove(&cond) {
+        match ctx.local.condvars.remove(&cond) {
             Some(queue) => {
                 if !queue.is_empty() {
                     panic!("[UB] `pthread_cond_destroy` called on locked condvar")
@@ -614,7 +683,7 @@ hook_macros::hook! {
 
         let cond = CondVarPtr::from(lock);
 
-        let cond_queue = match ctx.local().condvars.get_mut(&cond) {
+        let cond_queue = match ctx.local.condvars.get_mut(&cond) {
             Some(queue) => queue,
             None => {
                 let res = libc::pthread_cond_signal(lock);
@@ -622,14 +691,14 @@ hook_macros::hook! {
                     panic!("[UB] `pthread_cond_signal` called on uninitialized condvar")
                 } else {
                     // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    ctx.local().condvars.insert(cond, VecDeque::new());
-                    ctx.local().condvars.get_mut(&cond).unwrap()
+                    ctx.local.condvars.insert(cond, VecDeque::new());
+                    ctx.local.condvars.get_mut(&cond).unwrap()
                 }
             }
         };
 
         if let Some(thread_id) = cond_queue.pop_front() {
-            ctx.add_ready_thread(thread_id);
+            ctx.mark_thread_ready(thread_id);
         }
 
         0
@@ -643,7 +712,7 @@ hook_macros::hook! {
 
         let cond = CondVarPtr::from(lock);
 
-        let cond_queue = match ctx.local().condvars.get_mut(&cond) {
+        let cond_queue = match ctx.local.condvars.get_mut(&cond) {
             Some(queue) => queue,
             None => {
                 let res = libc::pthread_cond_signal(lock);
@@ -651,8 +720,8 @@ hook_macros::hook! {
                     panic!("[UB] `pthread_cond_broadcast` called on uninitialized condvar")
                 } else {
                     // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    ctx.local().condvars.insert(cond, VecDeque::new());
-                    ctx.local().condvars.get_mut(&cond).unwrap()
+                    ctx.local.condvars.insert(cond, VecDeque::new());
+                    ctx.local.condvars.get_mut(&cond).unwrap()
                 }
             }
         };
@@ -660,7 +729,7 @@ hook_macros::hook! {
         let threads: Vec<ThreadId> = cond_queue.drain(..).collect();
 
         for thread in threads {
-            ctx.add_ready_thread(thread);
+            ctx.mark_thread_ready(thread);
         }
 
         0
@@ -675,7 +744,7 @@ hook_macros::hook! {
 
         let cond = CondVarPtr::from(lock);
 
-        let cond_queue = match ctx.local().condvars.get_mut(&cond) {
+        let cond_queue = match ctx.local.condvars.get_mut(&cond) {
             Some(queue) => queue,
             None => {
                 let res = libc::pthread_cond_signal(lock);
@@ -683,8 +752,8 @@ hook_macros::hook! {
                     panic!("[UB] `pthread_cond_wait` called on uninitialized condvar")
                 } else {
                     // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    ctx.local().condvars.insert(cond, VecDeque::new());
-                    ctx.local().condvars.get_mut(&cond).unwrap()
+                    ctx.local.condvars.insert(cond, VecDeque::new());
+                    ctx.local.condvars.get_mut(&cond).unwrap()
                 }
             }
         };
@@ -694,7 +763,7 @@ hook_macros::hook! {
         // Now unlock the mutex
         let mutex = MutexPtr::from(mutex);
 
-        let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
+        let Some(mutex_queue) = ctx.local.mutexes.get_mut(&mutex) else {
             panic!("[UB] `pthread_cond_wait` called on uninitialized mutex")
         };
 
@@ -707,13 +776,15 @@ hook_macros::hook! {
         }
 
         if let Some(next_thread) = mutex_queue.front().copied() {
-            ctx.add_ready_thread(next_thread);
+            ctx.mark_thread_ready(next_thread);
         }
 
         // Wait until the thread is signaled
-        ctx.yield_thread();
+        drop(ctx);
+        state::FIZZLE_STATE.yield_thread();
+        let mut ctx = state::FIZZLE_STATE.acquire();
 
-        let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
+        let Some(mutex_queue) = ctx.local.mutexes.get_mut(&mutex) else {
             panic!("[UB] `pthread_cond_wait` called on uninitialized mutex")
         };
 
@@ -721,7 +792,8 @@ hook_macros::hook! {
         mutex_queue.push_back(thread::current().id());
 
         if !available {
-            ctx.yield_thread();
+            drop(ctx);
+            state::FIZZLE_STATE.yield_thread();
         }
 
         0
@@ -739,7 +811,7 @@ hook_macros::hook! {
 
         let cond = CondVarPtr::from(lock);
 
-        let cond_queue = match ctx.local().condvars.get_mut(&cond) {
+        let cond_queue = match ctx.local.condvars.get_mut(&cond) {
             Some(queue) => queue,
             None => {
                 let res = libc::pthread_cond_signal(lock);
@@ -747,8 +819,8 @@ hook_macros::hook! {
                     panic!("[UB] `pthread_cond_timedwait` called on uninitialized condvar")
                 } else {
                     // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    ctx.local().condvars.insert(cond, VecDeque::new());
-                    ctx.local().condvars.get_mut(&cond).unwrap()
+                    ctx.local.condvars.insert(cond, VecDeque::new());
+                    ctx.local.condvars.get_mut(&cond).unwrap()
                 }
             }
         };
@@ -758,7 +830,7 @@ hook_macros::hook! {
         // Now unlock the mutex
         let mutex = MutexPtr::from(mutex);
 
-        let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
+        let Some(mutex_queue) = ctx.local.mutexes.get_mut(&mutex) else {
             panic!("[UB] `pthread_cond_timedwait` called on uninitialized mutex")
         };
 
@@ -771,13 +843,15 @@ hook_macros::hook! {
         }
 
         if let Some(next_thread) = mutex_queue.front().copied() {
-            ctx.add_ready_thread(next_thread);
+            ctx.mark_thread_ready(next_thread);
         }
 
         // Wait until the thread is signaled
-        ctx.yield_thread();
+        drop(ctx);
+        state::FIZZLE_STATE.yield_thread();
+        let mut ctx = state::FIZZLE_STATE.acquire();
 
-        let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
+        let Some(mutex_queue) = ctx.local.mutexes.get_mut(&mutex) else {
             panic!("[UB] `pthread_cond_timedwait` called on uninitialized mutex")
         };
 
@@ -785,7 +859,8 @@ hook_macros::hook! {
         mutex_queue.push_back(thread::current().id());
 
         if !available {
-            ctx.yield_thread();
+            drop(ctx);
+            state::FIZZLE_STATE.yield_thread();
         }
 
         0
@@ -803,7 +878,7 @@ hook_macros::hook! {
         // TODO: timeout is infinite by default
         let cond = CondVarPtr::from(lock);
 
-        let cond_queue = match ctx.local().condvars.get_mut(&cond) {
+        let cond_queue = match ctx.local.condvars.get_mut(&cond) {
             Some(queue) => queue,
             None => {
                 let res = libc::pthread_cond_signal(lock);
@@ -811,8 +886,8 @@ hook_macros::hook! {
                     panic!("[UB] `pthread_cond_clockwait` called on uninitialized condvar")
                 } else {
                     // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    ctx.local().condvars.insert(cond, VecDeque::new());
-                    ctx.local().condvars.get_mut(&cond).unwrap()
+                    ctx.local.condvars.insert(cond, VecDeque::new());
+                    ctx.local.condvars.get_mut(&cond).unwrap()
                 }
             }
         };
@@ -822,7 +897,7 @@ hook_macros::hook! {
         // Now unlock the mutex
         let mutex = MutexPtr::from(mutex);
 
-        let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
+        let Some(mutex_queue) = ctx.local.mutexes.get_mut(&mutex) else {
             panic!("[UB] `pthread_cond_clockwait` called on uninitialized mutex")
         };
 
@@ -835,13 +910,15 @@ hook_macros::hook! {
         }
 
         if let Some(next_thread) = mutex_queue.front().copied() {
-            ctx.add_ready_thread(next_thread);
+            ctx.mark_thread_ready(next_thread);
         }
 
         // Wait until the thread is signaled
-        ctx.yield_thread();
+        drop(ctx);
+        state::FIZZLE_STATE.yield_thread();
+        let mut ctx = state::FIZZLE_STATE.acquire();
 
-        let Some(mutex_queue) = ctx.local().mutexes.get_mut(&mutex) else {
+        let Some(mutex_queue) = ctx.local.mutexes.get_mut(&mutex) else {
             panic!("[UB] `pthread_cond_clockwait` mutex freed while waiting for condition")
         };
 
@@ -849,7 +926,8 @@ hook_macros::hook! {
         mutex_queue.push_back(thread::current().id());
 
         if !available {
-            ctx.yield_thread();
+            drop(ctx);
+            state::FIZZLE_STATE.yield_thread();
         }
 
         0
@@ -865,7 +943,7 @@ hook_macros::hook! {
 
         let rwlock = RwLockPtr::from(lock);
 
-        if ctx.local().rwlocks.insert(rwlock, RwLockInfo::default()).is_some() {
+        if ctx.local.rwlocks.insert(rwlock, RwLockInfo::default()).is_some() {
             panic!("[UB] `pthread_rwlock_init` called twice on one rwlock");
         }
 
@@ -880,7 +958,7 @@ hook_macros::hook! {
 
         let rwlock = RwLockPtr::from(lock);
 
-        match ctx.local().rwlocks.remove(&rwlock) {
+        match ctx.local.rwlocks.remove(&rwlock) {
             Some(rwlock_info) => {
                 if rwlock_info.state != RwLockState::Available {
                     panic!("[UB] `pthread_rwlock_destroy` called on locked rwlock") // Undefined behavior
@@ -909,7 +987,7 @@ hook_macros::hook! {
 
         let rwlock = RwLockPtr::from(lock);
 
-        let rwlock_info = match ctx.local().rwlocks.get_mut(&rwlock) {
+        let rwlock_info = match ctx.local.rwlocks.get_mut(&rwlock) {
             Some(rwlock_info) => rwlock_info,
             None => {
                 let res = libc::pthread_rwlock_trywrlock(lock);
@@ -917,8 +995,8 @@ hook_macros::hook! {
                     panic!("[UB] `pthread_rwlock_rdlock` called on uninitialized rwlock")
                 } else {
                     // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    ctx.local().rwlocks.insert(rwlock, RwLockInfo::default());
-                    ctx.local().rwlocks.get_mut(&rwlock).unwrap()
+                    ctx.local.rwlocks.insert(rwlock, RwLockInfo::default());
+                    ctx.local.rwlocks.get_mut(&rwlock).unwrap()
                 }
             }
         };
@@ -926,13 +1004,16 @@ hook_macros::hook! {
         match rwlock_info.state {
             RwLockState::Writing => {
                 rwlock_info.awaiting_read.push_back(thread::current().id());
-                ctx.yield_thread(); // Wait for rwlock to become available
+                drop(ctx);
+                state::FIZZLE_STATE.yield_thread();
                 // State should already be set by prior thread--no need to change here
             }
             RwLockState::Reading if !rwlock_info.awaiting_write.is_empty() => {
                 // Avoid starvation of blocking writers
                 rwlock_info.awaiting_read.push_back(thread::current().id());
-                ctx.yield_thread(); // Wait for write lock to be handled, then read lock
+                // Wait for write lock to be handled, then read lock
+                drop(ctx);
+                state::FIZZLE_STATE.yield_thread();
                 // State should already be set by prior thread--no need to change here
             }
             RwLockState::Reading => { // The lock is ready to be taken
@@ -959,7 +1040,7 @@ hook_macros::hook! {
 
         let rwlock = RwLockPtr::from(lock);
 
-        let rwlock_info = match ctx.local().rwlocks.get_mut(&rwlock) {
+        let rwlock_info = match ctx.local.rwlocks.get_mut(&rwlock) {
             Some(rwlock_info) => rwlock_info,
             None => {
                 let res = libc::pthread_rwlock_trywrlock(lock);
@@ -967,8 +1048,8 @@ hook_macros::hook! {
                     panic!("[UB] `pthread_rwlock_tryrdlock` called on uninitialized rwlock")
                 } else {
                     // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    ctx.local().rwlocks.insert(rwlock, RwLockInfo::default());
-                    ctx.local().rwlocks.get_mut(&rwlock).unwrap()
+                    ctx.local.rwlocks.insert(rwlock, RwLockInfo::default());
+                    ctx.local.rwlocks.get_mut(&rwlock).unwrap()
                 }
             }
         };
@@ -1023,7 +1104,7 @@ hook_macros::hook! {
 
         let rwlock = RwLockPtr::from(lock);
 
-        let rwlock_info = match ctx.local().rwlocks.get_mut(&rwlock) {
+        let rwlock_info = match ctx.local.rwlocks.get_mut(&rwlock) {
             Some(rwlock_info) => rwlock_info,
             None => {
                 let res = libc::pthread_rwlock_trywrlock(lock);
@@ -1031,8 +1112,8 @@ hook_macros::hook! {
                     panic!("[UB] `pthread_rwlock_wrlock` called on uninitialized rwlock")
                 } else {
                     // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    ctx.local().rwlocks.insert(rwlock, RwLockInfo::default());
-                    ctx.local().rwlocks.get_mut(&rwlock).unwrap()
+                    ctx.local.rwlocks.insert(rwlock, RwLockInfo::default());
+                    ctx.local.rwlocks.get_mut(&rwlock).unwrap()
                 }
             }
         };
@@ -1048,7 +1129,9 @@ hook_macros::hook! {
             }
             _ => {
                 rwlock_info.awaiting_write.push_back(thread::current().id());
-                ctx.yield_thread(); // Wait for rwlock to become available
+                // Wait for rwlock to become available
+                drop(ctx);
+                state::FIZZLE_STATE.yield_thread();
                 // State should already be set by prior thread--no need to change here
             }
         }
@@ -1064,7 +1147,7 @@ hook_macros::hook! {
 
         let rwlock = RwLockPtr::from(lock);
 
-        let rwlock_info = match ctx.local().rwlocks.get_mut(&rwlock) {
+        let rwlock_info = match ctx.local.rwlocks.get_mut(&rwlock) {
             Some(rwlock_info) => rwlock_info,
             None => {
                 let res = libc::pthread_rwlock_trywrlock(lock);
@@ -1072,8 +1155,8 @@ hook_macros::hook! {
                     panic!("[UB] `pthread_rwlock_trywrlock` called on uninitialized rwlock")
                 } else {
                     // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    ctx.local().rwlocks.insert(rwlock, RwLockInfo::default());
-                    ctx.local().rwlocks.get_mut(&rwlock).unwrap()
+                    ctx.local.rwlocks.insert(rwlock, RwLockInfo::default());
+                    ctx.local.rwlocks.get_mut(&rwlock).unwrap()
                 }
             }
         };
@@ -1123,7 +1206,7 @@ hook_macros::hook! {
 
         let rwlock = RwLockPtr::from(lock);
 
-        let Some(rwlock_info) = ctx.local().rwlocks.get_mut(&rwlock) else {
+        let Some(rwlock_info) = ctx.local.rwlocks.get_mut(&rwlock) else {
             panic!("[UB] `pthread_rwlock_unlock` called on uninitialized rwlock")
         };
 
@@ -1142,7 +1225,7 @@ hook_macros::hook! {
                     Some(write_thread) => {
                         rwlock_info.holding_state.insert(write_thread);
                         rwlock_info.state = RwLockState::Writing;
-                        ctx.add_ready_thread(write_thread);
+                        ctx.mark_thread_ready(write_thread);
                     }
                     None => {
                         let threads: Vec<ThreadId> = rwlock_info.awaiting_read.drain(..).collect();
@@ -1152,14 +1235,14 @@ hook_macros::hook! {
                         }
 
                         for thread in threads {
-                            ctx.add_ready_thread(thread);
+                            ctx.mark_thread_ready(thread);
                         }
                     }
                 }
                 RwLockState::Writing => if rwlock_info.awaiting_read.is_empty() {
                     if let Some(write_thread) = rwlock_info.awaiting_write.pop_front() {
                         rwlock_info.holding_state.insert(write_thread);
-                        ctx.add_ready_thread(write_thread);
+                        ctx.mark_thread_ready(write_thread);
 
                     }else { // No threads waiting reads or writes
                         rwlock_info.state = RwLockState::Available;
@@ -1170,7 +1253,7 @@ hook_macros::hook! {
                     rwlock_info.state = RwLockState::Reading;
 
                     for thread in threads {
-                        ctx.add_ready_thread(thread);
+                        ctx.mark_thread_ready(thread);
                     }
                 }
                 _ => ()
@@ -1191,7 +1274,7 @@ hook_macros::hook! {
 
         let barrier = BarrierPtr::from(lock);
 
-        if ctx.local().barriers.insert(barrier, BarrierInfo { curr: Vec::new(), needed: count as usize }).is_some() {
+        if ctx.local.barriers.insert(barrier, BarrierInfo { curr: Vec::new(), needed: count as usize }).is_some() {
             panic!("[UB] `pthread_barrier_init` called twice on one barrier");
         }
 
@@ -1206,7 +1289,7 @@ hook_macros::hook! {
 
         let barrier = BarrierPtr::from(lock);
 
-        match ctx.local().barriers.remove(&barrier) {
+        match ctx.local.barriers.remove(&barrier) {
             Some(barrier_info) if !barrier_info.curr.is_empty() => panic!("[UB] `pthread_barrier_destroy` called on barrier other threads were waiting on"),
             None => panic!("[UB] `pthread_barrier_destroy` called on uninitialized barrier"),
             _ => ()
@@ -1223,7 +1306,7 @@ hook_macros::hook! {
 
         let barrier = BarrierPtr::from(lock);
 
-        let Some(barrier_info) = ctx.local().barriers.get_mut(&barrier) else {
+        let Some(barrier_info) = ctx.local.barriers.get_mut(&barrier) else {
             panic!("[UB] `pthread_barrier_wait` called on uninitialized barrier");
         };
 
@@ -1233,12 +1316,13 @@ hook_macros::hook! {
             // Release all threads (including this one)
             let threads: Vec<ThreadId> = barrier_info.curr.drain(..).collect();
             for thread_id in threads {
-                ctx.add_ready_thread(thread_id);
+                ctx.mark_thread_ready(thread_id);
             }
 
             -1 // TODO: replace this with `libc::PTHREAD_BARRIER_SERIAL_THREAD` once it exists
         } else {
-            ctx.yield_thread();
+            drop(ctx);
+            state::FIZZLE_STATE.yield_thread();
             0
         }
     }

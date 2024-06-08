@@ -78,7 +78,7 @@ macro_rules! va_args_hook {
                 std::process::abort() // NO RECURSION ALLOWED
             }
             #[allow(unused_mut)]
-            let mut $state = crate::state::FIZZLE_STATE.get();
+            let mut $state = crate::state::FIZZLE_STATE.acquire();
             $body
         }
     };
@@ -120,6 +120,13 @@ macro_rules! hook {
             pub unsafe extern fn $real_fn ( $($v : $t),* ) -> $r {
                 ::std::panic::catch_unwind(|| {
                     if crate::state::has_entered_handler() {
+                        /*
+                        // If we want to drop the `has_entered_handler` flag at this invocation
+                        if crate::state::has_passthrough_handler() {
+                            crate::state::set_passthrough_handler(false);
+                            crate::state::set_entered_handler(false);
+                        }
+                        */
                         // Use actual function instead of fizzle
                         return $real_fn.get() ( $($v),* )
                     }
@@ -145,7 +152,7 @@ macro_rules! hook {
 
         pub unsafe fn $hook_fn ( $($v : $t),*) -> $r {
             #[allow(unused_mut)]
-            let mut $state = crate::state::FIZZLE_STATE.get();
+            let mut $state = crate::state::FIZZLE_STATE.acquire();
             $body
         }
     };

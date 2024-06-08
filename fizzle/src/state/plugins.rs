@@ -3,7 +3,7 @@ use crate::constants::*;
 use fizzle_common::storage::ValueIndex;
 use fizzle_plugin::{Context, FizzlePluginObject, IoEndpointVariant};
 
-use super::{FizzleContext, PluginId, PluginModuleId};
+use super::{FizzState, PluginId, PluginModuleId};
 
 pub type PluginModules =
     ValueIndex<PluginModuleId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>;
@@ -69,15 +69,15 @@ pub enum IoEmulationType {
 /// # Panics
 /// 
 /// This method will panic if it is not called in the root process
-pub fn run_plugins(ctx: &mut FizzleContext) -> bool {
-    let max_id = ctx.global().plugins.max_key();
+pub fn run_plugins(ctx: &mut FizzState) -> bool {
+    let max_id = ctx.global.plugins.max_key();
     let mut plugin_activated = false;
 
     // TODO: turn this into an iterator in the future
     for i in 0..=max_id {
         // TODO: this is reeeeally messy... but it gets the job done
         // I would like to refactor to improve encapsulation of state more generally in the future
-        let global = unsafe { &mut (*FizzleContext::interprocess_state(ctx.shared_memory)) };
+        let global = &mut ctx.global;
 
         // TODO: handle datagrams here
 
@@ -92,7 +92,7 @@ pub fn run_plugins(ctx: &mut FizzleContext) -> bool {
                 stream_id: plugin_info.stream.clone(),
             };
 
-            let plugin_module = ctx.process_state.as_mut().plugin_modules.as_mut().unwrap().get_mut(plugin_module_id).unwrap();
+            let plugin_module = ctx.local.plugin_modules.as_mut().unwrap().get_mut(plugin_module_id).unwrap();
             let write_buf_id = plugin_info.write_buf;
             let write_polled = plugin_info.write_polled;
             let read_buf_id = plugin_info.read_buf;

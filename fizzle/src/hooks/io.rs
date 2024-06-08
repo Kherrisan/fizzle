@@ -5,59 +5,15 @@ use std::{cmp, mem, ptr, slice};
 use fizzle_common::io::TransportAddress;
 use fizzle_common::storage::Buffer;
 
-use crate::hook_macros;
+use crate::{hook_macros, state};
 use crate::constants::FIZZLE_BUFFER_LENGTH;
 use crate::state::backend::{ConnectedBackend, ConnectionlessBackend, FileBackend, IoBackend, RegularConnected, StdioBackend};
-use crate::state::identifiers::{BufferId, PolledId, SocketId};
-use crate::state::{ConnectedSocket, ConnectionlessSocket, FizzleContext, PipeMode, SocketLocationInfo, SocketState};
+use crate::state::identifiers::SocketId;
+use crate::state::{ConnectedSocket, ConnectionlessSocket, PipeMode, SocketLocationInfo, SocketState};
 use crate::state::fd::FdResource;
 use crate::state::identifiers::DescriptorId;
 
 const PIPE_BUF: usize = 4096;
-
-fn read_from_buffer(ctx: &mut FizzleContext, data: &mut [u8], buffer_id: BufferId, read_polled: PolledId, write_polled: Option<PolledId>, is_nonblocking: bool) -> libc::ssize_t {
-    if !ctx.global().polled_events.get(read_polled).unwrap().event_raised {
-        if is_nonblocking {
-            unsafe { *libc::__errno_location() = libc::EAGAIN };
-            return -1
-        } else {
-            ctx.poll_until_ready(read_polled);
-        }
-    }
-
-    let buf = ctx.global().buffers.get_mut(buffer_id).unwrap();
-    let read_len = buf.read(data);
-    if buf.is_empty() {
-        ctx.lower_polled(read_polled);
-    }
-    if let Some(write_polled) = write_polled {
-        ctx.raise_polled(write_polled)
-    }
-
-    return read_len as isize
-}
-
-fn write_to_buffer(ctx: &mut FizzleContext, data: &[u8], buffer_id: BufferId, write_polled: PolledId, read_polled: Option<PolledId>, is_nonblocking: bool) -> libc::ssize_t {
-    if !ctx.global().polled_events.get(write_polled).unwrap().event_raised {
-        if is_nonblocking {
-            unsafe { *libc::__errno_location() = libc::EAGAIN };
-            return -1
-        } else {
-            ctx.poll_until_ready(write_polled);
-        }
-    }
-
-    let buf = ctx.global().buffers.get_mut(buffer_id).unwrap();
-    let written = buf.write(data);
-    if buf.is_full() {
-        ctx.lower_polled(write_polled);
-    }
-    if let Some(read_polled) = read_polled {
-        ctx.raise_polled(read_polled)
-    }
-
-    return written as isize
-}
 
 hook_macros::hook! {
     unsafe fn write(
@@ -66,7 +22,7 @@ hook_macros::hook! {
         len: libc::size_t
     ) -> libc::ssize_t => fizzle_write(ctx) {
 
-        let Some(fd_info) = ctx.local().fds.get(DescriptorId::new(fd)) else {
+        let Some(fd_info) = ctx.local.fds.get(DescriptorId::new(fd)) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
         };
@@ -79,7 +35,7 @@ hook_macros::hook! {
                 *libc::__errno_location() = libc::EINVAL;
                 return -1
             },
-            FdResource::File(file_id) => match ctx.global().files.get(file_id).unwrap() {
+            FdResource::File(file_id) => match ctx.global.files.get(file_id).unwrap() {
                 FileBackend::Passthrough => hook_macros::real!(write)(fd, buf, len),
                 FileBackend::Regular(_) => unreachable!(),
                 FileBackend::Feedback(feedback) => {
@@ -87,15 +43,56 @@ hook_macros::hook! {
                     let write_polled = feedback.write_polled;
                     let read_polled = feedback.read_polled;
 
-                    write_to_buffer(&mut ctx, data, buffer_id, write_polled, Some(read_polled), is_nonblocking)
+                    let event_raised = ctx.global.polled_events.get(write_polled).unwrap().event_raised;
+                    drop(ctx);
+
+                    if !event_raised {
+                        if is_nonblocking {
+                            unsafe { *libc::__errno_location() = libc::EAGAIN };
+                            return -1
+                        } else {
+                            state::FIZZLE_STATE.poll_until_ready(write_polled);
+                        }
+                    }
+
+                    let mut ctx = state::FIZZLE_STATE.acquire();
+
+                    let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
+                    let written = buf.write(data);
+                    if buf.is_full() {
+                        ctx.lower_polled(write_polled);
+                    }
+                    ctx.raise_polled(read_polled);
+
+                    return written as isize
                 }
                 FileBackend::Plugin(plugin_id) => {
                     let plugin_id = *plugin_id;
-                    let plugin_info = ctx.global().plugins.get(plugin_id).unwrap();
+                    let plugin_info = ctx.global.plugins.get(plugin_id).unwrap();
                     let buffer_id = plugin_info.write_buf;
                     let write_polled = plugin_info.write_polled;
 
-                    write_to_buffer(&mut ctx, data, buffer_id, write_polled, None, is_nonblocking)
+                    let event_raised = ctx.global.polled_events.get(write_polled).unwrap().event_raised;
+                    drop(ctx);
+
+                    if !event_raised {
+                        if is_nonblocking {
+                            unsafe { *libc::__errno_location() = libc::EAGAIN };
+                            return -1
+                        } else {
+                            state::FIZZLE_STATE.poll_until_ready(write_polled);
+                        }
+                    }
+
+                    let mut ctx = state::FIZZLE_STATE.acquire();
+
+                    let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
+                    let written = buf.write(data);
+                    if buf.is_full() {
+                        ctx.lower_polled(write_polled);
+                    }
+
+                    return written as isize
                 },
                 FileBackend::Sink => len as libc::ssize_t,
                 FileBackend::NullSink => len as libc::ssize_t,
@@ -103,34 +100,38 @@ hook_macros::hook! {
             }
             FdResource::MessageQueue(_) => todo!(),
             FdResource::Pipe(pipe_id) => {
-                let Some(peer_id) = ctx.global().pipes.get(pipe_id).unwrap().peer else {
+                let Some(peer_id) = ctx.global.pipes.get(pipe_id).unwrap().peer else {
                     *libc::__errno_location() = libc::EPIPE;
                     return -1
                 };
 
-                let peer_info = ctx.global().pipes.get(peer_id).unwrap();
+                let peer_info = ctx.global.pipes.get(peer_id).unwrap();
                 let buffer_id = peer_info.read_buf;
                 let write_polled = peer_info.write_polled;
                 let read_polled = peer_info.read_polled;
 
                 let pipe_mode = peer_info.mode;
 
-                if !ctx.polled_is_ready(write_polled) {
+                let polled_is_ready = ctx.polled_is_ready(write_polled);
+                drop(ctx);
+                if !polled_is_ready {
                     if is_nonblocking {
                         unsafe { *libc::__errno_location() = libc::EAGAIN };
                         return -1
                     } else {
-                        ctx.poll_until_ready(write_polled);
+                        state::FIZZLE_STATE.poll_until_ready(write_polled);
                     }
                 }
 
+                let mut ctx = state::FIZZLE_STATE.acquire();
+
                 // We need to verify that this connection has not shut down before writing to the same buffer_id
-                if ctx.global().pipes.get(pipe_id).unwrap().peer.is_none() {
+                if ctx.global.pipes.get(pipe_id).unwrap().peer.is_none() {
                     unsafe { *libc::__errno_location() = libc::EPIPE };
                     return -1
                 };
 
-                let buf = ctx.global().buffers.get_mut(buffer_id).unwrap();
+                let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
                 let amount_written = match pipe_mode {
                     PipeMode::Direct => {
                         let packet_len = cmp::min(data.len(), 4096);
@@ -150,10 +151,10 @@ hook_macros::hook! {
                 }
                 ctx.raise_polled(read_polled);
 
-                return amount_written as isize
+                amount_written as isize
             },
             FdResource::Stdin => 0,
-            FdResource::Stdout => match ctx.global().stdio {
+            FdResource::Stdout => match ctx.global.stdio {
                 StdioBackend::Passthrough => unreachable!(),
                 StdioBackend::Regular(_) => unreachable!(),
                 StdioBackend::Feedback(feedback) => {
@@ -161,26 +162,73 @@ hook_macros::hook! {
                     let write_polled = feedback.write_polled;
                     let read_polled = feedback.read_polled;
 
-                    write_to_buffer(&mut ctx, data, buffer_id, write_polled, Some(read_polled), is_nonblocking)
+                    let event_raised = ctx.global.polled_events.get(write_polled).unwrap().event_raised;
+                    drop(ctx);
+
+                    if !event_raised {
+                        if is_nonblocking {
+                            unsafe { *libc::__errno_location() = libc::EAGAIN };
+                            return -1
+                        } else {
+                            state::FIZZLE_STATE.poll_until_ready(write_polled);
+                        }
+                    }
+
+                    let mut ctx = state::FIZZLE_STATE.acquire();
+
+                    let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
+                    let written = buf.write(data);
+                    if buf.is_full() {
+                        ctx.lower_polled(write_polled);
+                    }
+                    ctx.raise_polled(read_polled);
+
+                    written as isize
                 },
                 StdioBackend::Plugin(plugin_id) => {
-                    let plugin_info = ctx.global().plugins.get(plugin_id).unwrap();
+                    let plugin_info = ctx.global.plugins.get(plugin_id).unwrap();
                     let buffer_id = plugin_info.write_buf;
                     let write_polled = plugin_info.write_polled;
 
-                    write_to_buffer(&mut ctx, data, buffer_id, write_polled, None, is_nonblocking)
+                    let event_raised = ctx.global.polled_events.get(write_polled).unwrap().event_raised;
+                    drop(ctx);
+
+                    if !event_raised {
+                        if is_nonblocking {
+                            unsafe { *libc::__errno_location() = libc::EAGAIN };
+                            return -1
+                        } else {
+                            state::FIZZLE_STATE.poll_until_ready(write_polled);
+                        }
+                    }
+
+                    let mut ctx = state::FIZZLE_STATE.acquire();
+
+                    let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
+                    let written = buf.write(data);
+                    if buf.is_full() {
+                        ctx.lower_polled(write_polled);
+                    }
+
+                    written as isize
                 },
                 StdioBackend::Sink => len as libc::ssize_t,
                 StdioBackend::NullSink => len as libc::ssize_t,
                 StdioBackend::Fuzz(_) => len as libc::ssize_t,
             },
             FdResource::Stderr => len as libc::ssize_t, // Transparently consume `stderr` output
-            FdResource::Socket(socket_id) => match ctx.global().sockets.get(socket_id).unwrap() {
-                SocketState::Connected(_) => send_connected_socket(&mut ctx, data, socket_id, is_nonblocking),
-                SocketState::Connectionless(_) => send_connectionless_socket(&mut ctx, data, socket_id, is_nonblocking, None),
+            FdResource::Socket(socket_id) => match ctx.global.sockets.get(socket_id).unwrap() {
+                SocketState::Connected(_) => {
+                    drop(ctx);
+                    send_connected_socket(data, socket_id, is_nonblocking)
+                }
+                SocketState::Connectionless(_) => {
+                    drop(ctx);
+                    send_connectionless_socket(data, socket_id, is_nonblocking, None)
+                }
                 _ => {
                     *libc::__errno_location() = libc::ENOTCONN;
-                    return -1
+                    -1
                 }
             }
         }
@@ -199,7 +247,7 @@ hook_macros::hook! {
             crate::report_strict_failure("fizzle does not currently implement TCP Fast Open")
         }
 
-        let Some(fd_info) = ctx.local().fds.get(DescriptorId::new(fd)) else {
+        let Some(fd_info) = ctx.local.fds.get(DescriptorId::new(fd)) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
         };
@@ -212,9 +260,15 @@ hook_macros::hook! {
             return -1
         };
 
-        match ctx.global().sockets.get(socket_id).unwrap() {
-            SocketState::Connected(_) => send_connected_socket(&mut ctx, data, socket_id, is_nonblocking),
-            SocketState::Connectionless(_) => send_connectionless_socket(&mut ctx, data, socket_id, is_nonblocking, None),
+        match ctx.global.sockets.get(socket_id).unwrap() {
+            SocketState::Connected(_) => {
+                drop(ctx);
+                send_connected_socket(data, socket_id, is_nonblocking)
+            }
+            SocketState::Connectionless(_) => {
+                drop(ctx);
+                send_connectionless_socket(data, socket_id, is_nonblocking, None)
+            }
             _ => {
                 *libc::__errno_location() = libc::ENOTCONN;
                 return -1
@@ -237,7 +291,7 @@ hook_macros::hook! {
             crate::report_strict_failure("fizzle does not currently implement TCP Fast Open")
         }
 
-        let Some(fd_info) = ctx.local().fds.get(DescriptorId::new(fd)) else {
+        let Some(fd_info) = ctx.local.fds.get(DescriptorId::new(fd)) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
         };
@@ -251,7 +305,7 @@ hook_macros::hook! {
 
         let data = slice::from_raw_parts(buf as *const u8, len);
 
-        match ctx.global().sockets.get(socket_id).unwrap() {
+        match ctx.global.sockets.get(socket_id).unwrap() {
             SocketState::Connectionless(_) => {
                 let addr = if dest_addr.is_null() {
                     None
@@ -265,14 +319,16 @@ hook_macros::hook! {
                     }
                 };
 
-                send_connectionless_socket(&mut ctx, data, socket_id, is_nonblocking, addr)
+                drop(ctx);
+                send_connectionless_socket(data, socket_id, is_nonblocking, addr)
             }
             SocketState::Connected(_) => {
                 if addrlen != 0 || !dest_addr.is_null() {
                     *libc::__errno_location() = libc::EISCONN;
                     return -1
                 }
-                send_connected_socket(&mut ctx, data, socket_id, is_nonblocking)
+                drop(ctx);
+                send_connected_socket(data, socket_id, is_nonblocking)
             }
             _ => {
                 *libc::__errno_location() = libc::ENOTCONN;
@@ -305,7 +361,7 @@ hook_macros::hook! {
         len: libc::size_t
     ) -> libc::ssize_t => fizzle_read(ctx) {
 
-        let Some(fd_info) = ctx.local().fds.get(DescriptorId::new(fd)) else {
+        let Some(fd_info) = ctx.local.fds.get(DescriptorId::new(fd)) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
         };
@@ -318,7 +374,7 @@ hook_macros::hook! {
                 *libc::__errno_location() = libc::EINVAL;
                 return -1
             },
-            FdResource::File(file_id) => match ctx.global().files.get(file_id).unwrap() {
+            FdResource::File(file_id) => match ctx.global.files.get(file_id).unwrap() {
                 FileBackend::Passthrough => hook_macros::real!(read)(fd, buf, len),
                 FileBackend::Regular(_) => unreachable!(),
                 FileBackend::Feedback(feedback) => {
@@ -326,15 +382,58 @@ hook_macros::hook! {
                     let read_polled = feedback.read_polled;
                     let write_polled = feedback.write_polled;
 
-                    read_from_buffer(&mut ctx, data, buffer_id, read_polled, Some(write_polled), is_nonblocking)
+                    let event_raised = ctx.global.polled_events.get(read_polled).unwrap().event_raised;
+                    drop(ctx);
+
+                    if !event_raised {
+                        if is_nonblocking {
+                            unsafe { *libc::__errno_location() = libc::EAGAIN };
+                            return -1
+                        } else {
+                            state::FIZZLE_STATE.poll_until_ready(read_polled);
+                        }
+                    }
+
+                    let mut ctx = state::FIZZLE_STATE.acquire();
+
+                    let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
+                    let read_len = buf.read(data);
+
+                    if buf.is_empty() {
+                        ctx.lower_polled(read_polled);
+                    }
+                    ctx.raise_polled(write_polled);
+
+                    read_len as isize
                 },
                 FileBackend::Plugin(plugin_id) => {
                     let plugin_id = *plugin_id;
-                    let plugin_info = ctx.global().plugins.get(plugin_id).unwrap();
+                    let plugin_info = ctx.global.plugins.get(plugin_id).unwrap();
                     let buffer_id = plugin_info.read_buf;
                     let read_polled = plugin_info.read_polled;
 
-                    read_from_buffer(&mut ctx, data, buffer_id, read_polled, None, is_nonblocking)                   
+                    let event_raised = ctx.global.polled_events.get(read_polled).unwrap().event_raised;
+                    drop(ctx);
+
+                    if !event_raised {
+                        if is_nonblocking {
+                            unsafe { *libc::__errno_location() = libc::EAGAIN };
+                            return -1
+                        } else {
+                            state::FIZZLE_STATE.poll_until_ready(read_polled);
+                        }
+                    }
+
+                    let mut ctx = state::FIZZLE_STATE.acquire();
+
+                    let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
+                    let read_len = buf.read(data);
+
+                    if buf.is_empty() {
+                        ctx.lower_polled(read_polled);
+                    }
+
+                    read_len as isize
                 },
                 FileBackend::Sink => 0 as libc::ssize_t,
                 FileBackend::NullSink => {
@@ -347,7 +446,7 @@ hook_macros::hook! {
             }
             FdResource::MessageQueue(_) => todo!(),
             FdResource::Pipe(pipe_id) => {
-                let pipe_info = ctx.global().pipes.get(pipe_id).unwrap();
+                let pipe_info = ctx.global.pipes.get(pipe_id).unwrap();
                 let peer_is_closed = pipe_info.peer.is_none();
 
                 let buffer_id = pipe_info.read_buf;
@@ -355,23 +454,27 @@ hook_macros::hook! {
                 let read_polled = pipe_info.read_polled;
 
                 let pipe_mode = pipe_info.mode;
-                
-                if !ctx.polled_is_ready(write_polled) {
+                let polled_is_ready = ctx.polled_is_ready(write_polled);
+                drop(ctx);
+
+                if !polled_is_ready {
                     if peer_is_closed {
                         return 0
                     } else if is_nonblocking {
                         unsafe { *libc::__errno_location() = libc::EAGAIN };
                         return -1
                     } else {
-                        ctx.poll_until_ready(write_polled);
+                        state::FIZZLE_STATE.poll_until_ready(write_polled);
                     }
                 }
 
-                if ctx.global().pipes.get(pipe_id).unwrap().peer.is_none() {
+                let mut ctx = state::FIZZLE_STATE.acquire();
+
+                if ctx.global.pipes.get(pipe_id).unwrap().peer.is_none() {
                     return 0
                 }
 
-                let buf = ctx.global().buffers.get_mut(buffer_id).unwrap();
+                let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
                 let amount_read = match pipe_mode {
                     PipeMode::Direct => {
                         let mut packet_len_bytes = [0u8; 2];
@@ -388,7 +491,7 @@ hook_macros::hook! {
 
                 return amount_read as isize
             },
-            FdResource::Stdin => match ctx.global().stdio {
+            FdResource::Stdin => match ctx.global.stdio {
                 StdioBackend::Passthrough => unreachable!(),
                 StdioBackend::Regular(_) => unreachable!(),
                 StdioBackend::Feedback(feedback) => {
@@ -396,14 +499,57 @@ hook_macros::hook! {
                     let read_polled = feedback.read_polled;
                     let write_polled = feedback.write_polled;
 
-                    read_from_buffer(&mut ctx, data, buffer_id, read_polled, Some(write_polled), is_nonblocking)
+                    let event_raised = ctx.global.polled_events.get(read_polled).unwrap().event_raised;
+                    drop(ctx);
+
+                    if !event_raised {
+                        if is_nonblocking {
+                            unsafe { *libc::__errno_location() = libc::EAGAIN };
+                            return -1
+                        } else {
+                            state::FIZZLE_STATE.poll_until_ready(read_polled);
+                        }
+                    }
+
+                    let mut ctx = state::FIZZLE_STATE.acquire();
+
+                    let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
+                    let read_len = buf.read(data);
+
+                    if buf.is_empty() {
+                        ctx.lower_polled(read_polled);
+                    }
+                    ctx.raise_polled(write_polled);
+
+                    read_len as isize
                 },
                 StdioBackend::Plugin(plugin_id) => {
-                    let plugin_info = ctx.global().plugins.get(plugin_id).unwrap();
+                    let plugin_info = ctx.global.plugins.get(plugin_id).unwrap();
                     let buffer_id = plugin_info.write_buf;
                     let read_polled = plugin_info.read_polled;
 
-                    read_from_buffer(&mut ctx, data, buffer_id, read_polled, None, is_nonblocking)
+                    let event_raised = ctx.global.polled_events.get(read_polled).unwrap().event_raised;
+                    drop(ctx);
+
+                    if !event_raised {
+                        if is_nonblocking {
+                            unsafe { *libc::__errno_location() = libc::EAGAIN };
+                            return -1
+                        } else {
+                            state::FIZZLE_STATE.poll_until_ready(read_polled);
+                        }
+                    }
+
+                    let mut ctx = state::FIZZLE_STATE.acquire();
+
+                    let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
+                    let read_len = buf.read(data);
+
+                    if buf.is_empty() {
+                        ctx.lower_polled(read_polled);
+                    }
+
+                    read_len as isize
                 },
                 StdioBackend::Sink => 0,
                 StdioBackend::NullSink => {
@@ -416,9 +562,15 @@ hook_macros::hook! {
             },
             FdResource::Stdout => 0,
             FdResource::Stderr => 0,
-            FdResource::Socket(socket_id) => match ctx.global().sockets.get(socket_id).unwrap() {
-                SocketState::Connected(_) => send_connected_socket(&mut ctx, data, socket_id, is_nonblocking),
-                SocketState::Connectionless(_) => send_connectionless_socket(&mut ctx, data, socket_id, is_nonblocking, None),
+            FdResource::Socket(socket_id) => match ctx.global.sockets.get(socket_id).unwrap() {
+                SocketState::Connected(_) => {
+                    drop(ctx);
+                    send_connected_socket(data, socket_id, is_nonblocking)
+                }
+                SocketState::Connectionless(_) => {
+                    drop(ctx);
+                    send_connectionless_socket(data, socket_id, is_nonblocking, None)
+                }
                 _ => {
                     *libc::__errno_location() = libc::ENOTCONN;
                     return -1
@@ -452,7 +604,7 @@ hook_macros::hook! {
         addrlen: *mut libc::socklen_t
     ) -> libc::ssize_t => fizzle_recvfrom(ctx) {
 
-        let Some(fd_info) = ctx.local().fds.get(DescriptorId::new(fd)) else {
+        let Some(fd_info) = ctx.local.fds.get(DescriptorId::new(fd)) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
         };
@@ -465,14 +617,15 @@ hook_macros::hook! {
             return -1
         };
 
-        match ctx.global().sockets.get(socket_id).unwrap() {
+        match ctx.global.sockets.get(socket_id).unwrap() {
             SocketState::Connected(conn_info) => {
                 crate::encode_inet_address(src_addr, conn_info.rem_addr.address()); // TODO: buffer overflow if addrlen is too short...
-                recv_connected_socket(&mut ctx, data, socket_id, is_nonblocking)
+                drop(ctx);
+                recv_connected_socket(data, socket_id, is_nonblocking)
             },
             SocketState::Connectionless(_) => {
-                recv_connectionless_socket(&mut ctx, data, socket_id, is_nonblocking, src_addr, addrlen)
-
+                drop(ctx);
+                recv_connectionless_socket(data, socket_id, is_nonblocking, src_addr, addrlen)
             },
             _ => {
                 *libc::__errno_location() = libc::ENOTCONN;
@@ -644,12 +797,13 @@ fn write_datagram<const N: usize>(
 }
 
 fn send_connected_socket(
-    ctx: &mut FizzleContext,
     data: &[u8],
     socket_id: SocketId,
     is_nonblocking: bool,
 ) -> libc::ssize_t {
-    let SocketState::Connected(sock_info) = ctx.global().sockets.get(socket_id).unwrap() else {
+    let mut ctx = state::FIZZLE_STATE.acquire();
+
+    let SocketState::Connected(sock_info) = ctx.global.sockets.get(socket_id).unwrap() else {
         panic!("internal error")
     };
 
@@ -661,7 +815,7 @@ fn send_connected_socket(
         return 0; // No more information to write to the connected socket
     };
 
-    let Some(SocketState::Connected(peer_info)) = ctx.global().sockets.get(peer) else {
+    let Some(SocketState::Connected(peer_info)) = ctx.global.sockets.get(peer) else {
         unreachable!()
     };
 
@@ -673,21 +827,26 @@ fn send_connected_socket(
             let write_polled = regular_peer.write_polled;
             let read_polled = regular_peer.read_polled;
 
-            if !ctx.polled_is_ready(write_polled) {
+            let polled_is_ready = ctx.polled_is_ready(write_polled);
+            drop(ctx);
+
+            if !polled_is_ready {
                 if is_nonblocking {
                     unsafe { *libc::__errno_location() = libc::EAGAIN };
                     return -1
                 } else {
-                    ctx.poll_until_ready(write_polled);
+                    state::FIZZLE_STATE.poll_until_ready(write_polled);
                 }
             }
 
+            let mut ctx = state::FIZZLE_STATE.acquire();
+
             // We need to verify that this connection has not shut down before writing to the same buffer_id
-            let Some(SocketState::Connected(ConnectedSocket { backend: IoBackend::Regular(RegularConnected { peer: Some(_), .. }), .. })) = ctx.global().sockets.get(socket_id) else {
+            let Some(SocketState::Connected(ConnectedSocket { backend: IoBackend::Regular(RegularConnected { peer: Some(_), .. }), .. })) = ctx.global.sockets.get(socket_id) else {
                 return 0
             };
 
-            let buf = ctx.global().buffers.get_mut(buffer_id).unwrap();
+            let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
             let written = buf.write(data);
             if buf.is_full() {
                 ctx.lower_polled(write_polled);
@@ -701,21 +860,26 @@ fn send_connected_socket(
             let write_polled = feedback.write_polled;
             let read_polled = feedback.read_polled;
 
-            if !ctx.polled_is_ready(write_polled) {
+            let polled_is_ready = ctx.polled_is_ready(write_polled);
+            drop(ctx);
+
+            if !polled_is_ready {
                 if is_nonblocking {
                     unsafe { *libc::__errno_location() = libc::EAGAIN };
                     return -1
                 } else {
-                    ctx.poll_until_ready(write_polled);
+                    state::FIZZLE_STATE.poll_until_ready(write_polled);
                 }
             }
 
+            let mut ctx = state::FIZZLE_STATE.acquire();
+
             // We need to verify that this connection has not shut down before writing to the same buffer_id
-            let Some(SocketState::Connected(ConnectedSocket { backend: IoBackend::Regular(RegularConnected { peer: Some(_), .. }), .. })) = ctx.global().sockets.get(socket_id) else {
+            let Some(SocketState::Connected(ConnectedSocket { backend: IoBackend::Regular(RegularConnected { peer: Some(_), .. }), .. })) = ctx.global.sockets.get(socket_id) else {
                 return 0
             };
 
-            let buf = ctx.global().buffers.get_mut(buffer_id).unwrap();
+            let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
             let written = buf.write(data);
             if buf.is_full() {
                 ctx.lower_polled(write_polled);
@@ -725,26 +889,31 @@ fn send_connected_socket(
             return written as isize
         },
         ConnectedBackend::Plugin(plugin_id) => {
-            let plugin_info = ctx.global().plugins.get(plugin_id).unwrap();
+            let plugin_info = ctx.global.plugins.get(plugin_id).unwrap();
             let buffer_id = plugin_info.write_buf;
             let write_polled = plugin_info.write_polled;
             let read_polled = plugin_info.read_polled;
 
-            if !ctx.polled_is_ready(write_polled) {
+            let polled_is_ready = ctx.polled_is_ready(write_polled);
+            drop(ctx);
+
+            if !polled_is_ready {
                 if is_nonblocking {
                     unsafe { *libc::__errno_location() = libc::EAGAIN };
                     return -1
                 } else {
-                    ctx.poll_until_ready(write_polled);
+                    state::FIZZLE_STATE.poll_until_ready(write_polled);
                 }
             }
 
+            let mut ctx = state::FIZZLE_STATE.acquire();
+
             // We need to verify that this connection has not shut down before writing to the same buffer_id
-            let Some(SocketState::Connected(ConnectedSocket { backend: IoBackend::Regular(RegularConnected { peer: Some(_), .. }), .. })) = ctx.global().sockets.get(socket_id) else {
+            let Some(SocketState::Connected(ConnectedSocket { backend: IoBackend::Regular(RegularConnected { peer: Some(_), .. }), .. })) = ctx.global.sockets.get(socket_id) else {
                 return 0
             };
 
-            let buf = ctx.global().buffers.get_mut(buffer_id).unwrap();
+            let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
             let written = buf.write(data);
             if buf.is_full() {
                 ctx.lower_polled(write_polled);
@@ -763,14 +932,15 @@ const MAX_DATAGRAM: usize = 65507;
 const MAX_INTERNAL_DATAGRAM: usize = MAX_DATAGRAM + mem::size_of::<libc::sockaddr_storage>() + 3;
 
 fn send_connectionless_socket(
-    ctx: &mut FizzleContext,
     data: &[u8],
     socket_id: SocketId,
     is_nonblocking: bool,
     addr: Option<SocketAddr>,
 ) -> libc::ssize_t {
 
-    let SocketState::Connectionless(sock_info) = ctx.global().sockets.get(socket_id).unwrap()
+    let mut ctx = state::FIZZLE_STATE.acquire();
+
+    let SocketState::Connectionless(sock_info) = ctx.global.sockets.get(socket_id).unwrap()
     else {
         unreachable!()
     };
@@ -791,7 +961,7 @@ fn send_connectionless_socket(
         bound_socket: Some(peer_sock_id),
         ..
     }) = ctx
-        .global()
+        .global
         .socket_locations
         .get(&TransportAddress::Udp(rem_addr))
     else {
@@ -800,7 +970,7 @@ fn send_connectionless_socket(
     };
     let peer_sock_id = *peer_sock_id;
 
-    let SocketState::Connectionless(peer_info) = ctx.global().sockets.get(peer_sock_id).unwrap()
+    let SocketState::Connectionless(peer_info) = ctx.global.sockets.get(peer_sock_id).unwrap()
     else {
         unreachable!()
     };
@@ -810,21 +980,26 @@ fn send_connectionless_socket(
         ConnectionlessBackend::Regular(regular_peer) => {
             let write_polled = regular_peer.write_polled;
 
-            if !ctx.polled_is_ready(write_polled) {
+            let polled_is_ready = ctx.polled_is_ready(write_polled);
+            drop(ctx);
+
+            if !polled_is_ready {
                 if is_nonblocking {
                     unsafe { *libc::__errno_location() = libc::EAGAIN };
                     return -1
                 } else {
-                    ctx.poll_until_ready(write_polled);
+                    state::FIZZLE_STATE.poll_until_ready(write_polled);
                 }
             }
+
+            let mut ctx = state::FIZZLE_STATE.acquire();
 
             // We need to verify that this connection has not shut down before writing to the same buffer_id
             let Some(SocketLocationInfo {
                 bound_socket: Some(peer_sock_id),
                 ..
             }) = ctx
-                .global()
+                .global
                 .socket_locations
                 .get(&TransportAddress::Udp(rem_addr))
             else {
@@ -834,7 +1009,7 @@ fn send_connectionless_socket(
             let peer_sock_id = *peer_sock_id;
 
 
-            let SocketState::Connectionless(ConnectionlessSocket { backend: IoBackend::Regular(regular_peer), .. }) = ctx.global().sockets.get(peer_sock_id).unwrap() else {
+            let SocketState::Connectionless(ConnectionlessSocket { backend: IoBackend::Regular(regular_peer), .. }) = ctx.global.sockets.get(peer_sock_id).unwrap() else {
                 return data.len() as libc::ssize_t // Drop packet
             };
 
@@ -848,7 +1023,7 @@ fn send_connectionless_socket(
                 return data.len() as libc::ssize_t // Drop packet
             }
 
-            let buf = ctx.global().buffers.get_mut(buffer_id).unwrap();
+            let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
             let amount_written = write_datagram(buf, data, &rem_addr);
             
             if FIZZLE_BUFFER_LENGTH - buf.len() < MAX_INTERNAL_DATAGRAM {
@@ -863,18 +1038,23 @@ fn send_connectionless_socket(
             let write_polled = feedback.write_polled;
             let read_polled = feedback.read_polled;
 
-            if !ctx.polled_is_ready(write_polled) {
+            let polled_is_ready = ctx.polled_is_ready(write_polled);
+            drop(ctx);
+
+            if !polled_is_ready {
                 if is_nonblocking {
                     unsafe { *libc::__errno_location() = libc::EAGAIN };
                     return -1
                 } else {
-                    ctx.poll_until_ready(write_polled);
+                    state::FIZZLE_STATE.poll_until_ready(write_polled);
                 }
             }
 
+            let mut ctx = state::FIZZLE_STATE.acquire();
+
             // We don't need to verify that this connection has not shut down, as it's a Feedback endpoint
 
-            let buf = ctx.global().buffers.get_mut(buffer_id).unwrap();
+            let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
             let amount_written = write_datagram(buf, data, &local_addr);
 
             if FIZZLE_BUFFER_LENGTH - buf.len() < MAX_INTERNAL_DATAGRAM {
@@ -885,22 +1065,27 @@ fn send_connectionless_socket(
             return amount_written as isize
         },
         ConnectionlessBackend::Plugin(plugin_id) => {
-            let plugin_info = ctx.global().plugins.get(plugin_id).unwrap();
+            let plugin_info = ctx.global.plugins.get(plugin_id).unwrap();
             let buffer_id = plugin_info.write_buf;
             let write_polled = plugin_info.write_polled;
 
-            if !ctx.polled_is_ready(write_polled) {
+            let polled_is_ready = ctx.polled_is_ready(write_polled);
+            drop(ctx);
+
+            if !polled_is_ready {
                 if is_nonblocking {
                     unsafe { *libc::__errno_location() = libc::EAGAIN };
                     return -1
                 } else {
-                    ctx.poll_until_ready(write_polled);
+                    state::FIZZLE_STATE.poll_until_ready(write_polled);
                 }
             }
 
+            let mut ctx = state::FIZZLE_STATE.acquire();
+
             // We don't need to verify that this connection has not shut down, as it's a Plugin endpoint
 
-            let buf = ctx.global().buffers.get_mut(buffer_id).unwrap();
+            let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
             let amount_written = write_datagram(buf, data, &rem_addr);
 
             if FIZZLE_BUFFER_LENGTH - buf.len() < MAX_INTERNAL_DATAGRAM {
@@ -953,13 +1138,14 @@ fn read_datagram<const N: usize>(
 }
 
 fn recv_connected_socket(
-    ctx: &mut FizzleContext,
     data: &mut [u8],
     socket_id: SocketId,
     is_nonblocking: bool,
 ) -> libc::ssize_t {
 
-    let SocketState::Connected(sock_info) = ctx.global().sockets.get(socket_id).unwrap() else {
+    let mut ctx = state::FIZZLE_STATE.acquire();
+
+    let SocketState::Connected(sock_info) = ctx.global.sockets.get(socket_id).unwrap() else {
         panic!("internal error")
     };
 
@@ -973,7 +1159,7 @@ fn recv_connected_socket(
 
     // First, check to see if we can just immediately read despite teh peer being closed
     if ctx.polled_is_ready(read_polled) {
-        let buf = ctx.global().buffers.get_mut(buf_id).unwrap();
+        let buf = ctx.global.buffers.get_mut(buf_id).unwrap();
         let amount_read = buf.read(data);
         if buf.is_empty() {
             ctx.lower_polled(read_polled);
@@ -993,9 +1179,11 @@ fn recv_connected_socket(
     }
 
     // Our peer is still connected, and we're in blocking mode
-    ctx.poll_until_ready(read_polled);
+    drop(ctx);
+    state::FIZZLE_STATE.poll_until_ready(read_polled);
+    let mut ctx = state::FIZZLE_STATE.acquire();
 
-    let recv_buf = ctx.global().buffers.get_mut(buf_id).unwrap();
+    let recv_buf = ctx.global.buffers.get_mut(buf_id).unwrap();
     let amount_read = recv_buf.read(data) as libc::ssize_t;
 
     if recv_buf.is_empty() {
@@ -1007,14 +1195,16 @@ fn recv_connected_socket(
 }
 
 fn recv_connectionless_socket(
-    ctx: &mut FizzleContext,
     data: &mut [u8],
     socket_id: SocketId,
     is_nonblocking: bool,
     addr: *mut libc::sockaddr,
     addrlen: *mut libc::socklen_t,
 ) -> libc::ssize_t {
-    let SocketState::Connectionless(ConnectionlessSocket { backend: IoBackend::Regular(regular), .. }) = ctx.global().sockets.get(socket_id).unwrap()
+
+    let mut ctx = state::FIZZLE_STATE.acquire();
+
+    let SocketState::Connectionless(ConnectionlessSocket { backend: IoBackend::Regular(regular), .. }) = ctx.global.sockets.get(socket_id).unwrap()
     else {
         unreachable!()
     };
@@ -1023,16 +1213,21 @@ fn recv_connectionless_socket(
     let write_polled = regular.write_polled;
     let read_polled = regular.read_polled;
 
-    if !ctx.polled_is_ready(write_polled) {
+    let polled_is_ready = ctx.polled_is_ready(write_polled);
+    drop(ctx);
+
+    if !polled_is_ready {
         if is_nonblocking {
             unsafe { *libc::__errno_location() = libc::EAGAIN };
             return -1
         } else {
-            ctx.poll_until_ready(write_polled);
+            state::FIZZLE_STATE.poll_until_ready(write_polled);
         }
     }
 
-    let recv_buf = ctx.global().buffers.get_mut(buf_id).unwrap();
+    let mut ctx = state::FIZZLE_STATE.acquire();
+
+    let recv_buf = ctx.global.buffers.get_mut(buf_id).unwrap();
     let read_len = read_datagram(recv_buf, data, addr, addrlen);
 
     if recv_buf.is_empty() {
