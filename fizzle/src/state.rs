@@ -155,7 +155,7 @@ impl FizzCell {
             panic!("internal fizzle error--`FizzCell` global state accessed mutably twice")
         }
 
-        if self.initialized.fetch_xor(true, Ordering::Relaxed) {
+        if !self.initialized.fetch_or(true, Ordering::Relaxed) {
             self.initialize_inner()
         }
 
@@ -513,14 +513,14 @@ impl FizzState {
         };
 
         unsafe {
-            let ret = libc::shmget(key, size, flags);
-            assert_eq!(ret, 0, "shared memory creation failed (errno {})", *libc::__errno_location());
+            let shmid = libc::shmget(key, size, flags);
+            assert!(shmid >= 0, "shared memory creation failed (errno {})", *libc::__errno_location());
             
-            let ret = libc::shmctl(key, libc::IPC_RMID, ptr::null_mut());
-            assert_eq!(ret, 0, "failed to make shared memory ephemeral (errno {})", *libc::__errno_location());
-
-            let location = libc::shmat(key, ptr::null_mut(), 0);
+            let location = libc::shmat(shmid, ptr::null_mut(), 0);
             assert!(location as isize != -1, "mapping shared memory failed (errno {})", *libc::__errno_location());
+
+            let ret = libc::shmctl(shmid, libc::IPC_RMID, ptr::null_mut());
+            assert_eq!(ret, 0, "failed to make shared memory ephemeral (errno {})", *libc::__errno_location());
 
             &mut *(location as *mut MaybeUninit<FizzGlobal>)
         }
