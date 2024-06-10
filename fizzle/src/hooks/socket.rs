@@ -118,33 +118,35 @@ hook_macros::hook! {
                 return -1
             }
         };
-
+        
         match ctx.global.socket_locations.entry(transport_addr) {
-            heapless::Entry::Occupied(_) => {
+            heapless::Entry::Occupied(mut o) => if o.get().bound_socket.is_some() {
+                log::warn!("application attempted to bind to address {:?} that was already in use", &transport_addr);
                 *libc::__errno_location() = libc::EADDRINUSE;
-                -1
+                return -1
+            } else {
+                o.get_mut().bound_socket = Some(socket_id);
             },
             heapless::Entry::Vacant(v) => {
                 v.insert(SocketLocationInfo {
                     bound_socket: Some(socket_id),
                     pending: None,
                 }).unwrap();
-
-                match ctx.global.sockets.get_mut(socket_id).unwrap() {
-                    SocketState::Unassociated(UnassociatedSocket { local_addr, .. }) => {
-                        local_addr.replace(transport_addr);
-                    }
-                    SocketState::Connectionless(ConnectionlessSocket { local_addr, .. }) => {
-                        // TODO: what if local_addr already had address? leak here...
-                        *local_addr = socket_addr;
-                    }
-                    _ => panic!("internal state error in fizzle--unreachable code reached"),
-                };
-
-
-                0
             },
         }
+
+        match ctx.global.sockets.get_mut(socket_id).unwrap() {
+            SocketState::Unassociated(UnassociatedSocket { local_addr, .. }) => {
+                local_addr.replace(transport_addr);
+            }
+            SocketState::Connectionless(ConnectionlessSocket { local_addr, .. }) => {
+                // TODO: what if local_addr already had address? leak here...
+                *local_addr = socket_addr;
+            }
+            _ => panic!("internal state error in fizzle--unreachable code reached"),
+        };
+
+        0
     }
 }
 
@@ -169,15 +171,11 @@ hook_macros::hook! {
             panic!("internal fizzle error--`listen()` called on socket in unexpected state");
         };
 
-        // Connectionless protocols shouldn't `listen()`
-        if socket_info.protocol == TransportProtocol::Udp {
-            *libc::__errno_location() = libc::EOPNOTSUPP;
-            return -1
-        }
-
         let local_addr = match socket_info.local_addr {
             Some(addr) => addr,
             None => {
+                log::warn!("socket `listen`ing without prior `bind`");
+
                 let family = socket_info.family;
                 let protocol = socket_info.protocol;
 
@@ -198,12 +196,19 @@ hook_macros::hook! {
 
         // Allocate server context and set up polling
         let ready_to_connect = ctx.global.polled_events.put(PolledInfo::new());
+
+        if ctx.global.socket_locations.get_mut(&local_addr).unwrap().pending.is_some() {
+            ctx.raise_polled(ready_to_connect);
+        }
+
         *ctx.global.sockets.get_mut(socket_id).unwrap() = SocketState::Server(ServerSocket {
             backend: IoBackend::Regular(()),
             local_addr,
             connecting: Queue::new(),
             ready_to_connect,
         });
+
+    
 
         0
     }
@@ -410,6 +415,7 @@ hook_macros::hook! {
             return -1;
         };
 
+        let has_connecting = !server_info.connecting.is_empty();
         let server_addr = server_info.local_addr;
         let ready_to_connect = server_info.ready_to_connect;
 
@@ -419,15 +425,29 @@ hook_macros::hook! {
                 panic!("unexpected fizzle state--pending socket ID not in PendingConnection state");
             };
 
+            let pending_info = *pending_info;
+
             // Update the linked list of pending clients
             match pending_info.next_pending {
                 Some(pending_id) => ctx.global.socket_locations.get_mut(&server_addr).unwrap().pending.as_mut().unwrap().client = pending_id,
-                None => ctx.global.socket_locations.get_mut(&server_addr).unwrap().pending = None,
+                None => {
+                    ctx.global.socket_locations.get_mut(&server_addr).unwrap().pending = None;
+
+                    if !has_connecting {
+                        ctx.lower_polled(ready_to_connect);
+                    }
+                }
             }
 
             ctx.raise_polled(poll);
 
-            return join_socket_pair(&mut ctx, server_id, client, flags)
+            let new_address = ctx.global.next_ephemeral_address(pending_info.rem_addr.family(), pending_info.rem_addr.protocol());
+
+            if !addr.is_null() {
+                *addrlen = crate::encode_inet_address(addr, new_address.address()) as libc::socklen_t;
+            }
+
+            return join_socket_pair(&mut ctx, server_id, client, flags, Some(new_address))
         }
 
         let SocketState::Server(server_info) = ctx.global.sockets.get_mut(server_id).unwrap() else {
@@ -447,7 +467,7 @@ hook_macros::hook! {
             let polled = connecting_info.connect_polled;
             ctx.raise_polled(polled);
 
-            return join_socket_pair(&mut ctx, server_id, connecting_id, flags);
+            return join_socket_pair(&mut ctx, server_id, connecting_id, flags, None);
 
         } else if is_nonblocking {
             *libc::__errno_location() = libc::EAGAIN; // or EWOULDBLOCK
@@ -473,7 +493,7 @@ hook_macros::hook! {
                 crate::encode_inet_address(addr, connecting_info.local_addr.address());
             }
 
-            return join_socket_pair(&mut ctx, server_id, connecting_id, flags);
+            return join_socket_pair(&mut ctx, server_id, connecting_id, flags, None);
         }
     }
 }
@@ -484,6 +504,7 @@ fn join_socket_pair(
     server_id: SocketId,
     connecting_id: SocketId,
     flags: libc::c_int,
+    addr: Option<TransportAddress>
 ) -> libc::c_int {
     let (server_addr, server_backend) = match ctx.global.sockets.get(server_id).unwrap() {
         SocketState::Server(server_info) => (server_info.local_addr, server_info.backend),
@@ -503,11 +524,7 @@ fn join_socket_pair(
 
     let (client_addr, connect_backend) = match ctx.global.sockets.get_mut(connecting_id).unwrap() {
         SocketState::PendingConnection(pending_info) => {
-            let backend = pending_info.backend.clone();
-            let protocol = pending_info.rem_addr.protocol();
-            let family = pending_info.rem_addr.family();
-            let local_addr = ctx.global.next_ephemeral_address(family, protocol);
-            (local_addr, backend)
+            (addr.unwrap(), pending_info.backend.clone())
         }
         SocketState::Connecting(connecting_info) => {
             let client_addr = connecting_info.local_addr;

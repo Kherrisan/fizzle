@@ -259,10 +259,11 @@ impl FizzCell {
         let fuzz_buffer = ctx.global.fuzz_input.remaining_mut();
         let mut fuzz_length = fuzz_buffer.len();
         unsafe {
-            let amount_read = libc::read(1, fuzz_buffer.as_mut_ptr() as *mut libc::c_void, fuzz_length);
+            let amount_read = libc::read(0, fuzz_buffer.as_mut_ptr() as *mut libc::c_void, fuzz_length);
             if amount_read <= 0 {
                 panic!("fuzzing input not received correctly from AFL++ (stdin `read` failed)");
             }
+            log::debug!("read {} bytes in for fuzzing", amount_read);
             fuzz_length = amount_read as usize;
         }
         ctx.global.fuzz_input.did_write(fuzz_length);
@@ -1269,7 +1270,7 @@ pub struct ServerSocket {
     pub ready_to_connect: PolledId,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct PendingSocket {
     pub backend: PendingBackend,
     pub next_pending: Option<SocketId>,

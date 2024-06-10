@@ -443,7 +443,8 @@ hook_macros::hook! {
                     data.len() as libc::ssize_t
                 },
                 FileBackend::Fuzz => {
-                    let &FuzzEndpointInfo { read_idx, read_polled } = ctx.global.fuzz_endpoints.get(&fd_info.resource).unwrap();
+                    let resource = fd_info.resource;
+                    let &FuzzEndpointInfo { read_idx, read_polled } = ctx.global.fuzz_endpoints.get(&resource).unwrap();
 
                     let polled_is_ready = ctx.polled_is_ready(read_polled);
                     drop(ctx);
@@ -458,10 +459,19 @@ hook_macros::hook! {
                         }
                     }
 
-                    let ctx = state::FIZZLE_STATE.acquire();
+                    let mut ctx = state::FIZZLE_STATE.acquire();
                     
-                    let read_len = cmp::min(ctx.global.fuzz_input.len() - read_idx, len);
+                    let total_fuzz_len = ctx.global.fuzz_input.len();
+                    let read_len = cmp::min(total_fuzz_len - read_idx, len);
                     data[..read_len].copy_from_slice(&ctx.global.fuzz_input.data()[read_idx..read_idx + read_len]);
+                    
+                    let fuzz_endpoint = ctx.global.fuzz_endpoints.get_mut(&resource).unwrap();
+                    let read_polled = fuzz_endpoint.read_polled;
+                    fuzz_endpoint.read_idx += read_len;
+                    if fuzz_endpoint.read_idx == total_fuzz_len {
+                        ctx.lower_polled(read_polled);
+                    }
+
                     read_len as libc::ssize_t
                 },
             }
@@ -580,6 +590,7 @@ hook_macros::hook! {
                     data.len() as libc::ssize_t
                 },
                 StdioBackend::Fuzz => {
+                    let resource = fd_info.resource;
                     let &FuzzEndpointInfo { read_idx, read_polled } = ctx.global.fuzz_endpoints.get(&fd_info.resource).unwrap();
 
                     let polled_is_ready = ctx.polled_is_ready(read_polled);
@@ -595,10 +606,19 @@ hook_macros::hook! {
                         }
                     }
 
-                    let ctx = state::FIZZLE_STATE.acquire();
-                    
+                    let mut ctx = state::FIZZLE_STATE.acquire();
+
+                    let total_fuzz_len = ctx.global.fuzz_input.len();
                     let read_len = cmp::min(ctx.global.fuzz_input.len() - read_idx, len);
                     data[..read_len].copy_from_slice(&ctx.global.fuzz_input.data()[read_idx..read_idx + read_len]);
+
+                    let fuzz_endpoint = ctx.global.fuzz_endpoints.get_mut(&resource).unwrap();
+                    let read_polled = fuzz_endpoint.read_polled;
+                    fuzz_endpoint.read_idx += read_len;
+                    if fuzz_endpoint.read_idx == total_fuzz_len {
+                        ctx.lower_polled(read_polled);
+                    }
+
                     read_len as libc::ssize_t
                 },
             },
@@ -607,11 +627,11 @@ hook_macros::hook! {
             FdResource::Socket(socket_id) => match ctx.global.sockets.get(socket_id).unwrap() {
                 SocketState::Connected(_) => {
                     drop(ctx);
-                    send_connected_socket(data, socket_id, is_nonblocking)
+                    recv_connected_socket(data, socket_id, is_nonblocking)
                 }
                 SocketState::Connectionless(_) => {
                     drop(ctx);
-                    send_connectionless_socket(data, socket_id, is_nonblocking, None)
+                    recv_connectionless_socket(data, socket_id, is_nonblocking, ptr::null_mut(), ptr::null_mut())
                 }
                 _ => {
                     *libc::__errno_location() = libc::ENOTCONN;
@@ -1191,49 +1211,154 @@ fn recv_connected_socket(
         panic!("internal error")
     };
 
-    let ConnectedBackend::Regular(regular) = sock_info.backend else {
-        unreachable!()
-    };
+    match sock_info.backend {
+        IoBackend::Passthrough => unimplemented!(),
+        IoBackend::Regular(regular) => {
+            let buf_id = regular.recv_buf;
+            let write_polled = regular.write_polled;
+            let read_polled = regular.read_polled;
 
-    let buf_id = regular.recv_buf;
-    let write_polled = regular.write_polled;
-    let read_polled = regular.read_polled;
+            // First, check to see if we can just immediately read despite the peer being closed
+            if ctx.polled_is_ready(read_polled) {
+                let buf = ctx.global.buffers.get_mut(buf_id).unwrap();
+                let amount_read = buf.read(data);
+                if buf.is_empty() {
+                    ctx.lower_polled(read_polled);
+                }
+                ctx.raise_polled(write_polled);
 
-    // First, check to see if we can just immediately read despite teh peer being closed
-    if ctx.polled_is_ready(read_polled) {
-        let buf = ctx.global.buffers.get_mut(buf_id).unwrap();
-        let amount_read = buf.read(data);
-        if buf.is_empty() {
-            ctx.lower_polled(read_polled);
-        }
-        ctx.raise_polled(write_polled);
+                return amount_read as libc::ssize_t
+            }
 
-        return amount_read as libc::ssize_t
+            if regular.peer.is_none() {
+                return 0; // No more information to write to the connected socket
+            };
+
+            if is_nonblocking {
+                unsafe { *libc::__errno_location() = libc::EAGAIN };
+                return -1
+            }
+
+            // Our peer is still connected, and we're in blocking mode
+            drop(ctx);
+            state::FIZZLE_STATE.poll_until_ready(read_polled);
+            let mut ctx = state::FIZZLE_STATE.acquire();
+
+            let recv_buf = ctx.global.buffers.get_mut(buf_id).unwrap();
+            let amount_read = recv_buf.read(data) as libc::ssize_t;
+
+            if recv_buf.is_empty() {
+                ctx.lower_polled(read_polled);
+            }
+            ctx.raise_polled(write_polled);
+
+            amount_read
+        },
+        IoBackend::Feedback(feedback_info) => {
+            let buf_id = feedback_info.buf;
+            let write_polled = feedback_info.write_polled;
+            let read_polled = feedback_info.read_polled;
+
+            // First, check to see if we can just immediately read despite the peer being closed
+            if ctx.polled_is_ready(read_polled) {
+                let buf = ctx.global.buffers.get_mut(buf_id).unwrap();
+                let amount_read = buf.read(data);
+                if buf.is_empty() {
+                    ctx.lower_polled(read_polled);
+                }
+                ctx.raise_polled(write_polled);
+
+                return amount_read as libc::ssize_t
+            }
+
+            if is_nonblocking {
+                unsafe { *libc::__errno_location() = libc::EAGAIN };
+                return -1
+            }
+
+            // Our peer is still connected, and we're in blocking mode
+            drop(ctx);
+            state::FIZZLE_STATE.poll_until_ready(read_polled);
+            let mut ctx = state::FIZZLE_STATE.acquire();
+
+            let recv_buf = ctx.global.buffers.get_mut(buf_id).unwrap();
+            let amount_read = recv_buf.read(data);
+
+            if recv_buf.is_empty() {
+                ctx.lower_polled(read_polled);
+            }
+            ctx.raise_polled(write_polled);
+
+            amount_read as libc::ssize_t
+        },
+        IoBackend::Plugin(plugin_id) => {
+            let plugin_info = ctx.global.plugins.get(plugin_id).unwrap();
+            let buffer_id = plugin_info.read_buf;
+            let read_polled = plugin_info.read_polled;
+
+            let event_raised = ctx.global.polled_events.get(read_polled).unwrap().event_raised;
+            drop(ctx);
+
+            if !event_raised {
+                if is_nonblocking {
+                    unsafe { *libc::__errno_location() = libc::EAGAIN };
+                    return -1
+                } else {
+                    state::FIZZLE_STATE.poll_until_ready(read_polled);
+                }
+            }
+
+            let mut ctx = state::FIZZLE_STATE.acquire();
+
+            let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
+            let read_len = buf.read(data);
+
+            if buf.is_empty() {
+                ctx.lower_polled(read_polled);
+            }
+
+            read_len as isize
+        },
+        IoBackend::Sink => return 0 as libc::ssize_t,
+        IoBackend::NullSink => {
+            for b in data.iter_mut() {
+                *b = 0;
+            }
+            
+            data.len() as libc::ssize_t
+        },
+        IoBackend::Fuzz => {
+            let resource = FdResource::Socket(socket_id);
+            let &FuzzEndpointInfo { read_idx, read_polled } = ctx.global.fuzz_endpoints.get(&resource).unwrap();
+
+            let polled_is_ready = ctx.polled_is_ready(read_polled);
+            drop(ctx);
+
+            if !polled_is_ready {
+                if is_nonblocking {
+                    unsafe { *libc::__errno_location() = libc::EAGAIN };
+                    return -1
+                } else {
+                    state::FIZZLE_STATE.poll_until_ready(read_polled);
+                }
+            }
+
+            let mut ctx = state::FIZZLE_STATE.acquire();
+            
+            let total_fuzz_len = ctx.global.fuzz_input.len();
+            let read_len = cmp::min(total_fuzz_len - read_idx, data.len());
+            data[..read_len].copy_from_slice(&ctx.global.fuzz_input.data()[read_idx..read_idx + read_len]);
+            
+            let fuzz_endpoint = ctx.global.fuzz_endpoints.get_mut(&resource).unwrap();
+            let read_polled = fuzz_endpoint.read_polled;
+            fuzz_endpoint.read_idx += read_len;
+            if fuzz_endpoint.read_idx == total_fuzz_len {
+                ctx.lower_polled(read_polled);
+            }
+
+            read_len as libc::ssize_t
+        },
     }
-
-    if regular.peer.is_none() {
-        return 0; // No more information to write to the connected socket
-    };
-
-    if is_nonblocking {
-        unsafe { *libc::__errno_location() = libc::EAGAIN };
-        return -1
-    }
-
-    // Our peer is still connected, and we're in blocking mode
-    drop(ctx);
-    state::FIZZLE_STATE.poll_until_ready(read_polled);
-    let mut ctx = state::FIZZLE_STATE.acquire();
-
-    let recv_buf = ctx.global.buffers.get_mut(buf_id).unwrap();
-    let amount_read = recv_buf.read(data) as libc::ssize_t;
-
-    if recv_buf.is_empty() {
-        ctx.lower_polled(read_polled);
-    }
-    ctx.raise_polled(write_polled);
-
-    amount_read
 }
 
 fn recv_connectionless_socket(
@@ -1246,6 +1371,7 @@ fn recv_connectionless_socket(
 
     let mut ctx = state::FIZZLE_STATE.acquire();
 
+    // TODO: this isn't finished...
     let SocketState::Connectionless(ConnectionlessSocket { backend: IoBackend::Regular(regular), .. }) = ctx.global.sockets.get(socket_id).unwrap()
     else {
         unreachable!()

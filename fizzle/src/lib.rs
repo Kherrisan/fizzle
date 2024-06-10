@@ -139,19 +139,23 @@ unsafe fn decode_inet_address(
 /// It is the responsibility of the caller to ensure that `addr` points to valid bytes that are
 /// sized according to the address family in the address (e.g., the address length for an `AF_INET`
 /// sockaddr should be equal to `mem::size_of::<libc::sockaddr_in>()`).
-unsafe fn encode_inet_address(addr: *mut libc::sockaddr, address: &SocketAddr) {
+unsafe fn encode_inet_address(addr: *mut libc::sockaddr, address: &SocketAddr) -> usize {
     match address {
         SocketAddr::V4(v4) => {
             let addr = addr as *mut libc::sockaddr_in;
+            (*addr).sin_family = libc::AF_INET as u16;
             (*addr).sin_addr.s_addr = u32::from_be_bytes(v4.ip().octets()).to_be();
             (*addr).sin_port = v4.port().to_be();
+            mem::size_of::<libc::sockaddr_in>()
         }
         SocketAddr::V6(v6) => {
             let addr = addr as *mut libc::sockaddr_in6;
+            (*addr).sin6_family = libc::AF_INET6 as u16;
             (*addr).sin6_addr.s6_addr = v6.ip().octets();
             (*addr).sin6_port = v6.port().to_be();
             (*addr).sin6_flowinfo = v6.flowinfo().to_be();
             (*addr).sin6_scope_id = v6.scope_id().to_be();
+            mem::size_of::<libc::sockaddr_in6>()
         }
     }
 }
