@@ -625,6 +625,25 @@ struct sctp_initmsg {
     sinit_max_init_timeo: u16,
 }
 
+#[allow(non_camel_case_types)]
+#[repr(C)]
+struct sctp_event_subscribe {
+    sctp_data_io_event: u8,
+    sctp_association_event: u8,
+    sctp_address_event: u8,
+    sctp_send_failure_event: u8,
+    sctp_peer_error_event: u8,
+    sctp_shutdown_event: u8,
+    sctp_partial_delivery_event: u8,
+    sctp_adaptation_layer_event: u8,
+    sctp_authentication_event: u8,
+    sctp_sender_dry_event: u8,
+    sctp_stream_reset_event: u8,
+    sctp_assoc_reset_event: u8,
+    sctp_stream_change_event: u8,
+    sctp_send_failure_event_event: u8,
+}
+
 const SOL_SCTP: i32 = 132;
 const SCTP_SOCKOPT_BINDX_ADD: i32 = 100;
 const SCTP_SOCKOPT_BINDX_REM: i32 = 101;
@@ -908,7 +927,8 @@ hook_macros::hook! {
                     srto_max: 60000,
                     srto_min: 1000,
                 }; // based on default values for Debian 12/Linux 6.XX
-                -1 // TODO: revert this
+                
+                0
             }
             (SOL_SCTP, SCTP_GET_LOCAL_ADDRS) => {
 
@@ -997,8 +1017,24 @@ hook_macros::hook! {
             }
             (SOL_SCTP, libc::SCTP_EVENTS) => {
                 // libc::sctp_event_subscribe not defined...
-                *libc::__errno_location() = libc::EINVAL;
-                -1
+                *(optval as *mut sctp_event_subscribe) = sctp_event_subscribe {
+                    sctp_data_io_event: 0,
+                    sctp_association_event: 0,
+                    sctp_address_event: 0,
+                    sctp_send_failure_event: 0,
+                    sctp_peer_error_event: 0,
+                    sctp_shutdown_event: 0,
+                    sctp_partial_delivery_event: 0,
+                    sctp_adaptation_layer_event: 0,
+                    sctp_authentication_event: 0,
+                    sctp_sender_dry_event: 0,
+                    sctp_stream_reset_event: 0,
+                    sctp_assoc_reset_event: 0,
+                    sctp_stream_change_event: 0,
+                    sctp_send_failure_event_event: 0,
+                };
+
+                0
             }
             (SOL_SCTP, libc::SCTP_I_WANT_MAPPED_V4_ADDR) => {
                 // Mapped IPv4 always disabled
