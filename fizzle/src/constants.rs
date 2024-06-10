@@ -9,6 +9,8 @@ pub const FIZZLE_NOEXIT_ENV: &str = "FIZZLE_NOEXIT";
 
 // Static buffers
 
+pub const FIZZLE_MAX_FUZZ_ENDPOINTS: usize = 64;
+
 pub const FIZZLE_MAX_FUZZ_INPUT: usize = 262_144; // 256 KB. This can be manually changed if desired, though using plugins that derive entropy from this input is preferred.`
 
 pub const FIZZLE_MAX_EPOLLS: usize = 32;

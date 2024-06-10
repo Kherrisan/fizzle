@@ -75,14 +75,11 @@ pub fn run_plugins(ctx: &mut FizzState) -> bool {
 
     // TODO: turn this into an iterator in the future
     for i in 0..=max_id {
-        // TODO: this is reeeeally messy... but it gets the job done
-        // I would like to refactor to improve encapsulation of state more generally in the future
-        let global = &mut ctx.global;
 
         // TODO: handle datagrams here
 
         let plugin_id = PluginId::from(i);
-        if let Some(plugin_info) = global.plugins.get(plugin_id) {
+        if let Some(plugin_info) = ctx.global.plugins.get(plugin_id) {
             let mut raise_read = false;
             let mut raise_write = false;
 
@@ -99,7 +96,7 @@ pub fn run_plugins(ctx: &mut FizzState) -> bool {
             let read_polled = plugin_info.read_polled;
 
             // Check read end
-            let write_buf = global.buffers.get_mut(write_buf_id).unwrap();
+            let write_buf = ctx.global.buffers.get_mut(write_buf_id).unwrap();
             if plugin_module.can_read(&context) && !write_buf.is_empty() {
                 plugin_activated = true;
                 match plugin_module.read(write_buf.data(), &context) {
@@ -113,7 +110,7 @@ pub fn run_plugins(ctx: &mut FizzState) -> bool {
             }
 
             // Check write end
-            let read_buf = global.buffers.get_mut(read_buf_id).unwrap();
+            let read_buf = ctx.global.buffers.get_mut(read_buf_id).unwrap();
             if plugin_module.can_write(&context) && !read_buf.is_full() {
                 plugin_activated = true;
                 match plugin_module.write(read_buf.remaining_mut(), &context) {

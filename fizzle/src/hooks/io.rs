@@ -9,7 +9,7 @@ use crate::{hook_macros, state};
 use crate::constants::FIZZLE_BUFFER_LENGTH;
 use crate::state::backend::{ConnectedBackend, ConnectionlessBackend, FileBackend, IoBackend, RegularConnected, StdioBackend};
 use crate::state::identifiers::SocketId;
-use crate::state::{ConnectedSocket, ConnectionlessSocket, PipeMode, SocketLocationInfo, SocketState};
+use crate::state::{ConnectedSocket, ConnectionlessSocket, FuzzEndpointInfo, PipeMode, SocketLocationInfo, SocketState};
 use crate::state::fd::FdResource;
 use crate::state::identifiers::DescriptorId;
 
@@ -96,7 +96,7 @@ hook_macros::hook! {
                 },
                 FileBackend::Sink => len as libc::ssize_t,
                 FileBackend::NullSink => len as libc::ssize_t,
-                FileBackend::Fuzz(_) => len as libc::ssize_t,
+                FileBackend::Fuzz => len as libc::ssize_t,
             }
             FdResource::MessageQueue(_) => todo!(),
             FdResource::Pipe(pipe_id) => {
@@ -214,7 +214,7 @@ hook_macros::hook! {
                 },
                 StdioBackend::Sink => len as libc::ssize_t,
                 StdioBackend::NullSink => len as libc::ssize_t,
-                StdioBackend::Fuzz(_) => len as libc::ssize_t,
+                StdioBackend::Fuzz => len as libc::ssize_t,
             },
             FdResource::Stderr => len as libc::ssize_t, // Transparently consume `stderr` output
             FdResource::Socket(socket_id) => match ctx.global.sockets.get(socket_id).unwrap() {
@@ -442,7 +442,28 @@ hook_macros::hook! {
                     }
                     data.len() as libc::ssize_t
                 },
-                FileBackend::Fuzz(_) => todo!(),
+                FileBackend::Fuzz => {
+                    let &FuzzEndpointInfo { read_idx, read_polled } = ctx.global.fuzz_endpoints.get(&fd_info.resource).unwrap();
+
+                    let polled_is_ready = ctx.polled_is_ready(read_polled);
+                    drop(ctx);
+
+                    if !polled_is_ready {
+                        if is_nonblocking {
+                            *libc::__errno_location() = libc::EAGAIN;
+                            return -1
+                        } else {
+
+                            state::FIZZLE_STATE.poll_until_ready(read_polled);
+                        }
+                    }
+
+                    let ctx = state::FIZZLE_STATE.acquire();
+                    
+                    let read_len = cmp::min(ctx.global.fuzz_input.len() - read_idx, len);
+                    data[..read_len].copy_from_slice(&ctx.global.fuzz_input.data()[read_idx..read_idx + read_len]);
+                    read_len as libc::ssize_t
+                },
             }
             FdResource::MessageQueue(_) => todo!(),
             FdResource::Pipe(pipe_id) => {
@@ -558,7 +579,28 @@ hook_macros::hook! {
                     }
                     data.len() as libc::ssize_t
                 },
-                StdioBackend::Fuzz(_) => todo!(),
+                StdioBackend::Fuzz => {
+                    let &FuzzEndpointInfo { read_idx, read_polled } = ctx.global.fuzz_endpoints.get(&fd_info.resource).unwrap();
+
+                    let polled_is_ready = ctx.polled_is_ready(read_polled);
+                    drop(ctx);
+
+                    if !polled_is_ready {
+                        if is_nonblocking {
+                            *libc::__errno_location() = libc::EAGAIN;
+                            return -1
+                        } else {
+
+                            state::FIZZLE_STATE.poll_until_ready(read_polled);
+                        }
+                    }
+
+                    let ctx = state::FIZZLE_STATE.acquire();
+                    
+                    let read_len = cmp::min(ctx.global.fuzz_input.len() - read_idx, len);
+                    data[..read_len].copy_from_slice(&ctx.global.fuzz_input.data()[read_idx..read_idx + read_len]);
+                    read_len as libc::ssize_t
+                },
             },
             FdResource::Stdout => 0,
             FdResource::Stderr => 0,
@@ -924,7 +966,7 @@ fn send_connected_socket(
         },
         ConnectedBackend::Sink => data.len() as libc::ssize_t,
         ConnectedBackend::NullSink => data.len() as libc::ssize_t,
-        ConnectedBackend::Fuzz(_) => data.len() as libc::ssize_t,
+        ConnectedBackend::Fuzz => data.len() as libc::ssize_t,
     }
 }
 
@@ -1096,7 +1138,7 @@ fn send_connectionless_socket(
         },
         ConnectionlessBackend::Sink => data.len() as libc::ssize_t,
         ConnectionlessBackend::NullSink => data.len() as libc::ssize_t,
-        ConnectionlessBackend::Fuzz(_) => data.len() as libc::ssize_t,
+        ConnectionlessBackend::Fuzz => data.len() as libc::ssize_t,
     }
 }
 

@@ -321,7 +321,7 @@ hook_macros::hook! {
                         ConnectedBackend::Plugin(connect_plugin_id)
                     },
                     ServerBackend::Sink => ConnectedBackend::Sink,
-                    ServerBackend::Fuzz(_) => ConnectedBackend::Fuzz(0),
+                    ServerBackend::Fuzz => ConnectedBackend::Fuzz,
                     ServerBackend::NullSink => ConnectedBackend::NullSink,
                     ServerBackend::Feedback(()) => ConnectedBackend::Feedback(StandardFeedback {
                             buf: ctx.global.buffers.put(Buffer::new()),
@@ -519,6 +519,7 @@ fn join_socket_pair(
         _ => unreachable!(),
     };
 
+    let mut is_fuzzing = false;
     let connect_backend = match connect_backend {
         IoBackend::Passthrough => unimplemented!(),
         IoBackend::Regular(()) => ConnectedBackend::Regular(RegularConnected {
@@ -535,7 +536,10 @@ fn join_socket_pair(
         IoBackend::Plugin(plugin_id) => ConnectedBackend::Plugin(plugin_id),
         IoBackend::Sink => ConnectedBackend::Sink,
         IoBackend::NullSink => ConnectedBackend::NullSink,
-        IoBackend::Fuzz(_) => ConnectedBackend::Fuzz(0),
+        IoBackend::Fuzz => {
+            is_fuzzing = true;
+            ConnectedBackend::Fuzz
+        },
     };
 
     let accepted_id = ctx
@@ -545,6 +549,10 @@ fn join_socket_pair(
             rem_addr: client_addr,
             backend: accept_backend,
         }));
+
+    if is_fuzzing {
+        ctx.global.add_fuzz_endpoint(FdResource::Socket(accepted_id));
+    }
     
     *ctx.global.sockets.get_mut(connecting_id).unwrap() =
         SocketState::Connected(ConnectedSocket {
@@ -1132,7 +1140,7 @@ hook_macros::hook! {
                 *libc::__errno_location() = libc::EINVAL;
                 -1
             }
-            (SOL_SCTP, libc::SCTP_STATUS | libc::SCTP_GET_PEER_ADDR_INFO | 112) => { // libc::SCTP_GET_ASSOC_STATS
+            (SOL_SCTP, libc::SCTP_STATUS | libc::SCTP_GET_PEER_ADDR_INFO) => {
                 // readonly option
                 *libc::__errno_location() = libc::EINVAL;
                 -1

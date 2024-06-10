@@ -11,11 +11,24 @@ unsafe fn slice_init_mut(slice: &mut [MaybeUninit<u8>]) -> &mut [u8] {
     slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut u8, slice.len())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Buffer<const T: usize> {
     data: [MaybeUninit<u8>; T],
     data_start: usize,
     data_end: usize,
+}
+
+impl<const T: usize> Clone for Buffer<T> {
+    fn clone(&self) -> Self {
+        let mut data: [MaybeUninit<u8>; T] = unsafe { MaybeUninit::uninit().assume_init() };
+        data[self.data_start..self.data_end].copy_from_slice(&self.data[self.data_start..self.data_end]);
+
+        Self {
+            data,
+            data_start: self.data_start.clone(),
+            data_end: self.data_end.clone()
+        }
+    }
 }
 
 impl<const T: usize> PartialEq for Buffer<T> {
