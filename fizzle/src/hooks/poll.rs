@@ -28,7 +28,7 @@ pub fn fd_to_pollin(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
                 }
                 FileBackend::Sink => PolledStatus::NotPollable,
                 FileBackend::NullSink => PolledStatus::ImmediatelyPollable,
-                FileBackend::Fuzz(_) => todo!(),
+                FileBackend::Fuzz => PolledStatus::Pollable(ctx.global.fuzz_endpoints.get(&FdResource::File(file_id)).unwrap().read_polled),
             }
         },
         FdResource::MessageQueue(_) => todo!(),
@@ -40,7 +40,7 @@ pub fn fd_to_pollin(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
             StdioBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global.plugins.get(plugin_id).unwrap().read_polled),
             StdioBackend::Sink => PolledStatus::NotPollable,
             StdioBackend::NullSink => PolledStatus::ImmediatelyPollable,
-            StdioBackend::Fuzz(_) => todo!(),
+            StdioBackend::Fuzz => PolledStatus::Pollable(ctx.global.fuzz_endpoints.get(&FdResource::Stdin).unwrap().read_polled),
         }
         FdResource::Stdout => PolledStatus::NotPollable,
         FdResource::Stderr => PolledStatus::NotPollable,
@@ -52,7 +52,7 @@ pub fn fd_to_pollin(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
                 ConnectionlessBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global.plugins.get(plugin_id).unwrap().read_polled),
                 ConnectionlessBackend::Sink => PolledStatus::NotPollable,
                 ConnectionlessBackend::NullSink => PolledStatus::ImmediatelyPollable,
-                ConnectionlessBackend::Fuzz(_) => todo!(),
+                ConnectionlessBackend::Fuzz => PolledStatus::Pollable(ctx.global.fuzz_endpoints.get(&FdResource::Socket(socket_id)).unwrap().read_polled),
             },
             SocketState::Unassociated(_) => PolledStatus::NotPollable,
             SocketState::Server(server) => PolledStatus::Pollable(server.ready_to_connect),
@@ -65,7 +65,7 @@ pub fn fd_to_pollin(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
                 ConnectedBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global.plugins.get(plugin_id).unwrap().read_polled),
                 ConnectedBackend::Sink => PolledStatus::NotPollable,
                 ConnectedBackend::NullSink => PolledStatus::ImmediatelyPollable,
-                ConnectedBackend::Fuzz(_) => todo!(),
+                ConnectedBackend::Fuzz => PolledStatus::Pollable(ctx.global.fuzz_endpoints.get(&FdResource::Socket(socket_id)).unwrap().read_polled),
             },
             // SocketState::Error => PolledStatus::ImmediatelyPollable,
         }
@@ -90,7 +90,7 @@ pub fn fd_to_pollout(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
                 }
                 FileBackend::Sink => PolledStatus::ImmediatelyPollable,
                 FileBackend::NullSink => PolledStatus::ImmediatelyPollable,
-                FileBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
+                FileBackend::Fuzz => PolledStatus::ImmediatelyPollable,
             }
         },
         FdResource::MessageQueue(_) => todo!(),
@@ -109,7 +109,7 @@ pub fn fd_to_pollout(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
             StdioBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global.plugins.get(plugin_id).unwrap().write_polled),
             StdioBackend::Sink => PolledStatus::ImmediatelyPollable,
             StdioBackend::NullSink => PolledStatus::ImmediatelyPollable,
-            StdioBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
+            StdioBackend::Fuzz => PolledStatus::ImmediatelyPollable,
         }
         FdResource::Stderr => PolledStatus::NotPollable,
         FdResource::Socket(socket_id) => match ctx.global.sockets.get(socket_id).unwrap() {
@@ -120,7 +120,7 @@ pub fn fd_to_pollout(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
                 ConnectionlessBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global.plugins.get(plugin_id).unwrap().write_polled),
                 ConnectionlessBackend::Sink => PolledStatus::ImmediatelyPollable,
                 ConnectionlessBackend::NullSink => PolledStatus::ImmediatelyPollable,
-                ConnectionlessBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
+                ConnectionlessBackend::Fuzz => PolledStatus::ImmediatelyPollable,
             },
             SocketState::Unassociated(_) => PolledStatus::NotPollable,
             SocketState::Server(_) => PolledStatus::NotPollable, // Need to select for reading, not writing
@@ -133,7 +133,7 @@ pub fn fd_to_pollout(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
                 ConnectedBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global.plugins.get(plugin_id).unwrap().write_polled),
                 ConnectedBackend::Sink => PolledStatus::ImmediatelyPollable,
                 ConnectedBackend::NullSink => PolledStatus::ImmediatelyPollable,
-                ConnectedBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
+                ConnectedBackend::Fuzz => PolledStatus::ImmediatelyPollable,
             },
             // SocketState::Error => PolledStatus::ImmediatelyPollable,
         }
