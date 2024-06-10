@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ptr;
 use std::thread::{self, ThreadId};
 
@@ -173,6 +173,7 @@ hook_macros::hook! {
     ) => fizzle_pthread_key_create(ctx) {
         hook_macros::real!(pthread_key_create)(key, fizzle_do_nothing);
         ctx.local.pthread_keys.insert(*key, PThreadRoutine { function: destructor, arg: None });
+        ctx.local.pthread_key_values.insert(*key, HashMap::with_hasher(Default::default()));
     }
 }
 
@@ -187,7 +188,7 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
-    unsafe fn pthread_key_setspecific(
+    unsafe fn pthread_setspecific(
         key: libc::pthread_key_t,
         pointer: *mut libc::c_void // NOTE: this is actually `*const libc::c_void` in the function definition.
     ) => fizzle_pthread_key_setspecific(ctx) {
@@ -196,7 +197,7 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
-    unsafe fn pthread_key_getspecific(
+    unsafe fn pthread_getspecific(
         key: libc::pthread_key_t
     ) -> *mut libc::c_void => fizzle_pthread_key_getspecific(ctx) {
         *ctx.local.pthread_key_values.get_mut(&key).unwrap().get_mut(&thread::current().id()).unwrap_or(&mut ptr::null_mut())

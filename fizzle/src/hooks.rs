@@ -3,6 +3,7 @@ pub mod fd;
 pub mod file;
 pub mod io;
 pub mod io_uring;
+pub mod mq;
 pub mod pipe;
 pub mod poll;
 pub mod proc;

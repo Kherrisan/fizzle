@@ -2,7 +2,7 @@
 //!
 //!
 
-use std::mem;
+use std::{mem, ptr};
 use std::net::SocketAddr;
 
 use crate::constants::FIZZLE_BUFFER_LENGTH;
@@ -577,7 +577,58 @@ struct SctpRtoInfo {
     srto_min: u32,
 }
 
+#[repr(C)]
+struct SctpGetaddrs {
+    assoc_id: libc::sctp_assoc_t, // input
+    addr_num: i32,                // output
+    addrs: *mut u8,               // output, variable size
+}
+
+#[allow(non_camel_case_types)]
+#[repr(packed)]
+struct sctp_paddrparams {
+    spp_assoc_id: libc::sctp_assoc_t,
+    spp_address: libc::sockaddr_storage,
+    spp_hbinterval: u32,
+    spp_pathmaxrxt: u16,
+    spp_pathmtu: u32,
+    spp_sackdelay: u32,
+    spp_flags: u32,
+    spp_ipv6_flowlabel: u32,
+    spp_dscp: u8,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+struct sctp_assocparams {
+    sasoc_assoc_id: libc::sctp_assoc_t,
+    sasoc_asocmaxrxt: u16,
+    sasoc_peer_rwnd: u32,
+    sasoc_local_rwnd: u32,
+    sasoc_cookie_life: u32,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+struct sctp_initmsg {
+    sinit_num_ostreams: u16,
+    sinit_max_instreams: u16,
+    sinit_max_attempts: u16,
+    sinit_max_init_timeo: u16,
+}
+
 const SOL_SCTP: i32 = 132;
+const SCTP_SOCKOPT_BINDX_ADD: i32 = 100;
+const SCTP_SOCKOPT_BINDX_REM: i32 = 101;
+const SCTP_SOCKOPT_PEELOFF: i32 = 102;
+
+const SCTP_SOCKOPT_CONNECTX_OLD: i32 = 107;
+const SCTP_GET_PEER_ADDRS: i32 = 108;
+const SCTP_GET_LOCAL_ADDRS: i32 = 109;
+const SCTP_SOCKOPT_CONNECTX: i32 = 110;
+const SCTP_SOCKOPT_CONNECTX3: i32 = 111;
+const SCTP_GET_ASSOC_STATS: i32 = 112;
+const SCTP_PR_SUPPORTED: i32 = 113;
 
 hook_macros::hook! {
     unsafe fn getsockopt(
@@ -600,6 +651,15 @@ hook_macros::hook! {
         };
 
         match (level, optname) {
+            (libc::SOL_TCP, libc::TCP_NODELAY) => {
+                *(optval as *mut libc::c_int) = 1;
+                0
+            }
+            (libc::SOL_TCP, libc::TCP_MAXSEG) => {
+                *(optval as *mut libc::c_int) = 1220;
+                0
+            }
+            (libc::SOL_TCP, _) => panic!("unrecognized getsockopt SOL_TCP option {}", optname),
             (libc::SOL_SOCKET, libc::SO_ACCEPTCONN) => {
                 let is_listening = match ctx.global.sockets.get(socket_id).unwrap() {
                     SocketState::Server(_) => 1,
@@ -842,17 +902,23 @@ hook_macros::hook! {
                 }; // based on default values for Debian 12/Linux 6.XX
                 -1 // TODO: revert this
             }
-            (SOL_SCTP, libc::SCTP_ASSOCINFO) => {
-                // libc::sctp_assocparams not defined...
+            (SOL_SCTP, SCTP_GET_LOCAL_ADDRS) => {
 
-                *libc::__errno_location() = libc::EINVAL;
-                -1
+                let assoc_id = (*(optval as *const SctpGetaddrs)).assoc_id;
+                *(optval as *mut SctpGetaddrs) = SctpGetaddrs { assoc_id, addr_num: 0, addrs: ptr::null_mut() };
+                
+                0
             }
             (SOL_SCTP, libc::SCTP_INITMSG) => {
-                // libc::sctp_initmsg not defined...
 
-                *libc::__errno_location() = libc::EINVAL;
-                -1
+                *(optval as *mut sctp_initmsg) = sctp_initmsg {
+                    sinit_num_ostreams: 10,
+                    sinit_max_instreams: 10,
+                    sinit_max_attempts: 8,
+                    sinit_max_init_timeo: 60000
+                };
+                    
+                0
             }
             (SOL_SCTP, libc::SCTP_NODELAY) => {
                 // TODO: is libc this strict, or not?
@@ -899,8 +965,22 @@ hook_macros::hook! {
             }
             (SOL_SCTP, libc::SCTP_PEER_ADDR_PARAMS) => {
                 // libc::sctp_paddrparams not defined...
-                *libc::__errno_location() = libc::EINVAL;
-                -1
+
+                let spp_assoc_id = (*(optval as *mut sctp_paddrparams)).spp_assoc_id;
+                let spp_address = (*(optval as *mut sctp_paddrparams)).spp_address;
+
+                *(optval as *mut sctp_paddrparams) = sctp_paddrparams {
+                    spp_assoc_id,
+                    spp_address,
+                    spp_hbinterval: 30000,
+                    spp_pathmaxrxt: 5,
+                    spp_pathmtu: 1260,
+                    spp_sackdelay: 200,
+                    spp_flags: 1 | (1 << 3) | (1 << 5),
+                    spp_ipv6_flowlabel: 0,
+                    spp_dscp: 0
+                };
+                0
             }
             (SOL_SCTP, libc::SCTP_DEFAULT_SEND_PARAM) => {
                 // libc::sctp_sndrcvinfo not defined...
@@ -913,13 +993,11 @@ hook_macros::hook! {
                 -1
             }
             (SOL_SCTP, libc::SCTP_I_WANT_MAPPED_V4_ADDR) => {
-                // TODO: is libc this strict, or not?
-                if *optlen as usize != mem::size_of::<libc::c_int>() {
-                    *libc::__errno_location() = libc::EINVAL;
-                    return -1
-                }
-
                 // Mapped IPv4 always disabled
+                *(optval as *mut libc::c_int) = 0;
+                0
+            }
+            (SOL_SCTP, libc::SCTP_FRAGMENT_INTERLEAVE) => {
                 *(optval as *mut libc::c_int) = 0;
                 0
             }
@@ -932,6 +1010,17 @@ hook_macros::hook! {
 
                 // Fragmentation not limited
                 *(optval as *mut libc::c_int) = 0;
+                0
+            }
+            (SOL_SCTP, libc::SCTP_ASSOCINFO) => {
+                let sasoc_assoc_id = (*(optval as *mut sctp_assocparams)).sasoc_assoc_id;
+                (*(optval as *mut sctp_assocparams)) = sctp_assocparams {
+                    sasoc_assoc_id,
+                    sasoc_asocmaxrxt: 10,
+                    sasoc_peer_rwnd: 1,
+                    sasoc_local_rwnd: 1,
+                    sasoc_cookie_life: 60000
+                };
                 0
             }
             (SOL_SCTP, libc::SCTP_STATUS) => {
@@ -980,6 +1069,10 @@ hook_macros::hook! {
         };
 
         match (level, optname) {
+            // Pretend to support (but don't)
+            (libc::SOL_TCP, libc::TCP_NODELAY | libc::TCP_MAXSEG) => {
+                0
+            }
             // Socket options that are readonly
             (libc::SOL_SOCKET, libc::SO_ACCEPTCONN | libc::SO_DOMAIN | libc::SO_ERROR | libc::SO_PROTOCOL) => {
                 *libc::__errno_location() = libc::EINVAL;
@@ -1026,11 +1119,15 @@ hook_macros::hook! {
             (libc::SOL_SOCKET, _) => {
                 panic!("Unrecognized socket option: SOL_SOCKET, optname {}", optname);
             }
+            (SOL_SCTP, SCTP_SOCKOPT_BINDX_ADD | SCTP_SOCKOPT_BINDX_REM | SCTP_SOCKOPT_CONNECTX_OLD | SCTP_GET_PEER_ADDRS | SCTP_GET_LOCAL_ADDRS | SCTP_SOCKOPT_CONNECTX | SCTP_SOCKOPT_CONNECTX3 | SCTP_GET_ASSOC_STATS | SCTP_PR_SUPPORTED | libc::SCTP_I_WANT_MAPPED_V4_ADDR | libc::SCTP_FRAGMENT_INTERLEAVE) => {
+                // ignore the received value
+                0
+            }
             (SOL_SCTP, libc::SCTP_RTOINFO | libc::SCTP_ASSOCINFO | libc::SCTP_INITMSG | libc::SCTP_NODELAY | libc::SCTP_AUTOCLOSE | libc::SCTP_DISABLE_FRAGMENTS | libc::SCTP_PEER_ADDR_PARAMS | libc::SCTP_DEFAULT_SEND_PARAM | libc::SCTP_EVENTS | libc::SCTP_MAXSEG) => {
                 // Ignore received value
                 0
             }
-            (SOL_SCTP, libc::SCTP_SET_PEER_PRIMARY_ADDR | libc::SCTP_PRIMARY_ADDR | libc::SCTP_I_WANT_MAPPED_V4_ADDR) => {
+            (SOL_SCTP, libc::SCTP_SET_PEER_PRIMARY_ADDR | libc::SCTP_PRIMARY_ADDR) => {
                 // Ignoring received value would cause issues
                 *libc::__errno_location() = libc::EINVAL;
                 -1

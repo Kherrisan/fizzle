@@ -268,24 +268,32 @@ impl FizzCell {
         }
         ctx.global.fuzz_input.did_write(fuzz_length);
 
-        drop(ctx);
         // Mark appropriate processes/threads as ready to receive input
+        
+
+        drop(ctx);
+
 
         // If the current running thread isn't ready to receive input, pass on to the next thread.
-        if false {
-            self.yield_thread(); // This won't recurse as long as new inputs are received.
-        }
-
-        todo!()
+        self.yield_thread(); // This won't recurse beyond a depth of 2, so long as inputs are passed into the appropriate places here...
     }
 
     pub fn terminate_thread(&self, term_method: ThreadTermination) -> ! {
         let thread_id = thread::current().id();
+        log::info!("thread {:?} being terminated...", thread_id);
 
         let mut ctx = self.acquire();
         let mut cleanup_routines = ctx.local.pthread_cleanup.remove(&thread_id).unwrap_or(VecDeque::new());
-        for &destructor in ctx.local.pthread_keys.values() {
-            cleanup_routines.push_back(destructor);
+
+        let pthread_keys: Vec<u32> = ctx.local.pthread_keys.keys().map(|k| *k).collect();
+        for key in pthread_keys {
+            if let Some(values) = ctx.local.pthread_key_values.get_mut(&key) {
+                if let Some(p) = values.remove(&thread_id) {
+                    let mut destructor = *ctx.local.pthread_keys.get(&key).unwrap();
+                    destructor.arg = Some(p);
+                    cleanup_routines.push_back(destructor);
+                }
+            }
         }
         drop(ctx);
 
@@ -372,14 +380,11 @@ impl FizzCell {
         let current_thread = thread::current().id();
         self.get_thread_lock(&current_thread).wait();
 
-        /*
-        if let Some(notifier_thread) = self.local.cancelling_threads.remove(&current_thread) {
-            self.add_ready_thread(notifier_thread);
-            crate::state::set_passthrough_handler(true);
-            unsafe { libc::pthread_cancel(libc::pthread_self()) };
-            panic!("`pause_current_thread` failed to cancel own thread via pthread_cancel(self)")
+        let mut ctx = self.acquire();
+        if ctx.local.cancelling_threads.remove(&current_thread) {
+            drop(ctx);
+            self.terminate_thread(ThreadTermination::Cancellation)
         }
-        */
     }
 
     pub fn pause_current_process(&self) {
