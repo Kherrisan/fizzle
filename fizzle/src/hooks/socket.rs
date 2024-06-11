@@ -47,7 +47,7 @@ hook_macros::hook! {
             libc::IPPROTO_SCTP => ctx.global.sockets.put(SocketState::Unassociated(UnassociatedSocket {
                 local_addr: None,
                 family,
-                protocol: TransportProtocol::Tcp,
+                protocol: TransportProtocol::Sctp,
             })),
             libc::IPPROTO_UDP => {
                 let local_addr = ctx.global.next_ephemeral_address(family, TransportProtocol::Udp).address().clone();
@@ -585,6 +585,12 @@ fn join_socket_pair(
             _ => unreachable!(),
         };
 
+        *ctx.global.sockets.get_mut(connecting_id).unwrap() =
+            SocketState::Connected(ConnectedSocket {
+                rem_addr: server_addr,
+                backend: connect_backend,
+            });
+
         ctx
             .global
             .sockets
@@ -593,14 +599,16 @@ fn join_socket_pair(
                 backend: accept_backend,
             }))
     } else {
-        connecting_id // The connecting socket was emulated in some way (plugin, feedback, fuzz, etc.)
-    };
+        // The connecting socket was emulated in some way (`fuzz`, `sink` or the like).
+        // Convert the connecting socket into the accepted socket--we don't need two peered sockets.
+        *ctx.global.sockets.get_mut(connecting_id).unwrap() =
+            SocketState::Connected(ConnectedSocket {
+                rem_addr: client_addr,
+                backend: connect_backend,
+            });
 
-    *ctx.global.sockets.get_mut(connecting_id).unwrap() =
-        SocketState::Connected(ConnectedSocket {
-            rem_addr: server_addr,
-            backend: connect_backend,
-        });
+        connecting_id
+    };
 
     let new_fd = crate::alias_fd_create();
     // The two sockets are now joined--add a file descriptor to the accepted socket

@@ -501,8 +501,8 @@ hook_macros::hook! {
                     user_data: (*event).u64,
                 }).unwrap();
 
-                log::debug!("epfd {} EPOLL_CTL_ADD {} for {}", epfd, fd, match direction {
-                    EpollDirection::None => "None",
+                log::debug!("EPOLL_CTL_ADD called on epoll_fd({}) for fd({})--setting poll mode to {}", epfd, fd, match direction {
+                    EpollDirection::None => "NONE",
                     EpollDirection::Read(_) => "EPOLLIN",
                     EpollDirection::Write(_) => "EPOLLOUT",
                     EpollDirection::Both(_, _) => "EPOLLIN | EPOLLOUT",

@@ -1,4 +1,5 @@
 #![feature(c_variadic)]
+#![feature(new_uninit)]
 
 extern crate libc;
 
@@ -17,7 +18,17 @@ use std::{array, mem, ptr};
 
 extern "C" {
     pub fn __afl_manual_init();
+
+    pub fn __afl_persistent_loop(input: libc::c_uint) -> libc::c_int;
+
+    pub static __afl_fuzz_len: *mut libc::c_uint;
+
+    pub static __afl_fuzz_ptr: *mut libc::c_uchar;
+
+    pub static __afl_connected: *mut libc::c_int;
 }
+
+
 
 pub fn report_strict_failure(explanation: &'static str) {
     debug_assert!(false, "{}", explanation);

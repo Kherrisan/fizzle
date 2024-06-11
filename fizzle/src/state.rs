@@ -94,6 +94,8 @@ unsafe impl Send for FizzCell {}
 
 unsafe impl Sync for FizzCell {}
 
+// TODO: process locks need to be initialized correctly! They are NOT initialized currently...
+
 impl FizzCell {
     const fn new() -> Self {
         Self {
@@ -111,10 +113,14 @@ impl FizzCell {
         env_logger::init();
         log::info!("First syscall hooked--`env_logger` initialized.");
         log::trace!("Initializing fizzle state");
+
+        unsafe {
+            crate::__afl_manual_init(); // For AFL++
+        }
        
         unsafe {
             // Initialize the reaper lock.
-            Semaphore::initialize(&mut *self.reaper_lock.get(), false, 0);
+            Semaphore::initialize(&mut *self.reaper_lock.get(), true, 0);
             // Initialize the per-thread semaphore for this thread.
             self.init_thread_lock(&thread::current().id());
             // Initialize FizzleState
@@ -170,22 +176,26 @@ impl FizzCell {
     pub fn yield_thread(&self) {
         let mut ctx = self.acquire();
         let mut next_worker = None;
+        log::trace!("yield_thread internally called");
 
         // pop PollerId values off `ready_pollers` one at a time
         while let Some(item) = ctx.global.ready.dequeue() {
             match item {
                 ReadyInfo::Worker(worker_id) => {
+                    log::trace!("Scheduling worker {:?} for execution", worker_id);
                     // new_raised_events will be empty here
                     next_worker = Some(worker_id);
                     break;
                 }
                 ReadyInfo::Poller(poller_id) => {
+                    log::trace!("Checking if poller {:?} is ready for execution...", poller_id);
                     let global = &mut ctx.global;
                     let poller_info = global.pollers.get(poller_id).unwrap();
                     for &polled_id in poller_info.polled_events.iter() {
                         let polled_info = global.polled_events.get_mut(polled_id).unwrap();
                         if polled_info.event_raised {
                             next_worker = Some(poller_info.worker_id);
+                            log::trace!("Poller {:?} ready for execution, scheduling worker {:?}", poller_id, poller_info.worker_id);
                             break
                         }
                     }
@@ -214,6 +224,7 @@ impl FizzCell {
             };
 
             if thread::current().id() != thread_id {
+                log::trace!("Scheduling thread {:?} for execution", thread_id);
                 // Invariant: no FizzGuards are being held here
                 self.get_thread_lock(&thread_id).post();
                 self.pause_current_thread();
@@ -221,11 +232,13 @@ impl FizzCell {
             // Now it's this thread's turn to execute
         // TODO: this NEEDS to run in the root process, but we don't check this?
         } else if self::plugins::run_plugins(&mut self.acquire()) { // Plugins have queued more workers as ready
+            log::trace!("Plugins emitted new input--yielding thread to start next available worker");
             // This shouldn't lead to a stack overflow unless `run_plugins` erroneously
             // returns `true` but doesn't schedule new workers.
             self.yield_thread();
         
         } else {
+            log::trace!("No workers were ready to execute--fuzzing round complete.");
             // No events were triggered for any pollers--move on to next input
             self.fuzz_round_complete();
         }
@@ -244,19 +257,35 @@ impl FizzCell {
         //   2. PCR is fast, but introduces potential instability if state is saved across consecutive connections.
         //   3. Nyx-Net is deterministic and much faster than default forkserver, though harder to set up and has more system overhead.
 
-        // TODO: if deferred forkserver enabled, handle here:
-        unsafe {
-            crate::__afl_manual_init(); // For AFL++
-        }
-
         // TODO: if using PCR (Persistent mode with Channel Reset), handle __AFL_LOOP here
 
         // TODO: if using Nyx-Net, handle hypervisor preemption here
 
         // Wait for input from the fuzzing engine...
         // For AFL++, fuzzing input comes from stdin
-        ctx.global.fuzz_input.clear();
-        let fuzz_buffer = ctx.global.fuzz_input.remaining_mut();
+        unsafe {
+            let rounds = if *crate::__afl_connected == 0 { 1 } else { ctx.global.persistent_rounds as libc::c_uint };
+            if crate::__afl_persistent_loop(rounds) == 0 {
+                libc::_exit(0);
+            }
+
+            ctx.global.fuzz_input.clear();
+            let fuzz_buffer = ctx.global.fuzz_input.remaining_mut();
+
+            if crate::__afl_fuzz_ptr.is_null() {
+                let read_amount = libc::read(0, fuzz_buffer.as_mut_ptr() as *mut libc::c_void, 1048576);
+                *crate::__afl_fuzz_len = (read_amount & u32::MAX as isize) as u32;
+                if read_amount < 0 {
+                    panic!("could not read input from stdin")
+                }
+            } else {
+                ptr::copy_nonoverlapping(crate::__afl_fuzz_ptr, fuzz_buffer.as_mut_ptr() as *mut u8, *crate::__afl_fuzz_len as usize);
+            };
+
+            ctx.global.fuzz_input.did_write(*crate::__afl_fuzz_len as usize);
+        }
+
+        /* 
         let mut fuzz_length = fuzz_buffer.len();
         unsafe {
             let amount_read = libc::read(0, fuzz_buffer.as_mut_ptr() as *mut libc::c_void, fuzz_length);
@@ -265,9 +294,11 @@ impl FizzCell {
                 panic!("failed to receive input for fuzzing from stdin");
             }
             log::debug!("read in {} bytes of fuzzing input", amount_read);
+            log::debug!("{:?}", ctx.deref());
             fuzz_length = amount_read as usize;
         }
         ctx.global.fuzz_input.did_write(fuzz_length);
+        */
 
         // Mark appropriate processes/threads as ready to receive input
 
@@ -279,6 +310,7 @@ impl FizzCell {
 
         log::debug!("{} fuzzing endpoints are marked as ready to fuzz", polled_ready.len());
         for polled_id in polled_ready {
+
             ctx.raise_polled(polled_id);
         }
 
@@ -536,12 +568,30 @@ impl FizzState {
         let size = mem::size_of::<FizzGlobal>();
         let is_multiprocess = matches!(env::var(FIZZLE_MULTIPROCESS_ENV), Ok(s) if s.as_str() == "1");
 
+        if !is_multiprocess {
+            unsafe {
+                let location = libc::mmap(ptr::null_mut(), size, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0);
+                if location == libc::MAP_FAILED {
+                    panic!("failed to mmap")
+                }
+
+                return &mut *(location as *mut MaybeUninit<FizzGlobal>)
+            }
+        }
+
         let (key, flags) = match env::var(FIZZLE_MEMORY_ENV) {
-            Err(_) if !is_multiprocess => (libc::IPC_PRIVATE, (libc::S_IRUSR | libc::S_IWUSR) as libc::c_int),
-            Ok(var) => (var.parse().unwrap(), (libc::S_IRUSR | libc::S_IWUSR) as libc::c_int),
+            Err(_) if !is_multiprocess => {
+                log::debug!("allocating IPC_PRIVATE shared memory");
+                (libc::IPC_PRIVATE, (libc::S_IRUSR | libc::S_IWUSR) as libc::c_int)
+            }
+            Ok(var) => {
+                log::debug!("attaching to already-created shared memory");
+                (var.parse().unwrap(), (libc::S_IRUSR | libc::S_IWUSR) as libc::c_int)
+            }
             Err(_) => unsafe {
                 let key = libc::getpid();
                 env::set_var(FIZZLE_MEMORY_ENV, key.to_string());
+                log::debug!("allocating public shared memory object with key {}", key);
                 (key, libc::IPC_CREAT | libc::IPC_EXCL | (libc::S_IRUSR | libc::S_IWUSR) as libc::c_int)
             },
         };
@@ -742,6 +792,7 @@ impl FizzLocal {
 
 #[derive(Debug)]
 pub struct FizzGlobal {
+    persistent_rounds: usize,
     next_process_id: ProcessId,
     /// The next StreamId available to be assigned to an emulated stream.
     next_stream_id: StreamId,
@@ -783,6 +834,7 @@ impl FizzGlobal {
         unsafe {
             let state = state.as_mut_ptr() as *mut FizzGlobal;
 
+            *ptr::addr_of_mut!((*state).persistent_rounds) = FIZZLE_AFL_LOOP;
             *ptr::addr_of_mut!((*state).next_process_id) = ProcessId::from(1);
             *ptr::addr_of_mut!((*state).next_stream_id) = StreamId::from(0);
             *ptr::addr_of_mut!((*state).next_ephemeral_port) = FIZZLE_EPHEMERAL_PORT_START;

@@ -6,7 +6,8 @@
 
 # The "io" table lists I/O endpoints and corresponding actions that should be taken for each.
 [io]
-stdio = "fuzz" # Consume all input, produce fuzzing data as output
+"sctp-client:127.0.0.2:36412" = "fuzz"
+# stdio = "fuzz" # Consume all input, produce fuzzing data as output
 "file:/dev/null" = "nullsink" # Consume all input, produce repeating 0s
 #"file:./myconfig" = "feedback" # Output whatever is given as input
 #"udp-server:127.0.0.1:53" = "passthrough" # Pass on to an actual network service (warning: unstable)

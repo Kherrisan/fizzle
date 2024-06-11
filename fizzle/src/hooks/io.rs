@@ -5,7 +5,7 @@ use std::{array, cmp, mem, ptr, slice};
 use fizzle_common::io::TransportAddress;
 use fizzle_common::storage::Buffer;
 
-use crate::{hook_macros, state};
+use crate::{encode_inet_address, hook_macros, state};
 use crate::constants::FIZZLE_BUFFER_LENGTH;
 use crate::state::backend::{ConnectedBackend, ConnectionlessBackend, FileBackend, IoBackend, RegularConnected, StdioBackend};
 use crate::state::identifiers::SocketId;
@@ -351,6 +351,7 @@ hook_macros::hook! {
         }
 
         let Some(fd_info) = ctx.local.fds.get(DescriptorId::new(fd)) else {
+            log::warn!("invalid file descriptor `{}` passed to `sendmsg`", fd);
             *libc::__errno_location() = libc::EBADF;
             return -1
         };
@@ -368,6 +369,7 @@ hook_macros::hook! {
         });
 
         let FdResource::Socket(socket_id) = fd_info.resource else {
+            log::warn!("non-socket file descriptor `{}` passed to `sendmsg`", fd);
             *libc::__errno_location() = libc::ENOTSOCK;
             return -1
         };
@@ -383,6 +385,7 @@ hook_macros::hook! {
                 //send_connectionless_socket(data, socket_id, is_nonblocking, None)
             }
             _ => {
+                log::warn!("`sendmsg` called on unconnected socket {}", fd);
                 *libc::__errno_location() = libc::ENOTCONN;
                 return -1
             }
@@ -760,11 +763,7 @@ hook_macros::hook! {
         // TODO: have to fill out all the other fields in `msg`
         // For now we do this:
         (*msg).msg_controllen = 0;
-        (*msg).msg_flags = 0;
-
-        if !(*msg).msg_name.is_null() {
-            panic!("recvmsg unimplemented for receiving message name");
-        }
+        (*msg).msg_flags = libc::MSG_EOR;
 
         let Some(fd_info) = ctx.local.fds.get(DescriptorId::new(fd)) else {
             *libc::__errno_location() = libc::EBADF;
@@ -788,15 +787,48 @@ hook_macros::hook! {
             return -1
         };
 
+        // Set CMSG headers
+        let sndrcvinfo_len = libc::CMSG_LEN(mem::size_of::<libc::sctp_sndrcvinfo>() as u32) as usize;
+        if (*msg).msg_controllen >= sndrcvinfo_len {
+            // NOTE: this should only be for SCTP sockets...
+            (*msg).msg_controllen = sndrcvinfo_len;
+            let header = libc::cmsghdr {
+                cmsg_len: mem::size_of::<libc::sctp_sndrcvinfo>(),
+                cmsg_level: libc::IPPROTO_SCTP,
+                cmsg_type: libc::SCTP_SNDRCV,
+            };
+
+            let sndrcvinfo = libc::sctp_sndrcvinfo {
+                sinfo_stream: 0,
+                sinfo_ssn: 0,
+                sinfo_flags: 0,
+                sinfo_ppid: 18, // TODO: make configurable
+                sinfo_context: 0,
+                sinfo_timetolive: 0,
+                sinfo_tsn: 0,
+                sinfo_cumtsn: 0,
+                sinfo_assoc_id: 0,
+            };
+            
+            let control_data = slice::from_raw_parts_mut((*msg).msg_control as *mut u8, (*msg).msg_controllen);
+            let (header_data, sndrcvinfo_data) = control_data.split_at_mut(mem::size_of::<libc::sctp_sndrcvinfo>());
+            header_data.copy_from_slice(slice::from_raw_parts(ptr::addr_of!(header) as *const u8, mem::size_of::<libc::cmsghdr>()));
+            sndrcvinfo_data.copy_from_slice(slice::from_raw_parts(ptr::addr_of!(sndrcvinfo) as *const u8, mem::size_of::<libc::sctp_sndrcvinfo>()));           
+        }
+
+        let recv_addr = (*msg).msg_name as *mut libc::sockaddr;
+
         match ctx.global.sockets.get(socket_id).unwrap() {
-            SocketState::Connected(_conn_info) => {
+            SocketState::Connected(conn_info) => {
+
+                (*msg).msg_namelen = encode_inet_address(recv_addr, conn_info.rem_addr.address()) as u32;
                 drop(ctx);
                 recv_connected_socket(&mut slices[..slice_cnt], socket_id, is_nonblocking)
             },
             SocketState::Connectionless(_) => {
                 drop(ctx);
-                todo!()
-                //recv_connectionless_socket(data, socket_id, is_nonblocking, src_addr, addrlen)
+                // TODO: fix this!!
+                recv_connectionless_socket(slices[0], socket_id, is_nonblocking, recv_addr, ptr::addr_of_mut!((*msg).msg_namelen))
             },
             _ => {
                 *libc::__errno_location() = libc::ENOTCONN;
@@ -962,22 +994,23 @@ fn send_connected_socket(
 ) -> libc::ssize_t {
     let mut ctx = state::FIZZLE_STATE.acquire();
 
-    let SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Peered(regular), .. }) = ctx.global.sockets.get(socket_id).unwrap() else {
-        unreachable!()
-    };
-
-    let Some(peer) = regular.peer else {
-        return 0; // No more information to write to the connected socket
-    };
-
-    let Some(SocketState::Connected(peer_info)) = ctx.global.sockets.get(peer) else {
+    let SocketState::Connected(ConnectedSocket { backend, .. }) = ctx.global.sockets.get(socket_id).unwrap() else {
         unreachable!()
     };
 
     // TODO: potentially make this more DRY
-    match peer_info.backend {
+    match backend {
         ConnectedBackend::Passthrough => unimplemented!(),
-        ConnectedBackend::Peered(regular_peer) => {
+        ConnectedBackend::Peered(regular) => {
+            let Some(peer) = regular.peer else {
+                log::debug!("connected peer was closed during attempted socket send");
+                return 0; // No more information to write to the connected socket
+            };
+
+            let Some(SocketState::Connected(ConnectedSocket { backend: IoBackend::Peered(regular_peer), .. })) = ctx.global.sockets.get(peer) else {
+                unreachable!()
+            };
+
             let buffer_id = regular_peer.recv_buf;
             let write_polled = regular_peer.write_polled;
             let read_polled = regular_peer.read_polled;
@@ -987,6 +1020,7 @@ fn send_connected_socket(
 
             if !polled_is_ready {
                 if is_nonblocking {
+                    log::debug!("nonblocking socket not ready for send--returning EAGAIN");
                     unsafe { *libc::__errno_location() = libc::EAGAIN };
                     return -1
                 } else {
@@ -1066,6 +1100,7 @@ fn send_connected_socket(
             return total_written as isize
         },
         ConnectedBackend::Plugin(plugin_id) => {
+            let plugin_id = *plugin_id;
             let plugin_info = ctx.global.plugins.get(plugin_id).unwrap();
             let buffer_id = plugin_info.write_buf;
             let write_polled = plugin_info.write_polled;
@@ -1110,9 +1145,9 @@ fn send_connected_socket(
 
             return total_written as isize
         },
-        ConnectedBackend::Sink => data.len() as libc::ssize_t,
-        ConnectedBackend::NullSink => data.len() as libc::ssize_t,
-        ConnectedBackend::Fuzz => data.len() as libc::ssize_t,
+        ConnectedBackend::Sink => data.iter().map(|s| s.len()).sum::<usize>() as libc::ssize_t,
+        ConnectedBackend::NullSink => data.iter().map(|s| s.len()).sum::<usize>() as libc::ssize_t,
+        ConnectedBackend::Fuzz => data.iter().map(|s| s.len()).sum::<usize>() as libc::ssize_t,
     }
 }
 
