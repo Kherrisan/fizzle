@@ -2,6 +2,7 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::{array, cmp, mem, ptr, slice};
+use std::fmt::Debug;
 
 unsafe fn slice_init(slice: &[MaybeUninit<u8>]) -> &[u8] {
     slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len())
@@ -11,11 +12,18 @@ unsafe fn slice_init_mut(slice: &mut [MaybeUninit<u8>]) -> &mut [u8] {
     slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut u8, slice.len())
 }
 
-#[derive(Debug)]
 pub struct Buffer<const T: usize> {
     data: [MaybeUninit<u8>; T],
     data_start: usize,
     data_end: usize,
+}
+
+impl<const N: usize> Debug for Buffer<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        unsafe {
+            slice_init(&self.data[self.data_start..self.data_end]).fmt(f)
+        }
+    }
 }
 
 impl<const T: usize> Clone for Buffer<T> {
@@ -298,12 +306,25 @@ impl<const T: usize> RingBuffer<T> {
 
 /// A set of values that can be indexed into by a key of type `K`.
 ///
-#[derive(Debug)]
 pub struct ValueIndex<K: Sized + From<usize> + Into<usize>, V: Sized, const N: usize> {
     inner: [Option<V>; N],
     next_key: usize,
     max_key: usize,
     _phantom: PhantomData<K>,
+}
+
+impl<K: Sized + From<usize> + Into<usize>, V: Sized + Debug, const N: usize> Debug for ValueIndex<K, V, N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut list = f.debug_list();
+
+        for i in 0..=self.max_key {
+            if let Some(value) = &self.inner[i] {
+                list.entry(&(i, value));
+            }
+        }
+        
+        list.finish()
+    }
 }
 
 impl<K: Sized + From<usize> + Into<usize> + Copy, V: Sized, const N: usize> ValueIndex<K, V, N> {

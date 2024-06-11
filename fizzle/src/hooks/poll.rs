@@ -20,7 +20,7 @@ pub fn fd_to_pollin(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
         FdResource::File(file_id) => {
             match ctx.global.files.get(file_id).unwrap() {
                 FileBackend::Passthrough => PolledStatus::ImmediatelyPollable, // TODO: should we `poll()` here instead?
-                FileBackend::Regular(_) => unreachable!(),
+                FileBackend::Peered(_) => unreachable!(),
                 FileBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.read_polled),
                 FileBackend::Plugin(plugin_id) => {
                     let plugin_id = *plugin_id;
@@ -35,7 +35,7 @@ pub fn fd_to_pollin(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
         FdResource::Pipe(pipe_id) => PolledStatus::Pollable(ctx.global.pipes.get(pipe_id).unwrap().read_polled),
         FdResource::Stdin => match ctx.global.stdio {
             StdioBackend::Passthrough => unreachable!(),
-            StdioBackend::Regular(_) => unreachable!(),
+            StdioBackend::Peered(_) => unreachable!(),
             StdioBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.read_polled),
             StdioBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global.plugins.get(plugin_id).unwrap().read_polled),
             StdioBackend::Sink => PolledStatus::NotPollable,
@@ -47,7 +47,7 @@ pub fn fd_to_pollin(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
         FdResource::Socket(socket_id) => match ctx.global.sockets.get(socket_id).unwrap() {
             SocketState::Connectionless(connectionless) => match connectionless.backend {
                 ConnectionlessBackend::Passthrough => unreachable!(),
-                ConnectionlessBackend::Regular(regular) => PolledStatus::Pollable(regular.read_polled),
+                ConnectionlessBackend::Peered(regular) => PolledStatus::Pollable(regular.read_polled),
                 ConnectionlessBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.read_polled),
                 ConnectionlessBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global.plugins.get(plugin_id).unwrap().read_polled),
                 ConnectionlessBackend::Sink => PolledStatus::NotPollable,
@@ -60,7 +60,7 @@ pub fn fd_to_pollin(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
             SocketState::Connecting(_) => PolledStatus::NotPollable, // Need to select for writing, not reading
             SocketState::Connected(connected) => match connected.backend {
                 ConnectedBackend::Passthrough => unreachable!(),
-                ConnectedBackend::Regular(regular) => PolledStatus::Pollable(regular.read_polled),
+                ConnectedBackend::Peered(regular) => PolledStatus::Pollable(regular.read_polled),
                 ConnectedBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.read_polled),
                 ConnectedBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global.plugins.get(plugin_id).unwrap().read_polled),
                 ConnectedBackend::Sink => PolledStatus::NotPollable,
@@ -82,7 +82,7 @@ pub fn fd_to_pollout(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
         FdResource::File(file_id) => {
             match ctx.global.files.get(file_id).unwrap() {
                 FileBackend::Passthrough => PolledStatus::ImmediatelyPollable, // TODO: should we `poll()` here instead?
-                FileBackend::Regular(_) => unreachable!(),
+                FileBackend::Peered(_) => unreachable!(), 
                 FileBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.write_polled),
                 FileBackend::Plugin(plugin_id) => {
                     let plugin_id = *plugin_id;
@@ -104,7 +104,7 @@ pub fn fd_to_pollout(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
         FdResource::Stdin => PolledStatus::NotPollable,
         FdResource::Stdout => match ctx.global.stdio {
             StdioBackend::Passthrough => unreachable!(),
-            StdioBackend::Regular(_) => unreachable!(),
+            StdioBackend::Peered(_) => unreachable!(),
             StdioBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.write_polled),
             StdioBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global.plugins.get(plugin_id).unwrap().write_polled),
             StdioBackend::Sink => PolledStatus::ImmediatelyPollable,
@@ -115,7 +115,7 @@ pub fn fd_to_pollout(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
         FdResource::Socket(socket_id) => match ctx.global.sockets.get(socket_id).unwrap() {
             SocketState::Connectionless(connectionless) => match connectionless.backend {
                 ConnectionlessBackend::Passthrough => unreachable!(),
-                ConnectionlessBackend::Regular(regular) => PolledStatus::Pollable(regular.write_polled),
+                ConnectionlessBackend::Peered(_) => PolledStatus::ImmediatelyPollable, // A connectionless socket can always `send()` TODO: ??
                 ConnectionlessBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.write_polled),
                 ConnectionlessBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global.plugins.get(plugin_id).unwrap().write_polled),
                 ConnectionlessBackend::Sink => PolledStatus::ImmediatelyPollable,
@@ -128,7 +128,21 @@ pub fn fd_to_pollout(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
             SocketState::Connecting(connecting) => PolledStatus::Pollable(connecting.connect_polled),
             SocketState::Connected(connected) => match connected.backend {
                 ConnectedBackend::Passthrough => unreachable!(),
-                ConnectedBackend::Regular(regular) => PolledStatus::Pollable(regular.write_polled),
+                ConnectedBackend::Peered(peered) => {
+                    if let Some(peer_id) = peered.peer {
+                        let SocketState::Connected(conn) = ctx.global.sockets.get(peer_id).unwrap() else {
+                            panic!()
+                        };
+
+                        match &conn.backend {
+                            ConnectedBackend::Peered(peer_info) => PolledStatus::Pollable(peer_info.write_polled),
+                            _ => panic!(),
+                        }
+
+                    } else {
+                        PolledStatus::ImmediatelyPollable // The next `write()` call will return 0
+                    }
+                }
                 ConnectedBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.write_polled),
                 ConnectedBackend::Plugin(plugin_id) => PolledStatus::Pollable(ctx.global.plugins.get(plugin_id).unwrap().write_polled),
                 ConnectedBackend::Sink => PolledStatus::ImmediatelyPollable,
@@ -442,6 +456,7 @@ hook_macros::hook! {
         };
 
         let Some(_) = ctx.local.fds.get(DescriptorId::new(fd)) else {
+            log::error!("`epoll_ctl` fd not found (ignoring...)");
             return 0 // TODO: fix fopen rather than this workaround
             //*libc::__errno_location() = libc::EBADF;
             //return -1
@@ -470,7 +485,7 @@ hook_macros::hook! {
                 }
 
                 if ((*event).events & libc::EPOLLOUT as u32) != 0 {
-                    write_status = Some(fd_to_pollin(&mut ctx, fd));
+                    write_status = Some(fd_to_pollout(&mut ctx, fd));
                 }
 
                 let direction = match (read_status, write_status) {
@@ -485,6 +500,13 @@ hook_macros::hook! {
                     direction,
                     user_data: (*event).u64,
                 }).unwrap();
+
+                log::debug!("epfd {} EPOLL_CTL_ADD {} for {}", epfd, fd, match direction {
+                    EpollDirection::None => "None",
+                    EpollDirection::Read(_) => "EPOLLIN",
+                    EpollDirection::Write(_) => "EPOLLOUT",
+                    EpollDirection::Both(_, _) => "EPOLLIN | EPOLLOUT",
+                });
 
                 0
             }
@@ -507,7 +529,7 @@ hook_macros::hook! {
                 }
 
                 if ((*event).events & libc::EPOLLOUT as u32) != 0 {
-                    write_status = Some(fd_to_pollin(&mut ctx, fd));
+                    write_status = Some(fd_to_pollout(&mut ctx, fd));
                 }
 
                 let direction = match (read_status, write_status) {

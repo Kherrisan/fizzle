@@ -1,6 +1,6 @@
 use std::mem::MaybeUninit;
 use std::net::SocketAddr;
-use std::{cmp, mem, ptr, slice};
+use std::{array, cmp, mem, ptr, slice};
 
 use fizzle_common::io::TransportAddress;
 use fizzle_common::storage::Buffer;
@@ -14,6 +14,7 @@ use crate::state::fd::FdResource;
 use crate::state::identifiers::DescriptorId;
 
 const PIPE_BUF: usize = 4096;
+const IOV_MAX: usize = 16;
 
 hook_macros::hook! {
     unsafe fn write(
@@ -37,7 +38,7 @@ hook_macros::hook! {
             },
             FdResource::File(file_id) => match ctx.global.files.get(file_id).unwrap() {
                 FileBackend::Passthrough => hook_macros::real!(write)(fd, buf, len),
-                FileBackend::Regular(_) => unreachable!(),
+                FileBackend::Peered(_) => unreachable!(),
                 FileBackend::Feedback(feedback) => {
                     let buffer_id = feedback.buf;
                     let write_polled = feedback.write_polled;
@@ -156,7 +157,7 @@ hook_macros::hook! {
             FdResource::Stdin => 0,
             FdResource::Stdout => match ctx.global.stdio {
                 StdioBackend::Passthrough => unreachable!(),
-                StdioBackend::Regular(_) => unreachable!(),
+                StdioBackend::Peered(_) => unreachable!(),
                 StdioBackend::Feedback(feedback) => {
                     let buffer_id = feedback.buf;
                     let write_polled = feedback.write_polled;
@@ -220,7 +221,7 @@ hook_macros::hook! {
             FdResource::Socket(socket_id) => match ctx.global.sockets.get(socket_id).unwrap() {
                 SocketState::Connected(_) => {
                     drop(ctx);
-                    send_connected_socket(data, socket_id, is_nonblocking)
+                    send_connected_socket(&[data], socket_id, is_nonblocking)
                 }
                 SocketState::Connectionless(_) => {
                     drop(ctx);
@@ -263,7 +264,7 @@ hook_macros::hook! {
         match ctx.global.sockets.get(socket_id).unwrap() {
             SocketState::Connected(_) => {
                 drop(ctx);
-                send_connected_socket(data, socket_id, is_nonblocking)
+                send_connected_socket(&[data], socket_id, is_nonblocking)
             }
             SocketState::Connectionless(_) => {
                 drop(ctx);
@@ -328,7 +329,7 @@ hook_macros::hook! {
                     return -1
                 }
                 drop(ctx);
-                send_connected_socket(data, socket_id, is_nonblocking)
+                send_connected_socket(&[data], socket_id, is_nonblocking)
             }
             _ => {
                 *libc::__errno_location() = libc::ENOTCONN;
@@ -343,14 +344,66 @@ hook_macros::hook! {
         fd: libc::c_int,
         msg: *const libc::msghdr,
         flags: libc::c_int
-    ) -> libc::ssize_t => fizzle_sendmsg(_ctx) {
+    ) -> libc::ssize_t => fizzle_sendmsg(ctx) {
+
+        if (flags & libc::MSG_FASTOPEN) != 0 {
+            crate::report_strict_failure("fizzle does not currently implement TCP Fast Open")
+        }
+
+        let Some(fd_info) = ctx.local.fds.get(DescriptorId::new(fd)) else {
+            *libc::__errno_location() = libc::EBADF;
+            return -1
+        };
+
+        let is_nonblocking = fd_info.nonblocking || ((flags & libc::MSG_DONTWAIT) != 0);
+
+        let slice_cnt = (*msg).msg_iovlen;
+        let slices: [&[u8]; IOV_MAX] = array::from_fn(|i| {
+            if i < slice_cnt {
+                let iov = (*msg).msg_iov.add(i);
+                slice::from_raw_parts((*iov).iov_base as *const u8, (*iov).iov_len)
+            } else {
+                &[]
+            }
+        });
+
+        let FdResource::Socket(socket_id) = fd_info.resource else {
+            *libc::__errno_location() = libc::ENOTSOCK;
+            return -1
+        };
+
+        match ctx.global.sockets.get(socket_id).unwrap() {
+            SocketState::Connected(_) => {
+                drop(ctx);
+                send_connected_socket(&slices[..slice_cnt], socket_id, is_nonblocking)
+            }
+            SocketState::Connectionless(_) => {
+                drop(ctx);
+                todo!()
+                //send_connectionless_socket(data, socket_id, is_nonblocking, None)
+            }
+            _ => {
+                *libc::__errno_location() = libc::ENOTCONN;
+                return -1
+            }
+        }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn sendmmsg(
+        fd: libc::c_int,
+        msgvec: *mut libc::msghdr,
+        vlen: libc::c_uint,
+        flags: libc::c_int
+    ) -> libc::ssize_t => fizzle_sendmmsg(_ctx) {
 
         if (flags & libc::MSG_FASTOPEN) != 0 {
             crate::report_strict_failure("fizzle does not currently implement TCP Fast Open")
         }
 
         crate::report_strict_failure("`sendmsg` unimplemented");
-        hook_macros::real!(sendmsg)(fd, msg, flags)
+        hook_macros::real!(sendmmsg)(fd, msgvec, vlen, flags)
     }
 }
 
@@ -376,7 +429,7 @@ hook_macros::hook! {
             },
             FdResource::File(file_id) => match ctx.global.files.get(file_id).unwrap() {
                 FileBackend::Passthrough => hook_macros::real!(read)(fd, buf, len),
-                FileBackend::Regular(_) => unreachable!(),
+                FileBackend::Peered(_) => unreachable!(),
                 FileBackend::Feedback(feedback) => {
                     let buffer_id = feedback.buf;
                     let read_polled = feedback.read_polled;
@@ -524,7 +577,7 @@ hook_macros::hook! {
             },
             FdResource::Stdin => match ctx.global.stdio {
                 StdioBackend::Passthrough => unreachable!(),
-                StdioBackend::Regular(_) => unreachable!(),
+                StdioBackend::Peered(_) => unreachable!(),
                 StdioBackend::Feedback(feedback) => {
                     let buffer_id = feedback.buf;
                     let read_polled = feedback.read_polled;
@@ -627,7 +680,7 @@ hook_macros::hook! {
             FdResource::Socket(socket_id) => match ctx.global.sockets.get(socket_id).unwrap() {
                 SocketState::Connected(_) => {
                     drop(ctx);
-                    recv_connected_socket(data, socket_id, is_nonblocking)
+                    recv_connected_socket(&mut [data], socket_id, is_nonblocking)
                 }
                 SocketState::Connectionless(_) => {
                     drop(ctx);
@@ -683,7 +736,7 @@ hook_macros::hook! {
             SocketState::Connected(conn_info) => {
                 crate::encode_inet_address(src_addr, conn_info.rem_addr.address()); // TODO: buffer overflow if addrlen is too short...
                 drop(ctx);
-                recv_connected_socket(data, socket_id, is_nonblocking)
+                recv_connected_socket(&mut [data], socket_id, is_nonblocking)
             },
             SocketState::Connectionless(_) => {
                 drop(ctx);
@@ -702,10 +755,54 @@ hook_macros::hook! {
         fd: libc::c_int,
         msg: *mut libc::msghdr,
         flags: libc::c_int
-    ) -> libc::ssize_t => fizzle_recvmsg(_ctx) {
+    ) -> libc::ssize_t => fizzle_recvmsg(ctx) {
 
-        crate::report_strict_failure("`recvmsg` unimplemented");
-        hook_macros::real!(recvmsg)(fd, msg, flags)
+        // TODO: have to fill out all the other fields in `msg`
+        // For now we do this:
+        (*msg).msg_controllen = 0;
+        (*msg).msg_flags = 0;
+
+        if !(*msg).msg_name.is_null() {
+            panic!("recvmsg unimplemented for receiving message name");
+        }
+
+        let Some(fd_info) = ctx.local.fds.get(DescriptorId::new(fd)) else {
+            *libc::__errno_location() = libc::EBADF;
+            return -1
+        };
+
+        let is_nonblocking = fd_info.nonblocking || ((flags & libc::MSG_DONTWAIT) != 0);
+
+        let slice_cnt = (*msg).msg_iovlen;
+        let mut slices: [&mut [u8]; IOV_MAX] = array::from_fn(|i| {
+            if i < slice_cnt {
+                let iov = (*msg).msg_iov.add(i);
+                slice::from_raw_parts_mut((*iov).iov_base as *mut u8, (*iov).iov_len)
+            } else {
+                &mut []
+            }
+        });
+
+        let FdResource::Socket(socket_id) = fd_info.resource else {
+            *libc::__errno_location() = libc::ENOTSOCK;
+            return -1
+        };
+
+        match ctx.global.sockets.get(socket_id).unwrap() {
+            SocketState::Connected(_conn_info) => {
+                drop(ctx);
+                recv_connected_socket(&mut slices[..slice_cnt], socket_id, is_nonblocking)
+            },
+            SocketState::Connectionless(_) => {
+                drop(ctx);
+                todo!()
+                //recv_connectionless_socket(data, socket_id, is_nonblocking, src_addr, addrlen)
+            },
+            _ => {
+                *libc::__errno_location() = libc::ENOTCONN;
+                return -1
+            }
+        }
     }
 }
 
@@ -859,17 +956,13 @@ fn write_datagram<const N: usize>(
 }
 
 fn send_connected_socket(
-    data: &[u8],
+    data: &[&[u8]],
     socket_id: SocketId,
     is_nonblocking: bool,
 ) -> libc::ssize_t {
     let mut ctx = state::FIZZLE_STATE.acquire();
 
-    let SocketState::Connected(sock_info) = ctx.global.sockets.get(socket_id).unwrap() else {
-        panic!("internal error")
-    };
-
-    let ConnectedBackend::Regular(regular) = sock_info.backend else {
+    let SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Peered(regular), .. }) = ctx.global.sockets.get(socket_id).unwrap() else {
         unreachable!()
     };
 
@@ -884,7 +977,7 @@ fn send_connected_socket(
     // TODO: potentially make this more DRY
     match peer_info.backend {
         ConnectedBackend::Passthrough => unimplemented!(),
-        ConnectedBackend::Regular(regular_peer) => {
+        ConnectedBackend::Peered(regular_peer) => {
             let buffer_id = regular_peer.recv_buf;
             let write_polled = regular_peer.write_polled;
             let read_polled = regular_peer.read_polled;
@@ -904,18 +997,29 @@ fn send_connected_socket(
             let mut ctx = state::FIZZLE_STATE.acquire();
 
             // We need to verify that this connection has not shut down before writing to the same buffer_id
-            let Some(SocketState::Connected(ConnectedSocket { backend: IoBackend::Regular(RegularConnected { peer: Some(_), .. }), .. })) = ctx.global.sockets.get(socket_id) else {
+            let Some(SocketState::Connected(ConnectedSocket { backend: IoBackend::Peered(RegularConnected { peer: Some(_), .. }), .. })) = ctx.global.sockets.get(socket_id) else {
                 return 0
             };
 
             let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
-            let written = buf.write(data);
+            let mut total_written = 0;
+            for slice in data.iter() {
+                let written = buf.write(slice);
+                if written > 0 {
+                    total_written += written;
+                }
+
+                if written != slice.len() {
+                    break
+                }
+            }
+
             if buf.is_full() {
                 ctx.lower_polled(write_polled);
             }
             ctx.raise_polled(read_polled);
 
-            return written as isize
+            return total_written as isize
         },
         ConnectedBackend::Feedback(feedback) => {
             let buffer_id = feedback.buf;
@@ -937,18 +1041,29 @@ fn send_connected_socket(
             let mut ctx = state::FIZZLE_STATE.acquire();
 
             // We need to verify that this connection has not shut down before writing to the same buffer_id
-            let Some(SocketState::Connected(ConnectedSocket { backend: IoBackend::Regular(RegularConnected { peer: Some(_), .. }), .. })) = ctx.global.sockets.get(socket_id) else {
+            let Some(SocketState::Connected(ConnectedSocket { backend: IoBackend::Peered(RegularConnected { peer: Some(_), .. }), .. })) = ctx.global.sockets.get(socket_id) else {
                 return 0
             };
 
             let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
-            let written = buf.write(data);
+            let mut total_written = 0;
+            for slice in data.iter() {
+                let written = buf.write(slice);
+                if written > 0 {
+                    total_written += written;
+                }
+
+                if written != slice.len() {
+                    break
+                }
+            }
+
             if buf.is_full() {
                 ctx.lower_polled(write_polled);
             }
             ctx.raise_polled(read_polled);
 
-            return written as isize
+            return total_written as isize
         },
         ConnectedBackend::Plugin(plugin_id) => {
             let plugin_info = ctx.global.plugins.get(plugin_id).unwrap();
@@ -971,18 +1086,29 @@ fn send_connected_socket(
             let mut ctx = state::FIZZLE_STATE.acquire();
 
             // We need to verify that this connection has not shut down before writing to the same buffer_id
-            let Some(SocketState::Connected(ConnectedSocket { backend: IoBackend::Regular(RegularConnected { peer: Some(_), .. }), .. })) = ctx.global.sockets.get(socket_id) else {
+            let Some(SocketState::Connected(ConnectedSocket { backend: IoBackend::Peered(RegularConnected { peer: Some(_), .. }), .. })) = ctx.global.sockets.get(socket_id) else {
                 return 0
             };
 
             let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
-            let written = buf.write(data);
+            let mut total_written = 0;
+            for slice in data.iter() {
+                let written = buf.write(slice);
+                if written > 0 {
+                    total_written += written;
+                }
+
+                if written != slice.len() {
+                    break
+                }
+            }
+
             if buf.is_full() {
                 ctx.lower_polled(write_polled);
             }
             ctx.raise_polled(read_polled);
 
-            return written as isize
+            return total_written as isize
         },
         ConnectedBackend::Sink => data.len() as libc::ssize_t,
         ConnectedBackend::NullSink => data.len() as libc::ssize_t,
@@ -1039,7 +1165,7 @@ fn send_connectionless_socket(
 
     match peer_info.backend {
         ConnectionlessBackend::Passthrough => unimplemented!(),
-        ConnectionlessBackend::Regular(regular_peer) => {
+        ConnectionlessBackend::Peered(regular_peer) => {
             let write_polled = regular_peer.write_polled;
 
             let polled_is_ready = ctx.polled_is_ready(write_polled);
@@ -1071,7 +1197,7 @@ fn send_connectionless_socket(
             let peer_sock_id = *peer_sock_id;
 
 
-            let SocketState::Connectionless(ConnectionlessSocket { backend: IoBackend::Regular(regular_peer), .. }) = ctx.global.sockets.get(peer_sock_id).unwrap() else {
+            let SocketState::Connectionless(ConnectionlessSocket { backend: IoBackend::Peered(regular_peer), .. }) = ctx.global.sockets.get(peer_sock_id).unwrap() else {
                 return data.len() as libc::ssize_t // Drop packet
             };
 
@@ -1200,7 +1326,7 @@ fn read_datagram<const N: usize>(
 }
 
 fn recv_connected_socket(
-    data: &mut [u8],
+    data: &mut [&mut [u8]],
     socket_id: SocketId,
     is_nonblocking: bool,
 ) -> libc::ssize_t {
@@ -1213,21 +1339,32 @@ fn recv_connected_socket(
 
     match sock_info.backend {
         IoBackend::Passthrough => unimplemented!(),
-        IoBackend::Regular(regular) => {
+        IoBackend::Peered(regular) => {
             let buf_id = regular.recv_buf;
             let write_polled = regular.write_polled;
             let read_polled = regular.read_polled;
 
             // First, check to see if we can just immediately read despite the peer being closed
             if ctx.polled_is_ready(read_polled) {
-                let buf = ctx.global.buffers.get_mut(buf_id).unwrap();
-                let amount_read = buf.read(data);
-                if buf.is_empty() {
+                let recv_buf = ctx.global.buffers.get_mut(buf_id).unwrap();
+                let mut total_read = 0;
+                for slice in data.iter_mut() {
+                    let read_amount = recv_buf.read(slice);
+                    if read_amount > 0 {
+                        total_read += read_amount;
+                    }
+
+                    if read_amount != slice.len() {
+                        break
+                    }
+                }
+
+                if recv_buf.is_empty() {
                     ctx.lower_polled(read_polled);
                 }
                 ctx.raise_polled(write_polled);
 
-                return amount_read as libc::ssize_t
+                return total_read as libc::ssize_t
             }
 
             if regular.peer.is_none() {
@@ -1245,14 +1382,24 @@ fn recv_connected_socket(
             let mut ctx = state::FIZZLE_STATE.acquire();
 
             let recv_buf = ctx.global.buffers.get_mut(buf_id).unwrap();
-            let amount_read = recv_buf.read(data) as libc::ssize_t;
+            let mut total_read = 0;
+            for slice in data.iter_mut() {
+                let read_amount = recv_buf.read(slice);
+                if read_amount > 0 {
+                    total_read += read_amount;
+                }
+
+                if read_amount != slice.len() {
+                    break
+                }
+            }
 
             if recv_buf.is_empty() {
                 ctx.lower_polled(read_polled);
             }
             ctx.raise_polled(write_polled);
 
-            amount_read
+            total_read as libc::ssize_t
         },
         IoBackend::Feedback(feedback_info) => {
             let buf_id = feedback_info.buf;
@@ -1261,14 +1408,25 @@ fn recv_connected_socket(
 
             // First, check to see if we can just immediately read despite the peer being closed
             if ctx.polled_is_ready(read_polled) {
-                let buf = ctx.global.buffers.get_mut(buf_id).unwrap();
-                let amount_read = buf.read(data);
-                if buf.is_empty() {
+                let recv_buf = ctx.global.buffers.get_mut(buf_id).unwrap();
+                let mut total_read = 0;
+                for slice in data.iter_mut() {
+                    let read_amount = recv_buf.read(slice);
+                    if read_amount > 0 {
+                        total_read += read_amount;
+                    }
+
+                    if read_amount != slice.len() {
+                        break
+                    }
+                }
+
+                if recv_buf.is_empty() {
                     ctx.lower_polled(read_polled);
                 }
                 ctx.raise_polled(write_polled);
 
-                return amount_read as libc::ssize_t
+                return total_read as libc::ssize_t
             }
 
             if is_nonblocking {
@@ -1282,14 +1440,24 @@ fn recv_connected_socket(
             let mut ctx = state::FIZZLE_STATE.acquire();
 
             let recv_buf = ctx.global.buffers.get_mut(buf_id).unwrap();
-            let amount_read = recv_buf.read(data);
+            let mut total_read = 0;
+            for slice in data.iter_mut() {
+                let read_amount = recv_buf.read(slice);
+                if read_amount > 0 {
+                    total_read += read_amount;
+                }
+
+                if read_amount != slice.len() {
+                    break
+                }
+            }
 
             if recv_buf.is_empty() {
                 ctx.lower_polled(read_polled);
             }
             ctx.raise_polled(write_polled);
 
-            amount_read as libc::ssize_t
+            total_read as libc::ssize_t
         },
         IoBackend::Plugin(plugin_id) => {
             let plugin_info = ctx.global.plugins.get(plugin_id).unwrap();
@@ -1310,26 +1478,40 @@ fn recv_connected_socket(
 
             let mut ctx = state::FIZZLE_STATE.acquire();
 
-            let buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
-            let read_len = buf.read(data);
+            let recv_buf = ctx.global.buffers.get_mut(buffer_id).unwrap();
+            let mut total_read = 0;
+            for slice in data.iter_mut() {
+                let read_amount = recv_buf.read(slice);
+                if read_amount > 0 {
+                    total_read += read_amount;
+                }
 
-            if buf.is_empty() {
+                if read_amount != slice.len() {
+                    break
+                }
+            }
+
+            if recv_buf.is_empty() {
                 ctx.lower_polled(read_polled);
             }
 
-            read_len as isize
+            return total_read as libc::ssize_t
         },
         IoBackend::Sink => return 0 as libc::ssize_t,
         IoBackend::NullSink => {
-            for b in data.iter_mut() {
-                *b = 0;
+            let mut total_len = 0;
+            for slice in data.iter_mut() {
+                for b in slice.iter_mut() {
+                    *b = 0;
+                }
+                total_len += slice.len();
             }
             
-            data.len() as libc::ssize_t
+            total_len as libc::ssize_t
         },
         IoBackend::Fuzz => {
             let resource = FdResource::Socket(socket_id);
-            let &FuzzEndpointInfo { read_idx, read_polled } = ctx.global.fuzz_endpoints.get(&resource).unwrap();
+            let &FuzzEndpointInfo { mut read_idx, read_polled } = ctx.global.fuzz_endpoints.get(&resource).unwrap();
 
             let polled_is_ready = ctx.polled_is_ready(read_polled);
             drop(ctx);
@@ -1346,17 +1528,25 @@ fn recv_connected_socket(
             let mut ctx = state::FIZZLE_STATE.acquire();
             
             let total_fuzz_len = ctx.global.fuzz_input.len();
-            let read_len = cmp::min(total_fuzz_len - read_idx, data.len());
-            data[..read_len].copy_from_slice(&ctx.global.fuzz_input.data()[read_idx..read_idx + read_len]);
-            
+            let start_read_idx = read_idx;
+
+            for slice in data.iter_mut() {
+                let read_len = cmp::min(total_fuzz_len - read_idx, slice.len());
+                slice[..read_len].copy_from_slice(&ctx.global.fuzz_input.data()[read_idx..read_idx + read_len]);
+                read_idx += read_len;
+                if read_idx == total_fuzz_len {
+                    break
+                }
+            }
+
             let fuzz_endpoint = ctx.global.fuzz_endpoints.get_mut(&resource).unwrap();
             let read_polled = fuzz_endpoint.read_polled;
-            fuzz_endpoint.read_idx += read_len;
+            fuzz_endpoint.read_idx = read_idx;
             if fuzz_endpoint.read_idx == total_fuzz_len {
                 ctx.lower_polled(read_polled);
             }
 
-            read_len as libc::ssize_t
+            (read_idx - start_read_idx) as libc::ssize_t
         },
     }
 }
@@ -1372,7 +1562,7 @@ fn recv_connectionless_socket(
     let mut ctx = state::FIZZLE_STATE.acquire();
 
     // TODO: this isn't finished...
-    let SocketState::Connectionless(ConnectionlessSocket { backend: IoBackend::Regular(regular), .. }) = ctx.global.sockets.get(socket_id).unwrap()
+    let SocketState::Connectionless(ConnectionlessSocket { backend: IoBackend::Peered(regular), .. }) = ctx.global.sockets.get(socket_id).unwrap()
     else {
         unreachable!()
     };

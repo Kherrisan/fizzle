@@ -56,7 +56,7 @@ hook_macros::hook! {
                 let write_polled = ctx.global.polled_events.put(PolledInfo::new_raised());
 
                 ctx.global.sockets.put(SocketState::Connectionless(ConnectionlessSocket {
-                    backend: ConnectionlessBackend::Regular(RegularConnectionless {
+                    backend: ConnectionlessBackend::Peered(RegularConnectionless {
                         recv_buf,
                         read_polled,
                         write_polled,
@@ -202,7 +202,7 @@ hook_macros::hook! {
         }
 
         *ctx.global.sockets.get_mut(socket_id).unwrap() = SocketState::Server(ServerSocket {
-            backend: IoBackend::Regular(()),
+            backend: IoBackend::Peered(()),
             local_addr,
             connecting: Queue::new(),
             ready_to_connect,
@@ -286,7 +286,7 @@ hook_macros::hook! {
 
                 let connected_backend = match server_backend {
                     ServerBackend::Passthrough => unimplemented!(),
-                    ServerBackend::Regular(()) => {
+                    ServerBackend::Peered(()) => {
                         let SocketState::Server(server_info) = ctx.global.sockets.get_mut(server_socket_id).unwrap() else {
                             *libc::__errno_location() = libc::ECONNREFUSED;
                             return -1 // TODO: in the future, wait until a server does exist
@@ -303,7 +303,7 @@ hook_macros::hook! {
 
                         let client_poll = ctx.global.polled_events.put(PolledInfo::new());
                         *ctx.global.sockets.get_mut(socket_id).unwrap() = SocketState::Connecting(ConnectingSocket {
-                            backend: ConnectingBackend::Regular(()),
+                            backend: ConnectingBackend::Peered(()),
                             connect_polled: client_poll,
                             local_addr,
                         });
@@ -326,7 +326,10 @@ hook_macros::hook! {
                         ConnectedBackend::Plugin(connect_plugin_id)
                     },
                     ServerBackend::Sink => ConnectedBackend::Sink,
-                    ServerBackend::Fuzz => ConnectedBackend::Fuzz,
+                    ServerBackend::Fuzz => {
+                        ctx.global.add_fuzz_endpoint(FdResource::Socket(socket_id));
+                        ConnectedBackend::Fuzz
+                    }
                     ServerBackend::NullSink => ConnectedBackend::NullSink,
                     ServerBackend::Feedback(()) => ConnectedBackend::Feedback(StandardFeedback {
                             buf: ctx.global.buffers.put(Buffer::new()),
@@ -447,15 +450,20 @@ hook_macros::hook! {
                 *addrlen = crate::encode_inet_address(addr, new_address.address()) as libc::socklen_t;
             }
 
+            log::info!("server [{:?}] `accept()`ed pending client [{:?}]", server_addr, new_address);
+
             return join_socket_pair(&mut ctx, server_id, client, flags, Some(new_address))
         }
 
         let SocketState::Server(server_info) = ctx.global.sockets.get_mut(server_id).unwrap() else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1;
+            panic!()
         };
 
         if let Some(connecting_id) = server_info.connecting.dequeue() {
+            if server_info.connecting.len() == 1 {
+                ctx.lower_polled(ready_to_connect);
+            }
+
             let SocketState::Connecting(connecting_info) = ctx.global.sockets.get(connecting_id).unwrap() else {
                 panic!("unexpected fizzle internal state--socket in server connecting queue was not `Connecting` variant")
             };
@@ -464,16 +472,20 @@ hook_macros::hook! {
                 crate::encode_inet_address(addr, connecting_info.local_addr.address());
             }
 
+            log::info!("server [{:?}] `accept()`ed connecting client [{:?}]", server_addr, connecting_info.local_addr.address());
+
             let polled = connecting_info.connect_polled;
             ctx.raise_polled(polled);
 
             return join_socket_pair(&mut ctx, server_id, connecting_id, flags, None);
 
         } else if is_nonblocking {
+            log::debug!("server [{:?}] `accept()` had no connections to accept (EAGAIN)", server_addr);
             *libc::__errno_location() = libc::EAGAIN; // or EWOULDBLOCK
             return -1
 
         } else { // !is_nonblocking
+            log::debug!("server [{:?}] blocking on `accept()`", server_addr);
             drop(ctx);
             state::FIZZLE_STATE.poll_until_ready(ready_to_connect);
             let mut ctx = state::FIZZLE_STATE.acquire();
@@ -482,6 +494,7 @@ hook_macros::hook! {
             let SocketState::Server(server_info) = ctx.global.sockets.get_mut(server_id).unwrap() else {
                 panic!("internal fizzle error")
             };
+            let connecting_num = server_info.connecting.len();
 
             let connecting_id = server_info.connecting.dequeue().unwrap();
             let SocketState::Connecting(connecting_info) = ctx.global.sockets.get(connecting_id).unwrap() else {
@@ -491,6 +504,12 @@ hook_macros::hook! {
             // Write the remote address of the connecting socket for the accept
             if !addr.is_null() {
                 crate::encode_inet_address(addr, connecting_info.local_addr.address());
+            }
+
+            log::info!("server [{:?}] `accept()`ed connecting client [{:?}]", server_addr, connecting_info.local_addr);
+
+            if connecting_num == 1 {
+                ctx.lower_polled(ready_to_connect);
             }
 
             return join_socket_pair(&mut ctx, server_id, connecting_id, flags, None);
@@ -511,17 +530,6 @@ fn join_socket_pair(
         _ => panic!("internal fizzle state"),
     };
 
-    let accept_backend = match server_backend {
-        IoBackend::Passthrough => unimplemented!(),
-        IoBackend::Regular(_) => ConnectedBackend::Regular(RegularConnected {
-            peer: Some(connecting_id),
-            recv_buf: ctx.global.buffers.put(Buffer::new()),
-            read_polled: ctx.global.polled_events.put(PolledInfo::new()),
-            write_polled: ctx.global.polled_events.put(PolledInfo::new_raised()),
-        }),
-        _ => unreachable!(),
-    };
-
     let (client_addr, connect_backend) = match ctx.global.sockets.get_mut(connecting_id).unwrap() {
         SocketState::PendingConnection(pending_info) => {
             (addr.unwrap(), pending_info.backend.clone())
@@ -536,59 +544,78 @@ fn join_socket_pair(
         _ => unreachable!(),
     };
 
-    let mut is_fuzzing = false;
     let connect_backend = match connect_backend {
         IoBackend::Passthrough => unimplemented!(),
-        IoBackend::Regular(()) => ConnectedBackend::Regular(RegularConnected {
+        IoBackend::Peered(()) => ConnectedBackend::Peered(RegularConnected {
             peer: Some(connecting_id),
             recv_buf: ctx.global.buffers.put(Buffer::new()),
             read_polled: ctx.global.polled_events.put(PolledInfo::new()),
             write_polled: ctx.global.polled_events.put(PolledInfo::new_raised()),
         }),
+        IoBackend::Plugin(plugin_id) => {
+            // Create new plugin
+            let plugin_info = ctx.global.plugins.get(plugin_id).unwrap();
+            let endpoint = plugin_info.endpoint.clone();
+            let module_id = plugin_info.module_id;
+            let connect_plugin_id = ctx.global.add_plugin(endpoint, module_id);
+            ConnectedBackend::Plugin(connect_plugin_id)
+        },
+        IoBackend::Sink => ConnectedBackend::Sink,
+        IoBackend::Fuzz => {
+            ctx.global.add_fuzz_endpoint(FdResource::Socket(connecting_id));
+            ConnectedBackend::Fuzz
+        }
+        IoBackend::NullSink => ConnectedBackend::NullSink,
         IoBackend::Feedback(()) => ConnectedBackend::Feedback(StandardFeedback {
             buf: ctx.global.buffers.put(Buffer::new()),
             read_polled: ctx.global.polled_events.put(PolledInfo::new()),
             write_polled: ctx.global.polled_events.put(PolledInfo::new_raised()),
-        }),
-        IoBackend::Plugin(plugin_id) => ConnectedBackend::Plugin(plugin_id),
-        IoBackend::Sink => ConnectedBackend::Sink,
-        IoBackend::NullSink => ConnectedBackend::NullSink,
-        IoBackend::Fuzz => {
-            is_fuzzing = true;
-            ConnectedBackend::Fuzz
-        },
+        })
     };
 
-    let accepted_id = ctx
-        .global
-        .sockets
-        .put(SocketState::Connected(ConnectedSocket {
-            rem_addr: client_addr,
-            backend: accept_backend,
-        }));
+    let socket_id = if let IoBackend::Peered(_) = connect_backend {
+        let accept_backend = match server_backend {
+            IoBackend::Passthrough => unimplemented!(),
+            IoBackend::Peered(_) => ConnectedBackend::Peered(RegularConnected {
+                peer: Some(connecting_id),
+                recv_buf: ctx.global.buffers.put(Buffer::new()),
+                read_polled: ctx.global.polled_events.put(PolledInfo::new()),
+                write_polled: ctx.global.polled_events.put(PolledInfo::new_raised()),
+            }),
+            _ => unreachable!(),
+        };
 
-    if is_fuzzing {
-        ctx.global.add_fuzz_endpoint(FdResource::Socket(accepted_id));
-    }
-    
+        ctx
+            .global
+            .sockets
+            .put(SocketState::Connected(ConnectedSocket {
+                rem_addr: client_addr,
+                backend: accept_backend,
+            }))
+    } else {
+        connecting_id // The connecting socket was emulated in some way (plugin, feedback, fuzz, etc.)
+    };
+
     *ctx.global.sockets.get_mut(connecting_id).unwrap() =
         SocketState::Connected(ConnectedSocket {
             rem_addr: server_addr,
             backend: connect_backend,
         });
 
+    let new_fd = crate::alias_fd_create();
     // The two sockets are now joined--add a file descriptor to the accepted socket
     ctx.local.fds.insert(
-        DescriptorId::new(crate::alias_fd_create()),
+        DescriptorId::new(new_fd),
         FdInfo {
             close_on_exec: (flags & libc::O_CLOEXEC) != 0,
             is_passthrough: false,
             nonblocking: (flags & libc::O_NONBLOCK) != 0,
-            resource: FdResource::Socket(accepted_id),
+            resource: FdResource::Socket(socket_id),
         },
     );
 
-    0 // TODO: need to account for error conditions within this function
+    // TODO: need to account for error conditions within this function
+    new_fd
 }
 
 // TODO: UDP sockets bound addresses (yes, even ephemeral) need to be registered
@@ -609,7 +636,7 @@ struct SctpGetaddrs {
     addrs: *mut u8,               // output, variable size
 }
 
-#[allow(non_camel_case_types)]
+#[allow(non_camel_case_types,unused)]
 #[repr(packed)]
 struct sctp_paddrparams {
     spp_assoc_id: libc::sctp_assoc_t,

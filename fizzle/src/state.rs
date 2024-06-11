@@ -261,9 +261,10 @@ impl FizzCell {
         unsafe {
             let amount_read = libc::read(0, fuzz_buffer.as_mut_ptr() as *mut libc::c_void, fuzz_length);
             if amount_read <= 0 {
-                panic!("fuzzing input not received correctly from AFL++ (stdin `read` failed)");
+                log::debug!("{:?}", ctx.deref());
+                panic!("failed to receive input for fuzzing from stdin");
             }
-            log::debug!("read {} bytes in for fuzzing", amount_read);
+            log::debug!("read in {} bytes of fuzzing input", amount_read);
             fuzz_length = amount_read as usize;
         }
         ctx.global.fuzz_input.did_write(fuzz_length);
@@ -276,6 +277,7 @@ impl FizzCell {
             polled_ready.push(endpoint_info.read_polled).unwrap();
         }
 
+        log::debug!("{} fuzzing endpoints are marked as ready to fuzz", polled_ready.len());
         for polled_id in polled_ready {
             ctx.raise_polled(polled_id);
         }
@@ -467,6 +469,7 @@ impl Drop for FizzGuard<'_> {
     }
 }
 
+#[derive(Debug)]
 pub struct FizzState {
     pub local: FizzLocal,
     pub global: &'static mut FizzGlobal,
@@ -650,6 +653,7 @@ impl FizzState {
     }
 }
 
+
 pub struct FizzLocal {
     pub process_id: ProcessId,
     /// Indicates that the thread being awoken should be immediately cancelled and delegate execution back to this thread.
@@ -657,6 +661,7 @@ pub struct FizzLocal {
     ///
     /// This field is only `Some` in the parent process; all other processes must delegate control
     /// flow to it in order to handle plugin I/O.
+    
     pub plugin_modules: Option<PluginModules>,
     /// A supplamentary thread used to reap exiting threads.
     pub reaper: Option<ThreadId>,
@@ -681,6 +686,12 @@ pub struct FizzLocal {
     pub awaiting_thread_death: HashMap<ThreadId, Vec<ThreadId>, FxBuildHasher>,
     /// The directory that the program is currently executing relative to.
     pub working_directory: FilePath,
+}
+
+impl Debug for FizzLocal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FizzLocal").field("process_id", &self.process_id).field("reaper", &self.reaper).field("fds", &self.fds).field("dirs", &self.dirs).field("barriers", &self.barriers).field("condvars", &self.condvars).field("named_semaphores", &self.named_semaphores).field("file_objs", &self.file_objs).field("mutexes", &self.mutexes).field("rwlocks", &self.rwlocks).field("semaphores", &self.semaphores).field("spinlocks", &self.spinlocks).field("pthreads", &self.pthreads).field("pthread_cleanup", &self.pthread_cleanup).field("pthread_keys", &self.pthread_keys).field("pthread_key_values", &self.pthread_key_values).field("terminated_threads", &self.terminated_threads).field("cancelling_threads", &self.cancelling_threads).field("awaiting_thread_death", &self.awaiting_thread_death).field("working_directory", &self.working_directory).finish()
+    }
 }
 
 impl FizzLocal {
@@ -729,6 +740,7 @@ impl FizzLocal {
     }
 }
 
+#[derive(Debug)]
 pub struct FizzGlobal {
     next_process_id: ProcessId,
     /// The next StreamId available to be assigned to an emulated stream.
@@ -1175,6 +1187,7 @@ impl PThreadRoutine {
     }
 }
 
+#[derive(Debug)]
 pub struct FileObject {
     pub descriptor_id: DescriptorId,
     pub buf: Buffer<FIZZLE_FOPEN_BUFSIZE>,

@@ -14,7 +14,7 @@ mod private {
 pub enum IoBackend<R: Clone + Copy + Debug, F: Clone + Copy + Debug> {
     Passthrough,
     /// Handles I/O regularly.
-    Regular(R),
+    Peered(R),
     /// `read()`s will return whatever was written by prior `write()`s--acts as a virtual FIFO queue.
     Feedback(F),
     /// Uses the plugin specified by `PluginId` to decide `read()`/`write()` behavior.
