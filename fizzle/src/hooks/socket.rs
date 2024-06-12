@@ -2,15 +2,19 @@
 //!
 //!
 
-use std::{mem, ptr};
 use std::net::SocketAddr;
+use std::{mem, ptr};
 
 use crate::constants::FIZZLE_BUFFER_LENGTH;
-use crate::state::backend::{ConnectedBackend, ConnectingBackend, ConnectionlessBackend, IoBackend, RegularConnected, RegularConnectionless, ServerBackend, StandardFeedback};
+use crate::state::backend::{
+    ConnectedBackend, ConnectingBackend, ConnectionlessBackend, IoBackend, RegularConnected,
+    RegularConnectionless, ServerBackend, StandardFeedback,
+};
 use crate::state::fd::{FdInfo, FdResource};
 use crate::state::identifiers::{DescriptorId, SocketId};
 use crate::state::{
-    self, ConnectedSocket, ConnectingSocket, ConnectionlessSocket, FizzState, PendingInfo, PolledInfo, ServerSocket, SocketLocationInfo, SocketState, UnassociatedSocket
+    self, ConnectedSocket, ConnectingSocket, ConnectionlessSocket, FizzState, PendingInfo,
+    PolledInfo, ServerSocket, SocketLocationInfo, SocketState, UnassociatedSocket,
 };
 use crate::{decode_inet_address, hook_macros};
 use fizzle_common::io::{AddressFamily, TransportAddress, TransportProtocol};
@@ -118,7 +122,7 @@ hook_macros::hook! {
                 return -1
             }
         };
-        
+
         match ctx.global.socket_locations.entry(transport_addr) {
             heapless::Entry::Occupied(mut o) => if o.get().bound_socket.is_some() {
                 log::warn!("application attempted to bind to address {:?} that was already in use", &transport_addr);
@@ -208,7 +212,7 @@ hook_macros::hook! {
             ready_to_connect,
         });
 
-    
+
 
         0
     }
@@ -523,7 +527,7 @@ fn join_socket_pair(
     server_id: SocketId,
     connecting_id: SocketId,
     flags: libc::c_int,
-    addr: Option<TransportAddress>
+    addr: Option<TransportAddress>,
 ) -> libc::c_int {
     let (server_addr, server_backend) = match ctx.global.sockets.get(server_id).unwrap() {
         SocketState::Server(server_info) => (server_info.local_addr, server_info.backend),
@@ -559,10 +563,11 @@ fn join_socket_pair(
             let module_id = plugin_info.module_id;
             let connect_plugin_id = ctx.global.add_plugin(endpoint, module_id);
             ConnectedBackend::Plugin(connect_plugin_id)
-        },
+        }
         IoBackend::Sink => ConnectedBackend::Sink,
         IoBackend::Fuzz => {
-            ctx.global.add_fuzz_endpoint(FdResource::Socket(connecting_id));
+            ctx.global
+                .add_fuzz_endpoint(FdResource::Socket(connecting_id));
             ConnectedBackend::Fuzz
         }
         IoBackend::NullSink => ConnectedBackend::NullSink,
@@ -570,7 +575,7 @@ fn join_socket_pair(
             buf: ctx.global.buffers.put(Buffer::new()),
             read_polled: ctx.global.polled_events.put(PolledInfo::new()),
             write_polled: ctx.global.polled_events.put(PolledInfo::new_raised()),
-        })
+        }),
     };
 
     let socket_id = if let IoBackend::Peered(_) = connect_backend {
@@ -591,8 +596,7 @@ fn join_socket_pair(
                 backend: connect_backend,
             });
 
-        ctx
-            .global
+        ctx.global
             .sockets
             .put(SocketState::Connected(ConnectedSocket {
                 rem_addr: client_addr,
@@ -628,7 +632,6 @@ fn join_socket_pair(
 
 // TODO: UDP sockets bound addresses (yes, even ephemeral) need to be registered
 
-
 #[repr(C)]
 struct SctpRtoInfo {
     srto_assoc_id: libc::sctp_assoc_t,
@@ -644,7 +647,7 @@ struct SctpGetaddrs {
     addrs: *mut u8,               // output, variable size
 }
 
-#[allow(non_camel_case_types,unused)]
+#[allow(non_camel_case_types, unused)]
 #[repr(packed)]
 struct sctp_paddrparams {
     spp_assoc_id: libc::sctp_assoc_t,
@@ -979,14 +982,14 @@ hook_macros::hook! {
                     srto_max: 60000,
                     srto_min: 1000,
                 }; // based on default values for Debian 12/Linux 6.XX
-                
+
                 0
             }
             (SOL_SCTP, SCTP_GET_LOCAL_ADDRS) => {
 
                 let assoc_id = (*(optval as *const SctpGetaddrs)).assoc_id;
                 *(optval as *mut SctpGetaddrs) = SctpGetaddrs { assoc_id, addr_num: 0, addrs: ptr::null_mut() };
-                
+
                 0
             }
             (SOL_SCTP, libc::SCTP_INITMSG) => {
@@ -997,7 +1000,7 @@ hook_macros::hook! {
                     sinit_max_attempts: 8,
                     sinit_max_init_timeo: 60000
                 };
-                    
+
                 0
             }
             (SOL_SCTP, libc::SCTP_NODELAY) => {
@@ -1178,7 +1181,7 @@ hook_macros::hook! {
             (libc::SOL_SOCKET, libc::SO_KEEPALIVE | libc::SO_OOBINLINE | libc::SO_PRIORITY | libc::SO_RCVBUF | libc::SO_SNDLOWAT | libc::SO_RCVLOWAT | libc::SO_RCVTIMEO | libc::SO_SNDTIMEO | libc::SO_REUSEADDR | libc::SO_REUSEPORT) => {
                 // TODO: is libc this strict, or not?
                 if optlen as usize != mem::size_of::<libc::c_int>() {
-                    *libc::__errno_location() = libc::EINVAL; 
+                    *libc::__errno_location() = libc::EINVAL;
                     return -1
                 }
 

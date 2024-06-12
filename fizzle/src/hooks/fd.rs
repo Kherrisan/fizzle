@@ -60,7 +60,7 @@ hook_macros::hook! {
                         });
                     }
                 }
-                
+
                 dupfd
             }
             Some(fd_info) => {
@@ -132,7 +132,7 @@ hook_macros::hook! {
             },
         }
 
-        
+
     }
 }
 

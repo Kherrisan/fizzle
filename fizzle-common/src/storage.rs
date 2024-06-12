@@ -1,8 +1,8 @@
+use std::fmt::Debug;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::{array, cmp, mem, ptr, slice};
-use std::fmt::Debug;
 
 unsafe fn slice_init(slice: &[MaybeUninit<u8>]) -> &[u8] {
     slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len())
@@ -20,21 +20,20 @@ pub struct Buffer<const T: usize> {
 
 impl<const N: usize> Debug for Buffer<N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        unsafe {
-            slice_init(&self.data[self.data_start..self.data_end]).fmt(f)
-        }
+        unsafe { slice_init(&self.data[self.data_start..self.data_end]).fmt(f) }
     }
 }
 
 impl<const T: usize> Clone for Buffer<T> {
     fn clone(&self) -> Self {
         let mut data: [MaybeUninit<u8>; T] = unsafe { MaybeUninit::uninit().assume_init() };
-        data[self.data_start..self.data_end].copy_from_slice(&self.data[self.data_start..self.data_end]);
+        data[self.data_start..self.data_end]
+            .copy_from_slice(&self.data[self.data_start..self.data_end]);
 
         Self {
             data,
             data_start: self.data_start.clone(),
-            data_end: self.data_end.clone()
+            data_end: self.data_end.clone(),
         }
     }
 }
@@ -42,7 +41,8 @@ impl<const T: usize> Clone for Buffer<T> {
 impl<const T: usize> PartialEq for Buffer<T> {
     fn eq(&self, other: &Self) -> bool {
         unsafe {
-            slice_init(&self.data[self.data_start..self.data_end]) == slice_init(&other.data[other.data_start..other.data_end])
+            slice_init(&self.data[self.data_start..self.data_end])
+                == slice_init(&other.data[other.data_start..other.data_end])
         }
     }
 }
@@ -107,9 +107,7 @@ impl<const N: usize> Buffer<N> {
     }
 
     pub fn data(&self) -> &[u8] {
-        unsafe {
-            slice_init(&self.data[self.data_start..self.data_end])
-        }
+        unsafe { slice_init(&self.data[self.data_start..self.data_end]) }
     }
 
     pub fn did_read(&mut self, amount: usize) {
@@ -118,7 +116,7 @@ impl<const N: usize> Buffer<N> {
             cmp::Ordering::Equal => {
                 self.data_start = 0;
                 self.data_end = 0;
-            },
+            }
             cmp::Ordering::Greater => panic!("`did_read()` called with too large an amount"),
         }
     }
@@ -156,9 +154,7 @@ impl<const N: usize> Buffer<N> {
     }
 
     pub fn data_mut(&mut self) -> &mut [u8] {
-        unsafe {
-            slice_init_mut(&mut self.data[self.data_start..self.data_end])
-        }
+        unsafe { slice_init_mut(&mut self.data[self.data_start..self.data_end]) }
     }
 
     /// Places `data` in the buffer, clearing out any prior data in the process.
@@ -187,7 +183,8 @@ impl<const N: usize> Buffer<N> {
 
     pub fn append(&mut self, data: &[u8]) {
         unsafe {
-            slice_init_mut(&mut self.data[self.data_end..self.data_end + data.len()]).copy_from_slice(data);
+            slice_init_mut(&mut self.data[self.data_end..self.data_end + data.len()])
+                .copy_from_slice(data);
         }
         self.data_end += data.len();
     }
@@ -313,7 +310,9 @@ pub struct ValueIndex<K: Sized + From<usize> + Into<usize>, V: Sized, const N: u
     _phantom: PhantomData<K>,
 }
 
-impl<K: Sized + From<usize> + Into<usize>, V: Sized + Debug, const N: usize> Debug for ValueIndex<K, V, N> {
+impl<K: Sized + From<usize> + Into<usize>, V: Sized + Debug, const N: usize> Debug
+    for ValueIndex<K, V, N>
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut list = f.debug_list();
 
@@ -322,7 +321,7 @@ impl<K: Sized + From<usize> + Into<usize>, V: Sized + Debug, const N: usize> Deb
                 list.entry(&(i, value));
             }
         }
-        
+
         list.finish()
     }
 }

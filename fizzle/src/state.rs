@@ -32,7 +32,10 @@ use crate::constants::*;
 use crate::semaphore::Semaphore;
 use crate::state::plugins::PluginConfig;
 
-use self::backend::{ConnectedBackend, ConnectingBackend, ConnectionlessBackend, FileBackend, PendingBackend, ServerBackend, StandardFeedback, StdioBackend};
+use self::backend::{
+    ConnectedBackend, ConnectingBackend, ConnectionlessBackend, FileBackend, PendingBackend,
+    ServerBackend, StandardFeedback, StdioBackend,
+};
 use self::fd::{FdInfo, FdResource};
 use self::identifiers::*;
 use self::plugins::{IoEmulationType, PluginConfigEndpoint, PluginModules};
@@ -67,9 +70,9 @@ pub fn has_entered_handler() -> bool {
 }
 
 /// A global Cell of memory containing all Fizzle state.
-/// 
+///
 /// # Safety
-/// 
+///
 /// Mutable aliasing within a process is UB in Rust; as such, we use
 /// [`thread_locks`](FizzCell::thread_locks) to ensure that only one thread mutably accesses
 /// `FizzCell` at a given time.
@@ -117,7 +120,7 @@ impl FizzCell {
         unsafe {
             crate::__afl_manual_init(); // For AFL++
         }
-       
+
         unsafe {
             // Initialize the reaper lock.
             Semaphore::initialize(&mut *self.reaper_lock.get(), true, 0);
@@ -138,7 +141,9 @@ impl FizzCell {
 
     pub fn get_thread_lock(&self, thread_id: &ThreadId) -> &Semaphore {
         unsafe {
-            (*self.thread_locks.get())[index_of_thread(thread_id)].as_deref().unwrap()
+            (*self.thread_locks.get())[index_of_thread(thread_id)]
+                .as_deref()
+                .unwrap()
         }
     }
 
@@ -150,7 +155,10 @@ impl FizzCell {
     }
 
     pub fn init_new_thread(&self) {
-        self.acquire().local.pthreads.insert(unsafe { libc::pthread_self() }, thread::current().id());
+        self.acquire()
+            .local
+            .pthreads
+            .insert(unsafe { libc::pthread_self() }, thread::current().id());
         self.init_thread_lock(&thread::current().id());
     }
 
@@ -165,9 +173,7 @@ impl FizzCell {
             self.initialize_inner()
         }
 
-        FizzGuard {
-            cell: self
-        }
+        FizzGuard { cell: self }
     }
 
     /// Pauses execution of the current thread and delegates control flow to another thread/process.
@@ -188,15 +194,22 @@ impl FizzCell {
                     break;
                 }
                 ReadyInfo::Poller(poller_id) => {
-                    log::trace!("Checking if poller {:?} is ready for execution...", poller_id);
+                    log::trace!(
+                        "Checking if poller {:?} is ready for execution...",
+                        poller_id
+                    );
                     let global = &mut ctx.global;
                     let poller_info = global.pollers.get(poller_id).unwrap();
                     for &polled_id in poller_info.polled_events.iter() {
                         let polled_info = global.polled_events.get_mut(polled_id).unwrap();
                         if polled_info.event_raised {
                             next_worker = Some(poller_info.worker_id);
-                            log::trace!("Poller {:?} ready for execution, scheduling worker {:?}", poller_id, poller_info.worker_id);
-                            break
+                            log::trace!(
+                                "Poller {:?} ready for execution, scheduling worker {:?}",
+                                poller_id,
+                                poller_info.worker_id
+                            );
+                            break;
                         }
                     }
                     // if current poller has all PolledId values that have false flags, move on to next
@@ -230,13 +243,15 @@ impl FizzCell {
                 self.pause_current_thread();
             }
             // Now it's this thread's turn to execute
-        // TODO: this NEEDS to run in the root process, but we don't check this?
-        } else if self::plugins::run_plugins(&mut self.acquire()) { // Plugins have queued more workers as ready
-            log::trace!("Plugins emitted new input--yielding thread to start next available worker");
+            // TODO: this NEEDS to run in the root process, but we don't check this?
+        } else if self::plugins::run_plugins(&mut self.acquire()) {
+            // Plugins have queued more workers as ready
+            log::trace!(
+                "Plugins emitted new input--yielding thread to start next available worker"
+            );
             // This shouldn't lead to a stack overflow unless `run_plugins` erroneously
             // returns `true` but doesn't schedule new workers.
             self.yield_thread();
-        
         } else {
             log::trace!("No workers were ready to execute--fuzzing round complete.");
             // No events were triggered for any pollers--move on to next input
@@ -271,11 +286,14 @@ impl FizzCell {
             }
         }
 
-
         // Wait for input from the fuzzing engine...
         // For AFL++, fuzzing input comes from stdin
         unsafe {
-            let rounds = if crate::__afl_connected == 0 { 1 } else { ctx.global.persistent_rounds as libc::c_uint };
+            let rounds = if crate::__afl_connected == 0 {
+                1
+            } else {
+                ctx.global.persistent_rounds as libc::c_uint
+            };
             if crate::__afl_persistent_loop(rounds) == 0 {
                 libc::_exit(0);
             }
@@ -284,19 +302,26 @@ impl FizzCell {
             let fuzz_buffer = ctx.global.fuzz_input.remaining_mut();
 
             if crate::__afl_fuzz_ptr.is_null() {
-                let read_amount = libc::read(0, fuzz_buffer.as_mut_ptr() as *mut libc::c_void, 1048576);
+                let read_amount =
+                    libc::read(0, fuzz_buffer.as_mut_ptr() as *mut libc::c_void, 1048576);
                 *crate::__afl_fuzz_len = (read_amount & u32::MAX as isize) as u32;
                 if read_amount < 0 {
                     panic!("could not read input from stdin")
                 }
             } else {
-                ptr::copy_nonoverlapping(crate::__afl_fuzz_ptr, fuzz_buffer.as_mut_ptr() as *mut u8, *crate::__afl_fuzz_len as usize);
+                ptr::copy_nonoverlapping(
+                    crate::__afl_fuzz_ptr,
+                    fuzz_buffer.as_mut_ptr() as *mut u8,
+                    *crate::__afl_fuzz_len as usize,
+                );
             };
 
-            ctx.global.fuzz_input.did_write(*crate::__afl_fuzz_len as usize);
+            ctx.global
+                .fuzz_input
+                .did_write(*crate::__afl_fuzz_len as usize);
         }
 
-        /* 
+        /*
         let mut fuzz_length = fuzz_buffer.len();
         unsafe {
             let amount_read = libc::read(0, fuzz_buffer.as_mut_ptr() as *mut libc::c_void, fuzz_length);
@@ -319,7 +344,10 @@ impl FizzCell {
             polled_ready.push(endpoint_info.read_polled).unwrap();
         }
 
-        log::debug!("{} fuzzing endpoints are marked as ready to fuzz", polled_ready.len());
+        log::debug!(
+            "{} fuzzing endpoints are marked as ready to fuzz",
+            polled_ready.len()
+        );
         for polled_id in polled_ready {
             ctx.raise_polled(polled_id);
         }
@@ -335,11 +363,16 @@ impl FizzCell {
             if let Some(plugin_info) = ctx.global.plugins.get(plugin_id) {
                 let module_id = plugin_info.module_id;
                 let local = &mut ctx.local;
-                let plugin_module = local.plugin_modules.as_mut().unwrap().get_mut(module_id).unwrap();
+                let plugin_module = local
+                    .plugin_modules
+                    .as_mut()
+                    .unwrap()
+                    .get_mut(module_id)
+                    .unwrap();
                 plugin_module.load_entropy(fuzz_input.data());
             }
         }
-        
+
         drop(ctx);
 
         // TODO: need to run plugins here?
@@ -353,7 +386,11 @@ impl FizzCell {
         log::info!("thread {:?} being terminated...", thread_id);
 
         let mut ctx = self.acquire();
-        let mut cleanup_routines = ctx.local.pthread_cleanup.remove(&thread_id).unwrap_or(VecDeque::new());
+        let mut cleanup_routines = ctx
+            .local
+            .pthread_cleanup
+            .remove(&thread_id)
+            .unwrap_or(VecDeque::new());
 
         let pthread_keys: Vec<u32> = ctx.local.pthread_keys.keys().map(|k| *k).collect();
         for key in pthread_keys {
@@ -398,7 +435,8 @@ impl FizzCell {
             FIZZLE_STATE.get_thread_lock(&reaper_id).post()
         } else {
             drop(ctx);
-            let handle = std::thread::spawn(move || { // Reaper thread
+            let handle = std::thread::spawn(move || {
+                // Reaper thread
                 // The thread that spawned the reaper will immediately wait on its thread lock, so
                 // it is safe to `acquire()` global state here.
                 let reaper_id = thread::current().id();
@@ -460,13 +498,24 @@ impl FizzCell {
     pub fn pause_current_process(&self) {
         unsafe {
             let ctx = self.acquire();
-            ctx.global.process_locks.get(ctx.local.process_id).unwrap().assume_init_ref().wait();
+            ctx.global
+                .process_locks
+                .get(ctx.local.process_id)
+                .unwrap()
+                .assume_init_ref()
+                .wait();
         }
     }
 
     fn wake_process(&self, process_id: ProcessId) {
         unsafe {
-            self.acquire().global.process_locks.get(process_id).unwrap().assume_init_ref().post();
+            self.acquire()
+                .global
+                .process_locks
+                .get(process_id)
+                .unwrap()
+                .assume_init_ref()
+                .post();
         }
     }
 
@@ -491,17 +540,13 @@ impl Deref for FizzGuard<'_> {
     type Target = FizzState;
 
     fn deref(&self) -> &Self::Target {
-        unsafe {
-            &*(self.cell.inner.get() as *const FizzState)
-        }
+        unsafe { &*(self.cell.inner.get() as *const FizzState) }
     }
 }
 
 impl DerefMut for FizzGuard<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe {
-            (*self.cell.inner.get()).assume_init_mut()
-        }
+        unsafe { (*self.cell.inner.get()).assume_init_mut() }
     }
 }
 
@@ -516,7 +561,6 @@ pub struct FizzState {
     pub local: FizzLocal,
     pub global: &'static mut FizzGlobal,
 }
-
 
 #[no_mangle]
 extern "C" fn fizzle_atexit_suspend() {
@@ -555,7 +599,7 @@ impl FizzState {
             false => {
                 global = FizzGlobal::initialize(global_uninit);
                 process_id = ProcessId::from(0);
-                
+
                 // Initialize plugins
                 let mut plugin_config = PluginConfig::new();
                 comptime::populate_plugins(&mut plugin_config);
@@ -568,53 +612,82 @@ impl FizzState {
 
         let local = FizzLocal::new(process_id, plugins, transfer_fds);
 
-        Self {
-            local,
-            global,
-        }
+        Self { local, global }
     }
 
     fn allocate_global_memory() -> &'static mut MaybeUninit<FizzGlobal> {
         let size = mem::size_of::<FizzGlobal>();
-        let is_multiprocess = matches!(env::var(FIZZLE_MULTIPROCESS_ENV), Ok(s) if s.as_str() == "1");
+        let is_multiprocess =
+            matches!(env::var(FIZZLE_MULTIPROCESS_ENV), Ok(s) if s.as_str() == "1");
 
         if !is_multiprocess {
             unsafe {
-                let location = libc::mmap(ptr::null_mut(), size, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0);
+                let location = libc::mmap(
+                    ptr::null_mut(),
+                    size,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                );
                 if location == libc::MAP_FAILED {
                     panic!("failed to mmap")
                 }
 
-                return &mut *(location as *mut MaybeUninit<FizzGlobal>)
+                return &mut *(location as *mut MaybeUninit<FizzGlobal>);
             }
         }
 
         let (key, flags) = match env::var(FIZZLE_MEMORY_ENV) {
             Err(_) if !is_multiprocess => {
                 log::debug!("allocating IPC_PRIVATE shared memory");
-                (libc::IPC_PRIVATE, (libc::S_IRUSR | libc::S_IWUSR) as libc::c_int)
+                (
+                    libc::IPC_PRIVATE,
+                    (libc::S_IRUSR | libc::S_IWUSR) as libc::c_int,
+                )
             }
             Ok(var) => {
                 log::debug!("attaching to already-created shared memory");
-                (var.parse().unwrap(), (libc::S_IRUSR | libc::S_IWUSR) as libc::c_int)
+                (
+                    var.parse().unwrap(),
+                    (libc::S_IRUSR | libc::S_IWUSR) as libc::c_int,
+                )
             }
             Err(_) => unsafe {
                 let key = libc::getpid();
                 env::set_var(FIZZLE_MEMORY_ENV, key.to_string());
                 log::debug!("allocating public shared memory object with key {}", key);
-                (key, libc::IPC_CREAT | libc::IPC_EXCL | (libc::S_IRUSR | libc::S_IWUSR) as libc::c_int)
+                (
+                    key,
+                    libc::IPC_CREAT
+                        | libc::IPC_EXCL
+                        | (libc::S_IRUSR | libc::S_IWUSR) as libc::c_int,
+                )
             },
         };
 
         unsafe {
             let shmid = libc::shmget(key, size, flags);
-            assert!(shmid >= 0, "shared memory creation failed (errno {})", *libc::__errno_location());
-            
+            assert!(
+                shmid >= 0,
+                "shared memory creation failed (errno {})",
+                *libc::__errno_location()
+            );
+
             let location = libc::shmat(shmid, ptr::null_mut(), 0);
-            assert!(location as isize != -1, "mapping shared memory failed (errno {})", *libc::__errno_location());
+            assert!(
+                location as isize != -1,
+                "mapping shared memory failed (errno {})",
+                *libc::__errno_location()
+            );
 
             let ret = libc::shmctl(shmid, libc::IPC_RMID, ptr::null_mut());
-            assert_eq!(ret, 0, "failed to make shared memory ephemeral (errno {})", *libc::__errno_location());
+            assert_eq!(
+                ret,
+                0,
+                "failed to make shared memory ephemeral (errno {})",
+                *libc::__errno_location()
+            );
 
             &mut *(location as *mut MaybeUninit<FizzGlobal>)
         }
@@ -640,7 +713,7 @@ impl FizzState {
     }
 
     /// Marks the given polled event as ready.
-    /// 
+    ///
     /// If not already raised, this method will enqueue a poller waiting on this polled event
     /// (if such a poller exists).
     pub fn raise_polled(&mut self, polled_id: PolledId) {
@@ -650,7 +723,10 @@ impl FizzState {
             let pollers = polled.pollers.clone();
             for poller in pollers {
                 if !self.global.pollers.get(poller).unwrap().in_raised_queue {
-                    self.global.ready.enqueue(ReadyInfo::Poller(poller)).unwrap();
+                    self.global
+                        .ready
+                        .enqueue(ReadyInfo::Poller(poller))
+                        .unwrap();
                 }
             }
         }
@@ -721,7 +797,11 @@ impl FizzState {
         let mut fds = self.local.fds.clone();
 
         for i in 0..fds.max_key() {
-            if let Some(FdInfo { close_on_exec: true, .. }) = fds.get(DescriptorId::from(i)) {
+            if let Some(FdInfo {
+                close_on_exec: true,
+                ..
+            }) = fds.get(DescriptorId::from(i))
+            {
                 fds.remove(DescriptorId::from(i)).unwrap();
             }
         }
@@ -730,7 +810,6 @@ impl FizzState {
     }
 }
 
-
 pub struct FizzLocal {
     pub process_id: ProcessId,
     /// Indicates that the thread being awoken should be immediately cancelled and delegate execution back to this thread.
@@ -738,7 +817,6 @@ pub struct FizzLocal {
     ///
     /// This field is only `Some` in the parent process; all other processes must delegate control
     /// flow to it in order to handle plugin I/O.
-    
     pub plugin_modules: Option<PluginModules>,
     /// A supplamentary thread used to reap exiting threads.
     pub reaper: Option<ThreadId>,
@@ -756,7 +834,8 @@ pub struct FizzLocal {
     pub pthreads: HashMap<libc::pthread_t, ThreadId, FxBuildHasher>,
     pub pthread_cleanup: HashMap<ThreadId, VecDeque<PThreadRoutine>, FxBuildHasher>,
     pub pthread_keys: HashMap<libc::pthread_key_t, PThreadRoutine>,
-    pub pthread_key_values: HashMap<libc::pthread_key_t, HashMap<ThreadId, *mut libc::c_void, FxBuildHasher>>,
+    pub pthread_key_values:
+        HashMap<libc::pthread_key_t, HashMap<ThreadId, *mut libc::c_void, FxBuildHasher>>,
     pub terminated_threads: HashSet<ThreadId, FxBuildHasher>,
     pub cancelling_threads: HashSet<ThreadId, FxBuildHasher>,
     /// Indicates which thread(s) are awaiting the death of a specific thread (via pthread_join)
@@ -767,13 +846,39 @@ pub struct FizzLocal {
 
 impl Debug for FizzLocal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FizzLocal").field("process_id", &self.process_id).field("reaper", &self.reaper).field("fds", &self.fds).field("dirs", &self.dirs).field("barriers", &self.barriers).field("condvars", &self.condvars).field("named_semaphores", &self.named_semaphores).field("file_objs", &self.file_objs).field("mutexes", &self.mutexes).field("rwlocks", &self.rwlocks).field("semaphores", &self.semaphores).field("spinlocks", &self.spinlocks).field("pthreads", &self.pthreads).field("pthread_cleanup", &self.pthread_cleanup).field("pthread_keys", &self.pthread_keys).field("pthread_key_values", &self.pthread_key_values).field("terminated_threads", &self.terminated_threads).field("cancelling_threads", &self.cancelling_threads).field("awaiting_thread_death", &self.awaiting_thread_death).field("working_directory", &self.working_directory).finish()
+        f.debug_struct("FizzLocal")
+            .field("process_id", &self.process_id)
+            .field("reaper", &self.reaper)
+            .field("fds", &self.fds)
+            .field("dirs", &self.dirs)
+            .field("barriers", &self.barriers)
+            .field("condvars", &self.condvars)
+            .field("named_semaphores", &self.named_semaphores)
+            .field("file_objs", &self.file_objs)
+            .field("mutexes", &self.mutexes)
+            .field("rwlocks", &self.rwlocks)
+            .field("semaphores", &self.semaphores)
+            .field("spinlocks", &self.spinlocks)
+            .field("pthreads", &self.pthreads)
+            .field("pthread_cleanup", &self.pthread_cleanup)
+            .field("pthread_keys", &self.pthread_keys)
+            .field("pthread_key_values", &self.pthread_key_values)
+            .field("terminated_threads", &self.terminated_threads)
+            .field("cancelling_threads", &self.cancelling_threads)
+            .field("awaiting_thread_death", &self.awaiting_thread_death)
+            .field("working_directory", &self.working_directory)
+            .finish()
     }
 }
 
 impl FizzLocal {
-    fn new(id: ProcessId, plugin_modules: Option<PluginModules>, transfer_fds: Option<Descriptors>) -> Self {
-        let working_directory = FilePath::from_raw_bytes(env::current_dir().unwrap().as_os_str().as_bytes()).unwrap();
+    fn new(
+        id: ProcessId,
+        plugin_modules: Option<PluginModules>,
+        transfer_fds: Option<Descriptors>,
+    ) -> Self {
+        let working_directory =
+            FilePath::from_raw_bytes(env::current_dir().unwrap().as_os_str().as_bytes()).unwrap();
 
         let fds = match transfer_fds {
             Some(fds) => fds,
@@ -789,9 +894,8 @@ impl FizzLocal {
         // Insert the current (main) pthread into `pthreads`
         let mut pthreads = HashMap::with_hasher(Default::default());
         pthreads.insert(unsafe { libc::pthread_self() }, thread::current().id());
-        
+
         Self {
-            
             process_id: id,
             plugin_modules,
             reaper: None,
@@ -819,7 +923,6 @@ impl FizzLocal {
 
 #[derive(Debug)]
 pub struct FizzGlobal {
-
     persistent_rounds: usize,
     next_process_id: ProcessId,
     /// The next StreamId available to be assigned to an emulated stream.
@@ -828,7 +931,7 @@ pub struct FizzGlobal {
     next_ephemeral_port: u16,
     /// The thread identifier to be executed by the waking process.
     waking_thread_id: Option<ThreadId>,
-    process_locks: ValueIndex<ProcessId, MaybeUninit<Semaphore>, FIZZLE_MAX_PROCESSES>, 
+    process_locks: ValueIndex<ProcessId, MaybeUninit<Semaphore>, FIZZLE_MAX_PROCESSES>,
     transfer_fds: Option<Descriptors>,
     pub shared_mem_initialized: bool,
     pub passthrough_process_id: ProcessId,
@@ -891,7 +994,8 @@ impl FizzGlobal {
             *ptr::addr_of_mut!((*state).fuzz_input) = Buffer::new();
             *ptr::addr_of_mut!((*state).fuzz_endpoints) = FnvIndexMap::new();
             // TODO: enable custom seed loading
-            *ptr::addr_of_mut!((*state).prefuzz_rng) = SmallRng::seed_from_u64(0xA_BAD_5EED_A_BAD_5EEDu64);
+            *ptr::addr_of_mut!((*state).prefuzz_rng) =
+                SmallRng::seed_from_u64(0xA_BAD_5EED_A_BAD_5EEDu64);
 
             &mut (*state)
         }
@@ -900,23 +1004,27 @@ impl FizzGlobal {
     fn load_config_mappings(&mut self, endpoints: Vec<PluginConfigEndpoint>) {
         for endpoint in endpoints {
             for _ in 0..endpoint.num_streams {
-            let endpoint_variant = endpoint.endpoint_variant.clone();
+                let endpoint_variant = endpoint.endpoint_variant.clone();
                 match endpoint_variant {
-                    IoEndpointVariant::Stdio => self.stdio = match endpoint.emulation_type {
-                        IoEmulationType::Feedback => StdioBackend::Feedback(StandardFeedback {
-                            buf: self.buffers.put(Buffer::new()),
-                            read_polled: self.polled_events.put(PolledInfo::new()),
-                            write_polled: self.polled_events.put(PolledInfo::new_raised()),
-                        }),
-                        IoEmulationType::Plugin(module_id) => StdioBackend::Plugin(self.add_plugin(endpoint.endpoint_variant.clone(), module_id)),
-                        IoEmulationType::Sink =>StdioBackend::Sink,
-                        IoEmulationType::NullSink => StdioBackend::NullSink,
-                        IoEmulationType::Fuzz => {
-                            self.add_fuzz_endpoint(FdResource::Stdin);
-                            StdioBackend::Fuzz
-                        },
-                        IoEmulationType::Passthrough => StdioBackend::Passthrough,
-                    },
+                    IoEndpointVariant::Stdio => {
+                        self.stdio = match endpoint.emulation_type {
+                            IoEmulationType::Feedback => StdioBackend::Feedback(StandardFeedback {
+                                buf: self.buffers.put(Buffer::new()),
+                                read_polled: self.polled_events.put(PolledInfo::new()),
+                                write_polled: self.polled_events.put(PolledInfo::new_raised()),
+                            }),
+                            IoEmulationType::Plugin(module_id) => StdioBackend::Plugin(
+                                self.add_plugin(endpoint.endpoint_variant.clone(), module_id),
+                            ),
+                            IoEmulationType::Sink => StdioBackend::Sink,
+                            IoEmulationType::NullSink => StdioBackend::NullSink,
+                            IoEmulationType::Fuzz => {
+                                self.add_fuzz_endpoint(FdResource::Stdin);
+                                StdioBackend::Fuzz
+                            }
+                            IoEmulationType::Passthrough => StdioBackend::Passthrough,
+                        }
+                    }
                     IoEndpointVariant::File(pathbuf) => {
                         let path =
                             FilePath::from_raw_bytes(pathbuf.as_os_str().as_bytes()).unwrap();
@@ -930,7 +1038,9 @@ impl FizzGlobal {
                                 }))
                             }
                             IoEmulationType::Plugin(module_id) => {
-                                let backend = FileBackend::Plugin(self.add_plugin(endpoint.endpoint_variant.clone(), module_id));
+                                let backend = FileBackend::Plugin(
+                                    self.add_plugin(endpoint.endpoint_variant.clone(), module_id),
+                                );
                                 self.files.put(backend)
                             }
                             IoEmulationType::Sink => self.files.put(FileBackend::Sink),
@@ -939,8 +1049,10 @@ impl FizzGlobal {
                                 let file_id = self.files.put(FileBackend::Fuzz);
                                 self.add_fuzz_endpoint(FdResource::File(file_id));
                                 file_id
-                            },
-                            IoEmulationType::Passthrough => self.files.put(FileBackend::Passthrough),
+                            }
+                            IoEmulationType::Passthrough => {
+                                self.files.put(FileBackend::Passthrough)
+                            }
                         };
 
                         self.file_paths.insert(path, file_id).unwrap();
@@ -948,7 +1060,9 @@ impl FizzGlobal {
                     IoEndpointVariant::TcpServer(addr) => {
                         let backend = match endpoint.emulation_type {
                             IoEmulationType::Feedback => ServerBackend::Feedback(()),
-                            IoEmulationType::Plugin(module_id) => ServerBackend::Plugin(self.add_plugin(endpoint_variant.clone(), module_id)),
+                            IoEmulationType::Plugin(module_id) => ServerBackend::Plugin(
+                                self.add_plugin(endpoint_variant.clone(), module_id),
+                            ),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
                             IoEmulationType::Fuzz => ServerBackend::Fuzz,
@@ -961,7 +1075,9 @@ impl FizzGlobal {
                         let mut is_fuzzing = false;
                         let backend = match endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
-                            IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(self.add_plugin(endpoint_variant.clone(), module_id)),
+                            IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(
+                                self.add_plugin(endpoint_variant.clone(), module_id),
+                            ),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
                             IoEmulationType::Fuzz => {
@@ -976,7 +1092,9 @@ impl FizzGlobal {
                     IoEndpointVariant::UdpServer(addr) => {
                         let backend = match endpoint.emulation_type {
                             IoEmulationType::Feedback => ServerBackend::Feedback(()),
-                            IoEmulationType::Plugin(module_id) => ServerBackend::Plugin(self.add_plugin(endpoint_variant.clone(), module_id)),
+                            IoEmulationType::Plugin(module_id) => ServerBackend::Plugin(
+                                self.add_plugin(endpoint_variant.clone(), module_id),
+                            ),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
                             IoEmulationType::Fuzz => ServerBackend::Fuzz,
@@ -989,7 +1107,9 @@ impl FizzGlobal {
                         let mut is_fuzzing = false;
                         let backend = match endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
-                            IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(self.add_plugin(endpoint_variant.clone(), module_id)),
+                            IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(
+                                self.add_plugin(endpoint_variant.clone(), module_id),
+                            ),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
                             IoEmulationType::Fuzz => {
@@ -1004,7 +1124,9 @@ impl FizzGlobal {
                     IoEndpointVariant::SctpServer(addr) => {
                         let backend = match endpoint.emulation_type {
                             IoEmulationType::Feedback => ServerBackend::Feedback(()),
-                            IoEmulationType::Plugin(module_id) => ServerBackend::Plugin(self.add_plugin(endpoint_variant.clone(), module_id)),
+                            IoEmulationType::Plugin(module_id) => ServerBackend::Plugin(
+                                self.add_plugin(endpoint_variant.clone(), module_id),
+                            ),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
                             IoEmulationType::Fuzz => ServerBackend::Fuzz,
@@ -1017,7 +1139,9 @@ impl FizzGlobal {
                         let mut is_fuzzing = false;
                         let backend = match endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
-                            IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(self.add_plugin(endpoint_variant.clone(), module_id)),
+                            IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(
+                                self.add_plugin(endpoint_variant.clone(), module_id),
+                            ),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
                             IoEmulationType::Fuzz => {
@@ -1037,7 +1161,6 @@ impl FizzGlobal {
 
     pub fn gen_random_bytes(&mut self, input: &mut [MaybeUninit<u8>]) {
         if self.fuzz_input.is_empty() {
-            
             for b in input {
                 *b = MaybeUninit::new(self.prefuzz_rng.gen());
             }
@@ -1062,13 +1185,23 @@ impl FizzGlobal {
 
     pub fn add_fuzz_endpoint(&mut self, resource: FdResource) {
         let read_polled = self.polled_events.put(PolledInfo::new());
-        self.fuzz_endpoints.insert(resource, FuzzEndpointInfo {
-            read_polled,
-            read_idx: 0,
-        }).unwrap();
+        self.fuzz_endpoints
+            .insert(
+                resource,
+                FuzzEndpointInfo {
+                    read_polled,
+                    read_idx: 0,
+                },
+            )
+            .unwrap();
     }
 
-    pub fn add_pending_client(&mut self, rem_addr: TransportAddress, backend: PendingBackend, is_fuzzing: bool) {
+    pub fn add_pending_client(
+        &mut self,
+        rem_addr: TransportAddress,
+        backend: PendingBackend,
+        is_fuzzing: bool,
+    ) {
         let client_socket_id = self
             .sockets
             .put(SocketState::PendingConnection(PendingSocket {
@@ -1084,9 +1217,7 @@ impl FizzGlobal {
         // Add the client to the pending client chain, if applicable
         match self.socket_locations.get_mut(&rem_addr) {
             None => {
-                let polled_id = self
-                    .polled_events
-                    .put(PolledInfo::new());
+                let polled_id = self.polled_events.put(PolledInfo::new());
                 self.socket_locations
                     .insert(
                         rem_addr,
@@ -1120,9 +1251,7 @@ impl FizzGlobal {
                     *next_awaiting = Some(client_socket_id);
                 }
                 None => {
-                    let polled_id = self
-                        .polled_events
-                        .put(PolledInfo::new());
+                    let polled_id = self.polled_events.put(PolledInfo::new());
                     location_info.pending = Some(PendingInfo {
                         client: client_socket_id,
                         poll: polled_id,
@@ -1159,7 +1288,11 @@ impl FizzGlobal {
         };
     }
 
-    pub fn add_plugin(&mut self, endpoint: IoEndpointVariant, module_id: PluginModuleId) -> PluginId {
+    pub fn add_plugin(
+        &mut self,
+        endpoint: IoEndpointVariant,
+        module_id: PluginModuleId,
+    ) -> PluginId {
         let stream = self.next_stream_id;
         self.next_stream_id = StreamId::from(usize::from(stream) + 1);
         let read_buf = self.buffers.put(Buffer::new());
@@ -1340,7 +1473,7 @@ pub enum SocketState {
     PendingConnection(PendingSocket),
     Connecting(ConnectingSocket),
     Connected(ConnectedSocket),
-//    Error,
+    //    Error,
 }
 
 #[derive(Debug)]
@@ -1395,7 +1528,7 @@ pub struct PluginInfo {
     pub read_buf: BufferId,
     pub read_polled: PolledId,
     pub write_buf: BufferId,
-    pub write_polled: PolledId
+    pub write_polled: PolledId,
 }
 
 #[derive(Debug)]
@@ -1463,7 +1596,6 @@ pub enum PipeMode {
 
 #[derive(Debug)]
 pub struct MessageQueueInfo {}
-
 
 #[derive(Debug)]
 pub struct RwLockInfo {

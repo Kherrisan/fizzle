@@ -32,7 +32,7 @@ pub struct PluginConfig {
 pub struct PluginConfigEndpoint {
     pub endpoint_variant: IoEndpointVariant,
     pub emulation_type: IoEmulationType,
-//    pub module_id: Option<PluginModuleId>,
+    //    pub module_id: Option<PluginModuleId>,
     pub num_streams: usize,
 }
 
@@ -59,15 +59,15 @@ pub enum IoEmulationType {
     Sink,
     #[allow(unused)]
     NullSink,
-    #[allow(unused)]   
+    #[allow(unused)]
     Fuzz,
 }
 
 /// Runs all plugins defined within the fizzle shim, returning `true` if any plugin raised events
 /// that may require further handling by the process.
-/// 
+///
 /// # Panics
-/// 
+///
 /// This method will panic if it is not called in the root process
 pub fn run_plugins(ctx: &mut FizzState) -> bool {
     let max_id = ctx.global.plugins.max_key();
@@ -75,7 +75,6 @@ pub fn run_plugins(ctx: &mut FizzState) -> bool {
 
     // TODO: turn this into an iterator in the future
     for i in 0..=max_id {
-
         // TODO: handle datagrams here
 
         let plugin_id = PluginId::from(i);
@@ -89,7 +88,13 @@ pub fn run_plugins(ctx: &mut FizzState) -> bool {
                 stream_id: plugin_info.stream.clone(),
             };
 
-            let plugin_module = ctx.local.plugin_modules.as_mut().unwrap().get_mut(plugin_module_id).unwrap();
+            let plugin_module = ctx
+                .local
+                .plugin_modules
+                .as_mut()
+                .unwrap()
+                .get_mut(plugin_module_id)
+                .unwrap();
             let write_buf_id = plugin_info.write_buf;
             let write_polled = plugin_info.write_polled;
             let read_buf_id = plugin_info.read_buf;

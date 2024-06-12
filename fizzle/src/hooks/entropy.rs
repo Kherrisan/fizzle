@@ -17,8 +17,6 @@ hook_macros::hook! {
     }
 }
 
-
-
 hook_macros::hook! {
     unsafe fn srand(
         _seed: libc::c_uint

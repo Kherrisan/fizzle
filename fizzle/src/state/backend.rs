@@ -22,7 +22,7 @@ pub enum IoBackend<R: Clone + Copy + Debug, F: Clone + Copy + Debug> {
     Sink,
     NullSink,
     /// Indicates that fuzzing input should be passed directly through the I/O Endpoint.
-    /// 
+    ///
     /// The `usize` value specifies the index of fuzzed input that has been read to.
     #[allow(unused)]
     Fuzz,

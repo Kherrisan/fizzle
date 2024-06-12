@@ -20,7 +20,6 @@ pub unsafe fn dlsym_next(symbol: &'static str) -> *const u8 {
     ptr as *const u8
 }
 
-
 macro_rules! va_args_hook {
     (unsafe extern "C" fn $real_fn:ident ( $($v:ident : $t:ty),*) -> $r:ty => preload ( $state:ident, $va_args:ident ) $body:block) => {
         /*

@@ -161,7 +161,7 @@ hook_macros::hook! {
                 e
             }
         });
-        
+
         // Add our fizzle env to the end of this list
         env[envp_idx] = fizzle_env.as_ptr();
         // Ensures that `fizzle_env` remains valid at least until `execve` is called

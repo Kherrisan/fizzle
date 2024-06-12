@@ -3,7 +3,10 @@ use std::ptr;
 use std::thread::{self, ThreadId};
 
 use crate::state::identifiers::{BarrierPtr, CondVarPtr, MutexPtr, RwLockPtr, SpinlockPtr};
-use crate::state::{set_entered_handler, BarrierInfo, PThreadDestructor, PThreadRoutine, RwLockInfo, RwLockState, ThreadTermination};
+use crate::state::{
+    set_entered_handler, BarrierInfo, PThreadDestructor, PThreadRoutine, RwLockInfo, RwLockState,
+    ThreadTermination,
+};
 use crate::{hook_macros, state};
 
 pub type PTFunction = unsafe extern "C" fn(*mut libc::c_void) -> *mut libc::c_void;
@@ -149,7 +152,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn pthread_cleanup_push(
         routine: PThreadDestructor,
-        arg: *mut libc::c_void 
+        arg: *mut libc::c_void
     ) => fizzle_pthread_cleanup_push(ctx) {
         ctx.local.pthread_cleanup.get_mut(&thread::current().id()).unwrap().push_back(PThreadRoutine {
             function: routine,
@@ -479,17 +482,17 @@ hook_macros::hook! {
                 }
             }
         };
-        
+
         // TODO: PTHREAD_MUTEX_INITIALIZER
         //   { 0, 0, 0, 0, __PTHREAD_MUTEX_TIMED, 0, { { 0, 0 } } }
-        // 
+        //
         // typedef union
         // {
         //   struct __pthread_mutex_s __data;
         //   char __size[__SIZEOF_PTHREAD_MUTEX_T];
         //   long int __align;
         // } pthread_mutex_t;
-        
+
 
         let available = mutex_queue.is_empty();
         mutex_queue.push_back(thread::current().id());

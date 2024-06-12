@@ -1,6 +1,6 @@
-use std::ptr;
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
+use std::ptr;
 
 unsafe fn raw(s: &Semaphore) -> *mut libc::sem_t {
     // if let Some(init) = &s.initialized {
@@ -27,20 +27,18 @@ pub struct Semaphore {
 }
 
 impl Semaphore {
-
-    
     /*
     /// Constructs a new semaphore in place.
-    /// 
-    /// This method MUST ONLY be used in global contexts (e.g. for a static variable); see `Safety` 
+    ///
+    /// This method MUST ONLY be used in global contexts (e.g. for a static variable); see `Safety`
     /// for more details.
-    /// 
+    ///
     /// # Safety
-    /// 
+    ///
     /// This method lazily initializes the semaphore in a thread-unsafe way. It should not be used in
     /// multithreaded contexts unless guarantees are put in place that only one thread is executing at
     /// the time this method is called.
-    /// 
+    ///
     /// `Sem` is not safe to relocate in memory; once allocated, it must remain at a fixed address.
     /// Any movement of `Sem` (even into a Box via (`Box::new(Sem::static_new())`) will lead to
     /// undefined behavior. It is up to the caller to ensure that this method is only called in a
@@ -64,13 +62,13 @@ impl Semaphore {
             let sem = s.as_mut().unwrap().inner.get().cast();
             assert!(libc::sem_init(sem, libc::PTHREAD_PROCESS_PRIVATE, value) == 0);
         }
-        
+
         s
     }
     */
 
     /// Constructs a new semaphore within a boxed memory region.
-    /// 
+    ///
     /// This method is safe to use under
     /// most normal circumstances, but the enclosed `Sem` must not be moved out of the box or
     /// undefined behavior will occur.
@@ -89,9 +87,13 @@ impl Semaphore {
     }
 
     /// Initializes a semaphore in-place.
-    /// 
+    ///
     /// This method is safe to use with shared memory to enable inter-process communication locks.
-    pub fn initialize(sem: &mut MaybeUninit<Semaphore>, shared: bool, value: u32) -> &mut Semaphore {
+    pub fn initialize(
+        sem: &mut MaybeUninit<Semaphore>,
+        shared: bool,
+        value: u32,
+    ) -> &mut Semaphore {
         let access = match shared {
             true => libc::PTHREAD_PROCESS_SHARED,
             false => libc::PTHREAD_PROCESS_PRIVATE,
@@ -99,7 +101,8 @@ impl Semaphore {
 
         unsafe {
             // ptr::addr_of_mut!((*sem.as_mut_ptr()).initialized).write(None);
-            ptr::addr_of_mut!((*sem.as_mut_ptr()).inner).write(UnsafeCell::new(MaybeUninit::uninit()));
+            ptr::addr_of_mut!((*sem.as_mut_ptr()).inner)
+                .write(UnsafeCell::new(MaybeUninit::uninit()));
             // Safety: the memory of `sem` is now all initialized
             let init_sem = sem.assume_init_mut();
             assert!(libc::sem_init(init_sem.inner.get().cast(), access, value) == 0);
@@ -140,7 +143,7 @@ impl Semaphore {
         if res != 0 {
             panic!("semaphore internal error during post()");
         }
-    }   
+    }
 }
 
 impl Drop for Semaphore {

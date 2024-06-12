@@ -22,7 +22,7 @@ impl FdInfo {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash,)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FdResource {
     /// Files `open()`ed using O_PATH
     Directory(DirectoryId),
