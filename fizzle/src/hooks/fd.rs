@@ -47,18 +47,16 @@ hook_macros::hook! {
         match ctx.local.fds.get_mut(DescriptorId::new(fd)) {
             Some(fd_info) if fd_info.is_passthrough => {
                 let dupfd = hook_macros::real!(fcntl)(fd, cmd, arg);
-                if dupfd >= 0 {
-                    if cmd == libc::F_DUPFD || cmd == libc::F_DUPFD_CLOEXEC {
-                        let nonblocking = fd_info.nonblocking;
-                        let close_on_exec = cmd == libc::F_DUPFD_CLOEXEC;
-                        let resource = fd_info.resource;
-                        ctx.local.fds.insert(DescriptorId::new(dupfd), FdInfo {
-                            close_on_exec,
-                            nonblocking,
-                            is_passthrough: true,
-                            resource,
-                        });
-                    }
+                if dupfd >= 0 && (cmd == libc::F_DUPFD || cmd == libc::F_DUPFD_CLOEXEC) {
+                    let nonblocking = fd_info.nonblocking;
+                    let close_on_exec = cmd == libc::F_DUPFD_CLOEXEC;
+                    let resource = fd_info.resource;
+                    ctx.local.fds.insert(DescriptorId::new(dupfd), FdInfo {
+                        close_on_exec,
+                        nonblocking,
+                        is_passthrough: true,
+                        resource,
+                    });
                 }
 
                 dupfd

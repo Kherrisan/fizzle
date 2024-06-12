@@ -20,7 +20,7 @@ hook_macros::hook! {
         // TODO: what about semaphores shared via memory across processes?
 
         if pshared != 0 {
-
+            panic!("shared anonymous semaphores unsupported by fizzle")
         }
 
         let semaphore_id = SemaphorePtr::from(sem);
@@ -228,7 +228,7 @@ hook_macros::hook! {
             Some(value) => semaphore.value = value,
             None => {
                 semaphore.waiting.push_back(WorkerId {
-                    process_id: process_id,
+                    process_id,
                     thread_id: thread::current().id()
                 }).unwrap();
                 drop(ctx);
@@ -282,7 +282,7 @@ hook_macros::hook! {
             Some(value) => semaphore.value = value,
             None => {
                 semaphore.waiting.push_back(WorkerId {
-                    process_id: process_id,
+                    process_id,
                     thread_id: thread::current().id()
                 }).unwrap();
                 drop(ctx);

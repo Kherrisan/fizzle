@@ -1068,7 +1068,7 @@ fn send_connected_socket(
             }
             ctx.raise_polled(read_polled);
 
-            return total_written as isize;
+            total_written as isize
         }
         ConnectedBackend::Feedback(feedback) => {
             let buffer_id = feedback.buf;
@@ -1116,7 +1116,7 @@ fn send_connected_socket(
             }
             ctx.raise_polled(read_polled);
 
-            return total_written as isize;
+            total_written as isize
         }
         ConnectedBackend::Plugin(plugin_id) => {
             let plugin_id = *plugin_id;
@@ -1166,7 +1166,7 @@ fn send_connected_socket(
             }
             ctx.raise_polled(read_polled);
 
-            return total_written as isize;
+            total_written as isize
         }
         ConnectedBackend::Sink => data.iter().map(|s| s.len()).sum::<usize>() as libc::ssize_t,
         ConnectedBackend::NullSink => data.iter().map(|s| s.len()).sum::<usize>() as libc::ssize_t,
@@ -1194,7 +1194,7 @@ fn send_connectionless_socket(
         return -1;
     }
 
-    let Some(rem_addr) = addr.or_else(|| sock_info.rem_addr) else {
+    let Some(rem_addr) = addr.or(sock_info.rem_addr) else {
         unsafe { *libc::__errno_location() = libc::ENOTCONN };
         return -1;
     };
@@ -1278,7 +1278,7 @@ fn send_connectionless_socket(
             }
             ctx.raise_polled(read_polled);
 
-            return amount_written as isize;
+            amount_written as isize
         }
         ConnectionlessBackend::Feedback(feedback) => {
             let buffer_id = feedback.buf;
@@ -1309,7 +1309,7 @@ fn send_connectionless_socket(
             }
             ctx.raise_polled(read_polled);
 
-            return amount_written as isize;
+            amount_written as isize
         }
         ConnectionlessBackend::Plugin(plugin_id) => {
             let plugin_info = ctx.global.plugins.get(plugin_id).unwrap();
@@ -1339,7 +1339,7 @@ fn send_connectionless_socket(
                 ctx.lower_polled(write_polled);
             }
 
-            return amount_written as isize;
+            amount_written as isize
         }
         ConnectionlessBackend::Sink => data.len() as libc::ssize_t,
         ConnectionlessBackend::NullSink => data.len() as libc::ssize_t,
@@ -1558,9 +1558,9 @@ fn recv_connected_socket(
                 ctx.lower_polled(read_polled);
             }
 
-            return total_read as libc::ssize_t;
+            total_read as libc::ssize_t
         }
-        IoBackend::Sink => return 0 as libc::ssize_t,
+        IoBackend::Sink => 0 as libc::ssize_t,
         IoBackend::NullSink => {
             let mut total_len = 0;
             for slice in data.iter_mut() {

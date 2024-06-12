@@ -252,45 +252,41 @@ hook_macros::hook! {
         let mut write_pollers = HashMap::with_hasher(FxBuildHasher::default());
 
         for fd in 0..nfds {
-            if !readfds.is_null() {
-                if libc::FD_ISSET(fd, readfds) {
-                    match fd_to_pollin(&mut ctx, fd) {
-                        PolledStatus::Pollable(polled_id) => {
-                            if !ctx.polled_is_ready(polled_id) {
-                                libc::FD_CLR(fd, readfds);
-                                read_pollers.insert(polled_id, fd);
-                            } else {
-                                total_ready += 1;
-                            }
-                        },
-                        PolledStatus::BadFd => {
-                            *libc::__errno_location() = libc::EBADF;
-                            return -1
-                        },
-                        PolledStatus::NotPollable => libc::FD_CLR(fd, readfds),
-                        PolledStatus::ImmediatelyPollable => total_ready += 1,
-                    }
+            if !readfds.is_null() && libc::FD_ISSET(fd, readfds) {
+                match fd_to_pollin(&mut ctx, fd) {
+                    PolledStatus::Pollable(polled_id) => {
+                        if !ctx.polled_is_ready(polled_id) {
+                            libc::FD_CLR(fd, readfds);
+                            read_pollers.insert(polled_id, fd);
+                        } else {
+                            total_ready += 1;
+                        }
+                    },
+                    PolledStatus::BadFd => {
+                        *libc::__errno_location() = libc::EBADF;
+                        return -1
+                    },
+                    PolledStatus::NotPollable => libc::FD_CLR(fd, readfds),
+                    PolledStatus::ImmediatelyPollable => total_ready += 1,
                 }
             }
 
-            if !writefds.is_null() {
-                if libc::FD_ISSET(fd, writefds) {
-                    match fd_to_pollout(&mut ctx, fd) {
-                        PolledStatus::Pollable(polled_id) => {
-                            if !ctx.polled_is_ready(polled_id) {
-                                libc::FD_CLR(fd, writefds);
-                                write_pollers.insert(polled_id, fd);
-                            } else {
-                                total_ready += 1;
-                            }
-                        },
-                        PolledStatus::BadFd => {
-                            *libc::__errno_location() = libc::EBADF;
-                            return -1
-                        },
-                        PolledStatus::NotPollable => libc::FD_CLR(fd, readfds),
-                        PolledStatus::ImmediatelyPollable => total_ready += 1,
-                    }
+            if !writefds.is_null() && libc::FD_ISSET(fd, writefds) {
+                match fd_to_pollout(&mut ctx, fd) {
+                    PolledStatus::Pollable(polled_id) => {
+                        if !ctx.polled_is_ready(polled_id) {
+                            libc::FD_CLR(fd, writefds);
+                            write_pollers.insert(polled_id, fd);
+                        } else {
+                            total_ready += 1;
+                        }
+                    },
+                    PolledStatus::BadFd => {
+                        *libc::__errno_location() = libc::EBADF;
+                        return -1
+                    },
+                    PolledStatus::NotPollable => libc::FD_CLR(fd, readfds),
+                    PolledStatus::ImmediatelyPollable => total_ready += 1,
                 }
             }
         }

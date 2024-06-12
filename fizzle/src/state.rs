@@ -390,9 +390,9 @@ impl FizzCell {
             .local
             .pthread_cleanup
             .remove(&thread_id)
-            .unwrap_or(VecDeque::new());
+            .unwrap_or_default();
 
-        let pthread_keys: Vec<u32> = ctx.local.pthread_keys.keys().map(|k| *k).collect();
+        let pthread_keys: Vec<u32> = ctx.local.pthread_keys.keys().copied().collect();
         for key in pthread_keys {
             if let Some(values) = ctx.local.pthread_key_values.get_mut(&key) {
                 if let Some(p) = values.remove(&thread_id) {
@@ -565,10 +565,8 @@ pub struct FizzState {
 #[no_mangle]
 extern "C" fn fizzle_atexit_suspend() {
     loop {
-        loop {
-            // TODO: clean up any dangling polling items here, like for `_exit()`/`exit()`
-            FIZZLE_STATE.yield_thread()
-        }
+        // TODO: clean up any dangling polling items here, like for `_exit()`/`exit()`
+        FIZZLE_STATE.yield_thread()
     }
 }
 
@@ -577,7 +575,7 @@ impl FizzState {
         // This needs to go before `allocate_global_memory`, as this env variable gets set within it.
         let is_initialized = matches!(env::var(FIZZLE_MEMORY_ENV), Ok(_));
 
-        if matches!(env::var(FIZZLE_NOEXIT_ENV), Ok(_)) {
+        if env::var(FIZZLE_NOEXIT_ENV).is_ok() {
             unsafe {
                 // Registered before any other atexit handler
                 // TODO: handle this different with proc interface
@@ -964,7 +962,7 @@ impl FizzGlobal {
     /// Takes an uninitialized InterprocessState and initializes it in place.
     fn initialize(state: &mut MaybeUninit<FizzGlobal>) -> &mut FizzGlobal {
         unsafe {
-            let state = state.as_mut_ptr() as *mut FizzGlobal;
+            let state = state.as_mut_ptr();
 
             *ptr::addr_of_mut!((*state).shared_mem_initialized) = false;
             *ptr::addr_of_mut!((*state).persistent_rounds) = FIZZLE_AFL_LOOP;
@@ -995,7 +993,7 @@ impl FizzGlobal {
             *ptr::addr_of_mut!((*state).fuzz_endpoints) = FnvIndexMap::new();
             // TODO: enable custom seed loading
             *ptr::addr_of_mut!((*state).prefuzz_rng) =
-                SmallRng::seed_from_u64(0xA_BAD_5EED_A_BAD_5EEDu64);
+                SmallRng::seed_from_u64(0xABAD_5EED_ABAD_5EED_u64);
 
             &mut (*state)
         }
@@ -1300,7 +1298,7 @@ impl FizzGlobal {
         let write_buf = self.buffers.put(Buffer::new());
         let write_polled = self.polled_events.put(PolledInfo::new_raised());
 
-        let plugin_id = self.plugins.put(PluginInfo {
+        self.plugins.put(PluginInfo {
             endpoint,
             stream,
             module_id,
@@ -1308,9 +1306,7 @@ impl FizzGlobal {
             read_polled,
             write_buf,
             write_polled,
-        });
-
-        plugin_id
+        })
     }
 
     pub fn next_ephemeral_address(

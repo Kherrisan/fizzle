@@ -32,8 +32,8 @@ impl<const T: usize> Clone for Buffer<T> {
 
         Self {
             data,
-            data_start: self.data_start.clone(),
-            data_end: self.data_end.clone(),
+            data_start: self.data_start,
+            data_end: self.data_end,
         }
     }
 }
@@ -336,6 +336,12 @@ impl<K: Sized + From<usize> + Into<usize> + Copy, V: Sized, const N: usize> Valu
         }
     }
 
+    /// Initializes the given ValueIndex's contents in-place.
+    /// 
+    /// # Safety
+    /// 
+    /// The caller of this method must ensure that `value_idx` points to a correctly allocated
+    /// ValueIndex.
     pub unsafe fn initialize(value_idx: *mut ValueIndex<K, V, N>) {
         for i in 0..N {
             *ptr::addr_of_mut!((*value_idx).inner[i]) = None;

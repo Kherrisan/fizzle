@@ -54,7 +54,7 @@ hook_macros::hook! {
                 protocol: TransportProtocol::Sctp,
             })),
             libc::IPPROTO_UDP => {
-                let local_addr = ctx.global.next_ephemeral_address(family, TransportProtocol::Udp).address().clone();
+                let local_addr = *ctx.global.next_ephemeral_address(family, TransportProtocol::Udp).address();
                 let recv_buf = ctx.global.buffers.put(Buffer::new());
                 let read_polled = ctx.global.polled_events.put(PolledInfo::new());
                 let write_polled = ctx.global.polled_events.put(PolledInfo::new_raised());
@@ -273,7 +273,7 @@ hook_macros::hook! {
                     return -1 // TODO: in the future, wait until a server does exist
                 };
 
-                let server_backend = server_info.backend.clone();
+                let server_backend = server_info.backend;
 
                 // Mark the socket as connected immediately, since it's connecting to a backend
                 // NOTE: some programs may be confused by this--a connection immediately returning 0 is unusual for a transport protocol
@@ -396,12 +396,10 @@ hook_macros::hook! {
         flags: libc::c_int
     ) -> libc::c_int => fizzle_accept4(ctx) {
 
-        if !addr.is_null() {
-            if (*addr).sa_family as i32 == libc::AF_INET && (*addrlen) as usize != mem::size_of::<libc::sockaddr_in>()
-                    || (*addr).sa_family as i32 == libc::AF_INET6 && (*addrlen) as usize != mem::size_of::<libc::sockaddr_in6>() {
-                *libc::__errno_location() = libc::EINVAL;
-                return -1;
-            }
+        if !addr.is_null() && ((*addr).sa_family as i32 == libc::AF_INET && (*addrlen) as usize != mem::size_of::<libc::sockaddr_in>()
+                || (*addr).sa_family as i32 == libc::AF_INET6 && (*addrlen) as usize != mem::size_of::<libc::sockaddr_in6>()) {
+            *libc::__errno_location() = libc::EINVAL;
+            return -1;
         }
 
         let descriptor_id = DescriptorId::new(fd);
@@ -536,11 +534,11 @@ fn join_socket_pair(
 
     let (client_addr, connect_backend) = match ctx.global.sockets.get_mut(connecting_id).unwrap() {
         SocketState::PendingConnection(pending_info) => {
-            (addr.unwrap(), pending_info.backend.clone())
+            (addr.unwrap(), pending_info.backend)
         }
         SocketState::Connecting(connecting_info) => {
             let client_addr = connecting_info.local_addr;
-            let connect_backend = connecting_info.backend.clone();
+            let connect_backend = connecting_info.backend;
             let polled = connecting_info.connect_polled; // Delete the current polled instance TODO: fix to remove dangling refs
             ctx.global.polled_events.remove(polled).unwrap();
             (client_addr, connect_backend)

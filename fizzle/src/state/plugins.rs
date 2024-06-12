@@ -85,7 +85,7 @@ pub fn run_plugins(ctx: &mut FizzState) -> bool {
             let plugin_module_id = plugin_info.module_id;
             let context = Context {
                 endpoint: plugin_info.endpoint.clone(),
-                stream_id: plugin_info.stream.clone(),
+                stream_id: plugin_info.stream,
             };
 
             let plugin_module = ctx

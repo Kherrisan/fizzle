@@ -160,9 +160,9 @@ impl From<usize> for PluginModuleId {
     }
 }
 
-impl Into<usize> for PluginModuleId {
-    fn into(self) -> usize {
-        self.0
+impl From<PluginModuleId> for usize {
+    fn from(value: PluginModuleId) -> usize {
+        value.0
     }
 }
 
@@ -175,9 +175,9 @@ impl From<usize> for PluginId {
     }
 }
 
-impl Into<usize> for PluginId {
-    fn into(self) -> usize {
-        self.0
+impl From<PluginId> for usize {
+    fn from(value: PluginId) -> usize {
+        value.0
     }
 }
 
