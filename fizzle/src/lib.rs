@@ -12,6 +12,7 @@ mod streams;
 
 pub(crate) use hook_macros::hook;
 
+use std::ffi::CStr;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::RawFd;
 use std::{array, mem, ptr};
@@ -19,16 +20,17 @@ use std::{array, mem, ptr};
 extern "C" {
     pub fn __afl_manual_init();
 
+    // TODO: three underscores for Apple
     pub fn __afl_persistent_loop(input: libc::c_uint) -> libc::c_int;
 
     pub static __afl_fuzz_len: *mut libc::c_uint;
 
     pub static __afl_fuzz_ptr: *mut libc::c_uchar;
 
-    pub static __afl_connected: *mut libc::c_int;
+    pub static __afl_connected: libc::c_int;
+
+    pub static mut __afl_sharedmem_fuzzing: libc::c_int;
 }
-
-
 
 pub fn report_strict_failure(explanation: &'static str) {
     debug_assert!(false, "{}", explanation);

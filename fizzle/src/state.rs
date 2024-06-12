@@ -261,10 +261,21 @@ impl FizzCell {
 
         // TODO: if using Nyx-Net, handle hypervisor preemption here
 
+        if !ctx.global.shared_mem_initialized {
+            ctx.global.shared_mem_initialized = true;
+            unsafe {
+                crate::__afl_sharedmem_fuzzing = 1;
+                log::debug!("calling __afl_manual_init()");
+                crate::__afl_manual_init(); // For AFL++
+                log::debug!("__afl_manual_init finished");
+            }
+        }
+
+
         // Wait for input from the fuzzing engine...
         // For AFL++, fuzzing input comes from stdin
         unsafe {
-            let rounds = if *crate::__afl_connected == 0 { 1 } else { ctx.global.persistent_rounds as libc::c_uint };
+            let rounds = if crate::__afl_connected == 0 { 1 } else { ctx.global.persistent_rounds as libc::c_uint };
             if crate::__afl_persistent_loop(rounds) == 0 {
                 libc::_exit(0);
             }
@@ -310,7 +321,6 @@ impl FizzCell {
 
         log::debug!("{} fuzzing endpoints are marked as ready to fuzz", polled_ready.len());
         for polled_id in polled_ready {
-
             ctx.raise_polled(polled_id);
         }
 
@@ -679,7 +689,24 @@ impl FizzState {
     pub fn delete_poller(&mut self, poller_id: PollerId) {
         let poller = self.global.pollers.remove(poller_id).unwrap();
         if poller.in_raised_queue {
-            // TODO: remove poller from raised queue...
+            // TODO: make queue indexable in future
+            for _ in 0..self.global.ready.len() {
+                let ready = self.global.ready.dequeue().unwrap();
+                if let ReadyInfo::Poller(current_poller_id) = ready {
+                    if current_poller_id != poller_id {
+                        self.global.ready.enqueue(ready).unwrap();
+                    }
+                }
+            }
+        }
+
+        for polled_id in poller.polled_events {
+            let polled = self.global.polled_events.get_mut(polled_id).unwrap();
+            for i in 0..polled.pollers.len() {
+                if *polled.pollers.get(i).unwrap() == poller_id {
+                    polled.pollers.remove(i);
+                }
+            }
         }
     }
 
@@ -792,6 +819,7 @@ impl FizzLocal {
 
 #[derive(Debug)]
 pub struct FizzGlobal {
+
     persistent_rounds: usize,
     next_process_id: ProcessId,
     /// The next StreamId available to be assigned to an emulated stream.
@@ -802,6 +830,7 @@ pub struct FizzGlobal {
     waking_thread_id: Option<ThreadId>,
     process_locks: ValueIndex<ProcessId, MaybeUninit<Semaphore>, FIZZLE_MAX_PROCESSES>, 
     transfer_fds: Option<Descriptors>,
+    pub shared_mem_initialized: bool,
     pub passthrough_process_id: ProcessId,
     pub epolls: ValueIndex<EpollId, EpollInfo, FIZZLE_MAX_EPOLLS>,
     pub file_paths: FnvIndexMap<FilePath, FileId, FIZZLE_MAX_FILE_PATHS>,
@@ -834,6 +863,7 @@ impl FizzGlobal {
         unsafe {
             let state = state.as_mut_ptr() as *mut FizzGlobal;
 
+            *ptr::addr_of_mut!((*state).shared_mem_initialized) = false;
             *ptr::addr_of_mut!((*state).persistent_rounds) = FIZZLE_AFL_LOOP;
             *ptr::addr_of_mut!((*state).next_process_id) = ProcessId::from(1);
             *ptr::addr_of_mut!((*state).next_stream_id) = StreamId::from(0);

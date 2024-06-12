@@ -47,6 +47,16 @@ hook_macros::hook! {
             wrapped_arg: arg,
         };
 
+        if !ctx.global.shared_mem_initialized {
+            ctx.global.shared_mem_initialized = true;
+            unsafe {
+                crate::__afl_sharedmem_fuzzing = 1;
+                log::debug!("calling __afl_manual_init()");
+                crate::__afl_manual_init(); // For AFL++
+                log::debug!("__afl_manual_init finished");
+            }
+        }
+
         // Let the scheduler know we have more to execute
         ctx.mark_thread_ready(thread::current().id());
         drop(ctx);
