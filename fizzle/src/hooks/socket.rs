@@ -699,7 +699,7 @@ struct sctp_event_subscribe {
 const SOL_SCTP: i32 = 132;
 const SCTP_SOCKOPT_BINDX_ADD: i32 = 100;
 const SCTP_SOCKOPT_BINDX_REM: i32 = 101;
-const SCTP_SOCKOPT_PEELOFF: i32 = 102;
+// const SCTP_SOCKOPT_PEELOFF: i32 = 102;
 
 const SCTP_SOCKOPT_CONNECTX_OLD: i32 = 107;
 const SCTP_GET_PEER_ADDRS: i32 = 108;

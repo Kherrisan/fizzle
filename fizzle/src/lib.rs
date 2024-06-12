@@ -12,7 +12,6 @@ mod streams;
 
 pub(crate) use hook_macros::hook;
 
-use std::ffi::CStr;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::RawFd;
 use std::{array, mem, ptr};
