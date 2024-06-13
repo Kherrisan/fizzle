@@ -309,37 +309,40 @@ hook_macros::hook! {
     }
 }
 
-// TODO: libc::file_handle not defined in `libc` crate
-/*
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct file_handle {
+    #[allow(unused)]
+    pub handle_bytes: libc::c_uint,
+    #[allow(unused)]
+    pub handle_typ: libc::c_int,
+    #[allow(unused)]
+    pub f_handle: *mut libc::c_char,
+}
+
 hook_macros::hook! {
     unsafe fn name_to_handle_at(
         dirfd: libc::c_int,
         pathname: *const libc::c_char,
-        handle: *mut libc::file_handle,
+        handle: *mut file_handle,
         mount_id: *mut libc::c_int,
         flags: libc::c_int
-    ) -> libc::c_int => fizzle_name_to_handle_at {
+    ) -> libc::c_int => fizzle_name_to_handle_at(_ctx) {
 
-        crate::debug_abort("name_to_handle_at")
-
-        hook_macros::real!(name_to_handle_at)(dirfd, pathname, mount_id, flags)
+        hook_macros::real!(name_to_handle_at)(dirfd, pathname, handle, mount_id, flags)
     }
 }
 
 hook_macros::hook! {
     unsafe fn open_by_handle_at(
         mount_fd: libc::c_int,
-        pathname: *const libc::c_char,
-        mount_id: *mut libc::c_int,
+        handle: *mut file_handle,
         flags: libc::c_int
-    ) -> libc::c_int => fizzle_open_by_handle_at {
+    ) -> libc::c_int => fizzle_open_by_handle_at(_ctx) {
 
-        crate::debug_abort("open_by_handle_at")
-
-        hook_macros::real!(name_to_handle_at)(dirfd, pathname, mount_id, flags)
+        hook_macros::real!(open_by_handle_at)(mount_fd, handle, flags)
     }
 }
-*/
 
 hook_macros::hook! {
     unsafe fn fwrite(
@@ -373,12 +376,24 @@ hook_macros::hook! {
     }
 }
 
-/*
+hook_macros::hook! {
+    unsafe fn lseek(
+        fd: libc::c_int,
+        offset: libc::off_t,
+        whence: libc::c_int
+    ) -> libc::c_int => fizzle_lseek(_ctx) {
+        hook_macros::real!(lseek)(fd, offset, whence)
+    }
+}
+
 hook_macros::hook! {
     unsafe fn fopen(
         pathname: *const libc::c_char,
-        _mode: *const libc::c_char
+        mode: *const libc::c_char
     ) -> *mut libc::FILE => fizzle_fopen(ctx) {
+        hook_macros::real!(fopen)(pathname, mode)
+
+        /*
         let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
             log::debug!("malformed or oversized filepath passed to `open`");
             *libc::__errno_location() = libc::ENAMETOOLONG; // TODO: split apart errors from backpathing too much (/../) vs too-long errors
@@ -428,9 +443,52 @@ hook_macros::hook! {
         };
 
         file
+        */
     }
 }
 
+hook_macros::hook! {
+    unsafe fn freopen(
+        pathname: *const libc::c_char,
+        mode: *const libc::c_char,
+        stream: *mut libc::FILE
+    ) -> *mut libc::FILE => fizzle_freopen(_ctx) {
+        hook_macros::real!(freopen)(pathname, mode, stream)
+    }
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct cookie_io_functions{
+    #[allow(unused)]
+    pub read: extern "C" fn(*mut libc::c_void, *mut libc::c_char, libc::size_t) -> libc::ssize_t,
+    #[allow(unused)]
+    pub write: extern "C" fn(*mut libc::c_void, *const libc::c_char, libc::size_t) -> libc::ssize_t,
+    #[allow(unused)]
+    pub seek: extern "C" fn(*mut libc::c_void, *mut libc::off64_t, libc::c_int) -> libc::c_int,
+    #[allow(unused)]
+    pub close: extern "C" fn(*mut libc::c_void) -> libc::c_int,
+}
+
+hook_macros::hook! {
+    unsafe fn fopencookie(
+        cookie: *mut libc::c_void,
+        mode: *const libc::c_char,
+        io_funcs: cookie_io_functions
+    ) -> *mut libc::FILE => fizzle_fopencookie(_ctx) {
+        hook_macros::real!(fopencookie)(cookie, mode, io_funcs)
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn fmemopen(
+        buf: *mut libc::c_void,
+        size: libc::size_t,
+        mode: *const libc::c_char
+    ) -> *mut libc::FILE => fizzle_fmemopen(_ctx) {
+        hook_macros::real!(fmemopen)(buf, size, mode)
+    }
+}
 
 hook_macros::hook! {
     unsafe fn __fsetlocking(
@@ -446,14 +504,16 @@ hook_macros::hook! {
         }
     }
 }
-*/
 
-/*
+
+
 hook_macros::hook! {
     unsafe fn fclose(
         stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_fclose(ctx) {
+        hook_macros::real!(fclose)(stream)
 
+        /*
         let file_id = FilePtr::from(stream);
         match ctx.local.file_objs.remove(&file_id) {
             Some(fd) => {
@@ -481,9 +541,10 @@ hook_macros::hook! {
                 ret
             }
         }
+        */
     }
 }
-*/
+
 
 hook_macros::hook! {
     unsafe fn chdir(

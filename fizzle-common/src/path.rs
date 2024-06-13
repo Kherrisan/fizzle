@@ -1,4 +1,4 @@
-use std::ffi::CStr;
+use std::{ffi::CStr, fmt::Debug};
 
 use crate::storage::Buffer;
 
@@ -47,10 +47,19 @@ impl SemPath {
 #[derive(Debug, Clone)]
 pub struct PathError;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct FilePath {
     buf: Buffer<256>,
     trailing_slash: bool,
+}
+
+impl Debug for FilePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match std::str::from_utf8(&self.buf.data()[..self.buf.data().len() - 1]) {
+            Ok(s) => s.fmt(f),
+            Err(_) => self.buf.data().fmt(f),
+        }
+    }
 }
 
 impl Default for FilePath {

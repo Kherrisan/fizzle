@@ -47,8 +47,9 @@ hook_macros::hook! {
     }
 }
 
+
 hook_macros::va_args_hook! {
-    unsafe extern "C" fn execl(pathname: *const libc::c_char, arg: *const libc::c_char) -> libc::c_int => preload(ctx, va_args) {
+    unsafe extern "C" fn execl(pathname: *const libc::c_char, arg: *const libc::c_char) -> libc::c_int => fizzle_execl(ctx, va_args) {
         let mut end_reached = false;
         let argv: [*const libc::c_char; MAX_ARGS] = array::from_fn(|i| {
             if end_reached {
@@ -72,7 +73,7 @@ hook_macros::va_args_hook! {
 }
 
 hook_macros::va_args_hook! {
-    unsafe extern "C" fn execlp(file: *const libc::c_char, arg: *const libc::c_char) -> libc::c_int => preload(ctx, va_args) {
+    unsafe extern "C" fn execlp(file: *const libc::c_char, arg: *const libc::c_char) -> libc::c_int => fizzle_execlp(ctx, va_args) {
         let mut end_reached = false;
         let argv: [*const libc::c_char; MAX_ARGS] = array::from_fn(|_| {
             if end_reached {
@@ -96,7 +97,7 @@ hook_macros::va_args_hook! {
 }
 
 hook_macros::va_args_hook! {
-    unsafe extern "C" fn execle(pathname: *const libc::c_char, arg: *const libc::c_char) -> libc::c_int => preload(ctx, va_args) {
+    unsafe extern "C" fn execle(pathname: *const libc::c_char, arg: *const libc::c_char) -> libc::c_int => fizzle_execle(ctx, va_args) {
         let mut envp: Option<*const *const libc::c_char> = None;
         let argv: [*const libc::c_char; MAX_ARGS] = array::from_fn(|_| {
             if envp.is_some() {
@@ -119,6 +120,7 @@ hook_macros::va_args_hook! {
         fizzle_execve(pathname, ptr::addr_of!(argv) as *const *const libc::c_char, envp)
     }
 }
+
 
 hook_macros::hook! {
     unsafe fn execv(pathname: *const libc::c_char, argv: *const *const libc::c_char) -> libc::c_int => fizzle_execv(ctx) {

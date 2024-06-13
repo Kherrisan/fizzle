@@ -1,4 +1,5 @@
 pub mod entropy;
+pub mod event;
 pub mod fd;
 pub mod file;
 pub mod io;
@@ -12,3 +13,4 @@ pub mod semaphore;
 pub mod signal;
 pub mod sleep;
 pub mod socket;
+pub mod syscall;
