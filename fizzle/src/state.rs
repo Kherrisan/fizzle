@@ -834,6 +834,7 @@ pub struct FizzLocal {
     pub pthread_keys: HashMap<libc::pthread_key_t, PThreadRoutine>,
     pub pthread_key_values:
         HashMap<libc::pthread_key_t, HashMap<ThreadId, *mut libc::c_void, FxBuildHasher>>,
+    pub futex_waiters: HashMap<*const u32, VecDeque<(u32, ThreadId)>>,
     pub terminated_threads: HashSet<ThreadId, FxBuildHasher>,
     pub cancelling_threads: HashSet<ThreadId, FxBuildHasher>,
     /// Indicates which thread(s) are awaiting the death of a specific thread (via pthread_join)
@@ -911,6 +912,7 @@ impl FizzLocal {
             pthread_cleanup: HashMap::with_hasher(Default::default()),
             pthread_keys: HashMap::with_hasher(Default::default()),
             pthread_key_values: HashMap::with_hasher(Default::default()),
+            futex_waiters: HashMap::with_hasher(Default::default()),
             terminated_threads: HashSet::with_hasher(Default::default()),
             cancelling_threads: HashSet::with_hasher(Default::default()),
             working_directory,
