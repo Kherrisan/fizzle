@@ -47,80 +47,137 @@ hook_macros::hook! {
     }
 }
 
-// TODO: fix these similar to how `syscall` has been fixed
-hook_macros::va_args_hook! {
-    unsafe extern "C" fn execl(pathname: *const libc::c_char, arg: *const libc::c_char) -> libc::c_int => fizzle_execl(ctx, va_args) {
-        let mut end_reached = false;
-        let argv: [*const libc::c_char; MAX_ARGS] = array::from_fn(|i| {
-            if end_reached {
-                ptr::null()
-            } else {
-                let arg: *const libc::c_char = va_args.arg();
-                if arg.is_null() {
-                    end_reached = true;
-                }
-                arg
-            }
-        });
+#[no_mangle]
+pub unsafe extern "C" fn execl(pathname: *const libc::c_char, arg: *const libc::c_char, mut va_args: ...) -> libc::c_int {
+        
+    if crate::state::has_entered_handler() {
+        panic!("recursive calls to `syscall` not allowed");
+    }
+    crate::state::set_entered_handler(true);
 
-        if !end_reached {
-            panic!("`execl` exceeded maximum number of va_args")
+    log::trace!(
+        "Thread {:?} invoked function `syscall`",
+        std::thread::current().id(),
+    );
+
+    let mut end_reached = false;
+    let argv: [*const libc::c_char; MAX_ARGS] = array::from_fn(|i| {
+        if i == 0 {
+            arg
+        } else if end_reached {
+            ptr::null()
+        } else {
+            let arg: *const libc::c_char = va_args.arg();
+            if arg.is_null() {
+                end_reached = true;
+            }
+            arg
         }
+    });
 
-        drop(ctx);
-        fizzle_execv(pathname, ptr::addr_of!(argv) as *const *const libc::c_char)
+    if !end_reached {
+        panic!("`execl` exceeded maximum number of va_args")
     }
+
+    let ret = fizzle_execv(pathname, ptr::addr_of!(argv) as *const *const libc::c_char);
+
+    log::trace!(
+        "Function `execl` returned {:?}", // TODO: add process info in the future
+        ret
+    );
+    crate::state::set_entered_handler(false);
+
+    ret
 }
 
-hook_macros::va_args_hook! {
-    unsafe extern "C" fn execlp(file: *const libc::c_char, arg: *const libc::c_char) -> libc::c_int => fizzle_execlp(ctx, va_args) {
-        let mut end_reached = false;
-        let argv: [*const libc::c_char; MAX_ARGS] = array::from_fn(|_| {
-            if end_reached {
-                ptr::null()
-            } else {
-                let arg: *const libc::c_char = va_args.arg();
-                if arg.is_null() {
-                    end_reached = true;
-                }
-                arg
-            }
-        });
 
-        if !end_reached {
-            panic!("`execl` exceeded maximum number of va_args")
+
+#[no_mangle]
+pub unsafe extern "C" fn execlp(pathname: *const libc::c_char, arg: *const libc::c_char, mut va_args: ...) -> libc::c_int {
+        
+    if crate::state::has_entered_handler() {
+        panic!("recursive calls to `syscall` not allowed");
+    }
+    crate::state::set_entered_handler(true);
+
+    log::trace!(
+        "Thread {:?} invoked function `syscall`",
+        std::thread::current().id(),
+    );
+
+    let mut end_reached = false;
+    let argv: [*const libc::c_char; MAX_ARGS] = array::from_fn(|i| {
+        if i == 0 {
+            arg
+        } else if end_reached {
+            ptr::null()
+        } else {
+            let arg: *const libc::c_char = va_args.arg();
+            if arg.is_null() {
+                end_reached = true;
+            }
+            arg
         }
+    });
 
-        drop(ctx);
-        fizzle_execvp(file, ptr::addr_of!(argv) as *const *const libc::c_char)
+    if !end_reached {
+        panic!("`execl` exceeded maximum number of va_args")
     }
+
+    let ret = fizzle_execvp(pathname, ptr::addr_of!(argv) as *const *const libc::c_char);
+
+    log::trace!(
+        "Function `execl` returned {:?}", // TODO: add process info in the future
+        ret
+    );
+    crate::state::set_entered_handler(false);
+
+    ret
 }
 
-hook_macros::va_args_hook! {
-    unsafe extern "C" fn execle(pathname: *const libc::c_char, arg: *const libc::c_char) -> libc::c_int => fizzle_execle(ctx, va_args) {
-        let mut envp: Option<*const *const libc::c_char> = None;
-        let argv: [*const libc::c_char; MAX_ARGS] = array::from_fn(|_| {
-            if envp.is_some() {
-                ptr::null()
-            } else {
-                let arg: *const libc::c_char = va_args.arg();
-                if arg.is_null() {
-                    envp = Some(va_args.arg());
-                }
-                arg
+#[no_mangle]
+pub unsafe extern "C" fn execle(pathname: *const libc::c_char, mut arg: *const libc::c_char, mut va_args: ...) -> libc::c_int {
+        
+    if crate::state::has_entered_handler() {
+        panic!("recursive calls to `syscall` not allowed");
+    }
+    crate::state::set_entered_handler(true);
+
+    log::trace!(
+        "Thread {:?} invoked function `syscall`",
+        std::thread::current().id(),
+    );
+
+    let mut envp: Option<*const *const libc::c_char> = None;
+    let argv: [*const libc::c_char; MAX_ARGS] = array::from_fn(|i| {
+        if envp.is_some() {
+            ptr::null()
+        } else {
+            if i != 0 {
+                arg = va_args.arg()
             }
-        });
+            
+            if arg.is_null() {
+                envp = Some(va_args.arg());
+            }
+            arg
+        }
+    });
 
+    let Some(envp) = envp else {
+        panic!("`execle` exceeded maximum number of va_args")
+    };
 
-        let Some(envp) = envp else {
-            panic!("`execle` exceeded maximum number of va_args")
-        };
+    let ret = fizzle_execve(pathname, ptr::addr_of!(argv) as *const *const libc::c_char, envp);
 
-        drop(ctx);
-        fizzle_execve(pathname, ptr::addr_of!(argv) as *const *const libc::c_char, envp)
-    }
+    log::trace!(
+        "Function `execl` returned {:?}", // TODO: add process info in the future
+        ret
+    );
+    crate::state::set_entered_handler(false);
+
+    ret
 }
-
 
 hook_macros::hook! {
     unsafe fn execv(pathname: *const libc::c_char, argv: *const *const libc::c_char) -> libc::c_int => fizzle_execv(ctx) {

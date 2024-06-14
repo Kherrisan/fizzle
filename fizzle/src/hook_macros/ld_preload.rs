@@ -20,95 +20,6 @@ pub unsafe fn dlsym_next(symbol: &'static str) -> *const u8 {
     ptr as *const u8
 }
 
-macro_rules! va_args_hook {
-    (unsafe extern "C" fn $real_fn:ident ( $($v:ident : $t:ty),*) -> $r:ty => $hook_fn:ident ( $state:ident, $va_args:ident ) $body:block) => {
-        mod $real_fn {
-            #[allow(non_camel_case_types)]
-            pub struct $real_fn {__private_field: ()}
-
-            pub static REAL_SINGLETON: $real_fn = $real_fn {__private_field: ()};
-
-            impl $real_fn {
-                pub fn get(&self) -> unsafe extern "C" fn ( $($v : $t,)* $va_args: ... ) -> $r {
-                    use ::std::sync::Once;
-
-                    static mut REAL: *const u8 = 0 as *const u8;
-                    static mut ONCE: Once = Once::new();
-
-                    unsafe {
-                        ONCE.call_once(|| {
-                            REAL = $crate::hook_macros::ld_preload::dlsym_next(concat!(stringify!($real_fn), "\0"));
-                        });
-                        ::std::mem::transmute(REAL)
-                    }
-                }
-            }
-        }
-
-        #[no_mangle]
-        pub unsafe extern "C" fn $real_fn ( $($v : $t,)* $va_args: ...) -> $r {
-            //::std::panic::catch_unwind(|| {
-            if crate::state::has_entered_handler() {
-                // Use actual function instead of fizzle
-                return $real_fn::REAL_SINGLETON.get() ( $($v),* )
-            }
-            crate::state::set_entered_handler(true);
-
-            log::trace!(
-                "Thread {:?} invoked function {}", // TODO: add process info in the future
-                std::thread::current().id(),
-                stringify!($real_fn)
-            );
-
-            let res = {
-                $hook_fn ( $($v,)* $va_args )
-            };
-
-            log::trace!(
-                "Function {} returned {:?}", // TODO: add process info in the future
-                stringify!($real_fn),
-                res
-            );
-            crate::state::set_entered_handler(false);
-            res
-            //}).unwrap_or_else(|_| {
-            //    std::process::abort(); // Panic unwind hook already prints out stack info
-            //})
-        }
-
-        #[allow(unused_mut)]
-        pub unsafe extern "C" fn $hook_fn ( $($v : $t,)* mut $va_args: ...) -> $r {
-            #[allow(unused_mut)]
-            let mut $state = crate::state::FIZZLE_STATE.acquire();
-            $body
-        }
-
-        /*
-        #[allow(unused_mut,unused)]
-        #[no_mangle]
-        pub unsafe extern "C" fn $real_fn ( $($v : $t,)* mut $va_args: ... ) -> $r {
-            if crate::state::has_entered_handler() {
-                std::process::abort() // NO RECURSION ALLOWED
-            }
-            #[allow(unused_mut)]
-            let mut $state = crate::state::FIZZLE_STATE.acquire();
-            $body
-        }
-        */
-    };
-
-    // Handle case where function signature has no return type
-    (unsafe extern "C" fn $real_fn:ident ( $($v:ident : $t:ty),* ) => $hook_fn:ident ( $state:ident, $va_args:ident ) $body:block) => {
-        $crate::va_args_hook! { unsafe extern "C" fn $real_fn ( $($v : $t),* ) -> () => $hook_fn ( $state, $va_args ) $body }
-    };
-}
-
-macro_rules! va_args_real {
-    ($real_fn:ident) => {
-        $real_fn::REAL_SINGLETON.get()
-    };
-}
-
 macro_rules! hook {
     (unsafe fn $real_fn:ident ( $($v:ident : $t:ty),* ) -> $r:ty => $hook_fn:ident ( $state:ident ) $body:block) => {
         #[allow(non_camel_case_types)]
@@ -182,10 +93,6 @@ macro_rules! hook {
         $crate::hook! { unsafe fn $real_fn ( $($v : $t),* ) -> () => $hook_fn ( $state ) $body }
     };
 }
-
-pub(crate) use va_args_hook;
-
-pub(crate) use va_args_real;
 
 pub(crate) use hook;
 
