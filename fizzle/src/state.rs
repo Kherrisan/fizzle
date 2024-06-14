@@ -990,6 +990,7 @@ impl FizzGlobal {
             *ptr::addr_of_mut!((*state).transfer_fds) = None;
             *ptr::addr_of_mut!((*state).passthrough_process_id) = ProcessId::from(1);
             ValueIndex::initialize(ptr::addr_of_mut!((*state).epolls));
+            ValueIndex::initialize(ptr::addr_of_mut!((*state).event_fds));
             *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
             ValueIndex::initialize(ptr::addr_of_mut!((*state).files));
             *ptr::addr_of_mut!((*state).sem_paths) = FnvIndexMap::new();
