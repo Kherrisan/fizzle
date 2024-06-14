@@ -28,6 +28,8 @@ pub enum FdResource {
     Directory(DirectoryId),
     /// Epoll descriptors.
     Epoll(EpollId),
+    /// Event file descriptor.
+    EventFd(EventFdId),
     /// Files that are accessed via the virtual filesystem.
     File(FileId),
     /// Cross-process message queues.

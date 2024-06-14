@@ -5,7 +5,7 @@ extern crate libc;
 
 mod constants;
 mod hook_macros;
-mod hooks;
+pub mod hooks;
 mod semaphore;
 mod state;
 mod streams;
@@ -17,17 +17,23 @@ use std::os::fd::RawFd;
 use std::{array, mem, ptr};
 
 extern "C" {
+    #[cfg(feature = "afl")]
     pub fn __afl_manual_init();
 
     // TODO: three underscores for Apple
+    #[cfg(feature = "pcr")]
     pub fn __afl_persistent_loop(input: libc::c_uint) -> libc::c_int;
 
+    #[cfg(feature = "pcr")]
     pub static __afl_fuzz_len: *mut libc::c_uint;
 
+    #[cfg(feature = "pcr")]
     pub static __afl_fuzz_ptr: *mut libc::c_uchar;
 
+    #[cfg(feature = "pcr")]
     pub static __afl_connected: libc::c_int;
 
+    #[cfg(feature = "pcr")]
     pub static mut __afl_sharedmem_fuzzing: libc::c_int;
 }
 

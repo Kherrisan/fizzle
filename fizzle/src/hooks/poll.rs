@@ -17,6 +17,7 @@ pub fn fd_to_pollin(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
     };
     match fd_info.resource {
         FdResource::Epoll(_) => panic!("polling an epoll descriptor not supported"),
+        FdResource::EventFd(eventfd_id) => PolledStatus::Pollable(ctx.global.event_fds.get(eventfd_id).unwrap().write_polled),
         FdResource::Directory(_) => PolledStatus::NotPollable,
         FdResource::File(file_id) => {
             match ctx.global.files.get(file_id).unwrap() {
@@ -117,6 +118,7 @@ pub fn fd_to_pollout(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
     };
     match fd_info.resource {
         FdResource::Epoll(_) => panic!("polling an epoll descriptor not supported"),
+        FdResource::EventFd(eventfd_id) => PolledStatus::Pollable(ctx.global.event_fds.get(eventfd_id).unwrap().write_polled),
         FdResource::Directory(_) => PolledStatus::NotPollable,
         FdResource::File(file_id) => {
             match ctx.global.files.get(file_id).unwrap() {
@@ -504,7 +506,7 @@ hook_macros::hook! {
         };
 
         let Some(_) = ctx.local.fds.get(DescriptorId::new(fd)) else {
-            log::error!("`epoll_ctl` fd not found (ignoring...)");
+            log::error!("`epoll_ctl` fd {} not found (ignoring...)", fd);
             return 0 // TODO: fix fopen rather than this workaround
             //*libc::__errno_location() = libc::EBADF;
             //return -1

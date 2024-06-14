@@ -28,6 +28,8 @@ hook_macros::hook! {
         protocol: libc::c_int
     ) -> libc::c_int => fizzle_socket(ctx) {
 
+        // TODO: implement unix socket
+
         let fd = hook_macros::real!(socket)(domain, socktype, protocol);
         if fd < 0 {
             return fd

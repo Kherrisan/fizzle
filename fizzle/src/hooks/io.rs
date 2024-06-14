@@ -29,8 +29,12 @@ hook_macros::hook! {
     ) -> libc::ssize_t => fizzle_write(ctx) {
 
         let Some(fd_info) = ctx.local.fds.get(DescriptorId::new(fd)) else {
+            log::warn!("write() called with unknown file descriptor");
+            return hook_macros::real!(write)(fd, buf, len)
+            /*
             *libc::__errno_location() = libc::EBADF;
             return -1
+            */
         };
 
         let is_nonblocking = fd_info.nonblocking;
@@ -41,6 +45,42 @@ hook_macros::hook! {
                 *libc::__errno_location() = libc::EINVAL;
                 return -1
             },
+            FdResource::EventFd(eventfd_id) => {
+                let Ok(increment) = data.try_into().map(u64::from_ne_bytes) else {
+                    log::warn!("eventfd received `write` with invalid length != 8");
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                };
+
+                if increment == u64::MAX {
+                    log::warn!("eventfd received `write` with invalid value 0xffffffff");
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1                   
+                }
+
+                let eventfd = ctx.global.event_fds.get(eventfd_id).unwrap();
+                let old_counter = eventfd.counter;
+                let read_polled = eventfd.read_polled;
+                let write_polled = eventfd.write_polled;
+
+                drop(ctx);
+
+                let new_counter = loop {
+                    match old_counter.checked_add(increment) {
+                        Some(c) if c != u64::MAX => break c,
+                        _ => {
+                            state::FIZZLE_STATE.acquire().lower_polled(write_polled); // TODO: will this work??
+                            state::FIZZLE_STATE.poll_until_ready(write_polled);
+                        },
+                    }
+                };
+
+                let mut ctx = state::FIZZLE_STATE.acquire();
+                ctx.global.event_fds.get_mut(eventfd_id).unwrap().counter = new_counter;
+                ctx.raise_polled(read_polled);
+
+                8
+            }
             FdResource::File(file_id) => match ctx.global.files.get(file_id).unwrap() {
                 FileBackend::Passthrough => hook_macros::real!(write)(fd, buf, len),
                 FileBackend::Peered(_) => unreachable!(),
@@ -423,8 +463,12 @@ hook_macros::hook! {
     ) -> libc::ssize_t => fizzle_read(ctx) {
 
         let Some(fd_info) = ctx.local.fds.get(DescriptorId::new(fd)) else {
+            log::warn!("read() called with unknown file descriptor");
+            return hook_macros::real!(read)(fd, buf, len)
+            /*
             *libc::__errno_location() = libc::EBADF;
             return -1
+            */
         };
 
         let is_nonblocking = fd_info.nonblocking;
@@ -435,6 +479,48 @@ hook_macros::hook! {
                 *libc::__errno_location() = libc::EINVAL;
                 return -1
             },
+            FdResource::EventFd(eventfd_id) => {
+                let Some(data) = data.get_mut(..8) else {
+                    log::warn!("eventfd received `read` with invalid buffer length < 8");
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                };
+
+                let eventfd = ctx.global.event_fds.get(eventfd_id).unwrap();
+                let is_semaphore = eventfd.is_semaphore;
+                let old_counter = eventfd.counter;
+                let read_polled = eventfd.read_polled;
+                let write_polled = eventfd.write_polled;
+
+                drop(ctx);
+
+                if old_counter == 0 {
+                    state::FIZZLE_STATE.poll_until_ready(read_polled);
+                }
+
+                let mut ctx = state::FIZZLE_STATE.acquire();
+                let eventfd = ctx.global.event_fds.get_mut(eventfd_id).unwrap();
+
+                let ret: u64 = match is_semaphore {
+                    true => 1,
+                    false => eventfd.counter,
+                };
+                
+                if is_semaphore {
+                    eventfd.counter -= 1;
+                } else {
+                    eventfd.counter = 0;   
+                }
+
+                if eventfd.counter == 0 {
+                    ctx.lower_polled(read_polled);
+                }
+                ctx.raise_polled(write_polled);
+
+                data.copy_from_slice(ret.to_ne_bytes().as_slice());
+
+                8
+            }
             FdResource::File(file_id) => match ctx.global.files.get(file_id).unwrap() {
                 FileBackend::Passthrough => hook_macros::real!(read)(fd, buf, len),
                 FileBackend::Peered(_) => unreachable!(),

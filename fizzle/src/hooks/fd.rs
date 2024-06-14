@@ -15,6 +15,7 @@ hook_macros::hook! {
         // TODO: remove underlying resource from descriptor for each of these options (otherwise memory leak + state error)
         match ctx.local.fds.remove(descriptor_id) {
             Some(FdInfo { resource: FdResource::Epoll(_), .. }) => crate::alias_fd_destroy(fd),
+            Some(FdInfo { resource: FdResource::EventFd(_), .. }) => crate::alias_fd_destroy(fd),
             Some(FdInfo { resource: FdResource::Directory(_), .. }) => crate::alias_fd_destroy(fd),
             Some(FdInfo { resource: FdResource::File(_), .. }) => crate::alias_fd_destroy(fd),
             Some(FdInfo { resource: FdResource::Socket(_), .. }) => return hook_macros::real!(close)(fd),

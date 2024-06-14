@@ -72,6 +72,21 @@ impl From<EpollId> for usize {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EventFdId(usize);
+
+impl From<usize> for EventFdId {
+    fn from(value: usize) -> Self {
+        Self(value)
+    }
+}
+
+impl From<EventFdId> for usize {
+    fn from(val: EventFdId) -> Self {
+        val.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FifoId(usize);
 
 impl From<FifoId> for usize {

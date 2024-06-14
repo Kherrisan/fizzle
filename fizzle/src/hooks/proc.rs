@@ -47,7 +47,7 @@ hook_macros::hook! {
     }
 }
 
-
+// TODO: fix these similar to how `syscall` has been fixed
 hook_macros::va_args_hook! {
     unsafe extern "C" fn execl(pathname: *const libc::c_char, arg: *const libc::c_char) -> libc::c_int => fizzle_execl(ctx, va_args) {
         let mut end_reached = false;

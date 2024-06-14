@@ -50,14 +50,16 @@ hook_macros::hook! {
             wrapped_arg: arg,
         };
 
+        #[cfg(feature = "afl")]
         if !ctx.global.shared_mem_initialized {
             ctx.global.shared_mem_initialized = true;
-            unsafe {
-                crate::__afl_sharedmem_fuzzing = 1;
-                log::debug!("calling __afl_manual_init()");
-                crate::__afl_manual_init(); // For AFL++
-                log::debug!("__afl_manual_init finished");
-            }
+
+            #[cfg(feature = "pcr")]
+            unsafe { crate::__afl_sharedmem_fuzzing = 1; }
+
+            log::debug!("calling __afl_manual_init()");
+            unsafe { crate::__afl_manual_init(); }
+            log::debug!("__afl_manual_init finished");
         }
 
         // Let the scheduler know we have more to execute

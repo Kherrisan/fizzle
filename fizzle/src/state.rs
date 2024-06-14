@@ -118,10 +118,6 @@ impl FizzCell {
         log::trace!("Initializing fizzle state");
 
         unsafe {
-            crate::__afl_manual_init(); // For AFL++
-        }
-
-        unsafe {
             // Initialize the reaper lock.
             Semaphore::initialize(&mut *self.reaper_lock.get(), true, 0);
             // Initialize the per-thread semaphore for this thread.
@@ -276,18 +272,21 @@ impl FizzCell {
 
         // TODO: if using Nyx-Net, handle hypervisor preemption here
 
+        #[cfg(feature = "afl")]
         if !ctx.global.shared_mem_initialized {
             ctx.global.shared_mem_initialized = true;
-            unsafe {
-                crate::__afl_sharedmem_fuzzing = 1;
-                log::debug!("calling __afl_manual_init()");
-                crate::__afl_manual_init(); // For AFL++
-                log::debug!("__afl_manual_init finished");
-            }
+
+            #[cfg(feature = "pcr")]
+            unsafe { crate::__afl_sharedmem_fuzzing = 1; }
+
+            log::debug!("calling __afl_manual_init()");
+            unsafe { crate::__afl_manual_init(); }
+            log::debug!("__afl_manual_init finished");
         }
 
         // Wait for input from the fuzzing engine...
         // For AFL++, fuzzing input comes from stdin
+        #[cfg(feature = "pcr")]
         unsafe {
             let rounds = if crate::__afl_connected == 0 {
                 1
@@ -319,6 +318,20 @@ impl FizzCell {
             ctx.global
                 .fuzz_input
                 .did_write(*crate::__afl_fuzz_len as usize);
+        }
+
+        #[cfg(all(feature = "afl", not(feature = "pcr")))]
+        unsafe {
+            let fuzz_buffer = ctx.global.fuzz_input.remaining_mut();
+            let read_amount =
+                libc::read(0, fuzz_buffer.as_mut_ptr() as *mut libc::c_void, 1048576);
+            if read_amount < 0 {
+                panic!("could not read input from stdin")
+            }
+
+            ctx.global
+                .fuzz_input
+                .did_write(read_amount as usize);
         }
 
         /*
@@ -936,6 +949,7 @@ pub struct FizzGlobal {
     pub shared_mem_initialized: bool,
     pub passthrough_process_id: ProcessId,
     pub epolls: ValueIndex<EpollId, EpollInfo, FIZZLE_MAX_EPOLLS>,
+    pub event_fds: ValueIndex<EventFdId, EventFdInfo, FIZZLE_MAX_EVENTFDS>,
     pub file_paths: FnvIndexMap<FilePath, FileId, FIZZLE_MAX_FILE_PATHS>,
     pub files: ValueIndex<FileId, FileBackend, FIZZLE_MAX_FILES>,
     pub sem_paths: FnvIndexMap<SemPath, SemaphoreId, FIZZLE_MAX_NAMED_SEMAPHORES>,
@@ -1379,6 +1393,15 @@ pub enum ThreadTermination {
 pub struct FuzzEndpointInfo {
     pub read_polled: PolledId,
     pub read_idx: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct EventFdInfo {
+    pub read_polled: PolledId,
+    pub write_polled: PolledId,
+    pub is_semaphore: bool,
+    pub counter: u64,
+
 }
 
 pub type PThreadDestructor = unsafe extern "C" fn(*mut libc::c_void);

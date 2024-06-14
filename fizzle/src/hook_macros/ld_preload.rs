@@ -61,9 +61,14 @@ macro_rules! va_args_hook {
             );
 
             let res = {
-
                 $hook_fn ( $($v,)* $va_args )
             };
+
+            log::trace!(
+                "Function {} returned {:?}", // TODO: add process info in the future
+                stringify!($real_fn),
+                res
+            );
             crate::state::set_entered_handler(false);
             res
             //}).unwrap_or_else(|_| {
@@ -179,6 +184,8 @@ macro_rules! hook {
 }
 
 pub(crate) use va_args_hook;
+
+pub(crate) use va_args_real;
 
 pub(crate) use hook;
 

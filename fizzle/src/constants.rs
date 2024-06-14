@@ -26,6 +26,7 @@ pub const FIZZLE_MAX_PLUGINS: usize = 128;
 
 pub const FIZZLE_MAX_PROCESSES: usize = 128;
 
+pub const FIZZLE_MAX_EVENTFDS: usize = 128;
 pub const FIZZLE_MAX_THREADS: usize = 256;
 /// The maximum number of paths to files fizzle emulates.
 pub const FIZZLE_MAX_FILE_PATHS: usize = 512;
