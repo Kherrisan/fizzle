@@ -34,22 +34,22 @@ hook_macros::hook! {
         let first_pipe = PipeInfo {
             mode,
             peer: None,
-            read_buf: ctx.global.buffers.put(Buffer::new()),
-            read_polled: ctx.global.polled_events.put(PolledInfo::new()),
-            write_polled: ctx.global.polled_events.put(PolledInfo::new_raised()),
+            read_buf: ctx.global.buffers.put(Buffer::new()).unwrap(),
+            read_polled: ctx.global.polled_events.put(PolledInfo::new()).unwrap(),
+            write_polled: ctx.global.polled_events.put(PolledInfo::new_raised()).unwrap(),
         };
 
-        let first_pipe_id = ctx.global.pipes.put(first_pipe);
+        let first_pipe_id = ctx.global.pipes.put(first_pipe).unwrap();
 
         let second_pipe = PipeInfo {
             mode,
             peer: Some(first_pipe_id),
-            read_buf: ctx.global.buffers.put(Buffer::new()),
-            read_polled: ctx.global.polled_events.put(PolledInfo::new()),
-            write_polled: ctx.global.polled_events.put(PolledInfo::new_raised()),
+            read_buf: ctx.global.buffers.put(Buffer::new()).unwrap(),
+            read_polled: ctx.global.polled_events.put(PolledInfo::new()).unwrap(),
+            write_polled: ctx.global.polled_events.put(PolledInfo::new_raised()).unwrap(),
         };
 
-        let second_pipe_id = ctx.global.pipes.put(second_pipe);
+        let second_pipe_id = ctx.global.pipes.put(second_pipe).unwrap();
 
         // `unwrap()` guaranteed to succeed--we *just* inserted the pipe
         ctx.global.pipes.get_mut(first_pipe_id).unwrap().peer = Some(second_pipe_id);

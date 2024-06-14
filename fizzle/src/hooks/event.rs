@@ -12,15 +12,15 @@ hook_macros::hook! {
 
         let fd = crate::alias_fd_create();
 
-        let read_polled = ctx.global.polled_events.put(PolledInfo::new());
-        let write_polled = ctx.global.polled_events.put(PolledInfo::new_raised());
+        let read_polled = ctx.global.polled_events.put(PolledInfo::new()).unwrap();
+        let write_polled = ctx.global.polled_events.put(PolledInfo::new_raised()).unwrap();
 
         let eventfd_id = ctx.global.event_fds.put(EventFdInfo {
             read_polled,
             write_polled,
             is_semaphore,
             counter: initval as u64,
-        });
+        }).unwrap();
 
         ctx.local.fds.insert(DescriptorId::new(fd), FdInfo {
             close_on_exec,

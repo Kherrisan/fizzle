@@ -49,17 +49,17 @@ hook_macros::hook! {
                 local_addr: None,
                 family,
                 protocol: TransportProtocol::Tcp,
-            })),
+            })).unwrap(),
             libc::IPPROTO_SCTP => ctx.global.sockets.put(SocketState::Unassociated(UnassociatedSocket {
                 local_addr: None,
                 family,
                 protocol: TransportProtocol::Sctp,
-            })),
+            })).unwrap(),
             libc::IPPROTO_UDP => {
                 let local_addr = *ctx.global.next_ephemeral_address(family, TransportProtocol::Udp).address();
-                let recv_buf = ctx.global.buffers.put(Buffer::new());
-                let read_polled = ctx.global.polled_events.put(PolledInfo::new());
-                let write_polled = ctx.global.polled_events.put(PolledInfo::new_raised());
+                let recv_buf = ctx.global.buffers.put(Buffer::new()).unwrap();
+                let read_polled = ctx.global.polled_events.put(PolledInfo::new()).unwrap();
+                let write_polled = ctx.global.polled_events.put(PolledInfo::new_raised()).unwrap();
 
                 ctx.global.sockets.put(SocketState::Connectionless(ConnectionlessSocket {
                     backend: ConnectionlessBackend::Peered(RegularConnectionless {
@@ -69,7 +69,7 @@ hook_macros::hook! {
                     }),
                     local_addr,
                     rem_addr: None,
-                }))
+                })).unwrap()
             }
             _ => panic!("unsupported transport protocol {}", protocol),
         };
@@ -201,7 +201,7 @@ hook_macros::hook! {
         };
 
         // Allocate server context and set up polling
-        let ready_to_connect = ctx.global.polled_events.put(PolledInfo::new());
+        let ready_to_connect = ctx.global.polled_events.put(PolledInfo::new()).unwrap();
 
         if ctx.global.socket_locations.get_mut(&local_addr).unwrap().pending.is_some() {
             ctx.raise_polled(ready_to_connect);
@@ -307,7 +307,7 @@ hook_macros::hook! {
                         let server_poll = server_info.ready_to_connect;
                         ctx.raise_polled(server_poll);
 
-                        let client_poll = ctx.global.polled_events.put(PolledInfo::new());
+                        let client_poll = ctx.global.polled_events.put(PolledInfo::new()).unwrap();
                         *ctx.global.sockets.get_mut(socket_id).unwrap() = SocketState::Connecting(ConnectingSocket {
                             backend: ConnectingBackend::Peered(()),
                             connect_polled: client_poll,
@@ -338,9 +338,9 @@ hook_macros::hook! {
                     }
                     ServerBackend::NullSink => ConnectedBackend::NullSink,
                     ServerBackend::Feedback(()) => ConnectedBackend::Feedback(StandardFeedback {
-                            buf: ctx.global.buffers.put(Buffer::new()),
-                            read_polled: ctx.global.polled_events.put(PolledInfo::new()),
-                            write_polled: ctx.global.polled_events.put(PolledInfo::new_raised()),
+                            buf: ctx.global.buffers.put(Buffer::new()).unwrap(),
+                            read_polled: ctx.global.polled_events.put(PolledInfo::new()).unwrap(),
+                            write_polled: ctx.global.polled_events.put(PolledInfo::new_raised()).unwrap(),
                     })
                 };
 
@@ -552,9 +552,9 @@ fn join_socket_pair(
         IoBackend::Passthrough => unimplemented!(),
         IoBackend::Peered(()) => ConnectedBackend::Peered(RegularConnected {
             peer: Some(connecting_id),
-            recv_buf: ctx.global.buffers.put(Buffer::new()),
-            read_polled: ctx.global.polled_events.put(PolledInfo::new()),
-            write_polled: ctx.global.polled_events.put(PolledInfo::new_raised()),
+            recv_buf: ctx.global.buffers.put(Buffer::new()).unwrap(),
+            read_polled: ctx.global.polled_events.put(PolledInfo::new()).unwrap(),
+            write_polled: ctx.global.polled_events.put(PolledInfo::new_raised()).unwrap(),
         }),
         IoBackend::Plugin(plugin_id) => {
             // Create new plugin
@@ -572,9 +572,9 @@ fn join_socket_pair(
         }
         IoBackend::NullSink => ConnectedBackend::NullSink,
         IoBackend::Feedback(()) => ConnectedBackend::Feedback(StandardFeedback {
-            buf: ctx.global.buffers.put(Buffer::new()),
-            read_polled: ctx.global.polled_events.put(PolledInfo::new()),
-            write_polled: ctx.global.polled_events.put(PolledInfo::new_raised()),
+            buf: ctx.global.buffers.put(Buffer::new()).unwrap(),
+            read_polled: ctx.global.polled_events.put(PolledInfo::new()).unwrap(),
+            write_polled: ctx.global.polled_events.put(PolledInfo::new_raised()).unwrap(),
         }),
     };
 
@@ -583,9 +583,9 @@ fn join_socket_pair(
             IoBackend::Passthrough => unimplemented!(),
             IoBackend::Peered(_) => ConnectedBackend::Peered(RegularConnected {
                 peer: Some(connecting_id),
-                recv_buf: ctx.global.buffers.put(Buffer::new()),
-                read_polled: ctx.global.polled_events.put(PolledInfo::new()),
-                write_polled: ctx.global.polled_events.put(PolledInfo::new_raised()),
+                recv_buf: ctx.global.buffers.put(Buffer::new()).unwrap(),
+                read_polled: ctx.global.polled_events.put(PolledInfo::new()).unwrap(),
+                write_polled: ctx.global.polled_events.put(PolledInfo::new_raised()).unwrap(),
             }),
             _ => unreachable!(),
         };
@@ -601,7 +601,7 @@ fn join_socket_pair(
             .put(SocketState::Connected(ConnectedSocket {
                 rem_addr: client_addr,
                 backend: accept_backend,
-            }))
+            })).unwrap()
     } else {
         // The connecting socket was emulated in some way (`fuzz`, `sink` or the like).
         // Convert the connecting socket into the accepted socket--we don't need two peered sockets.

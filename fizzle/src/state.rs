@@ -760,7 +760,7 @@ impl FizzState {
             worker_id,
             polled_events: heapless::Vec::new(),
             in_raised_queue: false,
-        })
+        }).unwrap()
     }
 
     /// Registers `poller_id` as waiting on `polled_id`.
@@ -1023,9 +1023,9 @@ impl FizzGlobal {
                     IoEndpointVariant::Stdio => {
                         self.stdio = match endpoint.emulation_type {
                             IoEmulationType::Feedback => StdioBackend::Feedback(StandardFeedback {
-                                buf: self.buffers.put(Buffer::new()),
-                                read_polled: self.polled_events.put(PolledInfo::new()),
-                                write_polled: self.polled_events.put(PolledInfo::new_raised()),
+                                buf: self.buffers.put(Buffer::new()).unwrap(),
+                                read_polled: self.polled_events.put(PolledInfo::new()).unwrap(),
+                                write_polled: self.polled_events.put(PolledInfo::new_raised()).unwrap(),
                             }),
                             IoEmulationType::Plugin(module_id) => StdioBackend::Plugin(
                                 self.add_plugin(endpoint.endpoint_variant.clone(), module_id),
@@ -1046,26 +1046,26 @@ impl FizzGlobal {
                         let file_id = match endpoint.emulation_type {
                             IoEmulationType::Feedback => {
                                 self.files.put(FileBackend::Feedback(StandardFeedback {
-                                    buf: self.buffers.put(Buffer::new()),
-                                    read_polled: self.polled_events.put(PolledInfo::new()),
-                                    write_polled: self.polled_events.put(PolledInfo::new_raised()),
-                                }))
+                                    buf: self.buffers.put(Buffer::new()).unwrap(),
+                                    read_polled: self.polled_events.put(PolledInfo::new()).unwrap(),
+                                    write_polled: self.polled_events.put(PolledInfo::new_raised()).unwrap(),
+                                })).unwrap()
                             }
                             IoEmulationType::Plugin(module_id) => {
                                 let backend = FileBackend::Plugin(
                                     self.add_plugin(endpoint.endpoint_variant.clone(), module_id),
                                 );
-                                self.files.put(backend)
+                                self.files.put(backend).unwrap()
                             }
-                            IoEmulationType::Sink => self.files.put(FileBackend::Sink),
-                            IoEmulationType::NullSink => self.files.put(FileBackend::NullSink),
+                            IoEmulationType::Sink => self.files.put(FileBackend::Sink).unwrap(),
+                            IoEmulationType::NullSink => self.files.put(FileBackend::NullSink).unwrap(),
                             IoEmulationType::Fuzz => {
-                                let file_id = self.files.put(FileBackend::Fuzz);
+                                let file_id = self.files.put(FileBackend::Fuzz).unwrap();
                                 self.add_fuzz_endpoint(FdResource::File(file_id));
                                 file_id
                             }
                             IoEmulationType::Passthrough => {
-                                self.files.put(FileBackend::Passthrough)
+                                self.files.put(FileBackend::Passthrough).unwrap()
                             }
                         };
 
@@ -1198,7 +1198,7 @@ impl FizzGlobal {
     }
 
     pub fn add_fuzz_endpoint(&mut self, resource: FdResource) {
-        let read_polled = self.polled_events.put(PolledInfo::new());
+        let read_polled = self.polled_events.put(PolledInfo::new()).unwrap();
         self.fuzz_endpoints
             .insert(
                 resource,
@@ -1222,7 +1222,7 @@ impl FizzGlobal {
                 rem_addr,
                 backend,
                 next_pending: None,
-            }));
+            })).unwrap();
 
         if is_fuzzing {
             self.add_fuzz_endpoint(FdResource::Socket(client_socket_id));
@@ -1231,7 +1231,7 @@ impl FizzGlobal {
         // Add the client to the pending client chain, if applicable
         match self.socket_locations.get_mut(&rem_addr) {
             None => {
-                let polled_id = self.polled_events.put(PolledInfo::new());
+                let polled_id = self.polled_events.put(PolledInfo::new()).unwrap();
                 self.socket_locations
                     .insert(
                         rem_addr,
@@ -1265,7 +1265,7 @@ impl FizzGlobal {
                     *next_awaiting = Some(client_socket_id);
                 }
                 None => {
-                    let polled_id = self.polled_events.put(PolledInfo::new());
+                    let polled_id = self.polled_events.put(PolledInfo::new()).unwrap();
                     location_info.pending = Some(PendingInfo {
                         client: client_socket_id,
                         poll: polled_id,
@@ -1277,14 +1277,14 @@ impl FizzGlobal {
 
     pub fn add_server(&mut self, transport_addr: TransportAddress, backend: ServerBackend) {
         // Create a new polled instance for listeners waiting to accept connections
-        let connect_polled_id = self.polled_events.put(PolledInfo::new());
+        let connect_polled_id = self.polled_events.put(PolledInfo::new()).unwrap();
 
         let socket_id = self.sockets.put(SocketState::Server(ServerSocket {
             backend,
             local_addr: transport_addr,
             connecting: Queue::new(),
             ready_to_connect: connect_polled_id,
-        }));
+        })).unwrap();
 
         match self.socket_locations.get_mut(&transport_addr) {
             None => {
@@ -1309,10 +1309,10 @@ impl FizzGlobal {
     ) -> PluginId {
         let stream = self.next_stream_id;
         self.next_stream_id = StreamId::from(usize::from(stream) + 1);
-        let read_buf = self.buffers.put(Buffer::new());
-        let read_polled = self.polled_events.put(PolledInfo::new());
-        let write_buf = self.buffers.put(Buffer::new());
-        let write_polled = self.polled_events.put(PolledInfo::new_raised());
+        let read_buf = self.buffers.put(Buffer::new()).unwrap();
+        let read_polled = self.polled_events.put(PolledInfo::new()).unwrap();
+        let write_buf = self.buffers.put(Buffer::new()).unwrap();
+        let write_polled = self.polled_events.put(PolledInfo::new_raised()).unwrap();
 
         self.plugins.put(PluginInfo {
             endpoint,
@@ -1322,7 +1322,7 @@ impl FizzGlobal {
             read_polled,
             write_buf,
             write_polled,
-        })
+        }).unwrap()
     }
 
     pub fn next_ephemeral_address(
@@ -1368,14 +1368,14 @@ impl FizzGlobal {
         match self.file_paths.get(&path) {
             Some(&id) => Err(id),
             None => {
-                let buf = self.buffers.put(Buffer::new());
-                let read_polled = self.polled_events.put(PolledInfo::new());
-                let write_polled = self.polled_events.put(PolledInfo::new_raised());
+                let buf = self.buffers.put(Buffer::new()).unwrap();
+                let read_polled = self.polled_events.put(PolledInfo::new()).unwrap();
+                let write_polled = self.polled_events.put(PolledInfo::new_raised()).unwrap();
                 let file_id = self.files.put(FileBackend::Feedback(StandardFeedback {
                     buf,
                     read_polled,
                     write_polled,
-                }));
+                })).unwrap();
                 Ok(file_id)
             }
         }

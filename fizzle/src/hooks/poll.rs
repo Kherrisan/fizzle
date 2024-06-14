@@ -475,7 +475,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_epoll_create1(ctx) {
 
         let fd = crate::alias_fd_create();
-        let epoll_id = ctx.global.epolls.put(EpollInfo { interests: Default::default() });
+        let epoll_id = ctx.global.epolls.put(EpollInfo { interests: Default::default() }).unwrap();
         ctx.local.fds.insert(DescriptorId::new(fd), FdInfo {
             close_on_exec: (flags & libc::EPOLL_CLOEXEC) != 0,
             nonblocking: false,

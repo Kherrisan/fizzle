@@ -68,7 +68,7 @@ hook_macros::hook! {
                 unlinked: false,
                 value: value as usize,
                 waiting: Deque::new(),
-            });
+            }).unwrap();
 
             ctx.local.named_semaphores.insert(semaphore_ptr, sem_id);
 

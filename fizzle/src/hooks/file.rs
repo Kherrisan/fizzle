@@ -118,7 +118,7 @@ hook_macros::hook! {
         } else if (flags & libc::O_PATH) != 0 {
             // TODO: what about O_CREAT here?
             let fd = hook_macros::real!(open)(pathname, flags, mode);
-            let dir_id = ctx.local.dirs.put(path);
+            let dir_id = ctx.local.dirs.put(path).unwrap();
             ctx.local.fds.insert(DescriptorId::new(fd), FdInfo {
                 close_on_exec,
                 nonblocking: false,
@@ -141,7 +141,7 @@ hook_macros::hook! {
         } else {
             let fd = hook_macros::real!(open)(pathname, flags, mode);
             if fd >= 0 {
-                let file_id = ctx.global.files.put(FileBackend::Passthrough);
+                let file_id = ctx.global.files.put(FileBackend::Passthrough).unwrap();
 
                 ctx.local.fds.insert(DescriptorId::new(fd), FdInfo {
                     close_on_exec: false,
@@ -271,7 +271,7 @@ hook_macros::hook! {
         } else if (flags & libc::O_PATH) != 0 {
             // TODO: what about O_CREAT here?
             let fd = hook_macros::real!(open)(pathname, flags, mode);
-            let dir_id = ctx.local.dirs.put(path);
+            let dir_id = ctx.local.dirs.put(path).unwrap();
             ctx.local.fds.insert(DescriptorId::new(fd), FdInfo {
                 close_on_exec,
                 nonblocking: false,
@@ -294,7 +294,7 @@ hook_macros::hook! {
         } else {
             let fd = hook_macros::real!(open)(pathname, flags, mode);
             if fd >= 0 {
-                let file_id = ctx.global.files.put(FileBackend::Passthrough);
+                let file_id = ctx.global.files.put(FileBackend::Passthrough).unwrap();
 
                 ctx.local.fds.insert(DescriptorId::new(fd), FdInfo {
                     close_on_exec: false,
@@ -390,7 +390,7 @@ hook_macros::hook! {
     unsafe fn fopen(
         pathname: *const libc::c_char,
         mode: *const libc::c_char
-    ) -> *mut libc::FILE => fizzle_fopen(ctx) {
+    ) -> *mut libc::FILE => fizzle_fopen(_ctx) {
         hook_macros::real!(fopen)(pathname, mode)
 
         /*
@@ -510,7 +510,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn fclose(
         stream: *mut libc::FILE
-    ) -> libc::c_int => fizzle_fclose(ctx) {
+    ) -> libc::c_int => fizzle_fclose(_ctx) {
         hook_macros::real!(fclose)(stream)
 
         /*

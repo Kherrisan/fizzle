@@ -373,14 +373,14 @@ impl<K: Sized + From<usize> + Into<usize> + Copy, V: Sized, const N: usize> Valu
         res
     }
 
-    pub fn put(&mut self, value: V) -> K {
+    pub fn put(&mut self, value: V) -> Option<K> {
         let Some(key) = self.next_key() else {
-            panic!("ValueIndex structure out of space");
+            return None
         };
         self.max_key = cmp::max(self.max_key, key);
 
         self.inner[key] = Some(value);
-        K::from(key)
+        Some(K::from(key))
     }
 
     pub fn remove(&mut self, key: K) -> Option<V> {
