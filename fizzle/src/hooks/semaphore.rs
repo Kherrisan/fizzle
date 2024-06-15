@@ -63,7 +63,7 @@ hook_macros::hook! {
             let sem = crate::unique_mem_create() as *mut libc::sem_t;
             let semaphore_ptr = SemaphorePtr::from(sem);
 
-            let sem_id = ctx.global.semaphores.put(SemaphoreInfo {
+            let sem_id = ctx.global.semaphores.allocate(SemaphoreInfo {
                 refs: 1,
                 unlinked: false,
                 value: value as usize,
@@ -75,13 +75,13 @@ hook_macros::hook! {
             semaphore_ptr.to_mut_ptr()
 
         } else { // Open existing semaphore
-            if let Some(&sem_id) = ctx.global.sem_paths.get(&sem_path) {
+            if let Some(sem_id) = ctx.global.sem_paths.get(&sem_path).cloned() {
                 let sem = crate::unique_mem_create() as *mut libc::sem_t;
                 let semaphore_ptr = SemaphorePtr::from(sem);
 
-                ctx.local.named_semaphores.insert(semaphore_ptr, sem_id).unwrap();
+                ctx.local.named_semaphores.insert(semaphore_ptr, sem_id.clone()).unwrap();
 
-                let sem_ctx = ctx.global.semaphores.get_mut(sem_id).unwrap();
+                let sem_ctx = ctx.global.semaphores.get_mut(&sem_id).unwrap();
                 sem_ctx.refs += 1;
 
                 sem
@@ -134,14 +134,13 @@ hook_macros::hook! {
         };
 
         crate::unique_mem_destroy(sem as *mut libc::c_void); // TODO: make sure this is called everywhere
-        let Some(sem_ctx) = ctx.global.semaphores.get_mut(sem_id) else {
+        let Some(sem_ctx) = ctx.global.semaphores.get_mut(&sem_id) else {
             panic!("inconsistent fizzle state--named semaphore without global context in `sem_close`");
         };
 
         sem_ctx.refs -= 1;
         if sem_ctx.refs == 0 && sem_ctx.unlinked {
-            ctx.global.semaphores.remove(sem_id).unwrap();
-
+            ctx.global.semaphores.downref(&sem_id);
         }
 
         0
@@ -165,14 +164,16 @@ hook_macros::hook! {
             return -1
         };
 
-        let Some(sem_info) = ctx.global.semaphores.get_mut(sem_id) else {
+        let Some(sem_info) = ctx.global.semaphores.get_mut(&sem_id) else {
             panic!("inconsistent fizzle state--named semaphore without global context in `sem_unlink`")
         };
 
         sem_info.unlinked = true;
         if sem_info.refs == 0 {
             assert!(sem_info.waiting.is_empty(), "inconsistent fizzle state--global sem waiting queue not empty when refs are zero");
-            ctx.global.semaphores.remove(sem_id).unwrap();
+            // sem_id dropped => semaphore destroyed
+        } else {
+            ctx.global.semaphores.upref(&sem_id);
         }
 
         0
@@ -191,8 +192,8 @@ hook_macros::hook! {
                 None => sem_info.value += 1,
             }
 
-        } else if let Some(&semaphore_id) = ctx.local.named_semaphores.get(&semaphore_ptr) {
-            let Some(sem_info) = ctx.global.semaphores.get_mut(semaphore_id) else {
+        } else if let Some(semaphore_id) = ctx.local.named_semaphores.get(&semaphore_ptr).cloned() {
+            let Some(sem_info) = ctx.global.semaphores.get_mut(&semaphore_id) else {
                 panic!("inconsistent fizzle state--named semaphore without global context in `sem_unlink`");
             };
 

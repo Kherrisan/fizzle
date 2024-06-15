@@ -1,10 +1,27 @@
-use std::{os::fd::RawFd, thread::ThreadId};
+use std::{mem::MaybeUninit, os::fd::RawFd, thread::ThreadId};
+
+use fizzle_common::{
+    path::FilePath,
+    storage::{ArenaKey, Buffer},
+};
+use fizzle_plugin::FizzlePluginObject;
+
+use crate::{constants::*, semaphore::Semaphore};
+
+use super::{
+    backend::FileBackend, fd::FdInfo, EpollInfo, EventFdInfo,
+    MessageQueueInfo, PipeInfo, PluginInfo, PolledInfo, PollerInfo, SemaphoreInfo, SocketState,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BufferId(usize);
 
 impl BufferId {
     pub const INVALID: BufferId = BufferId(usize::MAX);
+}
+
+impl ArenaKey for BufferId {
+    type Value = Buffer<FIZZLE_BUFFER_LENGTH>;
 }
 
 impl From<usize> for BufferId {
@@ -29,6 +46,10 @@ impl DescriptorId {
     }
 }
 
+impl ArenaKey for DescriptorId {
+    type Value = FdInfo;
+}
+
 impl From<usize> for DescriptorId {
     fn from(value: usize) -> Self {
         Self(value)
@@ -43,6 +64,10 @@ impl From<DescriptorId> for usize {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DirectoryId(usize);
+
+impl ArenaKey for DirectoryId {
+    type Value = FilePath;
+}
 
 impl From<usize> for DirectoryId {
     fn from(value: usize) -> Self {
@@ -59,6 +84,10 @@ impl From<DirectoryId> for usize {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EpollId(usize);
 
+impl ArenaKey for EpollId {
+    type Value = EpollInfo;
+}
+
 impl From<usize> for EpollId {
     fn from(value: usize) -> Self {
         Self(value)
@@ -74,6 +103,10 @@ impl From<EpollId> for usize {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EventFdId(usize);
 
+impl ArenaKey for EventFdId {
+    type Value = EventFdInfo;
+}
+
 impl From<usize> for EventFdId {
     fn from(value: usize) -> Self {
         Self(value)
@@ -87,23 +120,12 @@ impl From<EventFdId> for usize {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct FifoId(usize);
-
-impl From<FifoId> for usize {
-    fn from(val: FifoId) -> Self {
-        val.0
-    }
-}
-
-impl From<usize> for FifoId {
-    fn from(val: usize) -> Self {
-        Self(val)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FileId {
     identifier: usize,
+}
+
+impl ArenaKey for FileId {
+    type Value = FileBackend;
 }
 
 impl FileId {
@@ -130,6 +152,10 @@ pub struct MessageQueueId {
     identifier: usize,
 }
 
+impl ArenaKey for MessageQueueId {
+    type Value = MessageQueueInfo;
+}
+
 impl MessageQueueId {
     #[allow(unused)]
     pub fn new(ident: usize) -> Self {
@@ -154,6 +180,10 @@ pub struct PipeId {
     identifier: usize,
 }
 
+impl ArenaKey for PipeId {
+    type Value = PipeInfo;
+}
+
 impl From<usize> for PipeId {
     fn from(value: usize) -> Self {
         Self { identifier: value }
@@ -168,6 +198,10 @@ impl From<PipeId> for usize {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PluginModuleId(usize);
+
+impl ArenaKey for PluginModuleId {
+    type Value = Box<dyn FizzlePluginObject>;
+}
 
 impl From<usize> for PluginModuleId {
     fn from(value: usize) -> Self {
@@ -184,6 +218,10 @@ impl From<PluginModuleId> for usize {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PluginId(usize);
 
+impl ArenaKey for PluginId {
+    type Value = PluginInfo;
+}
+
 impl From<usize> for PluginId {
     fn from(value: usize) -> Self {
         Self(value)
@@ -198,6 +236,10 @@ impl From<PluginId> for usize {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PolledId(usize);
+
+impl ArenaKey for PolledId {
+    type Value = PolledInfo;
+}
 
 impl PolledId {
     pub const INVALID: PolledId = PolledId(usize::MAX);
@@ -218,6 +260,10 @@ impl From<PolledId> for usize {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PollerId(usize);
 
+impl ArenaKey for PollerId {
+    type Value = PollerInfo;
+}
+
 impl From<usize> for PollerId {
     fn from(value: usize) -> Self {
         Self(value)
@@ -232,6 +278,10 @@ impl From<PollerId> for usize {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ProcessId(usize);
+
+impl ArenaKey for ProcessId {
+    type Value = MaybeUninit<Semaphore>;
+}
 
 impl From<usize> for ProcessId {
     fn from(value: usize) -> Self {
@@ -250,6 +300,10 @@ pub struct SemaphoreId {
     identifier: usize,
 }
 
+impl ArenaKey for SemaphoreId {
+    type Value = SemaphoreInfo;
+}
+
 impl From<usize> for SemaphoreId {
     fn from(value: usize) -> Self {
         Self { identifier: value }
@@ -265,6 +319,10 @@ impl From<SemaphoreId> for usize {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SocketId {
     identifier: usize,
+}
+
+impl ArenaKey for SocketId {
+    type Value = SocketState;
 }
 
 impl From<usize> for SocketId {

@@ -48,8 +48,11 @@ hook_macros::hook! {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn execl(pathname: *const libc::c_char, arg: *const libc::c_char, mut va_args: ...) -> libc::c_int {
-        
+pub unsafe extern "C" fn execl(
+    pathname: *const libc::c_char,
+    arg: *const libc::c_char,
+    mut va_args: ...
+) -> libc::c_int {
     if crate::state::has_entered_handler() {
         panic!("recursive calls to `syscall` not allowed");
     }
@@ -90,11 +93,12 @@ pub unsafe extern "C" fn execl(pathname: *const libc::c_char, arg: *const libc::
     ret
 }
 
-
-
 #[no_mangle]
-pub unsafe extern "C" fn execlp(pathname: *const libc::c_char, arg: *const libc::c_char, mut va_args: ...) -> libc::c_int {
-        
+pub unsafe extern "C" fn execlp(
+    pathname: *const libc::c_char,
+    arg: *const libc::c_char,
+    mut va_args: ...
+) -> libc::c_int {
     if crate::state::has_entered_handler() {
         panic!("recursive calls to `syscall` not allowed");
     }
@@ -136,8 +140,11 @@ pub unsafe extern "C" fn execlp(pathname: *const libc::c_char, arg: *const libc:
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn execle(pathname: *const libc::c_char, mut arg: *const libc::c_char, mut va_args: ...) -> libc::c_int {
-        
+pub unsafe extern "C" fn execle(
+    pathname: *const libc::c_char,
+    mut arg: *const libc::c_char,
+    mut va_args: ...
+) -> libc::c_int {
     if crate::state::has_entered_handler() {
         panic!("recursive calls to `syscall` not allowed");
     }
@@ -156,7 +163,7 @@ pub unsafe extern "C" fn execle(pathname: *const libc::c_char, mut arg: *const l
             if i != 0 {
                 arg = va_args.arg()
             }
-            
+
             if arg.is_null() {
                 envp = Some(va_args.arg());
             }
@@ -168,7 +175,11 @@ pub unsafe extern "C" fn execle(pathname: *const libc::c_char, mut arg: *const l
         panic!("`execle` exceeded maximum number of va_args")
     };
 
-    let ret = fizzle_execve(pathname, ptr::addr_of!(argv) as *const *const libc::c_char, envp);
+    let ret = fizzle_execve(
+        pathname,
+        ptr::addr_of!(argv) as *const *const libc::c_char,
+        envp,
+    );
 
     log::trace!(
         "Function `execl` returned {:?}", // TODO: add process info in the future

@@ -18,7 +18,7 @@ use std::{array, env, mem, ptr, thread};
 
 use fizzle_common::io::{AddressFamily, TransportAddress, TransportProtocol};
 use fizzle_common::path::{FilePath, SemPath};
-use fizzle_common::storage::{Buffer, ValueIndex};
+use fizzle_common::storage::{Buffer, Rc, KeyedArena};
 
 use fizzle_plugin::{IoEndpointVariant, StreamId};
 use heapless::spsc::Queue;
@@ -195,9 +195,9 @@ impl FizzCell {
                         poller_id
                     );
                     let global = &mut ctx.global;
-                    let poller_info = global.pollers.get(poller_id).unwrap();
-                    for &polled_id in poller_info.polled_events.iter() {
-                        let polled_info = global.polled_events.get_mut(polled_id).unwrap();
+                    let poller_info = global.pollers.get(&poller_id).unwrap();
+                    for polled_id in poller_info.polled_events.iter() {
+                        let polled_info = global.polled_events.get_mut(&polled_id).unwrap();
                         if polled_info.event_raised {
                             next_worker = Some(poller_info.worker_id);
                             log::trace!(
@@ -277,10 +277,14 @@ impl FizzCell {
             ctx.global.shared_mem_initialized = true;
 
             #[cfg(feature = "pcr")]
-            unsafe { crate::__afl_sharedmem_fuzzing = 1; }
+            unsafe {
+                crate::__afl_sharedmem_fuzzing = 1;
+            }
 
             log::debug!("calling __afl_manual_init()");
-            unsafe { crate::__afl_manual_init(); }
+            unsafe {
+                crate::__afl_manual_init();
+            }
             log::debug!("__afl_manual_init finished");
         }
 
@@ -323,15 +327,12 @@ impl FizzCell {
         #[cfg(all(feature = "afl", not(feature = "pcr")))]
         unsafe {
             let fuzz_buffer = ctx.global.fuzz_input.remaining_mut();
-            let read_amount =
-                libc::read(0, fuzz_buffer.as_mut_ptr() as *mut libc::c_void, 1048576);
+            let read_amount = libc::read(0, fuzz_buffer.as_mut_ptr() as *mut libc::c_void, 1048576);
             if read_amount < 0 {
                 panic!("could not read input from stdin")
             }
 
-            ctx.global
-                .fuzz_input
-                .did_write(read_amount as usize);
+            ctx.global.fuzz_input.did_write(read_amount as usize);
         }
 
         /*
@@ -351,10 +352,12 @@ impl FizzCell {
 
         // Mark appropriate processes/threads as ready to receive input
 
-        let mut polled_ready = heapless::Vec::<PolledId, FIZZLE_MAX_FUZZ_ENDPOINTS>::new();
+        let mut polled_ready = heapless::Vec::<Rc<PolledId>, FIZZLE_MAX_FUZZ_ENDPOINTS>::new();
         for endpoint_info in ctx.global.fuzz_endpoints.values_mut() {
             endpoint_info.read_idx = 0;
-            polled_ready.push(endpoint_info.read_polled).unwrap();
+            polled_ready
+                .push(endpoint_info.read_polled.clone())
+                .unwrap();
         }
 
         log::debug!(
@@ -362,7 +365,7 @@ impl FizzCell {
             polled_ready.len()
         );
         for polled_id in polled_ready {
-            ctx.raise_polled(polled_id);
+            ctx.raise_polled(&polled_id);
         }
 
         // TODO: inefficient
@@ -373,14 +376,14 @@ impl FizzCell {
         let max_id = ctx.global.plugins.max_key();
         for i in 0..=max_id {
             let plugin_id = PluginId::from(i);
-            if let Some(plugin_info) = ctx.global.plugins.get(plugin_id) {
-                let module_id = plugin_info.module_id;
+            if let Some(plugin_info) = ctx.global.plugins.get(&plugin_id) {
+                let module_id = plugin_info.module_id.clone();
                 let local = &mut ctx.local;
                 let plugin_module = local
                     .plugin_modules
                     .as_mut()
                     .unwrap()
-                    .get_mut(module_id)
+                    .get_mut(&module_id)
                     .unwrap();
                 plugin_module.load_entropy(fuzz_input.data());
             }
@@ -513,7 +516,7 @@ impl FizzCell {
             let ctx = self.acquire();
             ctx.global
                 .process_locks
-                .get(ctx.local.process_id)
+                .get(&ctx.local.process_id)
                 .unwrap()
                 .assume_init_ref()
                 .wait();
@@ -525,7 +528,7 @@ impl FizzCell {
             self.acquire()
                 .global
                 .process_locks
-                .get(process_id)
+                .get(&process_id)
                 .unwrap()
                 .assume_init_ref()
                 .post();
@@ -533,11 +536,11 @@ impl FizzCell {
     }
 
     // call this whenever waiting for a single poll event
-    pub fn poll_until_ready(&self, polled_id: PolledId) {
+    pub fn poll_until_ready(&self, polled_id: Rc<PolledId>) {
         let mut ctx = self.acquire();
-        if !ctx.polled_is_ready(polled_id) {
+        if !ctx.polled_is_ready(&polled_id) {
             let poller_id = ctx.new_poller();
-            ctx.register_poller(poller_id, polled_id);
+            ctx.register_poller(poller_id.clone(), polled_id);
             drop(ctx);
             self.yield_thread();
             self.acquire().delete_poller(poller_id);
@@ -718,7 +721,7 @@ impl FizzState {
             .unwrap();
     }
 
-    pub fn polled_is_ready(&mut self, polled_id: PolledId) -> bool {
+    pub fn polled_is_ready(&mut self, polled_id: &Rc<PolledId>) -> bool {
         let polled = self.global.polled_events.get(polled_id).unwrap();
         polled.event_raised
     }
@@ -727,13 +730,13 @@ impl FizzState {
     ///
     /// If not already raised, this method will enqueue a poller waiting on this polled event
     /// (if such a poller exists).
-    pub fn raise_polled(&mut self, polled_id: PolledId) {
+    pub fn raise_polled(&mut self, polled_id: &Rc<PolledId>) {
         let polled = self.global.polled_events.get_mut(polled_id).unwrap();
         if !polled.event_raised {
             polled.event_raised = true;
             let pollers = polled.pollers.clone();
             for poller in pollers {
-                if !self.global.pollers.get(poller).unwrap().in_raised_queue {
+                if !self.global.pollers.get(&poller).unwrap().in_raised_queue {
                     self.global
                         .ready
                         .enqueue(ReadyInfo::Poller(poller))
@@ -744,7 +747,7 @@ impl FizzState {
     }
 
     // if buffer is empty, then call this
-    pub fn lower_polled(&mut self, polled_id: PolledId) {
+    pub fn lower_polled(&mut self, polled_id: &Rc<PolledId>) {
         self.global
             .polled_events
             .get_mut(polled_id)
@@ -753,42 +756,46 @@ impl FizzState {
     }
 
     /// Creates a new poller for the currently executing worker.
-    pub fn new_poller(&mut self) -> PollerId {
+    pub fn new_poller(&mut self) -> Rc<PollerId> {
         let worker_id = self.current_worker_id();
 
-        self.global.pollers.put(PollerInfo {
-            worker_id,
-            polled_events: heapless::Vec::new(),
-            in_raised_queue: false,
-        }).unwrap()
+        self.global
+            .pollers
+            .allocate(PollerInfo {
+                worker_id,
+                polled_events: heapless::Vec::new(),
+                in_raised_queue: false,
+            })
+            .unwrap()
     }
 
     /// Registers `poller_id` as waiting on `polled_id`.
-    pub fn register_poller(&mut self, poller_id: PollerId, polled_id: PolledId) {
-        let poller = self.global.pollers.get_mut(poller_id).unwrap();
-        poller.polled_events.push(polled_id).unwrap();
-        let polled = self.global.polled_events.get_mut(polled_id).unwrap();
+    pub fn register_poller(&mut self, poller_id: Rc<PollerId>, polled_id: Rc<PolledId>) {
+        let poller = self.global.pollers.get_mut(&poller_id).unwrap();
+        poller.polled_events.push(polled_id.clone()).unwrap();
+        let polled = self.global.polled_events.get_mut(&polled_id).unwrap();
         polled.pollers.push(poller_id).unwrap();
     }
 
     // Ugh. This looks like O(n^2)...
     /// Deletes the given poller, removing any references to it from `Polled` objects.
-    pub fn delete_poller(&mut self, poller_id: PollerId) {
-        let poller = self.global.pollers.remove(poller_id).unwrap();
-        if poller.in_raised_queue {
+    pub fn delete_poller(&mut self, poller_id: Rc<PollerId>) {
+        let poller = self.global.pollers.get_mut(&poller_id).unwrap();
+
+        if poller.deref().in_raised_queue {
             // TODO: make queue indexable in future
             for _ in 0..self.global.ready.len() {
                 let ready = self.global.ready.dequeue().unwrap();
-                if let ReadyInfo::Poller(current_poller_id) = ready {
-                    if current_poller_id != poller_id {
+                if let ReadyInfo::Poller(current_poller_id) = &ready {
+                    if *current_poller_id != poller_id {
                         self.global.ready.enqueue(ready).unwrap();
                     }
                 }
             }
         }
 
-        for polled_id in poller.polled_events {
-            let polled = self.global.polled_events.get_mut(polled_id).unwrap();
+        for polled_id in poller.polled_events.iter() {
+            let polled = self.global.polled_events.get_mut(&polled_id).unwrap();
             for i in 0..polled.pollers.len() {
                 if *polled.pollers.get(i).unwrap() == poller_id {
                     polled.pollers.remove(i);
@@ -811,9 +818,11 @@ impl FizzState {
             if let Some(FdInfo {
                 close_on_exec: true,
                 ..
-            }) = fds.get(DescriptorId::from(i))
+            }) = fds.get(&DescriptorId::from(i))
             {
-                fds.remove(DescriptorId::from(i)).unwrap();
+                unsafe {
+                    fds.downref(&DescriptorId::from(i));
+                }
             }
         }
 
@@ -831,11 +840,11 @@ pub struct FizzLocal {
     pub plugin_modules: Option<PluginModules>,
     /// A supplamentary thread used to reap exiting threads.
     pub reaper: Option<ThreadId>,
-    pub fds: ValueIndex<DescriptorId, FdInfo, FIZZLE_MAX_FDS>,
-    pub dirs: ValueIndex<DirectoryId, FilePath, FIZZLE_MAX_DIRS>,
+    pub fds: KeyedArena<DescriptorId, FdInfo, FIZZLE_MAX_FDS>,
+    pub dirs: KeyedArena<DirectoryId, FilePath, FIZZLE_MAX_DIRS>,
     pub barriers: HashMap<BarrierPtr, BarrierInfo, FxBuildHasher>,
     pub condvars: HashMap<CondVarPtr, VecDeque<ThreadId>, FxBuildHasher>,
-    pub named_semaphores: HashMap<SemaphorePtr, SemaphoreId>,
+    pub named_semaphores: HashMap<SemaphorePtr, Rc<SemaphoreId>>,
     /// Files specifically designated as being emulated.
     pub file_objs: HashMap<FilePtr, FileObject, FxBuildHasher>,
     pub mutexes: HashMap<MutexPtr, VecDeque<ThreadId>, FxBuildHasher>,
@@ -895,10 +904,10 @@ impl FizzLocal {
         let fds = match transfer_fds {
             Some(fds) => fds,
             None => {
-                let mut fds = ValueIndex::default();
-                fds.insert(DescriptorId::from(0), FdInfo::new(FdResource::Stdin));
-                fds.insert(DescriptorId::from(1), FdInfo::new(FdResource::Stdout));
-                fds.insert(DescriptorId::from(2), FdInfo::new(FdResource::Stderr));
+                let mut fds = KeyedArena::default();
+                fds.allocate_with_key(DescriptorId::from(0), FdInfo::new(FdResource::Stdin));
+                fds.allocate_with_key(DescriptorId::from(1), FdInfo::new(FdResource::Stdout));
+                fds.allocate_with_key(DescriptorId::from(2), FdInfo::new(FdResource::Stderr));
                 fds
             }
         };
@@ -944,27 +953,27 @@ pub struct FizzGlobal {
     next_ephemeral_port: u16,
     /// The thread identifier to be executed by the waking process.
     waking_thread_id: Option<ThreadId>,
-    process_locks: ValueIndex<ProcessId, MaybeUninit<Semaphore>, FIZZLE_MAX_PROCESSES>,
+    process_locks: KeyedArena<ProcessId, MaybeUninit<Semaphore>, FIZZLE_MAX_PROCESSES>,
     transfer_fds: Option<Descriptors>,
     pub shared_mem_initialized: bool,
     pub passthrough_process_id: ProcessId,
-    pub epolls: ValueIndex<EpollId, EpollInfo, FIZZLE_MAX_EPOLLS>,
-    pub event_fds: ValueIndex<EventFdId, EventFdInfo, FIZZLE_MAX_EVENTFDS>,
-    pub file_paths: FnvIndexMap<FilePath, FileId, FIZZLE_MAX_FILE_PATHS>,
-    pub files: ValueIndex<FileId, FileBackend, FIZZLE_MAX_FILES>,
-    pub sem_paths: FnvIndexMap<SemPath, SemaphoreId, FIZZLE_MAX_NAMED_SEMAPHORES>,
-    pub semaphores: ValueIndex<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>,
-    pub pipes: ValueIndex<PipeId, PipeInfo, FIZZLE_MAX_PIPES>,
-    pub message_queues: ValueIndex<MessageQueueId, MessageQueueInfo, FIZZLE_MAX_MESSAGE_QUEUES>,
+    pub epolls: KeyedArena<EpollId, EpollInfo, FIZZLE_MAX_EPOLLS>,
+    pub event_fds: KeyedArena<EventFdId, EventFdInfo, FIZZLE_MAX_EVENTFDS>,
+    pub file_paths: FnvIndexMap<FilePath, Rc<FileId>, FIZZLE_MAX_FILE_PATHS>,
+    pub files: KeyedArena<FileId, FileBackend, FIZZLE_MAX_FILES>,
+    pub sem_paths: FnvIndexMap<SemPath, Rc<SemaphoreId>, FIZZLE_MAX_NAMED_SEMAPHORES>,
+    pub semaphores: KeyedArena<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>,
+    pub pipes: KeyedArena<PipeId, PipeInfo, FIZZLE_MAX_PIPES>,
+    pub message_queues: KeyedArena<MessageQueueId, MessageQueueInfo, FIZZLE_MAX_MESSAGE_QUEUES>,
     // TODO: SO_REUSEPORT breaks this...
     pub socket_locations: FnvIndexMap<TransportAddress, SocketLocationInfo, FIZZLE_MAX_SOCKADDRS>,
-    pub sockets: ValueIndex<SocketId, SocketState, FIZZLE_MAX_SOCKETS>,
-    pub buffers: ValueIndex<BufferId, Buffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
+    pub sockets: KeyedArena<SocketId, SocketState, FIZZLE_MAX_SOCKETS>,
+    pub buffers: KeyedArena<BufferId, Buffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
     pub stdio: StdioBackend,
     // Polling infrastructure
-    pub plugins: ValueIndex<PluginId, PluginInfo, FIZZLE_MAX_PLUGIN_STREAMS>,
-    pub polled_events: ValueIndex<PolledId, PolledInfo, FIZZLE_MAX_POLLED_EVENTS>,
-    pub pollers: ValueIndex<PollerId, PollerInfo, FIZZLE_MAX_POLLERS>,
+    pub plugins: KeyedArena<PluginId, PluginInfo, FIZZLE_MAX_PLUGIN_STREAMS>,
+    pub polled_events: KeyedArena<PolledId, PolledInfo, FIZZLE_MAX_POLLED_EVENTS>,
+    pub pollers: KeyedArena<PollerId, PollerInfo, FIZZLE_MAX_POLLERS>,
     pub ready: Queue<ReadyInfo, FIZZLE_MAX_QUEUED_READY_POLLERS>,
     pub fuzz_input: Buffer<FIZZLE_MAX_FUZZ_INPUT>,
     pub fuzz_endpoints: FnvIndexMap<FdResource, FuzzEndpointInfo, FIZZLE_MAX_FUZZ_ENDPOINTS>,
@@ -986,25 +995,25 @@ impl FizzGlobal {
             *ptr::addr_of_mut!((*state).next_stream_id) = StreamId::from(0);
             *ptr::addr_of_mut!((*state).next_ephemeral_port) = FIZZLE_EPHEMERAL_PORT_START;
             *ptr::addr_of_mut!((*state).waking_thread_id) = None;
-            ValueIndex::initialize(ptr::addr_of_mut!((*state).process_locks));
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).process_locks));
             *ptr::addr_of_mut!((*state).transfer_fds) = None;
             *ptr::addr_of_mut!((*state).passthrough_process_id) = ProcessId::from(1);
-            ValueIndex::initialize(ptr::addr_of_mut!((*state).epolls));
-            ValueIndex::initialize(ptr::addr_of_mut!((*state).event_fds));
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).epolls));
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).event_fds));
             *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
-            ValueIndex::initialize(ptr::addr_of_mut!((*state).files));
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).files));
             *ptr::addr_of_mut!((*state).sem_paths) = FnvIndexMap::new();
-            ValueIndex::initialize(ptr::addr_of_mut!((*state).semaphores));
-            ValueIndex::initialize(ptr::addr_of_mut!((*state).pipes));
-            ValueIndex::initialize(ptr::addr_of_mut!((*state).message_queues));
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).semaphores));
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).pipes));
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).message_queues));
             *ptr::addr_of_mut!((*state).socket_locations) = FnvIndexMap::new();
-            ValueIndex::initialize(ptr::addr_of_mut!((*state).sockets));
-            ValueIndex::initialize(ptr::addr_of_mut!((*state).buffers));
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).sockets));
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).buffers));
 
             *ptr::addr_of_mut!((*state).stdio) = StdioBackend::Sink;
-            ValueIndex::initialize(ptr::addr_of_mut!((*state).plugins));
-            ValueIndex::initialize(ptr::addr_of_mut!((*state).polled_events));
-            ValueIndex::initialize(ptr::addr_of_mut!((*state).pollers));
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).plugins));
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).polled_events));
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).pollers));
             *ptr::addr_of_mut!((*state).ready) = Queue::new();
             *ptr::addr_of_mut!((*state).fuzz_input) = Buffer::new();
             *ptr::addr_of_mut!((*state).fuzz_endpoints) = FnvIndexMap::new();
@@ -1022,14 +1031,20 @@ impl FizzGlobal {
                 let endpoint_variant = endpoint.endpoint_variant.clone();
                 match endpoint_variant {
                     IoEndpointVariant::Stdio => {
-                        self.stdio = match endpoint.emulation_type {
+                        self.stdio = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => StdioBackend::Feedback(StandardFeedback {
-                                buf: self.buffers.put(Buffer::new()).unwrap(),
-                                read_polled: self.polled_events.put(PolledInfo::new()).unwrap(),
-                                write_polled: self.polled_events.put(PolledInfo::new_raised()).unwrap(),
+                                buf: self.buffers.allocate(Buffer::new()).unwrap(),
+                                read_polled: self
+                                    .polled_events
+                                    .allocate(PolledInfo::new())
+                                    .unwrap(),
+                                write_polled: self
+                                    .polled_events
+                                    .allocate(PolledInfo::new_raised())
+                                    .unwrap(),
                             }),
                             IoEmulationType::Plugin(module_id) => StdioBackend::Plugin(
-                                self.add_plugin(endpoint.endpoint_variant.clone(), module_id),
+                                self.add_plugin(endpoint.endpoint_variant.clone(), module_id.clone()),
                             ),
                             IoEmulationType::Sink => StdioBackend::Sink,
                             IoEmulationType::NullSink => StdioBackend::NullSink,
@@ -1044,39 +1059,50 @@ impl FizzGlobal {
                         let path =
                             FilePath::from_raw_bytes(pathbuf.as_os_str().as_bytes()).unwrap();
 
-                        let file_id = match endpoint.emulation_type {
-                            IoEmulationType::Feedback => {
-                                self.files.put(FileBackend::Feedback(StandardFeedback {
-                                    buf: self.buffers.put(Buffer::new()).unwrap(),
-                                    read_polled: self.polled_events.put(PolledInfo::new()).unwrap(),
-                                    write_polled: self.polled_events.put(PolledInfo::new_raised()).unwrap(),
-                                })).unwrap()
-                            }
+                        let file_id = match &endpoint.emulation_type {
+                            IoEmulationType::Feedback => self
+                                .files
+                                .allocate(FileBackend::Feedback(StandardFeedback {
+                                    buf: self.buffers.allocate(Buffer::new()).unwrap(),
+                                    read_polled: self
+                                        .polled_events
+                                        .allocate(PolledInfo::new())
+                                        .unwrap(),
+                                    write_polled: self
+                                        .polled_events
+                                        .allocate(PolledInfo::new_raised())
+                                        .unwrap(),
+                                }))
+                                .unwrap(),
                             IoEmulationType::Plugin(module_id) => {
                                 let backend = FileBackend::Plugin(
-                                    self.add_plugin(endpoint.endpoint_variant.clone(), module_id),
+                                    self.add_plugin(endpoint.endpoint_variant.clone(), module_id.clone()),
                                 );
-                                self.files.put(backend).unwrap()
+                                self.files.allocate(backend).unwrap()
                             }
-                            IoEmulationType::Sink => self.files.put(FileBackend::Sink).unwrap(),
-                            IoEmulationType::NullSink => self.files.put(FileBackend::NullSink).unwrap(),
+                            IoEmulationType::Sink => {
+                                self.files.allocate(FileBackend::Sink).unwrap()
+                            }
+                            IoEmulationType::NullSink => {
+                                self.files.allocate(FileBackend::NullSink).unwrap()
+                            }
                             IoEmulationType::Fuzz => {
-                                let file_id = self.files.put(FileBackend::Fuzz).unwrap();
-                                self.add_fuzz_endpoint(FdResource::File(file_id));
+                                let file_id = self.files.allocate(FileBackend::Fuzz).unwrap();
+                                self.add_fuzz_endpoint(FdResource::File(file_id.clone()));
                                 file_id
                             }
                             IoEmulationType::Passthrough => {
-                                self.files.put(FileBackend::Passthrough).unwrap()
+                                self.files.allocate(FileBackend::Passthrough).unwrap()
                             }
                         };
 
                         self.file_paths.insert(path, file_id).unwrap();
                     }
                     IoEndpointVariant::TcpServer(addr) => {
-                        let backend = match endpoint.emulation_type {
+                        let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => ServerBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => ServerBackend::Plugin(
-                                self.add_plugin(endpoint_variant.clone(), module_id),
+                                self.add_plugin(endpoint_variant.clone(), module_id.clone()),
                             ),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
@@ -1088,10 +1114,10 @@ impl FizzGlobal {
                     }
                     IoEndpointVariant::TcpClient(addr) => {
                         let mut is_fuzzing = false;
-                        let backend = match endpoint.emulation_type {
+                        let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(
-                                self.add_plugin(endpoint_variant.clone(), module_id),
+                                self.add_plugin(endpoint_variant.clone(), module_id.clone()),
                             ),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
@@ -1105,10 +1131,10 @@ impl FizzGlobal {
                         self.add_pending_client(TransportAddress::Tcp(addr), backend, is_fuzzing)
                     }
                     IoEndpointVariant::UdpServer(addr) => {
-                        let backend = match endpoint.emulation_type {
+                        let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => ServerBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => ServerBackend::Plugin(
-                                self.add_plugin(endpoint_variant.clone(), module_id),
+                                self.add_plugin(endpoint_variant.clone(), module_id.clone()),
                             ),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
@@ -1120,10 +1146,10 @@ impl FizzGlobal {
                     }
                     IoEndpointVariant::UdpClient(addr) => {
                         let mut is_fuzzing = false;
-                        let backend = match endpoint.emulation_type {
+                        let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(
-                                self.add_plugin(endpoint_variant.clone(), module_id),
+                                self.add_plugin(endpoint_variant.clone(), module_id.clone()),
                             ),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
@@ -1137,10 +1163,10 @@ impl FizzGlobal {
                         self.add_pending_client(TransportAddress::Udp(addr), backend, is_fuzzing)
                     }
                     IoEndpointVariant::SctpServer(addr) => {
-                        let backend = match endpoint.emulation_type {
+                        let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => ServerBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => ServerBackend::Plugin(
-                                self.add_plugin(endpoint_variant.clone(), module_id),
+                                self.add_plugin(endpoint_variant.clone(), module_id.clone()),
                             ),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
@@ -1152,10 +1178,10 @@ impl FizzGlobal {
                     }
                     IoEndpointVariant::SctpClient(addr) => {
                         let mut is_fuzzing = false;
-                        let backend = match endpoint.emulation_type {
+                        let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(
-                                self.add_plugin(endpoint_variant.clone(), module_id),
+                                self.add_plugin(endpoint_variant.clone(), module_id.clone()),
                             ),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
@@ -1199,7 +1225,7 @@ impl FizzGlobal {
     }
 
     pub fn add_fuzz_endpoint(&mut self, resource: FdResource) {
-        let read_polled = self.polled_events.put(PolledInfo::new()).unwrap();
+        let read_polled = self.polled_events.allocate(PolledInfo::new()).unwrap();
         self.fuzz_endpoints
             .insert(
                 resource,
@@ -1219,20 +1245,21 @@ impl FizzGlobal {
     ) {
         let client_socket_id = self
             .sockets
-            .put(SocketState::PendingConnection(PendingSocket {
+            .allocate(SocketState::PendingConnection(PendingSocket {
                 rem_addr,
                 backend,
                 next_pending: None,
-            })).unwrap();
+            }))
+            .unwrap();
 
         if is_fuzzing {
-            self.add_fuzz_endpoint(FdResource::Socket(client_socket_id));
+            self.add_fuzz_endpoint(FdResource::Socket(client_socket_id.clone()));
         }
 
         // Add the client to the pending client chain, if applicable
         match self.socket_locations.get_mut(&rem_addr) {
             None => {
-                let polled_id = self.polled_events.put(PolledInfo::new()).unwrap();
+                let polled_id = self.polled_events.allocate(PolledInfo::new()).unwrap();
                 self.socket_locations
                     .insert(
                         rem_addr,
@@ -1246,15 +1273,17 @@ impl FizzGlobal {
                     )
                     .unwrap();
             }
-            Some(location_info) => match location_info.pending {
-                Some(PendingInfo { mut client, .. }) => {
+            Some(location_info) => match &location_info.pending {
+                Some(PendingInfo { client, .. }) => {
+                    let mut last_client = client.clone();
                     while let Some(SocketState::PendingConnection(PendingSocket {
                         next_pending: Some(id),
                         ..
-                    })) = self.sockets.get(client)
+                    })) = self.sockets.get(&last_client)
                     {
-                        client = *id;
+                        last_client = id.clone();
                     }
+
                     let SocketState::PendingConnection(PendingSocket {
                         next_pending: next_awaiting,
                         ..
@@ -1266,7 +1295,7 @@ impl FizzGlobal {
                     *next_awaiting = Some(client_socket_id);
                 }
                 None => {
-                    let polled_id = self.polled_events.put(PolledInfo::new()).unwrap();
+                    let polled_id = self.polled_events.allocate(PolledInfo::new()).unwrap();
                     location_info.pending = Some(PendingInfo {
                         client: client_socket_id,
                         poll: polled_id,
@@ -1278,14 +1307,17 @@ impl FizzGlobal {
 
     pub fn add_server(&mut self, transport_addr: TransportAddress, backend: ServerBackend) {
         // Create a new polled instance for listeners waiting to accept connections
-        let connect_polled_id = self.polled_events.put(PolledInfo::new()).unwrap();
+        let connect_polled_id = self.polled_events.allocate(PolledInfo::new()).unwrap();
 
-        let socket_id = self.sockets.put(SocketState::Server(ServerSocket {
-            backend,
-            local_addr: transport_addr,
-            connecting: Queue::new(),
-            ready_to_connect: connect_polled_id,
-        })).unwrap();
+        let socket_id = self
+            .sockets
+            .allocate(SocketState::Server(ServerSocket {
+                backend,
+                local_addr: transport_addr,
+                connecting: Queue::new(),
+                ready_to_connect: connect_polled_id,
+            }))
+            .unwrap();
 
         match self.socket_locations.get_mut(&transport_addr) {
             None => {
@@ -1306,24 +1338,29 @@ impl FizzGlobal {
     pub fn add_plugin(
         &mut self,
         endpoint: IoEndpointVariant,
-        module_id: PluginModuleId,
-    ) -> PluginId {
+        module_id: Rc<PluginModuleId>,
+    ) -> Rc<PluginId> {
         let stream = self.next_stream_id;
         self.next_stream_id = StreamId::from(usize::from(stream) + 1);
-        let read_buf = self.buffers.put(Buffer::new()).unwrap();
-        let read_polled = self.polled_events.put(PolledInfo::new()).unwrap();
-        let write_buf = self.buffers.put(Buffer::new()).unwrap();
-        let write_polled = self.polled_events.put(PolledInfo::new_raised()).unwrap();
+        let read_buf = self.buffers.allocate(Buffer::new()).unwrap();
+        let read_polled = self.polled_events.allocate(PolledInfo::new()).unwrap();
+        let write_buf = self.buffers.allocate(Buffer::new()).unwrap();
+        let write_polled = self
+            .polled_events
+            .allocate(PolledInfo::new_raised())
+            .unwrap();
 
-        self.plugins.put(PluginInfo {
-            endpoint,
-            stream,
-            module_id,
-            read_buf,
-            read_polled,
-            write_buf,
-            write_polled,
-        }).unwrap()
+        self.plugins
+            .allocate(PluginInfo {
+                endpoint,
+                stream,
+                module_id,
+                read_buf,
+                read_polled,
+                write_buf,
+                write_polled,
+            })
+            .unwrap()
     }
 
     pub fn next_ephemeral_address(
@@ -1365,18 +1402,24 @@ impl FizzGlobal {
 
     /// This method returns `Ok` if the file was created, and `Err` if a file already
     /// exists at the given path.
-    pub fn create_file(&mut self, path: FilePath) -> Result<FileId, FileId> {
+    pub fn create_file(&mut self, path: FilePath) -> Result<Rc<FileId>, Rc<FileId>> {
         match self.file_paths.get(&path) {
-            Some(&id) => Err(id),
+            Some(id) => Err(id.clone()),
             None => {
-                let buf = self.buffers.put(Buffer::new()).unwrap();
-                let read_polled = self.polled_events.put(PolledInfo::new()).unwrap();
-                let write_polled = self.polled_events.put(PolledInfo::new_raised()).unwrap();
-                let file_id = self.files.put(FileBackend::Feedback(StandardFeedback {
-                    buf,
-                    read_polled,
-                    write_polled,
-                })).unwrap();
+                let buf = self.buffers.allocate(Buffer::new()).unwrap();
+                let read_polled = self.polled_events.allocate(PolledInfo::new()).unwrap();
+                let write_polled = self
+                    .polled_events
+                    .allocate(PolledInfo::new_raised())
+                    .unwrap();
+                let file_id = self
+                    .files
+                    .allocate(FileBackend::Feedback(StandardFeedback {
+                        buf,
+                        read_polled,
+                        write_polled,
+                    }))
+                    .unwrap();
                 Ok(file_id)
             }
         }
@@ -1390,19 +1433,18 @@ pub enum ThreadTermination {
     SigTerm,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct FuzzEndpointInfo {
-    pub read_polled: PolledId,
+    pub read_polled: Rc<PolledId>,
     pub read_idx: usize,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct EventFdInfo {
-    pub read_polled: PolledId,
-    pub write_polled: PolledId,
+    pub read_polled: Rc<PolledId>,
+    pub write_polled: Rc<PolledId>,
     pub is_semaphore: bool,
     pub counter: u64,
-
 }
 
 pub type PThreadDestructor = unsafe extern "C" fn(*mut libc::c_void);
@@ -1435,7 +1477,7 @@ pub struct FileObject {
 #[derive(Debug)]
 pub struct PolledInfo {
     /// Pollers that this Polled instance is meant to awaken
-    pub pollers: heapless::Vec<PollerId, FIZZLE_MAX_PER_EVENT_QUEUED_POLLERS>,
+    pub pollers: heapless::Vec<Rc<PollerId>, FIZZLE_MAX_PER_EVENT_QUEUED_POLLERS>,
     /// Indicates that the item being polled is "ready" for the `Poller`.
     pub event_raised: bool,
     // /// Indicates that a `Poller` has been sent to the ready queue from this `Polled` instance and
@@ -1462,28 +1504,28 @@ impl PolledInfo {
 #[derive(Debug)]
 pub struct SocketLocationInfo {
     /// The socket bound to the given location.
-    pub bound_socket: Option<SocketId>,
+    pub bound_socket: Option<Rc<SocketId>>,
     /// Points to an optional linked list of clients that are awaiting this location to exist.
     pub pending: Option<PendingInfo>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct PendingInfo {
-    pub client: SocketId,
-    pub poll: PolledId,
+    pub client: Rc<SocketId>,
+    pub poll: Rc<PolledId>,
 }
 
 #[derive(Debug)]
 pub struct PollerInfo {
     worker_id: WorkerId,
-    polled_events: heapless::Vec<PolledId, FIZZLE_MAX_PER_POLLER_QUEUED_EVENTS>,
+    polled_events: heapless::Vec<Rc<PolledId>, FIZZLE_MAX_PER_POLLER_QUEUED_EVENTS>,
     in_raised_queue: bool,
 }
 
 // TODO: rename...
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReadyInfo {
-    Poller(PollerId),
+    Poller(Rc<PollerId>),
     Worker(WorkerId),
 }
 
@@ -1516,21 +1558,21 @@ pub struct UnassociatedSocket {
 pub struct ServerSocket {
     pub backend: ServerBackend,
     pub local_addr: TransportAddress,
-    pub connecting: Queue<SocketId, FIZZLE_SOMAXCONN>,
-    pub ready_to_connect: PolledId,
+    pub connecting: Queue<Rc<SocketId>, FIZZLE_SOMAXCONN>,
+    pub ready_to_connect: Rc<PolledId>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct PendingSocket {
     pub backend: PendingBackend,
-    pub next_pending: Option<SocketId>,
+    pub next_pending: Option<Rc<SocketId>>,
     pub rem_addr: TransportAddress,
 }
 
 #[derive(Debug)]
 pub struct ConnectingSocket {
     pub backend: ConnectingBackend,
-    pub connect_polled: PolledId,
+    pub connect_polled: Rc<PolledId>,
     pub local_addr: TransportAddress,
 }
 
@@ -1546,11 +1588,11 @@ pub struct PluginInfo {
     pub endpoint: IoEndpointVariant,
     pub stream: StreamId,
     /// The plugin module to read/write from.
-    pub module_id: PluginModuleId,
-    pub read_buf: BufferId,
-    pub read_polled: PolledId,
-    pub write_buf: BufferId,
-    pub write_polled: PolledId,
+    pub module_id: Rc<PluginModuleId>,
+    pub read_buf: Rc<BufferId>,
+    pub read_polled: Rc<PolledId>,
+    pub write_buf: Rc<BufferId>,
+    pub write_polled: Rc<PolledId>,
 }
 
 #[derive(Debug)]
@@ -1558,13 +1600,13 @@ pub struct EpollInfo {
     pub interests: FnvIndexMap<DescriptorId, EpollInterest, FIZZLE_MAX_EPOLL_FDS>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct EpollInterest {
     pub direction: EpollDirection,
     pub user_data: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EpollDirection {
     None,
     Read(PolledStatus),
@@ -1572,9 +1614,9 @@ pub enum EpollDirection {
     Both(PolledStatus, PolledStatus),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PolledStatus {
-    Pollable(PolledId),
+    Pollable(Rc<PolledId>),
     /// The file descriptor was invalid.
     BadFd,
     /// The requested object will never return polled output (such as attempting to read `stdout`).
@@ -1583,7 +1625,7 @@ pub enum PolledStatus {
     ImmediatelyPollable,
 }
 
-type Descriptors = ValueIndex<DescriptorId, FdInfo, FIZZLE_MAX_FDS>;
+type Descriptors = KeyedArena<DescriptorId, FdInfo, FIZZLE_MAX_FDS>;
 
 #[derive(Debug)]
 pub struct BarrierInfo {
@@ -1600,11 +1642,11 @@ pub struct PipeInfo {
     /// The peer pipe that this pipe is connected to.
     ///
     /// If this value is `None`, then the pipe has broken (e.g., the other end has shut).
-    pub peer: Option<PipeId>,
+    pub peer: Option<Rc<PipeId>>,
     /// The buffer this pipe reads in data from.
-    pub read_buf: BufferId,
-    pub read_polled: PolledId,
-    pub write_polled: PolledId,
+    pub read_buf: Rc<BufferId>,
+    pub read_polled: Rc<PolledId>,
+    pub write_polled: Rc<PolledId>,
 }
 
 /// The mode of operation by which data is passed over the pipe.

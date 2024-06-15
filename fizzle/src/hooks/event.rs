@@ -1,4 +1,11 @@
-use crate::{hook_macros, state::{fd::{FdInfo, FdResource}, identifiers::DescriptorId, EventFdInfo, PolledInfo}};
+use crate::{
+    hook_macros,
+    state::{
+        fd::{FdInfo, FdResource},
+        identifiers::DescriptorId,
+        EventFdInfo, PolledInfo,
+    },
+};
 
 hook_macros::hook! {
     unsafe fn eventfd(
@@ -12,23 +19,23 @@ hook_macros::hook! {
 
         let fd = crate::alias_fd_create();
 
-        let read_polled = ctx.global.polled_events.put(PolledInfo::new()).unwrap();
-        let write_polled = ctx.global.polled_events.put(PolledInfo::new_raised()).unwrap();
+        let read_polled = ctx.global.polled_events.allocate(PolledInfo::new()).unwrap();
+        let write_polled = ctx.global.polled_events.allocate(PolledInfo::new_raised()).unwrap();
 
-        let eventfd_id = ctx.global.event_fds.put(EventFdInfo {
-            read_polled,
-            write_polled,
+        let eventfd_id = ctx.global.event_fds.allocate(EventFdInfo {
+            read_polled: read_polled,
+            write_polled: write_polled,
             is_semaphore,
             counter: initval as u64,
         }).unwrap();
 
-        ctx.local.fds.insert(DescriptorId::new(fd), FdInfo {
+        ctx.local.fds.allocate_with_key(DescriptorId::new(fd), FdInfo {
             close_on_exec,
             nonblocking,
             is_passthrough: false,
             resource: FdResource::EventFd(eventfd_id),
         });
-        
+
 
         fd
     }

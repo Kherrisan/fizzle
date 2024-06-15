@@ -1,3 +1,5 @@
+use fizzle_common::storage::Rc;
+
 use crate::state::identifiers::*;
 
 #[derive(Clone, Debug)]
@@ -22,21 +24,21 @@ impl FdInfo {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum FdResource {
     /// Files `open()`ed using O_PATH
-    Directory(DirectoryId),
+    Directory(Rc<DirectoryId>),
     /// Epoll descriptors.
-    Epoll(EpollId),
+    Epoll(Rc<EpollId>),
     /// Event file descriptor.
-    EventFd(EventFdId),
+    EventFd(Rc<EventFdId>),
     /// Files that are accessed via the virtual filesystem.
-    File(FileId),
+    File(Rc<FileId>),
     /// Cross-process message queues.
     #[allow(unused)]
-    MessageQueue(MessageQueueId),
+    MessageQueue(Rc<MessageQueueId>),
     /// Anonymous pipes, such as those created with `pipe()`.
-    Pipe(PipeId),
+    Pipe(Rc<PipeId>),
     /// The standard input of the parent process (which may be inherited by children).
     Stdin,
     /// The standard output of the parent process. (which may be inherited by children).
@@ -44,6 +46,5 @@ pub enum FdResource {
     /// The standard error of the parent process. (which may be inherited by children).
     Stderr,
     /// Network sockets.
-    #[allow(unused)]
-    Socket(SocketId),
+    Socket(Rc<SocketId>),
 }

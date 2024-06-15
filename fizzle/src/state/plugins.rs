@@ -1,12 +1,12 @@
 use crate::constants::*;
 
-use fizzle_common::storage::ValueIndex;
+use fizzle_common::storage::{Rc, KeyedArena};
 use fizzle_plugin::{Context, FizzlePluginObject, IoEndpointVariant};
 
 use super::{FizzState, PluginId, PluginModuleId};
 
 pub type PluginModules =
-    ValueIndex<PluginModuleId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>;
+    KeyedArena<PluginModuleId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>;
 
 /// Plugin information, populated based on the Fizzle configuration file.
 ///
@@ -45,7 +45,7 @@ impl PluginConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum IoEmulationType {
     #[allow(unused)]
     Passthrough,
@@ -54,7 +54,7 @@ pub enum IoEmulationType {
     Feedback,
     /// Uses the plugin specified by `PluginId` to decide `read()`/`write()` behavior.
     #[allow(unused)]
-    Plugin(PluginModuleId),
+    Plugin(Rc<PluginModuleId>),
     #[allow(unused)]
     Sink,
     #[allow(unused)]
@@ -78,11 +78,11 @@ pub fn run_plugins(ctx: &mut FizzState) -> bool {
         // TODO: handle datagrams here
 
         let plugin_id = PluginId::from(i);
-        if let Some(plugin_info) = ctx.global.plugins.get(plugin_id) {
+        if let Some(plugin_info) = ctx.global.plugins.get(&plugin_id) {
             let mut raise_read = false;
             let mut raise_write = false;
 
-            let plugin_module_id = plugin_info.module_id;
+            let plugin_module_id = plugin_info.module_id.clone();
             let context = Context {
                 endpoint: plugin_info.endpoint.clone(),
                 stream_id: plugin_info.stream,
@@ -93,15 +93,15 @@ pub fn run_plugins(ctx: &mut FizzState) -> bool {
                 .plugin_modules
                 .as_mut()
                 .unwrap()
-                .get_mut(plugin_module_id)
+                .get_mut(&plugin_module_id)
                 .unwrap();
-            let write_buf_id = plugin_info.write_buf;
-            let write_polled = plugin_info.write_polled;
-            let read_buf_id = plugin_info.read_buf;
-            let read_polled = plugin_info.read_polled;
+            let write_buf_id = plugin_info.write_buf.clone();
+            let write_polled = plugin_info.write_polled.clone();
+            let read_buf_id = plugin_info.read_buf.clone();
+            let read_polled = plugin_info.read_polled.clone();
 
             // Check read end
-            let write_buf = ctx.global.buffers.get_mut(write_buf_id).unwrap();
+            let write_buf = ctx.global.buffers.get_mut(&write_buf_id).unwrap();
             if plugin_module.can_read(&context) && !write_buf.is_empty() {
                 plugin_activated = true;
                 match plugin_module.read(write_buf.data(), &context) {
@@ -115,7 +115,7 @@ pub fn run_plugins(ctx: &mut FizzState) -> bool {
             }
 
             // Check write end
-            let read_buf = ctx.global.buffers.get_mut(read_buf_id).unwrap();
+            let read_buf = ctx.global.buffers.get_mut(&read_buf_id).unwrap();
             if plugin_module.can_write(&context) && !read_buf.is_full() {
                 plugin_activated = true;
                 match plugin_module.write(read_buf.remaining_mut(), &context) {
@@ -129,10 +129,10 @@ pub fn run_plugins(ctx: &mut FizzState) -> bool {
             }
 
             if raise_read {
-                ctx.raise_polled(read_polled);
+                ctx.raise_polled(&read_polled);
             }
             if raise_write {
-                ctx.raise_polled(write_polled);
+                ctx.raise_polled(&write_polled);
             }
         }
     }

@@ -1,5 +1,7 @@
 use std::fmt::Debug;
 
+use fizzle_common::storage::Rc;
+
 use crate::state::identifiers::*;
 
 use self::private::Sealed;
@@ -10,15 +12,15 @@ mod private {
     pub struct Sealed;
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum IoBackend<R: Clone + Copy + Debug, F: Clone + Copy + Debug> {
+#[derive(Clone, Debug)]
+pub enum IoBackend<R: Clone + Debug, F: Clone + Debug> {
     Passthrough,
     /// Handles I/O regularly.
     Peered(R),
     /// `read()`s will return whatever was written by prior `write()`s--acts as a virtual FIFO queue.
     Feedback(F),
     /// Uses the plugin specified by `PluginId` to decide `read()`/`write()` behavior.
-    Plugin(PluginId),
+    Plugin(Rc<PluginId>),
     Sink,
     NullSink,
     /// Indicates that fuzzing input should be passed directly through the I/O Endpoint.
@@ -28,26 +30,26 @@ pub enum IoBackend<R: Clone + Copy + Debug, F: Clone + Copy + Debug> {
     Fuzz,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct StandardFeedback {
-    pub buf: BufferId,
-    pub read_polled: PolledId,
-    pub write_polled: PolledId,
+    pub buf: Rc<BufferId>,
+    pub read_polled: Rc<PolledId>,
+    pub write_polled: Rc<PolledId>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct RegularConnected {
-    pub peer: Option<SocketId>,
-    pub recv_buf: BufferId,
-    pub read_polled: PolledId,
-    pub write_polled: PolledId,
+    pub peer: Option<Rc<SocketId>>,
+    pub recv_buf: Rc<BufferId>,
+    pub read_polled: Rc<PolledId>,
+    pub write_polled: Rc<PolledId>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct RegularConnectionless {
-    pub recv_buf: BufferId,
-    pub read_polled: PolledId,
-    pub write_polled: PolledId,
+    pub recv_buf: Rc<BufferId>,
+    pub read_polled: Rc<PolledId>,
+    pub write_polled: Rc<PolledId>,
 }
 
 /// A backend for a Pending socket connection.

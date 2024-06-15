@@ -13,7 +13,7 @@ hook_macros::hook! {
         let descriptor_id = DescriptorId::new(fd);
 
         // TODO: remove underlying resource from descriptor for each of these options (otherwise memory leak + state error)
-        match ctx.local.fds.remove(descriptor_id) {
+        match ctx.local.fds.get(&descriptor_id) {
             Some(FdInfo { resource: FdResource::Epoll(_), .. }) => crate::alias_fd_destroy(fd),
             Some(FdInfo { resource: FdResource::EventFd(_), .. }) => crate::alias_fd_destroy(fd),
             Some(FdInfo { resource: FdResource::Directory(_), .. }) => crate::alias_fd_destroy(fd),
@@ -31,6 +31,10 @@ hook_macros::hook! {
             },
         }
 
+        unsafe {
+            ctx.local.fds.downref(&descriptor_id);
+        }
+
         // TODO: implement cleanup properly here
 
         0
@@ -45,14 +49,14 @@ hook_macros::hook! {
         arg: *mut libc::c_void
     ) -> libc::c_int => fizzle_fcntl(ctx) {
 
-        match ctx.local.fds.get_mut(DescriptorId::new(fd)) {
+        match ctx.local.fds.get_mut(&DescriptorId::new(fd)) {
             Some(fd_info) if fd_info.is_passthrough => {
                 let dupfd = hook_macros::real!(fcntl)(fd, cmd, arg);
                 if dupfd >= 0 && (cmd == libc::F_DUPFD || cmd == libc::F_DUPFD_CLOEXEC) {
                     let nonblocking = fd_info.nonblocking;
                     let close_on_exec = cmd == libc::F_DUPFD_CLOEXEC;
-                    let resource = fd_info.resource;
-                    ctx.local.fds.insert(DescriptorId::new(dupfd), FdInfo {
+                    let resource = fd_info.resource.clone();
+                    ctx.local.fds.allocate_with_key(DescriptorId::new(dupfd), FdInfo {
                         close_on_exec,
                         nonblocking,
                         is_passthrough: true,
@@ -76,10 +80,10 @@ hook_macros::hook! {
                     }
                     libc::F_DUPFD | libc::F_DUPFD_CLOEXEC => {
                         let nonblocking = fd_info.nonblocking;
-                        let resource = fd_info.resource;
+                        let resource = fd_info.resource.clone();
 
                         let dupfd = crate::alias_fd_create();
-                        ctx.local.fds.insert(DescriptorId::new(dupfd), FdInfo {
+                        ctx.local.fds.allocate_with_key(DescriptorId::new(dupfd), FdInfo {
                             close_on_exec: cmd == libc::F_DUPFD_CLOEXEC,
                             nonblocking,
                             is_passthrough: false,

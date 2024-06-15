@@ -1,8 +1,10 @@
+use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
-use std::{array, cmp, mem, ptr, slice};
+use std::ops::{Deref, DerefMut};
+use std::{array, cmp, ptr, slice};
 
 unsafe fn slice_init(slice: &[MaybeUninit<u8>]) -> &[u8] {
     slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len())
@@ -203,122 +205,49 @@ impl<const N: usize> Buffer<N> {
     }
 }
 
-/*
-
-#[derive(Debug, Clone)]
-pub struct RingBuffer<const T: usize> {
-    data: [MaybeUninit<u8>; T],
-    data_idx: usize,
-    data_len: usize,
-}
-
-impl<const T: usize> Hash for RingBuffer<T> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        let end_idx = self.data_idx + self.data_len;
-        let first_end = cmp::min(end_idx, T);
-        (unsafe {
-            &*(&self.data[self.data_idx..first_end] as *const [MaybeUninit<u8>] as *const [u8])
-        })
-        .hash(state);
-
-        if end_idx > T {
-            (unsafe { &*(&self.data[..end_idx % T] as *const [MaybeUninit<u8>] as *const [u8]) })
-                .hash(state);
-        }
-    }
-}
-
-impl<const T: usize> Default for Buffer<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<const T: usize> RingBuffer<T> {
-    pub fn new() -> Self {
-        Self {
-            data: array::from_fn(|_| MaybeUninit::uninit()),
-            data_idx: 0,
-            data_len: 0,
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        self.data_len
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn is_full(&self) -> bool {
-        self.len() == T
-    }
-
-    pub fn clear(&mut self) {
-        self.data_idx = 0;
-        self.data_len = 0;
-    }
-
-    pub fn write(&mut self, buf: &[u8]) -> usize {
-        if self.data_len == T {
-            return 0
-        }
-
-        // TODO: this (and `read()`) can both use all the I/O they've been provided; fix this!
-        let end_idx = (self.data_idx + self.data_len) % T;
-
-        let available = match end_idx.cmp(&self.data_idx) {
-            Ordering::Greater | Ordering::Equal => T - end_idx,
-            Ordering::Less => self.data_idx - end_idx,
-        };
-
-        let written = cmp::min(available, buf.len());
-
-        self.data[end_idx..end_idx + written].copy_from_slice(unsafe {
-            &*(&buf[..written] as *const [u8] as *const [MaybeUninit<u8>])
-        });
-        self.data_len += written;
-        written
-    }
-
-    pub fn read(&mut self, buf: &mut [u8]) -> usize {
-        if self.data_len == 0 {
-            return 0
-        }
-
-        let available = cmp::min(self.data_len, T - self.data_idx);
-        let read = cmp::min(available, buf.len());
-
-        buf[..read].copy_from_slice(unsafe {
-            &*(&self.data[self.data_idx..self.data_idx + read] as *const [MaybeUninit<u8>]
-                as *const [u8])
-        });
-        self.data_idx = (self.data_idx + read) % T;
-
-        read
-    }
-}
-*/
-
 /// A set of values that can be indexed into by a key of type `K`.
 ///
-pub struct ValueIndex<K: Sized + From<usize> + Into<usize>, V: Sized, const N: usize> {
-    inner: [Option<V>; N],
+pub struct KeyedArena<K: ArenaKey<Value = V>, V: Sized + 'static, const N: usize> {
+    inner: [UnsafeCell<ArenaItem<V>>; N],
     next_key: usize,
     max_key: usize,
     _phantom: PhantomData<K>,
 }
 
-impl<K: Sized + From<usize> + Into<usize>, V: Sized + Debug, const N: usize> Debug
-    for ValueIndex<K, V, N>
+struct ArenaItem<V: Sized + 'static> {
+    value: MaybeUninit<V>,
+    ref_cnt: u16, // Up to 16k refs allowed; the two MSBs indicates access
+//    _pinned: PhantomPinned,
+}
+
+impl<V: Sized + 'static + Clone> Clone for ArenaItem<V> {
+    fn clone(&self) -> Self {
+        let value = if self.ref_cnt > 0 {
+            unsafe {
+                MaybeUninit::new(self.value.assume_init_ref().clone())
+            }
+        } else {
+            MaybeUninit::uninit()
+        };
+
+        Self {
+            value,
+            ref_cnt: self.ref_cnt.clone()
+        }
+    }
+}
+
+impl<K: ArenaKey<Value = V>, V: Sized + Debug, const N: usize> Debug
+    for KeyedArena<K, V, N>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut list = f.debug_list();
 
         for i in 0..=self.max_key {
-            if let Some(value) = &self.inner[i] {
-                list.entry(&(i, value));
+            unsafe {
+                if (*(self.inner[i].get() as *const ArenaItem<V>)).ref_cnt > 0 {
+                    list.entry((*(self.inner[i].get() as *const ArenaItem<V>)).value.assume_init_ref());
+                }
             }
         }
 
@@ -326,10 +255,13 @@ impl<K: Sized + From<usize> + Into<usize>, V: Sized + Debug, const N: usize> Deb
     }
 }
 
-impl<K: Sized + From<usize> + Into<usize> + Copy, V: Sized, const N: usize> ValueIndex<K, V, N> {
+impl<K: ArenaKey<Value = V>, V: Sized, const N: usize> KeyedArena<K, V, N> {
     pub fn new() -> Self {
         Self {
-            inner: array::from_fn(|_| None),
+            inner: array::from_fn(|_| UnsafeCell::new(ArenaItem {
+                value: MaybeUninit::uninit(),
+                ref_cnt: 0,
+            })),
             max_key: 0usize,
             next_key: 0usize,
             _phantom: Default::default(),
@@ -342,9 +274,9 @@ impl<K: Sized + From<usize> + Into<usize> + Copy, V: Sized, const N: usize> Valu
     /// 
     /// The caller of this method must ensure that `value_idx` points to a correctly allocated
     /// ValueIndex.
-    pub unsafe fn initialize(value_idx: *mut ValueIndex<K, V, N>) {
+    pub unsafe fn initialize(value_idx: *mut KeyedArena<K, V, N>) {
         for i in 0..N {
-            *ptr::addr_of_mut!((*value_idx).inner[i]) = None;
+            (*(ptr::addr_of_mut!((*value_idx).inner) as *mut ArenaItem<V>).add(i)).ref_cnt = 0;
         }
         *ptr::addr_of_mut!((*value_idx).next_key) = 0;
         *ptr::addr_of_mut!((*value_idx)._phantom) = Default::default();
@@ -354,39 +286,90 @@ impl<K: Sized + From<usize> + Into<usize> + Copy, V: Sized, const N: usize> Valu
         self.max_key
     }
 
-    pub fn get(&self, key: K) -> Option<&V> {
-        let key: usize = key.into();
+    pub fn get(&self, key: &K) -> Option<&V> {
+        let key: usize = (*key).into();
         if key >= self.inner.len() {
             return None;
         }
-        self.inner[key].as_ref()
+        unsafe {
+            let item = &*(self.inner[key].get() as *const ArenaItem<V>);
+            if item.ref_cnt == 0 {
+                None
+            } else {
+                Some(item.value.assume_init_ref())
+            }
+        }
     }
 
-    pub fn get_mut(&mut self, key: K) -> Option<&mut V> {
-        self.inner[key.into()].as_mut()
+    pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
+        let key: usize = (*key).into();
+        if key >= self.inner.len() {
+            return None;
+        }
+        unsafe {
+            let item = self.inner[key].get_mut();
+            if item.ref_cnt == 0 {
+                None
+            } else {
+                Some(item.value.assume_init_mut())
+            }
+        }
     }
 
-    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
-        self.max_key = cmp::max(self.max_key, key.into());
-        let mut res = Some(value);
-        mem::swap(&mut res, &mut self.inner[key.into()]);
-        res
+    pub fn allocate_with_key(&mut self, key: K, value: V) -> Option<Rc<K>> {
+        let idx: usize = key.into();
+        if idx >= self.inner.len() {
+            return None;
+        }
+
+        self.max_key = cmp::max(self.max_key, idx);
+
+        let item = self.inner[idx].get_mut();
+        if item.ref_cnt == 0 {
+            item.ref_cnt = 1;
+            item.value.write(value);
+            Some(Rc {
+                key,
+                ptr: ptr::addr_of!(self.inner[idx])
+            })
+        } else {
+            None // TODO: change these into Errors in the future
+        }
     }
 
-    pub fn put(&mut self, value: V) -> Option<K> {
-        let Some(key) = self.next_key() else {
-            return None
-        };
-        self.max_key = cmp::max(self.max_key, key);
+    pub fn allocate(&mut self, value: V) -> Option<Rc<K>> {
+        let idx = self.next_key()?;
+        self.max_key = cmp::max(self.max_key, idx);
 
-        self.inner[key] = Some(value);
-        Some(K::from(key))
+        let item = self.inner[idx].get_mut();
+        item.ref_cnt = 1;
+        item.value.write(value);
+        
+        Some(Rc {
+            key: K::from(idx),
+            ptr: ptr::addr_of!(self.inner[idx]),
+        })
     }
 
-    pub fn remove(&mut self, key: K) -> Option<V> {
-        let mut res = None;
-        mem::swap(&mut res, &mut self.inner[key.into()]);
-        res
+    pub unsafe fn downref(&mut self, key: &K) { // TODO: return result instead?
+        let idx: usize = (*key).into();
+        assert!(idx < self.inner.len());
+
+        let item = self.inner[idx].get_mut();
+        assert!(item.ref_cnt > 0);
+        item.ref_cnt -= 1;
+        if item.ref_cnt == 0 {
+            drop(item.value.assume_init_read());
+        }
+    }
+
+    pub unsafe fn upref(&mut self, key: &K) { // TODO: return result instead?
+        let idx: usize = (*key).into();
+        assert!(idx < self.inner.len());
+
+        let item = self.inner[idx].get_mut();
+        assert!(item.ref_cnt > 0);
+        item.ref_cnt += 1;
     }
 
     /// Retrieves the next available key from the value index.
@@ -398,11 +381,10 @@ impl<K: Sized + From<usize> + Into<usize> + Copy, V: Sized, const N: usize> Valu
     /// indexes.
     fn next_key(&mut self) -> Option<usize> {
         let mut curr_key = self.next_key;
-        while self.inner[curr_key].is_some() {
+        while self.inner[curr_key].get_mut().ref_cnt > 0 {
             curr_key = (curr_key + 1) % N;
             if curr_key == self.next_key {
-                // All keys are exhausted
-                return None;
+                return None; // All keys are exhausted
             }
         }
         self.next_key = (curr_key + 1) % N;
@@ -410,20 +392,20 @@ impl<K: Sized + From<usize> + Into<usize> + Copy, V: Sized, const N: usize> Valu
     }
 }
 
-impl<K: Sized + From<usize> + Into<usize> + Copy, V: Sized, const N: usize> Default
-    for ValueIndex<K, V, N>
+impl<K: ArenaKey<Value = V>, V: Sized, const N: usize> Default
+    for KeyedArena<K, V, N>
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K: Sized + From<usize> + Into<usize> + Clone, V: Sized + Clone, const N: usize> Clone
-    for ValueIndex<K, V, N>
+impl<K: ArenaKey<Value = V>, V: Sized + Clone, const N: usize> Clone
+    for KeyedArena<K, V, N>
 {
     fn clone(&self) -> Self {
         Self {
-            inner: self.inner.clone(),
+            inner: array::from_fn(|i| unsafe { UnsafeCell::new((*(self.inner[i].get() as *const ArenaItem<V>)).clone()) }),
             max_key: self.max_key,
             next_key: self.next_key,
             _phantom: self._phantom,
@@ -433,3 +415,79 @@ impl<K: Sized + From<usize> + Into<usize> + Clone, V: Sized + Clone, const N: us
 
 #[derive(Debug)]
 pub struct BufferError;
+
+pub trait ArenaKey: Clone + Copy + Debug + PartialEq + Eq + Hash + Sized + From<usize> + Into<usize> {
+    type Value: Sized + 'static; 
+}
+
+impl<T: Sized> Default for ArenaItem<T> {
+    fn default() -> Self {
+        Self { value: MaybeUninit::uninit(), ref_cnt: 0 }
+    }
+}
+
+pub struct Rc<K: ArenaKey> {
+    key: K,
+    ptr: *const UnsafeCell<ArenaItem<K::Value>>,
+}
+
+impl<K: ArenaKey> Deref for Rc<K> {
+    type Target = K;
+
+    fn deref(&self) -> &Self::Target {
+        &self.key
+    }
+}
+
+impl<K: ArenaKey> DerefMut for Rc<K> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.key
+    }
+}
+
+impl<K: ArenaKey> Drop for Rc<K> {
+    fn drop(&mut self) {
+        unsafe {
+            let item = &mut (*(*self.ptr).get());
+            item.ref_cnt -= 1;
+            if item.ref_cnt == 0 {
+                drop(item.value.assume_init_read());
+            }
+        }
+    }
+}
+
+impl<K: ArenaKey> Clone for Rc<K> {
+    fn clone(&self) -> Self {
+        unsafe {
+            debug_assert!((*(*self.ptr).get()).ref_cnt > 0);
+            assert!((*(*self.ptr).get()).ref_cnt < u16::MAX);
+            (*(*self.ptr).get()).ref_cnt += 1;
+        }
+        Self { 
+            key: self.key,
+            ptr: self.ptr,
+        }
+    }
+}
+
+impl<K: ArenaKey> Debug for Rc<K> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // TODO: fix this
+        f.debug_struct("StaticRc").field("key", &self.key).finish()
+    }
+}
+
+impl<K: ArenaKey> PartialEq for Rc<K> {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key // If they point to the same data, they are the same
+    }
+}
+
+impl<K: ArenaKey> Eq for Rc<K> {}
+
+impl<K: ArenaKey> Hash for Rc<K> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.key.hash(state);
+    }
+}

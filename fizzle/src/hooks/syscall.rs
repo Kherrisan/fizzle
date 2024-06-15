@@ -1,4 +1,7 @@
-use std::{collections::{hash_map::Entry, VecDeque}, mem, thread};
+use std::{
+    collections::{hash_map::Entry, VecDeque},
+    mem, thread,
+};
 
 use crate::{hook_macros, state};
 
@@ -33,7 +36,7 @@ fn format_futex_op(futex_op: libc::c_int) -> &'static str {
 }
 
 /*
-    
+
 
     let res = {
         $hook_fn ( $($v,)* $va_args )
@@ -49,13 +52,17 @@ fn format_futex_op(futex_op: libc::c_int) -> &'static str {
 */
 
 // VA_ARGS cannot
-struct SyscallReal {__private_field: ()}
+struct SyscallReal {
+    __private_field: (),
+}
 
-static SYSCALL_SINGLETON: SyscallReal = SyscallReal {__private_field: ()};
+static SYSCALL_SINGLETON: SyscallReal = SyscallReal {
+    __private_field: (),
+};
 
 impl SyscallReal {
-    pub fn get(&self) -> unsafe extern "C" fn (libc::c_long, ...) -> libc::c_long {
-        use ::std::sync::Once;
+    pub fn get(&self) -> unsafe extern "C" fn(libc::c_long, ...) -> libc::c_long {
+        use std::sync::Once;
 
         static mut REAL: *const u8 = 0 as *const u8;
         static mut ONCE: Once = Once::new();
@@ -71,7 +78,6 @@ impl SyscallReal {
 
 #[no_mangle]
 pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc::c_long {
-        
     if crate::state::has_entered_handler() {
         panic!("recursive calls to `syscall` not allowed");
     }
@@ -92,12 +98,17 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                 let futex_op: libc::c_int = va_args.arg();
                 let val: u32 = va_args.arg();
 
-                log::debug!("syscall(SYS_futex, {:?}, {} ({}), {}, ...)", uaddr, format_futex_op(futex_op), futex_op, val);
+                log::debug!(
+                    "syscall(SYS_futex, {:?}, {} ({}), {}, ...)",
+                    uaddr,
+                    format_futex_op(futex_op),
+                    futex_op,
+                    val
+                );
 
                 let futex_private_flag = (futex_op & libc::FUTEX_PRIVATE_FLAG) != 0;
                 let _futex_clock_realtime = (futex_op & libc::FUTEX_CLOCK_REALTIME) != 0;
 
-                
                 if !futex_private_flag {
                     log::warn!("SYS_futex syscall used non-private futex--fizzle does not currently support process-shared futex operations, so this may cause bugs if used in a multiprocess context");
                 }
@@ -110,21 +121,27 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
 
                         if *uaddr != val {
                             *libc::__errno_location() = libc::EAGAIN;
-                            break 'body -1
+                            break 'body -1;
                         }
 
                         match ctx.local.futex_waiters.entry(uaddr as *const u32) {
-                            Entry::Occupied(mut o) => o.get_mut().push_back((libc::FUTEX_BITSET_MATCH_ANY as u32, thread::current().id())),
+                            Entry::Occupied(mut o) => o.get_mut().push_back((
+                                libc::FUTEX_BITSET_MATCH_ANY as u32,
+                                thread::current().id(),
+                            )),
                             Entry::Vacant(v) => {
                                 let mut deque = VecDeque::new();
-                                deque.push_back((libc::FUTEX_BITSET_MATCH_ANY as u32, thread::current().id()));
+                                deque.push_back((
+                                    libc::FUTEX_BITSET_MATCH_ANY as u32,
+                                    thread::current().id(),
+                                ));
                                 v.insert(deque);
-                            },
+                            }
                         };
 
                         if !timeout.is_null() && (*timeout).tv_sec == 0 && (*timeout).tv_nsec == 0 {
                             *libc::__errno_location() = libc::ETIMEDOUT;
-                            break 'body -1
+                            break 'body -1;
                         }
 
                         drop(ctx);
@@ -133,8 +150,9 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                         0
                     }
                     libc::FUTEX_WAKE => {
-                        let Some(queue) = ctx.local.futex_waiters.get_mut(&(uaddr as *const u32)) else {
-                            break 'body 0
+                        let Some(queue) = ctx.local.futex_waiters.get_mut(&(uaddr as *const u32))
+                        else {
+                            break 'body 0;
                         };
 
                         let mut awoken_threads = Vec::new();
@@ -158,8 +176,10 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                         let _timeout: *const libc::timespec = va_args.arg();
                         let uaddr2: *mut u32 = va_args.arg();
 
-                        let Some(mut queue) = ctx.local.futex_waiters.remove(&(uaddr as *const u32)) else {
-                            break 'body 0
+                        let Some(mut queue) =
+                            ctx.local.futex_waiters.remove(&(uaddr as *const u32))
+                        else {
+                            break 'body 0;
                         };
 
                         let mut awoken_threads = Vec::new();
@@ -188,11 +208,13 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
 
                         if *uaddr != val3 {
                             *libc::__errno_location() = libc::EAGAIN;
-                            break 'body -1
+                            break 'body -1;
                         }
 
-                        let Some(mut queue) = ctx.local.futex_waiters.remove(&(uaddr as *const u32)) else {
-                            return 0
+                        let Some(mut queue) =
+                            ctx.local.futex_waiters.remove(&(uaddr as *const u32))
+                        else {
+                            return 0;
                         };
 
                         let mut awoken_threads = Vec::new();
@@ -220,10 +242,15 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                         let val3: u32 = va_args.arg();
 
                         // Convert timeout to val2
-                        let val2 = u32::from_le_bytes((*(timeout as *const [u8; mem::size_of::<libc::timespec>()]))[mem::size_of::<libc::timespec>() - 4..].try_into().unwrap());
+                        let val2 = u32::from_le_bytes(
+                            (*(timeout as *const [u8; mem::size_of::<libc::timespec>()]))
+                                [mem::size_of::<libc::timespec>() - 4..]
+                                .try_into()
+                                .unwrap(),
+                        );
 
                         let oldval = *uaddr2;
-                        
+
                         let op = val3 >> 28;
                         let oparg = (val3 >> 12) & 0b1111_1111_1111;
 
@@ -236,17 +263,19 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                             FUTEX_OP_SHIFT_SET => *uaddr2 = 1 << oparg,
                             FUTEX_OP_SHIFT_ADD => *uaddr2 += 1 << oparg,
                             FUTEX_OP_SHIFT_OR => *uaddr2 |= 1 << oparg,
-                            FUTEX_OP_SHIFT_NAND => *uaddr2 &=  !(1 << oparg),
+                            FUTEX_OP_SHIFT_NAND => *uaddr2 &= !(1 << oparg),
                             FUTEX_OP_SHIFT_XOR => *uaddr ^= 1 << oparg,
-                            5..=7 | 13 ..= 15 => {
+                            5..=7 | 13..=15 => {
                                 log::warn!("futex syscall had unrecognized op in FUTEX_WAKE_OP");
                                 *libc::__errno_location() = libc::EINVAL;
-                                break 'body -1
+                                break 'body -1;
                             }
-                            _ => unreachable!()
+                            _ => unreachable!(),
                         }
 
-                        let woken_1 = if let Some(queue) = ctx.local.futex_waiters.get_mut(&(uaddr as *const u32)) {
+                        let woken_1 = if let Some(queue) =
+                            ctx.local.futex_waiters.get_mut(&(uaddr as *const u32))
+                        {
                             let mut awoken_threads = Vec::new();
                             for _ in 0..val {
                                 match queue.pop_front() {
@@ -283,7 +312,9 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                         };
 
                         if should_wake {
-                            let woken_2 = if let Some(queue) = ctx.local.futex_waiters.get_mut(&(uaddr2 as *const u32)) {
+                            let woken_2 = if let Some(queue) =
+                                ctx.local.futex_waiters.get_mut(&(uaddr2 as *const u32))
+                            {
                                 let mut awoken_threads = Vec::new();
                                 for _ in 0..val2 {
                                     match queue.pop_front() {
@@ -315,21 +346,23 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
 
                         if *uaddr != val {
                             *libc::__errno_location() = libc::EAGAIN;
-                            break 'body -1
+                            break 'body -1;
                         }
 
                         match ctx.local.futex_waiters.entry(uaddr as *const u32) {
-                            Entry::Occupied(mut o) => o.get_mut().push_back((val3, thread::current().id())),
+                            Entry::Occupied(mut o) => {
+                                o.get_mut().push_back((val3, thread::current().id()))
+                            }
                             Entry::Vacant(v) => {
                                 let mut deque = VecDeque::new();
                                 deque.push_back((val3, thread::current().id()));
                                 v.insert(deque);
-                            },
+                            }
                         };
 
                         if !timeout.is_null() && (*timeout).tv_sec == 0 && (*timeout).tv_nsec == 0 {
                             *libc::__errno_location() = libc::ETIMEDOUT;
-                            break 'body -1
+                            break 'body -1;
                         }
 
                         drop(ctx);
@@ -343,15 +376,18 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                         let _uaddr2: *mut u32 = va_args.arg();
                         let val3: u32 = va_args.arg();
 
-                        let Some(queue) = ctx.local.futex_waiters.get_mut(&(uaddr as *const u32)) else {
-                            break 'body 0
+                        let Some(queue) = ctx.local.futex_waiters.get_mut(&(uaddr as *const u32))
+                        else {
+                            break 'body 0;
                         };
 
                         let mut awoken_threads = Vec::new();
 
                         for _ in 0..queue.len() {
                             match queue.pop_front() {
-                                Some((bitmap, thread)) if (bitmap & val3) != 0 => awoken_threads.push(thread),
+                                Some((bitmap, thread)) if (bitmap & val3) != 0 => {
+                                    awoken_threads.push(thread)
+                                }
                                 Some(entry) => queue.push_back(entry),
                                 None => break,
                             }
@@ -386,7 +422,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
         "Function syscall returned {:?}", // TODO: add process info in the future
         res
     );
-    crate::state::set_entered_handler(false);       
+    crate::state::set_entered_handler(false);
 
     res
 }
