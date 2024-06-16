@@ -19,12 +19,12 @@ hook_macros::hook! {
 
         let fd = crate::alias_fd_create();
 
-        let read_polled = ctx.global.polled_events.allocate(PolledInfo::new()).unwrap();
+        let read_polled = ctx.global.polled_events.allocate(if initval == 0 { PolledInfo::new() } else { PolledInfo::new_raised() }).unwrap();
         let write_polled = ctx.global.polled_events.allocate(PolledInfo::new_raised()).unwrap();
 
         let eventfd_id = ctx.global.event_fds.allocate(EventFdInfo {
-            read_polled: read_polled,
-            write_polled: write_polled,
+            read_polled,
+            write_polled,
             is_semaphore,
             counter: initval as u64,
         }).unwrap();
@@ -34,7 +34,7 @@ hook_macros::hook! {
             nonblocking,
             is_passthrough: false,
             resource: FdResource::EventFd(eventfd_id),
-        });
+        }).unwrap();
 
 
         fd

@@ -6,6 +6,16 @@ use std::mem::MaybeUninit;
 use std::ops::{Deref, DerefMut};
 use std::{array, cmp, ptr, slice};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyedArenaError {
+    NoSpace,
+    OutOfRange,
+    /// The keyed entry was in an unexpected state.
+    KeyError,
+    /// The reference counter reached its maximum count.
+    TooManyRefs,
+}
+
 unsafe fn slice_init(slice: &[MaybeUninit<u8>]) -> &[u8] {
     slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len())
 }
@@ -246,7 +256,7 @@ impl<K: ArenaKey<Value = V>, V: Sized + Debug, const N: usize> Debug
         for i in 0..=self.max_key {
             unsafe {
                 if (*(self.inner[i].get() as *const ArenaItem<V>)).ref_cnt > 0 {
-                    list.entry((*(self.inner[i].get() as *const ArenaItem<V>)).value.assume_init_ref());
+                    list.entry(&(i, (*(self.inner[i].get() as *const ArenaItem<V>)).value.assume_init_ref()));
                 }
             }
         }
@@ -289,7 +299,7 @@ impl<K: ArenaKey<Value = V>, V: Sized, const N: usize> KeyedArena<K, V, N> {
     pub fn get(&self, key: &K) -> Option<&V> {
         let key: usize = (*key).into();
         if key >= self.inner.len() {
-            return None;
+            return None
         }
         unsafe {
             let item = &*(self.inner[key].get() as *const ArenaItem<V>);
@@ -304,7 +314,7 @@ impl<K: ArenaKey<Value = V>, V: Sized, const N: usize> KeyedArena<K, V, N> {
     pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
         let key: usize = (*key).into();
         if key >= self.inner.len() {
-            return None;
+            return None
         }
         unsafe {
             let item = self.inner[key].get_mut();
@@ -316,10 +326,10 @@ impl<K: ArenaKey<Value = V>, V: Sized, const N: usize> KeyedArena<K, V, N> {
         }
     }
 
-    pub fn allocate_with_key(&mut self, key: K, value: V) -> Option<Rc<K>> {
+    pub fn allocate_with_key(&mut self, key: K, value: V) -> Result<(), KeyedArenaError> {
         let idx: usize = key.into();
         if idx >= self.inner.len() {
-            return None;
+            return Err(KeyedArenaError::OutOfRange);
         }
 
         self.max_key = cmp::max(self.max_key, idx);
@@ -328,12 +338,9 @@ impl<K: ArenaKey<Value = V>, V: Sized, const N: usize> KeyedArena<K, V, N> {
         if item.ref_cnt == 0 {
             item.ref_cnt = 1;
             item.value.write(value);
-            Some(Rc {
-                key,
-                ptr: ptr::addr_of!(self.inner[idx])
-            })
+            Ok(())
         } else {
-            None // TODO: change these into Errors in the future
+            Err(KeyedArenaError::KeyError)
         }
     }
 
@@ -351,7 +358,17 @@ impl<K: ArenaKey<Value = V>, V: Sized, const N: usize> KeyedArena<K, V, N> {
         })
     }
 
-    pub unsafe fn downref(&mut self, key: &K) { // TODO: return result instead?
+    pub fn ref_count(&self, key: &K) -> usize {
+        let idx: usize = (*key).into();
+        assert!(idx < self.inner.len());
+
+        unsafe {
+            (*(self.inner[idx].get() as *const ArenaItem<V>)).ref_cnt as usize
+        }
+    }
+
+    /// Decrements the reference count for the given key, returning the new reference count.
+    pub fn downref(&mut self, key: &K) -> usize {
         let idx: usize = (*key).into();
         assert!(idx < self.inner.len());
 
@@ -359,11 +376,15 @@ impl<K: ArenaKey<Value = V>, V: Sized, const N: usize> KeyedArena<K, V, N> {
         assert!(item.ref_cnt > 0);
         item.ref_cnt -= 1;
         if item.ref_cnt == 0 {
-            drop(item.value.assume_init_read());
+            unsafe {
+                drop(item.value.assume_init_read());
+            }
         }
+
+        item.ref_cnt as usize
     }
 
-    pub unsafe fn upref(&mut self, key: &K) { // TODO: return result instead?
+    pub fn upref(&mut self, key: &K) {
         let idx: usize = (*key).into();
         assert!(idx < self.inner.len());
 

@@ -11,31 +11,31 @@ hook_macros::hook! {
         fd: libc::c_int
     ) -> libc::c_int => fizzle_close(ctx) {
         let descriptor_id = DescriptorId::new(fd);
-
-        // TODO: remove underlying resource from descriptor for each of these options (otherwise memory leak + state error)
-        match ctx.local.fds.get(&descriptor_id) {
-            Some(FdInfo { resource: FdResource::Epoll(_), .. }) => crate::alias_fd_destroy(fd),
-            Some(FdInfo { resource: FdResource::EventFd(_), .. }) => crate::alias_fd_destroy(fd),
-            Some(FdInfo { resource: FdResource::Directory(_), .. }) => crate::alias_fd_destroy(fd),
-            Some(FdInfo { resource: FdResource::File(_), .. }) => crate::alias_fd_destroy(fd),
-            Some(FdInfo { resource: FdResource::Socket(_), .. }) => return hook_macros::real!(close)(fd),
-            Some(FdInfo { resource: FdResource::MessageQueue(_), .. }) => crate::alias_fd_destroy(fd),
-            Some(FdInfo { resource: FdResource::Pipe(_), .. }) => crate::alias_fd_destroy(fd),
-            // TODO: mark stdin as closed after this...
-            Some(FdInfo { resource: FdResource::Stdin, .. }) => (), // We keep stdin for fuzzing input...
-            Some(FdInfo { resource: FdResource::Stdout, .. }) => (),
-            Some(FdInfo { resource: FdResource::Stderr, .. }) => (), // ... and stderr for reporting Fizzle errors.
-            None => {
-                *libc::__errno_location() = libc::EBADFD;
-                return -1
-            },
+        let ref_count = ctx.local.fds.ref_count(&descriptor_id);
+        if ref_count == 1 {
+            log::debug!("close({}) -> 0 (last fd closed for resource)", fd);
+            match ctx.local.fds.get(&descriptor_id) {
+                Some(FdInfo { resource: FdResource::Epoll(_), .. }) => crate::alias_fd_destroy(fd),
+                Some(FdInfo { resource: FdResource::EventFd(_), .. }) => crate::alias_fd_destroy(fd),
+                Some(FdInfo { resource: FdResource::Directory(_), .. }) => crate::alias_fd_destroy(fd),
+                Some(FdInfo { resource: FdResource::File(_), .. }) => crate::alias_fd_destroy(fd),
+                Some(FdInfo { resource: FdResource::Socket(_), .. }) => if hook_macros::real!(close)(fd) != 0 {
+                    log::warn!("close() returned errno {}", *libc::__errno_location());
+                },
+                Some(FdInfo { resource: FdResource::MessageQueue(_), .. }) => crate::alias_fd_destroy(fd),
+                Some(FdInfo { resource: FdResource::Pipe(_), .. }) => crate::alias_fd_destroy(fd),
+                // TODO: mark stdin as closed after this...
+                Some(FdInfo { resource: FdResource::Stdin, .. }) => (), // We keep stdin for fuzzing input...
+                Some(FdInfo { resource: FdResource::Stdout, .. }) => (),
+                Some(FdInfo { resource: FdResource::Stderr, .. }) => (), // ... and stderr for reporting Fizzle errors.
+                None => unreachable!(),
+            }
+        } else if ref_count == 0 {
+            *libc::__errno_location() = libc::EBADFD;
+            return -1
         }
 
-        unsafe {
-            ctx.local.fds.downref(&descriptor_id);
-        }
-
-        // TODO: implement cleanup properly here
+        assert_eq!(ctx.local.fds.downref(&descriptor_id), ref_count - 1);
 
         0
     }
@@ -61,7 +61,7 @@ hook_macros::hook! {
                         nonblocking,
                         is_passthrough: true,
                         resource,
-                    });
+                    }).unwrap();
                 }
 
                 dupfd
@@ -88,7 +88,8 @@ hook_macros::hook! {
                             nonblocking,
                             is_passthrough: false,
                             resource,
-                        });
+                        }).unwrap();
+
                         return dupfd
                     }
                     libc::F_SETLK | libc::F_SETLKW | libc::F_GETLK => {

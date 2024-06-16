@@ -23,7 +23,7 @@ pub fn fd_to_pollin(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
                 .event_fds
                 .get(&eventfd_id)
                 .unwrap()
-                .write_polled
+                .read_polled
                 .clone(),
         ),
         FdResource::Directory(_) => PolledStatus::NotPollable,
@@ -540,7 +540,7 @@ hook_macros::hook! {
             nonblocking: false,
             is_passthrough: false,
             resource: FdResource::Epoll(epoll_id),
-        });
+        }).unwrap();
 
         fd
     }

@@ -466,6 +466,8 @@ hook_macros::hook! {
         len: libc::size_t
     ) -> libc::ssize_t => fizzle_read(ctx) {
 
+        log::debug!("read({}, buf length: {})", fd, len);
+
         let Some(fd_info) = ctx.local.fds.get(&DescriptorId::new(fd)) else {
             log::warn!("read() called with unknown file descriptor");
             return hook_macros::real!(read)(fd, buf, len)

@@ -111,7 +111,7 @@ hook_macros::hook! {
                 nonblocking: false,
                 is_passthrough: false,
                 resource: FdResource::File(file_id)
-            });
+            }).unwrap();
 
             fd
 
@@ -124,7 +124,7 @@ hook_macros::hook! {
                 nonblocking: false,
                 is_passthrough: true,
                 resource: FdResource::Directory(dir_id)
-            });
+            }).unwrap();
 
             fd
 
@@ -135,7 +135,7 @@ hook_macros::hook! {
                 nonblocking: false,
                 is_passthrough: true,
                 resource: FdResource::File(file_id),
-            });
+            }).unwrap();
             fd
 
         } else {
@@ -148,7 +148,7 @@ hook_macros::hook! {
                     nonblocking: false,
                     is_passthrough: true,
                     resource: FdResource::File(file_id),
-                });
+                }).unwrap();
             }
 
             fd
@@ -192,7 +192,7 @@ hook_macros::hook! {
             nonblocking: false,
             is_passthrough: false,
             resource: FdResource::File(file_id)
-        });
+        }).unwrap();
 
         fd
     }
@@ -263,7 +263,7 @@ hook_macros::hook! {
                 nonblocking: false,
                 is_passthrough: false,
                 resource: FdResource::File(file_id)
-            });
+            }).unwrap();
 
             fd
 
@@ -276,7 +276,7 @@ hook_macros::hook! {
                 nonblocking: false,
                 is_passthrough: true,
                 resource: FdResource::Directory(dir_id)
-            });
+            }).unwrap();
 
             fd
 
@@ -287,7 +287,7 @@ hook_macros::hook! {
                 nonblocking: false,
                 is_passthrough: true,
                 resource: FdResource::File(file_id),
-            });
+            }).unwrap();
             fd
 
         } else {
@@ -300,7 +300,7 @@ hook_macros::hook! {
                     nonblocking: false,
                     is_passthrough: true,
                     resource: FdResource::File(file_id),
-                });
+                }).unwrap();
             }
 
             fd

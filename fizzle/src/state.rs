@@ -324,31 +324,16 @@ impl FizzCell {
                 .did_write(*crate::__afl_fuzz_len as usize);
         }
 
-        #[cfg(all(feature = "afl", not(feature = "pcr")))]
+        #[cfg(not(feature = "pcr"))]
         unsafe {
             let fuzz_buffer = ctx.global.fuzz_input.remaining_mut();
             let read_amount = libc::read(0, fuzz_buffer.as_mut_ptr() as *mut libc::c_void, 1048576);
-            if read_amount < 0 {
+            if read_amount <= 0 {
                 panic!("could not read input from stdin")
             }
 
             ctx.global.fuzz_input.did_write(read_amount as usize);
         }
-
-        /*
-        let mut fuzz_length = fuzz_buffer.len();
-        unsafe {
-            let amount_read = libc::read(0, fuzz_buffer.as_mut_ptr() as *mut libc::c_void, fuzz_length);
-            if amount_read <= 0 {
-                log::debug!("{:?}", ctx.deref());
-                panic!("failed to receive input for fuzzing from stdin");
-            }
-            log::debug!("read in {} bytes of fuzzing input", amount_read);
-            log::debug!("{:?}", ctx.deref());
-            fuzz_length = amount_read as usize;
-        }
-        ctx.global.fuzz_input.did_write(fuzz_length);
-        */
 
         // Mark appropriate processes/threads as ready to receive input
 
@@ -817,12 +802,10 @@ impl FizzState {
         for i in 0..fds.max_key() {
             if let Some(FdInfo {
                 close_on_exec: true,
+                is_passthrough,
                 ..
-            }) = fds.get(&DescriptorId::from(i))
-            {
-                unsafe {
-                    fds.downref(&DescriptorId::from(i));
-                }
+            }) = fds.get(&DescriptorId::from(i)) {
+                fds.downref(&DescriptorId::from(i));
             }
         }
 
@@ -905,9 +888,9 @@ impl FizzLocal {
             Some(fds) => fds,
             None => {
                 let mut fds = KeyedArena::default();
-                fds.allocate_with_key(DescriptorId::from(0), FdInfo::new(FdResource::Stdin));
-                fds.allocate_with_key(DescriptorId::from(1), FdInfo::new(FdResource::Stdout));
-                fds.allocate_with_key(DescriptorId::from(2), FdInfo::new(FdResource::Stderr));
+                fds.allocate_with_key(DescriptorId::from(0), FdInfo::new(FdResource::Stdin)).unwrap();
+                fds.allocate_with_key(DescriptorId::from(1), FdInfo::new(FdResource::Stdout)).unwrap();
+                fds.allocate_with_key(DescriptorId::from(2), FdInfo::new(FdResource::Stderr)).unwrap();
                 fds
             }
         };

@@ -35,6 +35,8 @@ hook_macros::hook! {
             return fd
         }
 
+        log::debug!("socket({}, {}, {}) -> {}", domain, socktype, protocol, fd);
+
         let nonblocking = (socktype & libc::SOCK_NONBLOCK) != 0;
         let close_on_exec = (socktype & libc::SOCK_CLOEXEC) != 0;
 
@@ -74,13 +76,13 @@ hook_macros::hook! {
             _ => panic!("unsupported transport protocol {}", protocol),
         };
 
-
-        ctx.local.fds.allocate_with_key(DescriptorId::new(fd), FdInfo {
+        let descriptor_id = DescriptorId::new(fd);
+        ctx.local.fds.allocate_with_key(descriptor_id, FdInfo {
             close_on_exec,
             nonblocking,
             is_passthrough: false,
             resource: FdResource::Socket(socket_id)
-        });
+        }).unwrap();
 
         fd
     }
@@ -610,7 +612,7 @@ fn join_socket_pair(
             nonblocking: (flags & libc::O_NONBLOCK) != 0,
             resource: FdResource::Socket(socket_id),
         },
-    );
+    ).unwrap();
 
     // TODO: need to account for error conditions within this function
     new_fd
