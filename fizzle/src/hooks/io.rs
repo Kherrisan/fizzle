@@ -1,8 +1,7 @@
 use std::mem::MaybeUninit;
-use std::net::SocketAddr;
 use std::{array, cmp, mem, ptr, slice};
 
-use fizzle_common::io::TransportAddress;
+use fizzle_common::io::{AddressFamily, TransportAddress};
 use fizzle_common::storage::{Buffer, Rc};
 
 use crate::constants::FIZZLE_BUFFER_LENGTH;
@@ -16,7 +15,7 @@ use crate::state::{
     ConnectedSocket, ConnectionlessSocket, FuzzEndpointInfo, PipeMode, SocketLocationInfo,
     SocketState,
 };
-use crate::{encode_inet_address, hook_macros, state};
+use crate::{hook_macros, state};
 
 const PIPE_BUF: usize = 4096;
 const IOV_MAX: usize = 16;
@@ -404,17 +403,26 @@ hook_macros::hook! {
         let data = slice::from_raw_parts(buf as *const u8, len);
 
         match ctx.global.sockets.get(&socket_id).unwrap() {
-            SocketState::Connectionless(_) => {
+            SocketState::Connectionless(connectionless_sock) => {
                 let addr = if dest_addr.is_null() {
                     None
                 } else {
-                    match crate::decode_inet_address(dest_addr, addrlen) {
-                        Ok(addr) => Some(addr),
-                        Err(_) => {
-                            *libc::__errno_location() = libc::EINVAL;
-                            return -1
+                    Some(match connectionless_sock.local_addr.family() {
+                        AddressFamily::Ipv4 | AddressFamily::Ipv6 => match crate::decode_inet_address(dest_addr, addrlen) {
+                            Ok(a) => TransportAddress::new_internet(a, connectionless_sock.local_addr.protocol()),
+                            Err(_) => {
+                                *libc::__errno_location() = libc::EINVAL;
+                                return -1
+                            }
                         }
-                    }
+                        AddressFamily::Unix => match crate::decode_unix_address(dest_addr, addrlen) {
+                            Ok(a) => TransportAddress::Unix(a),
+                            Err(_) => {
+                                *libc::__errno_location() = libc::EINVAL;
+                                return -1
+                            }
+                        }
+                    })
                 };
 
                 drop(ctx);
@@ -884,8 +892,7 @@ hook_macros::hook! {
         };
 
         match ctx.global.sockets.get(&socket_id).unwrap() {
-            SocketState::Connected(conn_info) => {
-                crate::encode_inet_address(src_addr, conn_info.rem_addr.address()); // TODO: buffer overflow if addrlen is too short...
+            SocketState::Connected(_) => {
                 drop(ctx);
                 recv_connected_socket(&mut [data], socket_id, is_nonblocking)
             },
@@ -968,14 +975,23 @@ hook_macros::hook! {
 
         match ctx.global.sockets.get(&socket_id).unwrap() {
             SocketState::Connected(conn_info) => {
-
-                (*msg).msg_namelen = encode_inet_address(recv_addr, conn_info.rem_addr.address()) as u32;
+                (*msg).msg_namelen = match &conn_info.rem_addr {
+                    TransportAddress::Sctp(addr) | TransportAddress::Tcp(addr) | TransportAddress::Udp(addr) => crate::encode_inet_address(recv_addr, addr),
+                    TransportAddress::Unix(addr) => crate::encode_unix_address(recv_addr, addr),
+                } as u32;
                 drop(ctx);
                 recv_connected_socket(&mut slices[..slice_cnt], socket_id, is_nonblocking)
             },
-            SocketState::Connectionless(_) => {
+            SocketState::Connectionless(conn_info) => {
+                // decode who the message was received from and put it in here:
+                /*
+                (*msg).msg_namelen = match &conn_info.rem_addr {
+                    TransportAddress::Sctp(addr) | TransportAddress::Tcp(addr) | TransportAddress::Udp(addr) => crate::encode_inet_address(recv_addr, addr),
+                    TransportAddress::Unix(addr) => crate::encode_unix_address(recv_addr, addr),
+                } as u32;
+                */
                 drop(ctx);
-                // TODO: fix this!!
+                // TODO: fix this!! Doesn't accurately handle iovec
                 recv_connectionless_socket(slices[0], socket_id.clone(), is_nonblocking, recv_addr, ptr::addr_of_mut!((*msg).msg_namelen))
             },
             _ => {
@@ -1107,10 +1123,18 @@ hook_macros::hook! {
 fn write_datagram<const N: usize>(
     send_buf: &mut Buffer<N>,
     data: &[u8],
-    addr: &SocketAddr,
+    addr: &TransportAddress,
 ) -> libc::ssize_t {
     let mut sockaddr: MaybeUninit<libc::sockaddr_storage> = MaybeUninit::uninit();
-    unsafe { crate::encode_inet_address(sockaddr.as_mut_ptr() as *mut libc::sockaddr, addr) };
+    unsafe {
+        match addr {
+            TransportAddress::Udp(socket_addr) =>
+                crate::encode_inet_address(sockaddr.as_mut_ptr() as *mut libc::sockaddr, socket_addr),
+            TransportAddress::Unix(unix_addr) =>
+                crate::encode_unix_address(sockaddr.as_mut_ptr() as *mut libc::sockaddr, unix_addr),
+            _ => unreachable!(),
+        };
+    }
     let addrlen = match unsafe { sockaddr.assume_init().ss_family } as i32 {
         libc::AF_INET => mem::size_of::<libc::sockaddr_in>(),
         libc::AF_INET6 => mem::size_of::<libc::sockaddr_in6>(),
@@ -1323,7 +1347,7 @@ fn send_connectionless_socket(
     data: &[u8],
     socket_id: Rc<SocketId>,
     is_nonblocking: bool,
-    addr: Option<SocketAddr>,
+    addr: Option<TransportAddress>,
 ) -> libc::ssize_t {
     let mut ctx = state::FIZZLE_STATE.acquire();
 
@@ -1336,12 +1360,12 @@ fn send_connectionless_socket(
         return -1;
     }
 
-    let Some(rem_addr) = addr.or(sock_info.rem_addr) else {
+    let Some(rem_addr) = addr.or(sock_info.rem_addr.clone()) else {
         unsafe { *libc::__errno_location() = libc::ENOTCONN };
         return -1;
     };
 
-    let local_addr = sock_info.local_addr;
+    let local_addr = sock_info.local_addr.clone();
 
     let Some(SocketLocationInfo {
         bound_socket: Some(peer_sock_id),
@@ -1349,7 +1373,7 @@ fn send_connectionless_socket(
     }) = ctx
         .global
         .socket_locations
-        .get(&TransportAddress::Udp(rem_addr))
+        .get(&rem_addr)
     else {
         unsafe { *libc::__errno_location() = libc::ECONNRESET }; // No socket was listening at the endpoint
         return -1; // TODO: should we just return data.len() here instead?
@@ -1386,7 +1410,7 @@ fn send_connectionless_socket(
             }) = ctx
                 .global
                 .socket_locations
-                .get(&TransportAddress::Udp(rem_addr))
+                .get(&rem_addr)
             else {
                 return data.len() as libc::ssize_t; // Drop packet
             };

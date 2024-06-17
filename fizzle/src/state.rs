@@ -9,14 +9,14 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::mem::MaybeUninit;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::ops::{Deref, DerefMut};
 use std::os::unix::ffi::OsStrExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::ThreadId;
 use std::{array, env, mem, ptr, thread};
 
-use fizzle_common::io::{AddressFamily, TransportAddress, TransportProtocol};
+use fizzle_common::io::{AddressFamily, SocketType, TransportAddress, TransportProtocol, UnixAddr, MAX_PATH_LEN};
 use fizzle_common::path::{FilePath, SemPath};
 use fizzle_common::storage::{Buffer, Rc, KeyedArena};
 
@@ -824,7 +824,7 @@ pub struct FizzLocal {
     /// A supplamentary thread used to reap exiting threads.
     pub reaper: Option<ThreadId>,
     pub fds: KeyedArena<DescriptorId, FdInfo, FIZZLE_MAX_FDS>,
-    pub dirs: KeyedArena<DirectoryId, FilePath, FIZZLE_MAX_DIRS>,
+    pub dirs: KeyedArena<DirectoryId, FilePath<MAX_PATH_LEN>, FIZZLE_MAX_DIRS>,
     pub barriers: HashMap<BarrierPtr, BarrierInfo, FxBuildHasher>,
     pub condvars: HashMap<CondVarPtr, VecDeque<ThreadId>, FxBuildHasher>,
     pub named_semaphores: HashMap<SemaphorePtr, Rc<SemaphoreId>>,
@@ -845,7 +845,7 @@ pub struct FizzLocal {
     /// Indicates which thread(s) are awaiting the death of a specific thread (via pthread_join)
     pub awaiting_thread_death: HashMap<ThreadId, Vec<ThreadId>, FxBuildHasher>,
     /// The directory that the program is currently executing relative to.
-    pub working_directory: FilePath,
+    pub working_directory: FilePath<MAX_PATH_LEN>,
 }
 
 impl Debug for FizzLocal {
@@ -942,7 +942,7 @@ pub struct FizzGlobal {
     pub passthrough_process_id: ProcessId,
     pub epolls: KeyedArena<EpollId, EpollInfo, FIZZLE_MAX_EPOLLS>,
     pub event_fds: KeyedArena<EventFdId, EventFdInfo, FIZZLE_MAX_EVENTFDS>,
-    pub file_paths: FnvIndexMap<FilePath, Rc<FileId>, FIZZLE_MAX_FILE_PATHS>,
+    pub file_paths: FnvIndexMap<FilePath<MAX_PATH_LEN>, Rc<FileId>, FIZZLE_MAX_FILE_PATHS>,
     pub files: KeyedArena<FileId, FileBackend, FIZZLE_MAX_FILES>,
     pub sem_paths: FnvIndexMap<SemPath, Rc<SemaphoreId>, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub semaphores: KeyedArena<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>,
@@ -1229,7 +1229,7 @@ impl FizzGlobal {
         let client_socket_id = self
             .sockets
             .allocate(SocketState::PendingConnection(PendingSocket {
-                rem_addr,
+                rem_addr: rem_addr.clone(),
                 backend,
                 next_pending: None,
             }))
@@ -1296,7 +1296,7 @@ impl FizzGlobal {
             .sockets
             .allocate(SocketState::Server(ServerSocket {
                 backend,
-                local_addr: transport_addr,
+                local_addr: transport_addr.clone(),
                 connecting: Queue::new(),
                 ready_to_connect: connect_polled_id,
             }))
@@ -1306,7 +1306,7 @@ impl FizzGlobal {
             None => {
                 self.socket_locations
                     .insert(
-                        transport_addr,
+                        transport_addr.clone(),
                         SocketLocationInfo {
                             bound_socket: Some(socket_id),
                             pending: None,
@@ -1346,30 +1346,63 @@ impl FizzGlobal {
             .unwrap()
     }
 
-    pub fn next_ephemeral_address(
-        &mut self,
-        family: AddressFamily,
-        protocol: TransportProtocol,
-    ) -> TransportAddress {
-        let addr = SocketAddr::new(
-            match family {
-                AddressFamily::Ipv4 => IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), // TODO: enable configuration to specify this address
-                AddressFamily::Ipv6 => IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
-            },
+    pub fn ephemeral_address(&mut self, family: AddressFamily, protocol: TransportProtocol) -> TransportAddress {
+        match family {
+            AddressFamily::Ipv4 => {
+                let port = self.next_ephemeral_port;
+                if self.next_ephemeral_port >= FIZZLE_EPHEMERAL_PORT_END {
+                    self.next_ephemeral_port = FIZZLE_EPHEMERAL_PORT_START;
+                } else {
+                    self.next_ephemeral_port += 1;
+                }
+                TransportAddress::new_internet(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port)), protocol)
+            }
+            AddressFamily::Ipv6 => {
+                let port = self.next_ephemeral_port;
+                if self.next_ephemeral_port >= FIZZLE_EPHEMERAL_PORT_END {
+                    self.next_ephemeral_port = FIZZLE_EPHEMERAL_PORT_START;
+                } else {
+                    self.next_ephemeral_port += 1;
+                }
+                TransportAddress::new_internet(SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1), port, 0, 0)), protocol)
+            }
+            AddressFamily::Unix => TransportAddress::Unix(UnixAddr::Unnamed)
+        }
+    }
+
+    /*
+    pub fn ipv4_ephemeral(&mut self) -> SocketAddrV4 {
+        let addr = SocketAddrV4::new(
+            Ipv4Addr::new(127, 0, 0, 1),
             self.next_ephemeral_port,
         );
+
         if self.next_ephemeral_port >= FIZZLE_EPHEMERAL_PORT_END {
             self.next_ephemeral_port = FIZZLE_EPHEMERAL_PORT_START;
         } else {
             self.next_ephemeral_port += 1;
         }
 
-        match protocol {
-            TransportProtocol::Tcp => TransportAddress::Tcp(addr),
-            TransportProtocol::Udp => TransportAddress::Udp(addr),
-            TransportProtocol::Sctp => TransportAddress::Sctp(addr),
-        }
+        addr
     }
+
+    pub fn ipv6_ephemeral(&mut self) -> SocketAddrV6 {
+        let addr = SocketAddrV6::new(
+            Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1),
+            self.next_ephemeral_port,
+            0,
+            0
+        );
+
+        if self.next_ephemeral_port >= FIZZLE_EPHEMERAL_PORT_END {
+            self.next_ephemeral_port = FIZZLE_EPHEMERAL_PORT_START;
+        } else {
+            self.next_ephemeral_port += 1;
+        }
+
+        addr
+    }
+    */
 
     /// Assigns the next available process ID and increments it internally.
     pub fn assign_process_id(&mut self) -> ProcessId {
@@ -1385,7 +1418,7 @@ impl FizzGlobal {
 
     /// This method returns `Ok` if the file was created, and `Err` if a file already
     /// exists at the given path.
-    pub fn create_file(&mut self, path: FilePath) -> Result<Rc<FileId>, Rc<FileId>> {
+    pub fn create_file(&mut self, path: FilePath<MAX_PATH_LEN>) -> Result<Rc<FileId>, Rc<FileId>> {
         match self.file_paths.get(&path) {
             Some(id) => Err(id.clone()),
             None => {
@@ -1520,14 +1553,14 @@ pub enum SocketState {
     PendingConnection(PendingSocket),
     Connecting(ConnectingSocket),
     Connected(ConnectedSocket),
-    //    Error,
+    //    Error state?
 }
 
 #[derive(Debug)]
 pub struct ConnectionlessSocket {
     pub backend: ConnectionlessBackend,
-    pub local_addr: SocketAddr,
-    pub rem_addr: Option<SocketAddr>,
+    pub local_addr: TransportAddress,
+    pub rem_addr: Option<TransportAddress>,
 }
 
 #[derive(Debug)]
@@ -1535,6 +1568,7 @@ pub struct UnassociatedSocket {
     pub local_addr: Option<TransportAddress>,
     pub family: AddressFamily,
     pub protocol: TransportProtocol,
+    pub socktype: SocketType,
 }
 
 #[derive(Debug)]

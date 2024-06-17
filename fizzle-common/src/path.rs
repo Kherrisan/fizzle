@@ -48,12 +48,12 @@ impl SemPath {
 pub struct PathError;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct FilePath {
-    buf: Buffer<256>,
+pub struct FilePath<const N: usize> {
+    buf: Buffer<N>,
     trailing_slash: bool,
 }
 
-impl Debug for FilePath {
+impl<const N: usize> Debug for FilePath<N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match std::str::from_utf8(&self.buf.data()[..self.buf.data().len() - 1]) {
             Ok(s) => s.fmt(f),
@@ -62,7 +62,7 @@ impl Debug for FilePath {
     }
 }
 
-impl Default for FilePath {
+impl<const N: usize> Default for FilePath<N> {
     fn default() -> Self {
         let mut buf = Buffer::new();
         buf.append(b"/");
@@ -74,7 +74,7 @@ impl Default for FilePath {
     }
 }
 
-impl FilePath {
+impl<const N: usize> FilePath<N> {
     fn segment(path: &[u8]) -> &[u8] {
         for (idx, &c) in path.iter().enumerate() {
             if c == b'/' {
@@ -172,7 +172,7 @@ impl FilePath {
         })
     }
 
-    pub fn concat(mut self, other: &FilePath) -> Result<Self, PathError> {
+    pub fn concat(mut self, other: &FilePath<N>) -> Result<Self, PathError> {
         let data = &other.buf.data()[..other.buf.data().len() - 1]; // remove null character
         let mut read_idx = 0;
 
