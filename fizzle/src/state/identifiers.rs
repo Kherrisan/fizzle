@@ -1,8 +1,7 @@
 use std::{mem::MaybeUninit, os::fd::RawFd, thread::ThreadId};
 
 use fizzle_common::{
-    path::FilePath,
-    storage::{ArenaKey, Buffer},
+    io::MAX_PATH_LEN, path::FilePath, storage::{ArenaKey, Buffer}
 };
 use fizzle_plugin::FizzlePluginObject;
 
@@ -15,10 +14,6 @@ use super::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BufferId(usize);
-
-impl BufferId {
-    pub const INVALID: BufferId = BufferId(usize::MAX);
-}
 
 impl ArenaKey for BufferId {
     type Value = Buffer<FIZZLE_BUFFER_LENGTH>;
@@ -66,7 +61,7 @@ impl From<DescriptorId> for usize {
 pub struct DirectoryId(usize);
 
 impl ArenaKey for DirectoryId {
-    type Value = FilePath;
+    type Value = FilePath<MAX_PATH_LEN>;
 }
 
 impl From<usize> for DirectoryId {
@@ -239,10 +234,6 @@ pub struct PolledId(usize);
 
 impl ArenaKey for PolledId {
     type Value = PolledInfo;
-}
-
-impl PolledId {
-    pub const INVALID: PolledId = PolledId(usize::MAX);
 }
 
 impl From<usize> for PolledId {
