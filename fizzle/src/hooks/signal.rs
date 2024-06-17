@@ -13,3 +13,16 @@ hook_macros::hook! {
         libc::EINVAL
     }
 }
+
+hook_macros::hook! {
+    unsafe fn sigwaitinfo(
+        _set: *const libc::sigset_t,
+        _info: *mut libc::siginfo_t
+    ) -> libc::c_int => fizzle_sigwaitinfo(ctx) {
+
+        drop(ctx);
+        state::FIZZLE_STATE.yield_thread();
+
+        libc::EINVAL
+    }
+}

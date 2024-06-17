@@ -2,9 +2,10 @@
 //!
 //!
 
+use std::net::SocketAddr;
 use std::{mem, ptr};
 
-use crate::constants::FIZZLE_BUFFER_LENGTH;
+use crate::constants::{FIZZLE_BUFFER_LENGTH, FIZZLE_EPHEMERAL_PORT_END, FIZZLE_EPHEMERAL_PORT_START};
 use crate::state::backend::{
     ConnectedBackend, ConnectingBackend, ConnectionlessBackend, IoBackend, RegularConnected,
     RegularConnectionless, ServerBackend, StandardFeedback,
@@ -119,10 +120,18 @@ hook_macros::hook! {
         // TODO: support AF_UNSPEC?
         let transport_addr = match ctx.global.sockets.get(&socket_id).unwrap() {
             SocketState::Connectionless(ConnectionlessSocket { local_addr: TransportAddress::Udp(_), .. }) => {
-                let Ok(socket_addr) = crate::decode_inet_address(addr, addrlen) else {
+                let Ok(mut socket_addr) = crate::decode_inet_address(addr, addrlen) else {
                     *libc::__errno_location() = libc::EINVAL;
                     return -1
                 };
+                if socket_addr.port() == 0 {
+                    socket_addr = SocketAddr::new(socket_addr.ip(), ctx.global.next_ephemeral_port);
+                    if ctx.global.next_ephemeral_port >= FIZZLE_EPHEMERAL_PORT_END {
+                        ctx.global.next_ephemeral_port = FIZZLE_EPHEMERAL_PORT_START;
+                    } else {
+                        ctx.global.next_ephemeral_port += 1
+                    }
+                }
                 TransportAddress::Udp(socket_addr)
             }
             SocketState::Connectionless(ConnectionlessSocket { local_addr: TransportAddress::Unix(_), .. }) => {
@@ -138,11 +147,20 @@ hook_macros::hook! {
                 return -1
             },
             SocketState::Unassociated(UnassociatedSocket { protocol: protocol @ (TransportProtocol::Tcp | TransportProtocol::Sctp), .. }) => {
-                let Ok(socket_addr) = crate::decode_inet_address(addr, addrlen) else {
+                let protocol = *protocol;
+                let Ok(mut socket_addr) = crate::decode_inet_address(addr, addrlen) else {
                     *libc::__errno_location() = libc::EINVAL;
                     return -1
                 };
-                TransportAddress::new_internet(socket_addr, *protocol)
+                if socket_addr.port() == 0 {
+                    socket_addr = SocketAddr::new(socket_addr.ip(), ctx.global.next_ephemeral_port);
+                    if ctx.global.next_ephemeral_port >= FIZZLE_EPHEMERAL_PORT_END {
+                        ctx.global.next_ephemeral_port = FIZZLE_EPHEMERAL_PORT_START;
+                    } else {
+                        ctx.global.next_ephemeral_port += 1
+                    }
+                }
+                TransportAddress::new_internet(socket_addr, protocol)
             }
             SocketState::Unassociated(UnassociatedSocket { protocol: TransportProtocol::Unix, .. }) => {
                 let Ok(unix_addr) = crate::decode_unix_address(addr, addrlen) else {
@@ -778,6 +796,10 @@ hook_macros::hook! {
         };
 
         match (level, optname) {
+            (libc::SOL_TCP, libc::TCP_USER_TIMEOUT) => {
+                *(optval as *mut libc::c_int) = 0;
+                0
+            }
             (libc::SOL_TCP, libc::TCP_NODELAY) => {
                 *(optval as *mut libc::c_int) = 1;
                 0
@@ -879,6 +901,17 @@ hook_macros::hook! {
                 }
 
                 // Pretend in-line OOB is enabled
+                *(optval as *mut libc::c_int) = 1;
+                0
+            }
+            (libc::SOL_SOCKET, libc::SO_ZEROCOPY) => {
+                // TODO: is libc this strict, or not?
+                if *optlen as usize != mem::size_of::<libc::c_int>() {
+                    *libc::__errno_location() = libc::EINVAL;
+                    return -1
+                }
+
+                // Pretend zero-copy is enabled
                 *(optval as *mut libc::c_int) = 1;
                 0
             }
@@ -1144,9 +1177,12 @@ hook_macros::hook! {
                 *libc::__errno_location() = libc::EINVAL;
                 -1
             }
-            (SOL_SCTP, _) => {
-                panic!("Unrecognized socket option: SOL_SCTP, optname {}", optname);
+            (SOL_SCTP, _) => panic!("Unrecognized socket option: SOL_SCTP, optname {}", optname),
+            (libc::SOL_IPV6, libc::IPV6_V6ONLY) => {
+                *(optval as *mut libc::c_int) = 1;
+                0 // Pretend to have V6ONLY enabled
             }
+            (libc::SOL_IPV6, _) => panic!("Unrecognized socket option: SOL_IPV6, optname {}", optname),
             _ => {
                 panic!("Unrecognized socket option: level {}, optname {}", level, optname);
             }
@@ -1176,7 +1212,7 @@ hook_macros::hook! {
 
         match (level, optname) {
             // Pretend to support (but don't)
-            (libc::SOL_TCP, libc::TCP_NODELAY | libc::TCP_MAXSEG) => {
+            (libc::SOL_TCP, libc::TCP_NODELAY | libc::TCP_MAXSEG | libc::TCP_USER_TIMEOUT) => {
                 0
             }
             // Socket options that are readonly
@@ -1185,7 +1221,7 @@ hook_macros::hook! {
                 return -1
             }
             // Socket options that we pretend to support (but don't)
-            (libc::SOL_SOCKET, libc::SO_KEEPALIVE | libc::SO_OOBINLINE | libc::SO_PRIORITY | libc::SO_RCVBUF | libc::SO_SNDLOWAT | libc::SO_RCVLOWAT | libc::SO_RCVTIMEO | libc::SO_SNDTIMEO | libc::SO_REUSEADDR | libc::SO_REUSEPORT) => {
+            (libc::SOL_SOCKET, libc::SO_KEEPALIVE | libc::SO_OOBINLINE | libc::SO_PRIORITY | libc::SO_RCVBUF | libc::SO_SNDLOWAT | libc::SO_RCVLOWAT | libc::SO_RCVTIMEO | libc::SO_SNDTIMEO | libc::SO_REUSEADDR | libc::SO_REUSEPORT | libc::SO_ZEROCOPY) => {
                 // TODO: is libc this strict, or not?
                 if optlen as usize != mem::size_of::<libc::c_int>() {
                     *libc::__errno_location() = libc::EINVAL;
@@ -1243,12 +1279,78 @@ hook_macros::hook! {
                 *libc::__errno_location() = libc::EINVAL;
                 -1
             }
-            (SOL_SCTP, _) => {
-                panic!("Unrecognized socket option: SOL_SCTP, optname {}", optname);
+            (SOL_SCTP, _) => panic!("Unrecognized socket option: SOL_SCTP, optname {}", optname),
+            (libc::SOL_IPV6, libc::IPV6_V6ONLY) => {
+                0 // Ignore received value
             }
-            _ => {
-                panic!("Unrecognized socket option: level {}, optname {}", level, optname);
-            }
+            (libc::SOL_IPV6, _) => panic!("Unrecognized socket option: SOL_IPV6, optname {}", optname),
+            _ => panic!("Unrecognized socket option: level {}, optname {}", level, optname),
         }
     }
 }
+
+hook_macros::hook! {
+    unsafe fn getsockname(
+        sockfd: libc::c_int,
+        addr: *mut libc::sockaddr,
+        addrlen: *mut libc::socklen_t
+    ) -> libc::c_int => fizzle_getsockname(ctx) {
+
+        let descriptor_id = DescriptorId::new(sockfd);
+        let Some(fd_info) = ctx.local.fds.get(&descriptor_id) else {
+            *libc::__errno_location() = libc::EBADF;
+            return -1
+        };
+
+        let FdResource::Socket(socket_id) = fd_info.resource.clone() else {
+            *libc::__errno_location() = libc::ENOTSOCK;
+            return -1
+        };
+
+        match ctx.global.sockets.get(&socket_id).unwrap() {
+            SocketState::Connectionless(conn) => {
+                match &conn.local_addr {
+                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => 
+                        crate::encode_inet_address(addr, addrlen, &socket_addr),
+                    TransportAddress::Unix(unix_addr) => 
+                        crate::encode_unix_address(addr, addrlen, &unix_addr),
+                }
+            }
+            SocketState::Unassociated(conn) => {
+                let Some(local_addr) = conn.local_addr.as_ref() else {
+                    panic!("getsockname() called on unassociated socket")
+                };
+
+                match local_addr {
+                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => 
+                        crate::encode_inet_address(addr, addrlen, &socket_addr),
+                    TransportAddress::Unix(unix_addr) => 
+                        crate::encode_unix_address(addr, addrlen, &unix_addr),
+                }
+            }
+            SocketState::Server(conn) => {
+                match &conn.local_addr {
+                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => 
+                        crate::encode_inet_address(addr, addrlen, &socket_addr),
+                    TransportAddress::Unix(unix_addr) => 
+                        crate::encode_unix_address(addr, addrlen, &unix_addr),
+                }
+            }
+            SocketState::PendingConnection(_) => unreachable!(),
+            SocketState::Connecting(conn) => {
+                match &conn.local_addr {
+                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => 
+                        crate::encode_inet_address(addr, addrlen, &socket_addr),
+                    TransportAddress::Unix(unix_addr) => 
+                        crate::encode_unix_address(addr, addrlen, &unix_addr),
+                }
+            }
+            SocketState::Connected(conn) => {
+                panic!("getsockname() not implemented for connected sockets")
+            }
+        }
+
+        0
+    }
+}
+

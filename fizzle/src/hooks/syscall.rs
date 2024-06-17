@@ -93,6 +93,13 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
     let res = 'body: {
         match number {
             libc::SYS_gettid => SYSCALL_SINGLETON.get()(number),
+            libc::SYS_getrandom => {
+                let buf: *mut libc::c_void = va_args.arg();
+                let buflen: libc::size_t = va_args.arg();
+                let flags: libc::c_uint = va_args.arg();
+                drop(ctx);
+                crate::hooks::entropy::fizzle_getrandom(buf, buflen, flags) as i64
+            }
             libc::SYS_futex => {
                 let uaddr: *mut u32 = va_args.arg();
                 let futex_op: libc::c_int = va_args.arg();

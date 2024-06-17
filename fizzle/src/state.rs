@@ -933,7 +933,7 @@ pub struct FizzGlobal {
     /// The next StreamId available to be assigned to an emulated stream.
     next_stream_id: StreamId,
     /// The next ephemeral port to be assigned to a socket.
-    next_ephemeral_port: u16,
+    pub next_ephemeral_port: u16,
     /// The thread identifier to be executed by the waking process.
     waking_thread_id: Option<ThreadId>,
     process_locks: KeyedArena<ProcessId, MaybeUninit<Semaphore>, FIZZLE_MAX_PROCESSES>,

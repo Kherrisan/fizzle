@@ -174,7 +174,7 @@ fn encode_inet_address(addr: *mut libc::sockaddr, addrlen: *mut libc::socklen_t,
                 (*storage_addr).sin_port = v4.port().to_be();
 
                 *addrlen = cmp::min(*addrlen, mem::size_of::<libc::sockaddr_in>() as u32);
-                ptr::copy_nonoverlapping(storage_addr, addr as *mut libc::sockaddr_in, *addrlen as usize);
+                ptr::copy_nonoverlapping(storage_addr as *mut u8, addr as *mut u8, *addrlen as usize);
             }
             SocketAddr::V6(v6) => {
                 let storage_addr = ptr::addr_of_mut!(storage) as *mut libc::sockaddr_in6;
@@ -185,7 +185,7 @@ fn encode_inet_address(addr: *mut libc::sockaddr, addrlen: *mut libc::socklen_t,
                 (*storage_addr).sin6_scope_id = v6.scope_id().to_be();
 
                 *addrlen = cmp::min(*addrlen, mem::size_of::<libc::sockaddr_in6>() as u32);
-                ptr::copy_nonoverlapping(storage_addr, addr as *mut libc::sockaddr_in6, *addrlen as usize);
+                ptr::copy_nonoverlapping(storage_addr as *mut u8, addr as *mut u8, *addrlen as usize);
             }
         }
     }
@@ -252,6 +252,6 @@ fn encode_unix_address(addr: *mut libc::sockaddr, addrlen: *mut libc::socklen_t,
             UnixAddr::Unnamed => cmp::min(*addrlen, 2),
         };
 
-        ptr::copy_nonoverlapping(storage_addr, addr as *mut libc::sockaddr_un, *addrlen as usize);
+        ptr::copy_nonoverlapping(storage_addr as *mut u8, addr as *mut u8, *addrlen as usize);
     }
 }

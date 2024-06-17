@@ -44,6 +44,15 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
+    unsafe fn fflush(stream: *mut libc::FILE) -> libc::c_int => fizzle_fflush(ctx) {
+        match ctx.local.file_objs.get(&FilePtr::from(stream)) {
+            Some(_) => 0,
+            None => hook_macros::real!(fflush)(stream),
+        }
+    }
+}
+
+hook_macros::hook! {
     unsafe fn umask(
         mask: libc::mode_t
     ) -> libc::c_int => fizzle_umask(_ctx) {
