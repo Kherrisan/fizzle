@@ -975,10 +975,10 @@ hook_macros::hook! {
 
         match ctx.global.sockets.get(&socket_id).unwrap() {
             SocketState::Connected(conn_info) => {
-                (*msg).msg_namelen = match &conn_info.rem_addr {
-                    TransportAddress::Sctp(addr) | TransportAddress::Tcp(addr) | TransportAddress::Udp(addr) => crate::encode_inet_address(recv_addr, addr),
-                    TransportAddress::Unix(addr) => crate::encode_unix_address(recv_addr, addr),
-                } as u32;
+                match &conn_info.rem_addr {
+                    TransportAddress::Sctp(addr) | TransportAddress::Tcp(addr) | TransportAddress::Udp(addr) => crate::encode_inet_address(recv_addr, ptr::addr_of_mut!((*msg).msg_namelen), addr),
+                    TransportAddress::Unix(addr) => crate::encode_unix_address(recv_addr, ptr::addr_of_mut!((*msg).msg_namelen), addr),
+                }
                 drop(ctx);
                 recv_connected_socket(&mut slices[..slice_cnt], socket_id, is_nonblocking)
             },
@@ -1126,22 +1126,16 @@ fn write_datagram<const N: usize>(
     addr: &TransportAddress,
 ) -> libc::ssize_t {
     let mut sockaddr: MaybeUninit<libc::sockaddr_storage> = MaybeUninit::uninit();
-    unsafe {
-        match addr {
-            TransportAddress::Udp(socket_addr) =>
-                crate::encode_inet_address(sockaddr.as_mut_ptr() as *mut libc::sockaddr, socket_addr),
-            TransportAddress::Unix(unix_addr) =>
-                crate::encode_unix_address(sockaddr.as_mut_ptr() as *mut libc::sockaddr, unix_addr),
-            _ => unreachable!(),
-        };
-    }
-    let addrlen = match unsafe { sockaddr.assume_init().ss_family } as i32 {
-        libc::AF_INET => mem::size_of::<libc::sockaddr_in>(),
-        libc::AF_INET6 => mem::size_of::<libc::sockaddr_in6>(),
-        _ => panic!("internal fizzle error--unrecognized socket address written to datagram"),
+    let mut addrlen = mem::size_of::<libc::sockaddr_storage>() as u32;
+    match addr {
+        TransportAddress::Udp(socket_addr) =>
+            crate::encode_inet_address(sockaddr.as_mut_ptr() as *mut libc::sockaddr, ptr::addr_of_mut!(addrlen), socket_addr),
+        TransportAddress::Unix(unix_addr) =>
+            crate::encode_unix_address(sockaddr.as_mut_ptr() as *mut libc::sockaddr, ptr::addr_of_mut!(addrlen), unix_addr),
+        _ => unreachable!(),
     };
 
-    let sockaddr_bytes = unsafe { slice::from_raw_parts(sockaddr.as_ptr() as *const u8, addrlen) };
+    let sockaddr_bytes = unsafe { slice::from_raw_parts(sockaddr.as_ptr() as *const u8, addrlen as usize) };
 
     // There is sufficient space--send the datagram
     let sockaddr_len = sockaddr_bytes.len() as u8;

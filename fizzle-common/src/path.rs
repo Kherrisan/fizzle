@@ -218,4 +218,8 @@ impl<const N: usize> FilePath<N> {
     pub fn has_trailing_slash(&self) -> bool {
         self.trailing_slash
     }
+
+    pub fn data(&self) -> &[u8] {
+        self.buf.data()
+    }
 }

@@ -484,9 +484,9 @@ hook_macros::hook! {
             if !addr.is_null() {
                 match &client_address {
                     TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => 
-                        *addrlen = crate::encode_inet_address(addr, &socket_addr) as libc::socklen_t,
+                        crate::encode_inet_address(addr, addrlen, &socket_addr),
                     TransportAddress::Unix(unix_addr) => 
-                        *addrlen = crate::encode_unix_address(addr, &unix_addr) as libc::socklen_t,
+                        crate::encode_unix_address(addr, addrlen, &unix_addr),
                 }
             }
 
@@ -512,9 +512,9 @@ hook_macros::hook! {
             if !addr.is_null() {
                 match &connecting_info.local_addr {
                     TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => 
-                        *addrlen = crate::encode_inet_address(addr, &socket_addr) as libc::socklen_t,
+                        crate::encode_inet_address(addr, addrlen, &socket_addr),
                     TransportAddress::Unix(unix_addr) => 
-                        *addrlen = crate::encode_unix_address(addr, &unix_addr) as libc::socklen_t,
+                        crate::encode_unix_address(addr, addrlen, &unix_addr),
                 }
             }
 
@@ -551,9 +551,9 @@ hook_macros::hook! {
             if !addr.is_null() {
                 match &connecting_info.local_addr {
                     TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => 
-                        *addrlen = crate::encode_inet_address(addr, &socket_addr) as libc::socklen_t,
+                        crate::encode_inet_address(addr, addrlen, &socket_addr),
                     TransportAddress::Unix(unix_addr) => 
-                        *addrlen = crate::encode_unix_address(addr, &unix_addr) as libc::socklen_t,
+                        crate::encode_unix_address(addr, addrlen, &unix_addr),
                 }
             }
 

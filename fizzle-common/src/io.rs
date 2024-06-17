@@ -5,7 +5,7 @@ use crate::{path::FilePath, storage::Buffer};
 
 pub const MAX_PATH_LEN: usize = 256;
 pub const MAX_UNIX_ABSTRACT_LEN: usize = 107;
-pub const MAX_UNIX_PATH_LEN: usize = 256;
+pub const MAX_UNIX_PATH_LEN: usize = 108;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TransportEndpoint {

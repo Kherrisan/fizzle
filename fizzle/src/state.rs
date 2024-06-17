@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::mem::MaybeUninit;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::ops::{Deref, DerefMut};
 use std::os::unix::ffi::OsStrExt;
 use std::sync::atomic::{AtomicBool, Ordering};
