@@ -60,18 +60,63 @@ hook_macros::hook! {
                 }
 
                 let eventfd = ctx.global.event_fds.get(&eventfd_id).unwrap();
-                let old_counter = eventfd.counter;
+                let mut current_counter = eventfd.counter;
                 let read_polled = eventfd.read_polled.clone();
                 let write_polled = eventfd.write_polled.clone();
 
                 drop(ctx);
 
+                if is_nonblocking && current_counter.checked_add(increment + 1).is_none() {
+                    *libc::__errno_location() = libc::EAGAIN;
+                    return -1
+                }
+
+                // The following code is designed very specifically to handle polling for arbitrary
+                // `increment` values. Specifically, an application may choose to increment an
+                // eventfd by up to `u64::MAX - 1`; however, if such an increment would cause the
+                // eventfd to exceed its maximum permittable value (which is also `u64::MAX - 1`),
+                // then the write operation for that increment should block until it can succeed.
+                // This is the challenge: how do we know when to raise/lower a poll for a variably
+                // chosen increment value so that writes preceding or following a blocked write will
+                // still succeed if they are of a sufficiently small increment value?a
+                //
+                // The solution is as follows: check initially to see if the write will succeed.
+                // Note that this DOES NOT use `polled_is_ready()`, but rather directly checks the
+                // counter value added with the increment. If this would overflow the maximum value,
+                // lower `write_polled` and poll until it has been raised again. Then check again; 
+                // continue this loop until succeeded.
+                //
+                // In the event that a large write blocks, smaller writes that would not overflow
+                // the eventfd will still succeed, as this directly checks the addition value rather
+                // than `polled_is_ready()` (`write_polled` will be lowered while a large write is
+                // blocked). Whenever a read is performed, `write_polled` will be raised, triggering
+                // an event for every poller waiting to write to the eventfd. This ensures that a
+                // blocked writer will not remain blocked if the eventfd value drops low enough for 
+                // the read to succeed. If the performed read does not drop the value low enough, or
+                // if another blocked write is carried out in between the read and the blocked write
+                // check, the writer will simply loop again and lower/re-poll `write_polled` so that
+                // the next subsequent read will trigger a notification. This solution is a bit
+                // "noisy", in that every read awakes all blocked writers to check for readiness
+                // instead of one, but it's what I could come up with within the constraints of
+                // Fizzle's current polling infrastructure.
+                //
+                // As a pleasent side note, the combination of this algorithm with the Vec data
+                // structures we use for holding pollers within `polled` instances means that a
+                // blocked write is guaranteed to always eventually be at the top of the queue
+                // following each read, thereby ensuring no blocked write is starved.
                 let new_counter = loop {
-                    match old_counter.checked_add(increment) {
+                    match current_counter.checked_add(increment) {
                         Some(c) if c != u64::MAX => break c,
                         _ => {
-                            state::FIZZLE_STATE.acquire().lower_polled(&write_polled); // TODO: will this work??
+                            let mut ctx = state::FIZZLE_STATE.acquire();
+                            ctx.lower_polled(&write_polled);
+                            drop(ctx);
+
                             state::FIZZLE_STATE.poll_until_ready(write_polled.clone());
+
+                            let ctx = state::FIZZLE_STATE.acquire();
+                            current_counter = ctx.global.event_fds.get(&eventfd_id).unwrap().counter;
+                            drop(ctx);
                         },
                     }
                 };
@@ -79,6 +124,9 @@ hook_macros::hook! {
                 let mut ctx = state::FIZZLE_STATE.acquire();
                 ctx.global.event_fds.get_mut(&eventfd_id).unwrap().counter = new_counter;
                 ctx.raise_polled(&read_polled);
+                if new_counter == u64::MAX - 1 {
+                    ctx.lower_polled(&write_polled);
+                }
 
                 8
             }
