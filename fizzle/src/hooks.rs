@@ -8,7 +8,6 @@ pub mod mq;
 pub mod pipe;
 pub mod poll;
 pub mod proc;
-pub mod protocols;
 pub mod pthread;
 pub mod semaphore;
 pub mod signal;

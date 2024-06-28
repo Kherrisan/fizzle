@@ -270,8 +270,7 @@ hook_macros::hook! {
         sig: libc::c_int
     ) -> libc::c_int => fizzle_pthread_kill(_ctx) {
 
-        crate::report_strict_failure("`pthread_kill` unimplemented");
-        hook_macros::real!(pthread_kill)(thread, sig)
+        panic!("`pthread_kill` unimplemented")
     }
 }
 

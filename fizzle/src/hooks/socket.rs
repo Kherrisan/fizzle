@@ -1345,7 +1345,7 @@ hook_macros::hook! {
                         crate::encode_unix_address(addr, addrlen, &unix_addr),
                 }
             }
-            SocketState::Connected(conn) => {
+            SocketState::Connected(_) => {
                 panic!("getsockname() not implemented for connected sockets")
             }
         }
