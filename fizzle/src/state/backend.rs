@@ -26,8 +26,7 @@ pub enum IoBackend<R: Clone + Debug, F: Clone + Debug> {
     /// Indicates that fuzzing input should be passed directly through the I/O Endpoint.
     ///
     /// The `usize` value specifies the index of fuzzed input that has been read to.
-    #[allow(unused)]
-    Fuzz,
+    Fuzz(Rc<FuzzEndpointId>),
 }
 
 #[derive(Clone, Debug)]

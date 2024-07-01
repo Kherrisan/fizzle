@@ -381,10 +381,7 @@ hook_macros::hook! {
                         ConnectedBackend::Plugin(connect_plugin_id)
                     },
                     ServerBackend::Sink => ConnectedBackend::Sink,
-                    ServerBackend::Fuzz => {
-                        ctx.global.add_fuzz_endpoint(FdResource::Socket(socket_id.clone()));
-                        ConnectedBackend::Fuzz
-                    }
+                    ServerBackend::Fuzz(_) => ConnectedBackend::Fuzz(ctx.global.add_fuzz_endpoint()),
                     ServerBackend::NullSink => ConnectedBackend::NullSink,
                     ServerBackend::Feedback(()) => ConnectedBackend::Feedback(StandardFeedback {
                             buf: ctx.global.buffers.allocate(Buffer::new()).unwrap(),
@@ -396,6 +393,7 @@ hook_macros::hook! {
                 *ctx.global.sockets.get_mut(&socket_id).unwrap() = SocketState::Connected(ConnectedSocket {
                     backend: connected_backend,
                     rem_addr,
+                    peer_closed: false,
                 });
 
                 0
@@ -628,11 +626,7 @@ fn join_socket_pair(
             ConnectedBackend::Plugin(connect_plugin_id)
         }
         IoBackend::Sink => ConnectedBackend::Sink,
-        IoBackend::Fuzz => {
-            ctx.global
-                .add_fuzz_endpoint(FdResource::Socket(connecting_id.clone()));
-            ConnectedBackend::Fuzz
-        }
+        IoBackend::Fuzz(endpoint) => ConnectedBackend::Fuzz(endpoint),
         IoBackend::NullSink => ConnectedBackend::NullSink,
         IoBackend::Feedback(()) => ConnectedBackend::Feedback(StandardFeedback {
             buf: ctx.global.buffers.allocate(Buffer::new()).unwrap(),
@@ -657,6 +651,7 @@ fn join_socket_pair(
             SocketState::Connected(ConnectedSocket {
                 rem_addr: server_addr,
                 backend: connect_backend,
+                peer_closed: false,
             });
 
         ctx.global
@@ -664,6 +659,7 @@ fn join_socket_pair(
             .allocate(SocketState::Connected(ConnectedSocket {
                 rem_addr: client_addr,
                 backend: accept_backend,
+                peer_closed: false,
             })).unwrap()
     } else {
         // The connecting socket was emulated in some way (`fuzz`, `sink` or the like).
@@ -672,6 +668,7 @@ fn join_socket_pair(
             SocketState::Connected(ConnectedSocket {
                 rem_addr: client_addr,
                 backend: connect_backend,
+                peer_closed: false,
             });
 
         connecting_id

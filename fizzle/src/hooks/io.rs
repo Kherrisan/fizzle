@@ -190,7 +190,7 @@ hook_macros::hook! {
                 },
                 FileBackend::Sink => len as libc::ssize_t,
                 FileBackend::NullSink => len as libc::ssize_t,
-                FileBackend::Fuzz => len as libc::ssize_t,
+                FileBackend::Fuzz(_) => len as libc::ssize_t,
             }
             FdResource::MessageQueue(_) => todo!(),
             FdResource::Pipe(pipe_id) => {
@@ -309,7 +309,7 @@ hook_macros::hook! {
                 },
                 StdioBackend::Sink => len as libc::ssize_t,
                 StdioBackend::NullSink => len as libc::ssize_t,
-                StdioBackend::Fuzz => len as libc::ssize_t,
+                StdioBackend::Fuzz(_) => len as libc::ssize_t,
             },
             FdResource::Stderr => len as libc::ssize_t, // Transparently consume `stderr` output
             FdResource::Socket(socket_id) => match ctx.global.sockets.get(&socket_id).unwrap() {
@@ -652,9 +652,9 @@ hook_macros::hook! {
                     }
                     data.len() as libc::ssize_t
                 },
-                FileBackend::Fuzz => {
-                    let resource = fd_info.resource.clone();
-                    let FuzzEndpointInfo { read_idx, read_polled } = ctx.global.fuzz_endpoints.get(&resource).unwrap().clone();
+                FileBackend::Fuzz(fuzz_endpoint_id) => {
+                    let fuzz_endpoint_id = fuzz_endpoint_id.clone();
+                    let FuzzEndpointInfo { read_idx, read_polled } = ctx.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().clone();
 
                     let polled_is_ready = ctx.polled_is_ready(&read_polled);
                     drop(ctx);
@@ -675,7 +675,7 @@ hook_macros::hook! {
                     let read_len = cmp::min(total_fuzz_len - read_idx, len);
                     data[..read_len].copy_from_slice(&ctx.global.fuzz_input.data()[read_idx..read_idx + read_len]);
 
-                    let fuzz_endpoint = ctx.global.fuzz_endpoints.get_mut(&resource).unwrap();
+                    let fuzz_endpoint = ctx.global.fuzz_endpoints.get_mut(&fuzz_endpoint_id).unwrap();
                     fuzz_endpoint.read_idx += read_len;
                     if fuzz_endpoint.read_idx == total_fuzz_len {
                         ctx.lower_polled(&read_polled);
@@ -799,9 +799,9 @@ hook_macros::hook! {
                     }
                     data.len() as libc::ssize_t
                 },
-                StdioBackend::Fuzz => {
-                    let resource = fd_info.resource.clone();
-                    let FuzzEndpointInfo { read_idx, read_polled } = ctx.global.fuzz_endpoints.get(&resource).unwrap().clone();
+                StdioBackend::Fuzz(fuzz_endpoint_id) => {
+                    let fuzz_endpoint_id = fuzz_endpoint_id.clone();
+                    let FuzzEndpointInfo { read_idx, read_polled } = ctx.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().clone();
 
                     let polled_is_ready = ctx.polled_is_ready(&read_polled);
                     drop(ctx);
@@ -822,7 +822,7 @@ hook_macros::hook! {
                     let read_len = cmp::min(ctx.global.fuzz_input.len() - read_idx, len);
                     data[..read_len].copy_from_slice(&ctx.global.fuzz_input.data()[read_idx..read_idx + read_len]);
 
-                    let fuzz_endpoint = ctx.global.fuzz_endpoints.get_mut(&resource).unwrap();
+                    let fuzz_endpoint = ctx.global.fuzz_endpoints.get_mut(&fuzz_endpoint_id).unwrap();
                     let read_polled = fuzz_endpoint.read_polled.clone();
                     fuzz_endpoint.read_idx += read_len;
                     if fuzz_endpoint.read_idx == total_fuzz_len {
@@ -982,7 +982,7 @@ hook_macros::hook! {
                 drop(ctx);
                 recv_connected_socket(&mut slices[..slice_cnt], socket_id, is_nonblocking)
             },
-            SocketState::Connectionless(conn_info) => {
+            SocketState::Connectionless(_) => {
                 // decode who the message was received from and put it in here:
                 /*
                 (*msg).msg_namelen = match &conn_info.rem_addr {
@@ -1330,7 +1330,7 @@ fn send_connected_socket(
         }
         ConnectedBackend::Sink => data.iter().map(|s| s.len()).sum::<usize>() as libc::ssize_t,
         ConnectedBackend::NullSink => data.iter().map(|s| s.len()).sum::<usize>() as libc::ssize_t,
-        ConnectedBackend::Fuzz => data.iter().map(|s| s.len()).sum::<usize>() as libc::ssize_t,
+        ConnectedBackend::Fuzz(_) => data.iter().map(|s| s.len()).sum::<usize>() as libc::ssize_t,
     }
 }
 
@@ -1500,7 +1500,7 @@ fn send_connectionless_socket(
         }
         ConnectionlessBackend::Sink => data.len() as libc::ssize_t,
         ConnectionlessBackend::NullSink => data.len() as libc::ssize_t,
-        ConnectionlessBackend::Fuzz => data.len() as libc::ssize_t,
+        ConnectionlessBackend::Fuzz(_) => data.len() as libc::ssize_t,
     }
 }
 
@@ -1730,12 +1730,12 @@ fn recv_connected_socket(
 
             total_len as libc::ssize_t
         }
-        IoBackend::Fuzz => {
-            let resource = FdResource::Socket(socket_id);
+        IoBackend::Fuzz(fuzz_endpoint_id) => {
+            let fuzz_endpoint_id = fuzz_endpoint_id.clone();
             let FuzzEndpointInfo {
                 mut read_idx,
                 read_polled,
-            } = ctx.global.fuzz_endpoints.get(&resource).unwrap().clone();
+            } = ctx.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().clone();
 
             let polled_is_ready = ctx.polled_is_ready(&read_polled);
             drop(ctx);
@@ -1764,7 +1764,7 @@ fn recv_connected_socket(
                 }
             }
 
-            let fuzz_endpoint = ctx.global.fuzz_endpoints.get_mut(&resource).unwrap();
+            let fuzz_endpoint = ctx.global.fuzz_endpoints.get_mut(&fuzz_endpoint_id).unwrap();
             let read_polled = fuzz_endpoint.read_polled.clone();
             fuzz_endpoint.read_idx = read_idx;
             if fuzz_endpoint.read_idx == total_fuzz_len {

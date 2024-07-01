@@ -8,8 +8,7 @@ use fizzle_plugin::FizzlePluginObject;
 use crate::{constants::*, semaphore::Semaphore};
 
 use super::{
-    backend::FileBackend, fd::FdInfo, EpollInfo, EventFdInfo,
-    MessageQueueInfo, PipeInfo, PluginInfo, PolledInfo, PollerInfo, SemaphoreInfo, SocketState,
+    backend::FileBackend, fd::FdInfo, EpollInfo, EventFdInfo, FuzzEndpointInfo, MessageQueueInfo, PipeInfo, PluginInfo, PolledInfo, PollerInfo, SemaphoreInfo, SocketState
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -225,6 +224,25 @@ impl From<usize> for PluginId {
 
 impl From<PluginId> for usize {
     fn from(value: PluginId) -> usize {
+        value.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FuzzEndpointId(usize);
+
+impl ArenaKey for FuzzEndpointId {
+    type Value = FuzzEndpointInfo;
+}
+
+impl From<usize> for FuzzEndpointId {
+    fn from(value: usize) -> Self {
+        Self(value)
+    }
+}
+
+impl From<FuzzEndpointId> for usize {
+    fn from(value: FuzzEndpointId) -> usize {
         value.0
     }
 }

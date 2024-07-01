@@ -43,6 +43,8 @@ pub const FIZZLE_MAX_FDS: usize = 4096;
 pub const FIZZLE_MAX_WAITING_SEMAPHORES: usize = 32;
 pub const FIZZLE_FOPEN_BUFSIZE: usize = 8192;
 
+pub const FIZZLE_MAX_PER_ROUND_ENDPOINTS: usize = 128;
+
 // Polling
 pub const FIZZLE_MAX_PER_EVENT_QUEUED_POLLERS: usize = 64;
 pub const FIZZLE_MAX_PER_POLLER_QUEUED_EVENTS: usize = 64;

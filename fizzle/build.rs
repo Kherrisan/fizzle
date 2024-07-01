@@ -35,9 +35,19 @@ pub enum IoBasicMethod {
     Feedback,
 }
 
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum IoTiming {
+    /// Initializes the plugin once and maintains state throughout different fuzzing rounds.
+    Startup,
+    /// Re-initializes the communication channel each time the program is run.
+    PerRound
+}
+
 #[derive(Deserialize)]
 pub struct IoPluginConfiguration {
     pub method: String, // TODO: this must be "plugin"
+    pub when: IoTiming,
     pub module: String,
     pub plugin: String,
     pub streams: Option<usize>,
@@ -162,22 +172,27 @@ fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
             IoInputVariant::Basic(IoBasicMethod::Feedback) => quote::quote! {
                 let num_streams = 1;
                 let emulation_type = IoEmulationType::Feedback;
+                let is_per_round = false;
             },
             IoInputVariant::Basic(IoBasicMethod::Fuzz) => quote::quote! {
                 let num_streams = 1;
                 let emulation_type = IoEmulationType::Fuzz;
+                let is_per_round = true;
             },
             IoInputVariant::Basic(IoBasicMethod::Nullsink) => quote::quote! {
                 let num_streams = 1;
                 let emulation_type = IoEmulationType::NullSink;
+                let is_per_round = false;
             },
             IoInputVariant::Basic(IoBasicMethod::Passthrough) => quote::quote! {
                 let num_streams = 1;
                 let emulation_type = IoEmulationType::Passthrough;
+                let is_per_round = false;
             },
             IoInputVariant::Basic(IoBasicMethod::Sink) => quote::quote! {
                 let num_streams = 1;
                 let emulation_type = IoEmulationType::Sink;
+                let is_per_round = false;
             },
             IoInputVariant::Plugin(plugin_config) => {
                 let num_streams = plugin_config.streams.unwrap_or(1);
@@ -212,9 +227,11 @@ fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
                     }
                 };
 
+                let is_per_round = plugin_config.when == IoTiming::PerRound;
                 quote::quote! {
                     let num_streams = #num_streams;
                     let emulation_type = IoEmulationType::Plugin(PluginModuleId::from(#plugin_module_id));
+                    let is_per_round = #is_per_round;
                 }
             }
         };
@@ -226,6 +243,7 @@ fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
             config.endpoints.push(PluginConfigEndpoint {
                 endpoint_variant,
                 emulation_type,
+                is_per_round,
                 num_streams,
             });
         });

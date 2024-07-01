@@ -40,7 +40,7 @@ use self::fd::{FdInfo, FdResource};
 use self::identifiers::*;
 use self::plugins::{IoEmulationType, PluginConfigEndpoint, PluginModules};
 
-const THREAD_LOCK_REPEAT_VALUE: Option<Box<Semaphore>> = None;
+const THREAD_LOCK_INIT_VALUE: Option<Box<Semaphore>> = None;
 
 pub static FIZZLE_STATE: FizzCell = FizzCell::new();
 
@@ -105,7 +105,7 @@ impl FizzCell {
             acquired: AtomicBool::new(false),
             initialized: AtomicBool::new(false),
             reaper_lock: UnsafeCell::new(MaybeUninit::uninit()),
-            thread_locks: UnsafeCell::new([THREAD_LOCK_REPEAT_VALUE; FIZZLE_MAX_THREADS]),
+            thread_locks: UnsafeCell::new([THREAD_LOCK_INIT_VALUE; FIZZLE_MAX_THREADS]),
             inner: UnsafeCell::new(MaybeUninit::uninit()),
         }
     }
@@ -240,6 +240,7 @@ impl FizzCell {
             }
             // Now it's this thread's turn to execute
             // TODO: this NEEDS to run in the root process, but we don't check this?
+
         } else if self::plugins::run_plugins(&mut self.acquire()) {
             // Plugins have queued more workers as ready
             log::trace!(
@@ -248,6 +249,54 @@ impl FizzCell {
             // This shouldn't lead to a stack overflow unless `run_plugins` erroneously
             // returns `true` but doesn't schedule new workers.
             self.yield_thread();
+
+        } else if !self.acquire().global.per_round_endpoints.is_empty() {
+            let mut ctx = self.acquire();
+            let mut endpoints = heapless::Vec::new();
+            mem::swap(&mut endpoints, &mut ctx.global.per_round_endpoints);
+
+            for socket_id in endpoints.into_iter() {
+                let Some(sock_info) = ctx.global.sockets.get_mut(&socket_id) else {
+                    continue
+                };
+
+                match sock_info {
+                    SocketState::PendingConnection(_) => (), // Leave be
+                    SocketState::Connected(connected) => {
+                        connected.peer_closed = true;
+
+                        let target_address = connected.rem_addr.clone();
+                        let client_backend = match &connected.backend {
+                            ConnectedBackend::Plugin(plugin_id) => PerRoundClientBackend::Plugin(plugin_id.clone()),
+                            ConnectedBackend::Fuzz(fuzz_endpoint_id) => PerRoundClientBackend::Fuzz(fuzz_endpoint_id.clone()),
+                            _ => unreachable!(),
+                        };
+
+                        // Now raise all applicable poll events so the reader discovers the peer is closed
+                        match connected.backend.clone() {
+                            backend::IoBackend::Plugin(plugin_id) => {
+                                let plugin = ctx.global.plugins.get(&plugin_id).unwrap();
+                                let read_polled = plugin.read_polled.clone();
+                                let write_polled = plugin.write_polled.clone();
+                                ctx.raise_polled(&read_polled);
+                                ctx.raise_polled(&write_polled);
+                            },
+                            backend::IoBackend::Fuzz(fuzz_endpoint_id) => {
+                                let read_polled = ctx.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().read_polled.clone();
+                                ctx.raise_polled(&read_polled);
+                            }
+                            _ => unreachable!(),
+                        }
+
+                        ctx.global.per_round_clients.push(PerRoundClientInfo {
+                            target_address,
+                            backend: client_backend,
+                        }).unwrap();
+                    }
+                    _ => unreachable!(),
+                }
+            }
+
         } else {
             log::trace!("No workers were ready to execute--fuzzing round complete.");
             // No events were triggered for any pollers--move on to next input
@@ -267,8 +316,6 @@ impl FizzCell {
         //   1. Default forkserver is deterministic but awfully slow (re-instantiates separate processes every time).
         //   2. PCR is fast, but introduces potential instability if state is saved across consecutive connections.
         //   3. Nyx-Net is deterministic and much faster than default forkserver, though harder to set up and has more system overhead.
-
-        // TODO: if using PCR (Persistent mode with Channel Reset), handle __AFL_LOOP here
 
         // TODO: if using Nyx-Net, handle hypervisor preemption here
 
@@ -335,8 +382,6 @@ impl FizzCell {
             ctx.global.fuzz_input.did_write(read_amount as usize);
         }
 
-        // Mark appropriate processes/threads as ready to receive input
-
         let mut polled_ready = heapless::Vec::<Rc<PolledId>, FIZZLE_MAX_FUZZ_ENDPOINTS>::new();
         for endpoint_info in ctx.global.fuzz_endpoints.values_mut() {
             endpoint_info.read_idx = 0;
@@ -349,6 +394,8 @@ impl FizzCell {
             "{} fuzzing endpoints are marked as ready to fuzz",
             polled_ready.len()
         );
+
+        // Mark appropriate processes/threads as ready to receive input from `fuzz` endpoints
         for polled_id in polled_ready {
             ctx.raise_polled(&polled_id);
         }
@@ -357,26 +404,24 @@ impl FizzCell {
         let fuzz_input = ctx.global.fuzz_input.clone();
 
         // TODO: this needs to run in the root process, but we don't check this??
-        // TODO: turn this into an iterator in the future
-        let max_id = ctx.global.plugins.max_key();
-        for i in 0..=max_id {
-            let plugin_id = PluginId::from(i);
-            if let Some(plugin_info) = ctx.global.plugins.get(&plugin_id) {
-                let module_id = plugin_info.module_id.clone();
-                let local = &mut ctx.local;
-                let plugin_module = local
-                    .plugin_modules
-                    .as_mut()
-                    .unwrap()
-                    .get_mut(&module_id)
-                    .unwrap();
-                plugin_module.load_entropy(fuzz_input.data());
-            }
+        let modules: Vec<_> = ctx.global.plugins.values().map(|plugin_info| plugin_info.module_id.clone()).collect();
+        for module in modules {
+            ctx.local.plugin_modules.as_mut().unwrap().get_mut(&module).unwrap().fuzz_round_start(fuzz_input.data());
+        }
+
+        // Now reload per-round fuzzing clients
+        let mut per_round_clients = heapless::Vec::new();
+        mem::swap(&mut per_round_clients, &mut ctx.global.per_round_clients);
+
+        for client_info in per_round_clients {
+            let socket_id = ctx.global.add_pending_client(client_info.target_address, match client_info.backend {
+                PerRoundClientBackend::Fuzz(fuzz_endpoint_id) => PendingBackend::Fuzz(fuzz_endpoint_id),
+                PerRoundClientBackend::Plugin(plugin_id) => PendingBackend::Plugin(plugin_id),
+            });
+            ctx.global.per_round_endpoints.push(socket_id).unwrap();
         }
 
         drop(ctx);
-
-        // TODO: need to run plugins here?
 
         // If the current running thread isn't ready to receive input, pass on to the next thread.
         self.yield_thread(); // This won't recurse beyond a depth of 2, so long as inputs are passed into the appropriate places here...
@@ -798,15 +843,19 @@ impl FizzState {
 
     pub fn copy_exec_fds(&mut self) {
         let mut fds = self.local.fds.clone();
+        let mut downref_keys  = Vec::new();
 
-        for i in 0..fds.max_key() {
+        for key in fds.keys() {
             if let Some(FdInfo {
                 close_on_exec: true,
-                is_passthrough,
                 ..
-            }) = fds.get(&DescriptorId::from(i)) {
-                fds.downref(&DescriptorId::from(i));
+            }) = fds.get(&key) {
+                downref_keys.push(key);
             }
+        }
+
+        for key in downref_keys {
+            fds.downref(&key);
         }
 
         self.global.transfer_fds = Some(fds);
@@ -959,7 +1008,9 @@ pub struct FizzGlobal {
     pub pollers: KeyedArena<PollerId, PollerInfo, FIZZLE_MAX_POLLERS>,
     pub ready: Queue<ReadyInfo, FIZZLE_MAX_QUEUED_READY_POLLERS>,
     pub fuzz_input: Buffer<FIZZLE_MAX_FUZZ_INPUT>,
-    pub fuzz_endpoints: FnvIndexMap<FdResource, FuzzEndpointInfo, FIZZLE_MAX_FUZZ_ENDPOINTS>,
+    pub per_round_clients: heapless::Vec<PerRoundClientInfo, FIZZLE_MAX_PER_ROUND_ENDPOINTS>,
+    pub per_round_endpoints: heapless::Vec<Rc<SocketId>, FIZZLE_MAX_PER_ROUND_ENDPOINTS>,
+    pub fuzz_endpoints: KeyedArena<FuzzEndpointId, FuzzEndpointInfo, FIZZLE_MAX_FUZZ_ENDPOINTS>,
     pub prefuzz_rng: rand::rngs::SmallRng,
 }
 
@@ -999,7 +1050,9 @@ impl FizzGlobal {
             KeyedArena::initialize(ptr::addr_of_mut!((*state).pollers));
             *ptr::addr_of_mut!((*state).ready) = Queue::new();
             *ptr::addr_of_mut!((*state).fuzz_input) = Buffer::new();
-            *ptr::addr_of_mut!((*state).fuzz_endpoints) = FnvIndexMap::new();
+            *ptr::addr_of_mut!((*state).per_round_clients) = heapless::Vec::new();
+            *ptr::addr_of_mut!((*state).per_round_endpoints) = heapless::Vec::new();
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).fuzz_endpoints));
             // TODO: enable custom seed loading
             *ptr::addr_of_mut!((*state).prefuzz_rng) =
                 SmallRng::seed_from_u64(0xABAD_5EED_ABAD_5EED_u64);
@@ -1032,8 +1085,8 @@ impl FizzGlobal {
                             IoEmulationType::Sink => StdioBackend::Sink,
                             IoEmulationType::NullSink => StdioBackend::NullSink,
                             IoEmulationType::Fuzz => {
-                                self.add_fuzz_endpoint(FdResource::Stdin);
-                                StdioBackend::Fuzz
+                                let fuzz_endpoint_id = self.add_fuzz_endpoint();
+                                StdioBackend::Fuzz(fuzz_endpoint_id)
                             }
                             IoEmulationType::Passthrough => StdioBackend::Passthrough,
                         }
@@ -1070,8 +1123,9 @@ impl FizzGlobal {
                                 self.files.allocate(FileBackend::NullSink).unwrap()
                             }
                             IoEmulationType::Fuzz => {
-                                let file_id = self.files.allocate(FileBackend::Fuzz).unwrap();
-                                self.add_fuzz_endpoint(FdResource::File(file_id.clone()));
+                                let fuzz_endpoint_id = self.add_fuzz_endpoint();
+                                let file_id = self.files.allocate(FileBackend::Fuzz(fuzz_endpoint_id)).unwrap();
+
                                 file_id
                             }
                             IoEmulationType::Passthrough => {
@@ -1089,14 +1143,13 @@ impl FizzGlobal {
                             ),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
-                            IoEmulationType::Fuzz => ServerBackend::Fuzz,
+                            IoEmulationType::Fuzz => ServerBackend::Fuzz(self.add_fuzz_endpoint()),
                             IoEmulationType::Passthrough => ServerBackend::Passthrough,
                         };
 
                         self.add_server(TransportAddress::Tcp(addr), backend)
                     }
                     IoEndpointVariant::TcpClient(addr) => {
-                        let mut is_fuzzing = false;
                         let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(
@@ -1104,14 +1157,22 @@ impl FizzGlobal {
                             ),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
-                            IoEmulationType::Fuzz => {
-                                is_fuzzing = true;
-                                PendingBackend::Fuzz
-                            }
+                            IoEmulationType::Fuzz => PendingBackend::Fuzz(self.add_fuzz_endpoint()),
                             IoEmulationType::Passthrough => PendingBackend::Passthrough,
                         };
 
-                        self.add_pending_client(TransportAddress::Tcp(addr), backend, is_fuzzing)
+                        if endpoint.is_per_round {
+                            self.per_round_clients.push(PerRoundClientInfo {
+                                target_address: TransportAddress::Tcp(addr),
+                                backend: match backend {
+                                    PendingBackend::Fuzz(fuzz_endpoint_id) => PerRoundClientBackend::Fuzz(fuzz_endpoint_id),
+                                    PendingBackend::Plugin(plugin_id) => PerRoundClientBackend::Plugin(plugin_id),
+                                    _ => unreachable!(),
+                                },
+                            }).unwrap();
+                        } else {
+                            self.add_pending_client(TransportAddress::Tcp(addr), backend);
+                        }
                     }
                     IoEndpointVariant::UdpServer(addr) => {
                         let backend = match &endpoint.emulation_type {
@@ -1121,14 +1182,13 @@ impl FizzGlobal {
                             ),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
-                            IoEmulationType::Fuzz => ServerBackend::Fuzz,
+                            IoEmulationType::Fuzz => ServerBackend::Fuzz(self.add_fuzz_endpoint()),
                             IoEmulationType::Passthrough => ServerBackend::Passthrough,
                         };
 
                         self.add_server(TransportAddress::Udp(addr), backend)
                     }
                     IoEndpointVariant::UdpClient(addr) => {
-                        let mut is_fuzzing = false;
                         let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(
@@ -1136,14 +1196,22 @@ impl FizzGlobal {
                             ),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
-                            IoEmulationType::Fuzz => {
-                                is_fuzzing = true;
-                                PendingBackend::Fuzz
-                            }
+                            IoEmulationType::Fuzz => PendingBackend::Fuzz(self.add_fuzz_endpoint()),
                             IoEmulationType::Passthrough => PendingBackend::Passthrough,
                         };
 
-                        self.add_pending_client(TransportAddress::Udp(addr), backend, is_fuzzing)
+                        if endpoint.is_per_round {
+                            self.per_round_clients.push(PerRoundClientInfo {
+                                target_address: TransportAddress::Udp(addr),
+                                backend: match backend {
+                                    PendingBackend::Fuzz(fuzz_endpoint_id) => PerRoundClientBackend::Fuzz(fuzz_endpoint_id),
+                                    PendingBackend::Plugin(plugin_id) => PerRoundClientBackend::Plugin(plugin_id),
+                                    _ => unreachable!(),
+                                },
+                            }).unwrap();
+                        } else {
+                            self.add_pending_client(TransportAddress::Udp(addr), backend);
+                        }
                     }
                     IoEndpointVariant::SctpServer(addr) => {
                         let backend = match &endpoint.emulation_type {
@@ -1153,14 +1221,13 @@ impl FizzGlobal {
                             ),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
-                            IoEmulationType::Fuzz => ServerBackend::Fuzz,
+                            IoEmulationType::Fuzz => ServerBackend::Fuzz(self.add_fuzz_endpoint()),
                             IoEmulationType::Passthrough => ServerBackend::Passthrough,
                         };
 
                         self.add_server(TransportAddress::Sctp(addr), backend)
                     }
                     IoEndpointVariant::SctpClient(addr) => {
-                        let mut is_fuzzing = false;
                         let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(
@@ -1168,14 +1235,22 @@ impl FizzGlobal {
                             ),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
-                            IoEmulationType::Fuzz => {
-                                is_fuzzing = true;
-                                PendingBackend::Fuzz
-                            }
+                            IoEmulationType::Fuzz => PendingBackend::Fuzz(self.add_fuzz_endpoint()),
                             IoEmulationType::Passthrough => PendingBackend::Passthrough,
                         };
 
-                        self.add_pending_client(TransportAddress::Sctp(addr), backend, is_fuzzing)
+                        if endpoint.is_per_round {
+                            self.per_round_clients.push(PerRoundClientInfo {
+                                target_address: TransportAddress::Sctp(addr),
+                                backend: match backend {
+                                    PendingBackend::Fuzz(fuzz_endpoint_id) => PerRoundClientBackend::Fuzz(fuzz_endpoint_id),
+                                    PendingBackend::Plugin(plugin_id) => PerRoundClientBackend::Plugin(plugin_id),
+                                    _ => unreachable!(),
+                                },
+                            }).unwrap();
+                        } else {
+                            self.add_pending_client(TransportAddress::Sctp(addr), backend);
+                        }
                     }
                     _ => panic!("unimplemented IoEndpoint type"),
                 }
@@ -1207,25 +1282,23 @@ impl FizzGlobal {
         }
     }
 
-    pub fn add_fuzz_endpoint(&mut self, resource: FdResource) {
+    pub fn add_fuzz_endpoint(&mut self) -> Rc<FuzzEndpointId> {
         let read_polled = self.polled_events.allocate(PolledInfo::new()).unwrap();
         self.fuzz_endpoints
-            .insert(
-                resource,
+            .allocate(
                 FuzzEndpointInfo {
                     read_polled,
                     read_idx: 0,
                 },
             )
-            .unwrap();
+            .unwrap()
     }
 
     pub fn add_pending_client(
         &mut self,
         rem_addr: TransportAddress,
         backend: PendingBackend,
-        is_fuzzing: bool,
-    ) {
+    ) -> Rc<SocketId> {
         let client_socket_id = self
             .sockets
             .allocate(SocketState::PendingConnection(PendingSocket {
@@ -1234,10 +1307,6 @@ impl FizzGlobal {
                 next_pending: None,
             }))
             .unwrap();
-
-        if is_fuzzing {
-            self.add_fuzz_endpoint(FdResource::Socket(client_socket_id.clone()));
-        }
 
         // Add the client to the pending client chain, if applicable
         match self.socket_locations.get_mut(&rem_addr) {
@@ -1249,7 +1318,7 @@ impl FizzGlobal {
                         SocketLocationInfo {
                             bound_socket: None,
                             pending: Some(PendingInfo {
-                                client: client_socket_id,
+                                client: client_socket_id.clone(),
                                 poll: polled_id,
                             }),
                         },
@@ -1275,17 +1344,19 @@ impl FizzGlobal {
                         panic!("unexpected internal fizzle state--chain of awaiting clients had invalid socket variant")
                     };
 
-                    *next_awaiting = Some(client_socket_id);
+                    *next_awaiting = Some(client_socket_id.clone());
                 }
                 None => {
                     let polled_id = self.polled_events.allocate(PolledInfo::new()).unwrap();
                     location_info.pending = Some(PendingInfo {
-                        client: client_socket_id,
+                        client: client_socket_id.clone(),
                         poll: polled_id,
                     });
                 }
             },
         }
+
+        client_socket_id
     }
 
     pub fn add_server(&mut self, transport_addr: TransportAddress, backend: ServerBackend) {
@@ -1369,40 +1440,6 @@ impl FizzGlobal {
             AddressFamily::Unix => TransportAddress::Unix(UnixAddr::Unnamed)
         }
     }
-
-    /*
-    pub fn ipv4_ephemeral(&mut self) -> SocketAddrV4 {
-        let addr = SocketAddrV4::new(
-            Ipv4Addr::new(127, 0, 0, 1),
-            self.next_ephemeral_port,
-        );
-
-        if self.next_ephemeral_port >= FIZZLE_EPHEMERAL_PORT_END {
-            self.next_ephemeral_port = FIZZLE_EPHEMERAL_PORT_START;
-        } else {
-            self.next_ephemeral_port += 1;
-        }
-
-        addr
-    }
-
-    pub fn ipv6_ephemeral(&mut self) -> SocketAddrV6 {
-        let addr = SocketAddrV6::new(
-            Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1),
-            self.next_ephemeral_port,
-            0,
-            0
-        );
-
-        if self.next_ephemeral_port >= FIZZLE_EPHEMERAL_PORT_END {
-            self.next_ephemeral_port = FIZZLE_EPHEMERAL_PORT_START;
-        } else {
-            self.next_ephemeral_port += 1;
-        }
-
-        addr
-    }
-    */
 
     /// Assigns the next available process ID and increments it internally.
     pub fn assign_process_id(&mut self) -> ProcessId {
@@ -1518,6 +1555,18 @@ impl PolledInfo {
 }
 
 #[derive(Debug)]
+pub struct PerRoundClientInfo {
+    target_address: TransportAddress,
+    backend: PerRoundClientBackend,
+}
+
+#[derive(Clone, Debug)]
+pub enum PerRoundClientBackend {
+    Fuzz(Rc<FuzzEndpointId>),
+    Plugin(Rc<PluginId>),
+}
+
+#[derive(Debug)]
 pub struct SocketLocationInfo {
     /// The socket bound to the given location.
     pub bound_socket: Option<Rc<SocketId>>,
@@ -1597,6 +1646,7 @@ pub struct ConnectingSocket {
 pub struct ConnectedSocket {
     pub backend: ConnectedBackend,
     pub rem_addr: TransportAddress,
+    pub peer_closed: bool,
 }
 
 // Runtime active plugin I/O information

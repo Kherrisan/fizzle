@@ -123,11 +123,13 @@ pub fn write_to_uninit(data: &[u8], buf: &mut [MaybeUninit<u8>]) -> usize {
 /// between protocols), so it can be safely ignored for plugins that only have one [`FizzlePlugin`]
 /// implementation.
 pub trait FizzlePluginObject {
-    /// Loads a source of entropy (e.g., fuzzing input) that the plugin may base its behavior on.
+    /// Indicates the beginning of a new fuzzing round and loads a source of entropy (e.g., fuzzing
+    /// input) that the plugin may base its behavior on.
     ///
     /// A plugin must exhibit the same behavior and outputs across consecutive runs for a given
-    /// entropy input to preserve deterministic behavior during fuzzing/dynamic analysis.
-    fn load_entropy(&mut self, entropy: &[u8]);
+    /// `entropy` input to preserve deterministic behavior during fuzzing/dynamic analysis. The
+    /// plugin _may_ exibit arbitrarily different behavior for different `entropy` inputs, however.
+    fn fuzz_round_start(&mut self, entropy: &[u8]);
 
     /// Reads data in to the service the plugin is modelling.
     fn read(&mut self, buf: &[u8], ctx: &Context) -> Result<usize, PluginError>;

@@ -217,34 +217,11 @@ impl<const N: usize> Buffer<N> {
 
 /// A set of values that can be indexed into by a key of type `K`.
 ///
-pub struct KeyedArena<K: ArenaKey<Value = V>, V: Sized + 'static, const N: usize> {
+pub struct KeyedArena<K: ArenaKey<Value = V>, V: Sized, const N: usize> {
     inner: [UnsafeCell<ArenaItem<V>>; N],
     next_key: usize,
     max_key: usize,
     _phantom: PhantomData<K>,
-}
-
-struct ArenaItem<V: Sized + 'static> {
-    value: MaybeUninit<V>,
-    ref_cnt: u16, // Up to 16k refs allowed; the two MSBs indicates access
-//    _pinned: PhantomPinned,
-}
-
-impl<V: Sized + 'static + Clone> Clone for ArenaItem<V> {
-    fn clone(&self) -> Self {
-        let value = if self.ref_cnt > 0 {
-            unsafe {
-                MaybeUninit::new(self.value.assume_init_ref().clone())
-            }
-        } else {
-            MaybeUninit::uninit()
-        };
-
-        Self {
-            value,
-            ref_cnt: self.ref_cnt.clone()
-        }
-    }
 }
 
 impl<K: ArenaKey<Value = V>, V: Sized + Debug, const N: usize> Debug
@@ -278,6 +255,18 @@ impl<K: ArenaKey<Value = V>, V: Sized, const N: usize> KeyedArena<K, V, N> {
         }
     }
 
+    pub fn keys(&self) -> ArenaKeyIter<'_, K, V, N> {
+        ArenaKeyIter::new(self)
+    }
+
+    pub fn values(&self) -> ArenaValueIter<'_, K, V, N> {
+        ArenaValueIter::new(self)
+    }
+
+    pub fn values_mut(&mut self) -> ArenaValueIterMut<'_, K, V, N> {
+        ArenaValueIterMut::new(self)
+    }
+
     /// Initializes the given ValueIndex's contents in-place.
     /// 
     /// # Safety
@@ -290,10 +279,6 @@ impl<K: ArenaKey<Value = V>, V: Sized, const N: usize> KeyedArena<K, V, N> {
         }
         *ptr::addr_of_mut!((*value_idx).next_key) = 0;
         *ptr::addr_of_mut!((*value_idx)._phantom) = Default::default();
-    }
-
-    pub fn max_key(&self) -> usize {
-        self.max_key
     }
 
     pub fn get(&self, key: &K) -> Option<&V> {
@@ -431,6 +416,156 @@ impl<K: ArenaKey<Value = V>, V: Sized + Clone, const N: usize> Clone
             next_key: self.next_key,
             _phantom: self._phantom,
         }
+    }
+}
+
+struct ArenaItem<V: Sized> {
+    value: MaybeUninit<V>,
+    ref_cnt: u16, // Up to 16k refs allowed; the two MSBs indicates access
+//    _pinned: PhantomPinned,
+}
+
+impl<V: Sized + Clone> Clone for ArenaItem<V> {
+    fn clone(&self) -> Self {
+        let value = if self.ref_cnt > 0 {
+            unsafe {
+                MaybeUninit::new(self.value.assume_init_ref().clone())
+            }
+        } else {
+            MaybeUninit::uninit()
+        };
+
+        Self {
+            value,
+            ref_cnt: self.ref_cnt.clone()
+        }
+    }
+}
+
+pub struct ArenaKeyIter<'a, K: ArenaKey<Value = V>, V: Sized, const N: usize> {
+    arena: &'a KeyedArena<K, V, N>,
+    next_key: Option<K>,
+}
+
+impl<'a, K: ArenaKey<Value = V>, V: Sized, const N: usize> ArenaKeyIter<'a, K, V, N> {
+    fn new(arena: &'a KeyedArena<K, V, N>) -> Self {
+        let mut next_key = None;
+        for i in 0..=arena.max_key {
+            if unsafe { (*(arena.inner[i].get() as *const ArenaItem<V>)).ref_cnt } > 0 {
+                next_key = Some(K::from(i));
+                break
+            }
+        }
+
+        Self {
+            arena,
+            next_key,
+        }
+    }
+}
+
+impl<'a, K: ArenaKey<Value = V>, V: Sized, const N: usize> Iterator for ArenaKeyIter<'a, K, V, N> {
+    type Item = K;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let key = self.next_key?;
+        let raw_key: usize = key.into();
+
+        self.next_key = None;
+        if raw_key + 1 <= self.arena.max_key {
+            for i in raw_key + 1..=self.arena.max_key {
+                if unsafe { (*(self.arena.inner[i].get() as *const ArenaItem<V>)).ref_cnt } > 0 {
+                    self.next_key = Some(K::from(i));
+                }
+            }
+        }
+
+        Some(key)
+    }
+}
+
+pub struct ArenaValueIter<'a, K: ArenaKey<Value = V>, V: Sized, const N: usize> {
+    arena: &'a KeyedArena<K, V, N>,
+    next_key: Option<K>,
+}
+
+impl<'a, K: ArenaKey<Value = V>, V: Sized, const N: usize> ArenaValueIter<'a, K, V, N> {
+    fn new(arena: &'a KeyedArena<K, V, N>) -> Self {
+        let mut next_key = None;
+        for i in 0..=arena.max_key {
+            if unsafe { (*(arena.inner[i].get() as *const ArenaItem<V>)).ref_cnt } > 0 {
+                next_key = Some(K::from(i));
+                break
+            }
+        }
+
+        Self {
+            arena,
+            next_key,
+        }
+    }
+}
+
+impl<'a, K: ArenaKey<Value = V>, V: Sized, const N: usize> Iterator for ArenaValueIter<'a, K, V, N> {
+    type Item = &'a V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let key: usize = self.next_key?.into();
+        let value = unsafe { (*(self.arena.inner[key].get() as *const ArenaItem<V>)).value.assume_init_ref() };
+
+        self.next_key = None;
+        if key + 1 <= self.arena.max_key {
+            for i in key + 1..=self.arena.max_key {
+                if unsafe { (*(self.arena.inner[i].get() as *const ArenaItem<V>)).ref_cnt } > 0 {
+                    self.next_key = Some(K::from(i));
+                }
+            }
+        }
+
+        Some(value)
+    }
+}
+
+pub struct ArenaValueIterMut<'a, K: ArenaKey<Value = V>, V: Sized, const N: usize> {
+    arena: &'a mut KeyedArena<K, V, N>,
+    next_key: Option<K>,
+}
+
+impl<'a, K: ArenaKey<Value = V>, V: Sized, const N: usize> ArenaValueIterMut<'a, K, V, N> {
+    fn new(arena: &'a mut KeyedArena<K, V, N>) -> Self {
+        let mut next_key = None;
+        for i in 0..=arena.max_key {
+            if unsafe { (*(arena.inner[i].get() as *const ArenaItem<V>)).ref_cnt } > 0 {
+                next_key = Some(K::from(i));
+                break
+            }
+        }
+
+        Self {
+            arena,
+            next_key,
+        }
+    }
+}
+
+impl<'a, K: ArenaKey<Value = V>, V: Sized, const N: usize> Iterator for ArenaValueIterMut<'a, K, V, N> {
+    type Item = &'a mut V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let key: usize = self.next_key?.into();
+
+        self.next_key = None;
+        if key + 1 <= self.arena.max_key {
+            for i in key + 1..=self.arena.max_key {
+                if unsafe { (*(self.arena.inner[i].get() as *const ArenaItem<V>)).ref_cnt } > 0 {
+                    self.next_key = Some(K::from(i));
+                }
+            }
+        }
+
+        let value = unsafe { (*self.arena.inner[key].get()).value.assume_init_mut() };
+
+        Some(value)
     }
 }
 
