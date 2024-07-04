@@ -162,31 +162,40 @@ unsafe fn decode_inet_address(
 /// It is the responsibility of the caller to ensure that `addr` points to valid bytes that are
 /// sized according to the address family in the address (e.g., the address length for an `AF_INET`
 /// sockaddr should be equal to `mem::size_of::<libc::sockaddr_in>()`).
-fn encode_inet_address(addr: *mut libc::sockaddr, addrlen: *mut libc::socklen_t, address: &SocketAddr) {
-    let mut storage = MaybeUninit::<libc::sockaddr_storage>::uninit();
+fn encode_inet_address(buffer: &mut [u8], address: &SocketAddr) -> libc::socklen_t {
+    match address {
+        SocketAddr::V4(v4) => {
+            let inet_addr = libc::sockaddr_in {
+                sin_family: libc::AF_INET as u16,
+                sin_port: v4.port().to_be(),
+                sin_addr: libc::in_addr {
+                    s_addr: u32::from_be_bytes(v4.ip().octets()).to_be(),  
+                },
+                sin_zero: [0u8; 8],
+            };
+            let storage_bytes = unsafe { slice::from_raw_parts(ptr::addr_of!(inet_addr) as *const u8, mem::size_of_val(&inet_addr)) };
 
-    unsafe {
-        match address {
-            SocketAddr::V4(v4) => {
-                let storage_addr = ptr::addr_of_mut!(storage) as *mut libc::sockaddr_in;
-                (*storage_addr).sin_family = libc::AF_INET as u16;
-                (*storage_addr).sin_addr.s_addr = u32::from_be_bytes(v4.ip().octets()).to_be();
-                (*storage_addr).sin_port = v4.port().to_be();
+            let copy_len = cmp::min(storage_bytes.len(), buffer.len());
+            buffer[..copy_len].copy_from_slice(&storage_bytes[..copy_len]);
 
-                *addrlen = cmp::min(*addrlen, mem::size_of::<libc::sockaddr_in>() as u32);
-                ptr::copy_nonoverlapping(storage_addr as *mut u8, addr as *mut u8, *addrlen as usize);
-            }
-            SocketAddr::V6(v6) => {
-                let storage_addr = ptr::addr_of_mut!(storage) as *mut libc::sockaddr_in6;
-                (*storage_addr).sin6_family = libc::AF_INET6 as u16;
-                (*storage_addr).sin6_addr.s6_addr = v6.ip().octets();
-                (*storage_addr).sin6_port = v6.port().to_be();
-                (*storage_addr).sin6_flowinfo = v6.flowinfo().to_be();
-                (*storage_addr).sin6_scope_id = v6.scope_id().to_be();
+            copy_len as libc::socklen_t
+        }
+        SocketAddr::V6(v6) => {
+            let inet6_addr = libc::sockaddr_in6 {
+                sin6_family: libc::AF_INET6 as u16,
+                sin6_port: v6.port().to_be(),
+                sin6_flowinfo: v6.flowinfo().to_be(),
+                sin6_addr: libc::in6_addr {
+                    s6_addr: v6.ip().octets(),
+                },
+                sin6_scope_id: v6.scope_id(),
+            };
+            let storage_bytes = unsafe { slice::from_raw_parts(ptr::addr_of!(inet6_addr) as *const u8, mem::size_of_val(&inet6_addr)) };
 
-                *addrlen = cmp::min(*addrlen, mem::size_of::<libc::sockaddr_in6>() as u32);
-                ptr::copy_nonoverlapping(storage_addr as *mut u8, addr as *mut u8, *addrlen as usize);
-            }
+            let copy_len = cmp::min(storage_bytes.len(), buffer.len());
+            buffer[..copy_len].copy_from_slice(&storage_bytes[..copy_len]);
+
+            copy_len as libc::socklen_t
         }
     }
 }
@@ -225,7 +234,6 @@ fn decode_unix_address(
     }
 }
 
-///
 /// # Safety
 ///
 /// It is the responsibility of the caller to ensure that `addr` points to valid bytes that are

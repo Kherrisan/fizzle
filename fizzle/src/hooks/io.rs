@@ -1,7 +1,7 @@
 use std::mem::MaybeUninit;
 use std::{array, cmp, mem, ptr, slice};
 
-use fizzle_common::io::{AddressFamily, TransportAddress};
+use fizzle_common::io::{AddressFamily, TransportAddress, TransportProtocol};
 use fizzle_common::storage::{Buffer, Rc};
 
 use crate::constants::FIZZLE_BUFFER_LENGTH;
@@ -480,7 +480,12 @@ hook_macros::hook! {
         };
 
         match ctx.global.sockets.get(&socket_id).unwrap() {
-            SocketState::Connected(_) => {
+            SocketState::Connected(conn_info) => {
+                if conn_info.peer_closed {
+                    log::debug!("peer was closed--returning 0");
+                    return 0
+                }
+
                 drop(ctx);
                 send_connected_socket(&slices[..slice_cnt], socket_id, is_nonblocking)
             }
@@ -500,9 +505,9 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn sendmmsg(
-        fd: libc::c_int,
-        msgvec: *mut libc::msghdr,
-        vlen: libc::c_uint,
+        _fd: libc::c_int,
+        _msgvec: *mut libc::msghdr,
+        _vlen: libc::c_uint,
         flags: libc::c_int
     ) -> libc::ssize_t => fizzle_sendmmsg(_ctx) {
 
@@ -510,8 +515,7 @@ hook_macros::hook! {
             crate::report_strict_failure("fizzle does not currently implement TCP Fast Open")
         }
 
-        crate::report_strict_failure("`sendmsg` unimplemented");
-        hook_macros::real!(sendmmsg)(fd, msgvec, vlen, flags)
+        panic!("`sendmsg` unimplemented");
     }
 }
 
@@ -908,6 +912,18 @@ hook_macros::hook! {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+#[allow(non_camel_case_types)]
+struct sctp_shutdown_event {
+    spc_type: u16,
+    spc_flags: u16,
+    spc_length: u32,
+    sse_assoc_id: libc::sctp_assoc_t,
+}
+
+const SCTP_SHUTDOWN_EVENT: u16 = (1 << 15) + 5;
+
 hook_macros::hook! {
     unsafe fn recvmsg(
         fd: libc::c_int,
@@ -976,9 +992,33 @@ hook_macros::hook! {
         match ctx.global.sockets.get(&socket_id).unwrap() {
             SocketState::Connected(conn_info) => {
                 match &conn_info.rem_addr {
-                    TransportAddress::Sctp(addr) | TransportAddress::Tcp(addr) | TransportAddress::Udp(addr) => crate::encode_inet_address(recv_addr, ptr::addr_of_mut!((*msg).msg_namelen), addr),
+                    TransportAddress::Sctp(addr) | TransportAddress::Tcp(addr) | TransportAddress::Udp(addr) => {
+                        let address_buf = slice::from_raw_parts_mut((*msg).msg_name as *mut u8, (*msg).msg_namelen as usize);
+                        (*msg).msg_namelen = crate::encode_inet_address(address_buf, addr);
+                    },
                     TransportAddress::Unix(addr) => crate::encode_unix_address(recv_addr, ptr::addr_of_mut!((*msg).msg_namelen), addr),
                 }
+
+                if conn_info.peer_closed && conn_info.rem_addr.protocol() == TransportProtocol::Sctp {
+                    // TODO: support vslices
+                    assert!(slices.len() == 1 || slices[0].len() >= mem::size_of::<sctp_shutdown_event>(), "vectored I/O unsupported for closed recvmsg");
+
+                    (*msg).msg_flags = libc::MSG_NOTIFICATION;
+
+                    let shutdown = sctp_shutdown_event {
+                        spc_type: SCTP_SHUTDOWN_EVENT,
+                        spc_flags: 0,
+                        spc_length: mem::size_of::<sctp_shutdown_event>() as u32,
+                        sse_assoc_id: 0,
+                    };
+
+                    let shutdown_slice = unsafe { slice::from_raw_parts(ptr::addr_of!(shutdown) as *const u8, mem::size_of_val(&shutdown)) };
+
+                    slices[0][..shutdown_slice.len()].copy_from_slice(shutdown_slice);
+
+                    return shutdown_slice.len() as libc::ssize_t
+                }
+
                 drop(ctx);
                 recv_connected_socket(&mut slices[..slice_cnt], socket_id, is_nonblocking)
             },
@@ -1128,8 +1168,10 @@ fn write_datagram<const N: usize>(
     let mut sockaddr: MaybeUninit<libc::sockaddr_storage> = MaybeUninit::uninit();
     let mut addrlen = mem::size_of::<libc::sockaddr_storage>() as u32;
     match addr {
-        TransportAddress::Udp(socket_addr) =>
-            crate::encode_inet_address(sockaddr.as_mut_ptr() as *mut libc::sockaddr, ptr::addr_of_mut!(addrlen), socket_addr),
+        TransportAddress::Udp(socket_addr) => {
+            let address_buf = unsafe { slice::from_raw_parts_mut(ptr::addr_of_mut!(sockaddr) as *mut u8, addrlen as usize) };
+            crate::encode_inet_address(address_buf, socket_addr);
+        }
         TransportAddress::Unix(unix_addr) =>
             crate::encode_unix_address(sockaddr.as_mut_ptr() as *mut libc::sockaddr, ptr::addr_of_mut!(addrlen), unix_addr),
         _ => unreachable!(),
@@ -1160,7 +1202,7 @@ fn send_connected_socket(
 ) -> libc::ssize_t {
     let mut ctx = state::FIZZLE_STATE.acquire();
 
-    let SocketState::Connected(ConnectedSocket { backend, .. }) =
+    let SocketState::Connected(ConnectedSocket { backend, peer_closed, .. }) =
         ctx.global.sockets.get(&socket_id).unwrap()
     else {
         unreachable!()
@@ -1174,6 +1216,10 @@ fn send_connected_socket(
                 log::debug!("connected peer was closed during attempted socket send");
                 return 0; // No more information to write to the connected socket
             };
+
+            if *peer_closed {
+                return 0
+            }
 
             let Some(SocketState::Connected(ConnectedSocket {
                 backend: IoBackend::Peered(regular_peer),
@@ -1283,7 +1329,6 @@ fn send_connected_socket(
             let plugin_info = ctx.global.plugins.get(plugin_id).unwrap();
             let buffer_id = plugin_info.write_buf.clone();
             let write_polled = plugin_info.write_polled.clone();
-            let read_polled = plugin_info.read_polled.clone();
 
             let polled_is_ready = ctx.polled_is_ready(&write_polled);
             drop(ctx);
@@ -1324,7 +1369,6 @@ fn send_connected_socket(
             if buf.is_full() {
                 ctx.lower_polled(&write_polled);
             }
-            ctx.raise_polled(&read_polled);
 
             total_written as isize
         }
@@ -1558,7 +1602,7 @@ fn recv_connected_socket(
             let buf_id = regular.recv_buf.clone();
             let write_polled = regular.write_polled.clone();
             let read_polled = regular.read_polled.clone();
-            let peer_is_shutdown = regular.peer.is_none();
+            let peer_is_shutdown = regular.peer.is_none() || sock_info.peer_closed;
 
             // First, check to see if we can just immediately read despite the peer being closed
             if ctx.polled_is_ready(&read_polled) {
@@ -1584,7 +1628,7 @@ fn recv_connected_socket(
             }
 
             if peer_is_shutdown {
-                return 0; // No more information to write to the connected socket
+                return 0; // No more information to receive from the connected socket
             };
 
             if is_nonblocking {

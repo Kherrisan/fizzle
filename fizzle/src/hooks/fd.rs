@@ -3,8 +3,10 @@
 
 use crate::hook_macros;
 
+use crate::state::backend::ConnectedBackend;
 use crate::state::fd::{FdInfo, FdResource};
 use crate::state::identifiers::DescriptorId;
+use crate::state::SocketState;
 
 hook_macros::hook! {
     unsafe fn close(
@@ -12,6 +14,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_close(ctx) {
         let descriptor_id = DescriptorId::new(fd);
         let ref_count = ctx.local.fds.ref_count(&descriptor_id);
+
         if ref_count == 1 {
             log::debug!("close({}) -> 0 (last fd closed for resource)", fd);
             match ctx.local.fds.get(&descriptor_id) {
@@ -19,11 +22,67 @@ hook_macros::hook! {
                 Some(FdInfo { resource: FdResource::EventFd(_), .. }) => crate::alias_fd_destroy(fd),
                 Some(FdInfo { resource: FdResource::Directory(_), .. }) => crate::alias_fd_destroy(fd),
                 Some(FdInfo { resource: FdResource::File(_), .. }) => crate::alias_fd_destroy(fd),
-                Some(FdInfo { resource: FdResource::Socket(_), .. }) => if hook_macros::real!(close)(fd) != 0 {
-                    log::warn!("close() returned errno {}", *libc::__errno_location());
+                Some(FdInfo { resource: FdResource::Socket(socket_id), .. }) => {
+                    assert_eq!(hook_macros::real!(close)(fd), 0, "close() returned nonzero despite valid socket context");
+                
+                    let socket_id = socket_id.clone();
+                    let mut ref_count = ctx.global.sockets.ref_count(&socket_id);
+                    match ctx.global.sockets.get(&socket_id).unwrap() {
+                        SocketState::Connectionless(sock_info) => if ref_count <= 3 { // 2 refs we're currently holding + 1 ref in socket_locations
+                            let addr = sock_info.local_addr.clone();
+                            ctx.global.socket_locations.remove(&addr).unwrap();
+                        }
+                        SocketState::Unassociated(sock_info) => {
+                            if ref_count <= 3 {
+                                if let Some(addr) = sock_info.local_addr.clone() {
+                                    ctx.global.socket_locations.remove(&addr).unwrap();                                   
+                                }
+                            }
+                        }
+                        SocketState::Server(server_info) => {
+                            if ref_count <= 3 {
+                                // TODO: need to handle `connecting` sockets here so that they get rejected correctly
+                                let addr = server_info.local_addr.clone();
+                                ctx.global.socket_locations.remove(&addr).unwrap();
+                            }
+                        }
+                        SocketState::Connecting(connecting_info) => {
+                            if ref_count <= 3 {
+                                let addr = connecting_info.local_addr.clone();
+                                ctx.global.socket_locations.remove(&addr).unwrap();
+                            }
+                        }
+                        SocketState::Connected(connection_info) => {
+                            // TODO: local address never bound?? Need to move address location...
+                            if let ConnectedBackend::Peered(peer_info) = &connection_info.backend {
+                                let peer_id = peer_info.peer.clone().unwrap();
+                                let SocketState::Connected(peer_info) = ctx.global.sockets.get_mut(&peer_id).unwrap() else {
+                                    unreachable!()
+                                };
+
+                                if let ConnectedBackend::Peered(p) = &mut peer_info.backend {
+                                    p.peer = None;
+                                    ref_count -= 1;
+                                };
+
+                                if ref_count <= 3 {
+                                    peer_info.peer_closed = true;
+                                    let addr = peer_info.rem_addr.clone();
+
+                                    // TODO: what about accept()ed sockets?
+                                    ctx.global.socket_locations.remove(&addr).unwrap();
+                                }
+                            }
+                        }
+                        SocketState::PendingConnection(_) => unreachable!(),
+                    }
                 },
                 Some(FdInfo { resource: FdResource::MessageQueue(_), .. }) => crate::alias_fd_destroy(fd),
-                Some(FdInfo { resource: FdResource::Pipe(_), .. }) => crate::alias_fd_destroy(fd),
+                Some(FdInfo { resource: FdResource::Pipe(pipe_id), .. }) => {
+                    crate::alias_fd_destroy(fd);
+                    let peer_id = ctx.global.pipes.get(&pipe_id).unwrap().peer.clone().unwrap();
+                    ctx.global.pipes.get_mut(&peer_id).unwrap().peer = None;
+                }
                 // TODO: mark stdin as closed after this...
                 Some(FdInfo { resource: FdResource::Stdin, .. }) => (), // We keep stdin for fuzzing input...
                 Some(FdInfo { resource: FdResource::Stdout, .. }) => (),

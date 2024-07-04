@@ -24,10 +24,6 @@ pub type PluginModules =
 /// We can keep plugin data in the first process spawned, as most fuzzers assume that if the main
 /// process exits then a crash has occurred. Fizzle has a special FIZZLE_NOEXIT option that can be
 /// set to keep the main process alive after a call to `exit()`
-pub struct PluginConfig {
-    pub endpoints: Vec<PluginConfigEndpoint>,
-    pub modules: PluginModules,
-}
 
 pub struct PluginConfigEndpoint {
     pub endpoint_variant: IoEndpointVariant,
@@ -35,15 +31,6 @@ pub struct PluginConfigEndpoint {
     pub emulation_type: IoEmulationType,
     //    pub module_id: Option<PluginModuleId>,
     pub num_streams: usize,
-}
-
-impl PluginConfig {
-    pub fn new() -> Self {
-        Self {
-            endpoints: Default::default(),
-            modules: Default::default(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -79,7 +66,7 @@ pub fn run_plugins(ctx: &mut FizzState) -> bool {
     // TODO: turn this into an iterator in the future
     for plugin_info in ctx.global.plugins.values() {
         let mut raise_read = false;
-        let mut raise_write = false;
+        let mut lower_write = false;
 
         let plugin_module_id = plugin_info.module_id.clone();
         let context = Context {
@@ -94,6 +81,7 @@ pub fn run_plugins(ctx: &mut FizzState) -> bool {
             .unwrap()
             .get_mut(&plugin_module_id)
             .unwrap();
+
         let write_buf_id = plugin_info.write_buf.clone();
         let write_polled = plugin_info.write_polled.clone();
         let read_buf_id = plugin_info.read_buf.clone();
@@ -102,13 +90,17 @@ pub fn run_plugins(ctx: &mut FizzState) -> bool {
         // Check read end
         let write_buf = ctx.global.buffers.get_mut(&write_buf_id).unwrap();
         if plugin_module.can_read(&context) && !write_buf.is_empty() {
+            log::debug!("plugin module context {:?} can be read", &context);
             plugin_activated = true;
             match plugin_module.read(write_buf.data(), &context) {
                 Ok(0) => unimplemented!(),
                 Err(_) => unimplemented!(),
                 Ok(amount) => {
+                    log::debug!("plugin module read {} bytes", amount);
                     write_buf.did_read(amount);
-                    raise_write = true;
+                    if write_buf.is_empty() {
+                        lower_write = true;
+                    }
                 }
             }
         }
@@ -116,11 +108,13 @@ pub fn run_plugins(ctx: &mut FizzState) -> bool {
         // Check write end
         let read_buf = ctx.global.buffers.get_mut(&read_buf_id).unwrap();
         if plugin_module.can_write(&context) && !read_buf.is_full() {
+            log::debug!("plugin module context {:?} can write", &context);
             plugin_activated = true;
             match plugin_module.write(read_buf.remaining_mut(), &context) {
                 Ok(0) => unimplemented!(),
                 Err(_) => unimplemented!(),
                 Ok(amount) => {
+                    log::debug!("plugin module wrote {} bytes", amount);
                     read_buf.did_write(amount);
                     raise_read = true;
                 }
@@ -130,7 +124,7 @@ pub fn run_plugins(ctx: &mut FizzState) -> bool {
         if raise_read {
             read.push(read_polled.clone());
         }
-        if raise_write {
+        if lower_write {
             write.push(write_polled.clone());
         }
     }
@@ -140,7 +134,7 @@ pub fn run_plugins(ctx: &mut FizzState) -> bool {
     }
 
     for write_polled in write {
-        ctx.raise_polled(&write_polled);
+        ctx.lower_polled(&write_polled);
     }
 
     plugin_activated

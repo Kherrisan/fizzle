@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::{cmp, ptr};
+use std::cmp;
 
 // TODO: can we pass through configuration options for specific streams? How would we go about
 // doing that?? The problem is that a plugin can be defined in multiple I/O endpoints, so the
@@ -105,11 +105,11 @@ pub trait FizzlePlugin: FizzlePluginObject {
 /// [`write()`](FizzlePluginObject::write).
 pub fn write_to_uninit(data: &[u8], buf: &mut [MaybeUninit<u8>]) -> usize {
     let amount = cmp::min(data.len(), buf.len());
-    unsafe {
-        let data_ptr = data.as_ptr();
-        let buf_ptr = buf.as_mut_ptr() as *mut u8;
-        ptr::copy_nonoverlapping(data_ptr, buf_ptr, amount);
+
+    for (dst, src) in buf.iter_mut().zip(data) {
+        dst.write(*src);
     }
+    
     amount
 }
 

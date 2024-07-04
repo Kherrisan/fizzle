@@ -119,9 +119,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let final_tokens = quote::quote! {
         #[allow(unused)]
-        use super::plugins::PluginConfig;
+        use super::plugins::PluginModules;
         #[allow(unused)]
         use fizzle_plugin::IoEndpointVariant;
+        #[allow(unused)]
+        use fizzle_plugin::{FizzlePlugin, FizzlePluginObject};
         #[allow(unused)]
         use crate::state::{IoEmulationType, PluginConfigEndpoint, PluginId, PluginModuleId};
         #[allow(unused)]
@@ -131,9 +133,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         #[allow(unused)]
         use std::collections::HashMap;
 
+
         #includes
 
-        pub fn populate_plugins(config: &mut PluginConfig) {
+        pub fn populate_plugins(endpoints: &mut Vec<PluginConfigEndpoint>, modules: &mut PluginModules) {
             #plugins_impl
         }
     };
@@ -166,6 +169,7 @@ fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
     let mut next_module_id = 0usize;
 
     let mut populate_plugins_tokens = TokenStream::new();
+    let mut comptime_output_tokens = TokenStream::new();
 
     for (endpoint, input_variant) in config.io.iter() {
         let io_variant = match input_variant {
@@ -228,9 +232,11 @@ fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
                 };
 
                 let is_per_round = plugin_config.when == IoTiming::PerRound;
+                let key_id = quote::format_ident!("key_{}", plugin_module_id);
+
                 quote::quote! {
                     let num_streams = #num_streams;
-                    let emulation_type = IoEmulationType::Plugin(PluginModuleId::from(#plugin_module_id));
+                    let emulation_type = IoEmulationType::Plugin(#key_id.clone()); // TODO
                     let is_per_round = #is_per_round;
                 }
             }
@@ -240,7 +246,7 @@ fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
         populate_plugins_tokens.extend(gen_io_endpoint_def(endpoint));
         populate_plugins_tokens.extend(io_variant);
         populate_plugins_tokens.extend(quote::quote! {
-            config.endpoints.push(PluginConfigEndpoint {
+            endpoints.push(PluginConfigEndpoint {
                 endpoint_variant,
                 emulation_type,
                 is_per_round,
@@ -252,7 +258,8 @@ fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
     // Populate (and initialize) plugin modules
 
     for ((module, plugin), (module_id, endpoint_configs)) in modules {
-        populate_plugins_tokens.extend(quote::quote! {
+        comptime_output_tokens.extend(quote::quote! {
+            #[allow(unused)]
             let mut endpoint_toml_configs = HashMap::new();          
         });
 
@@ -306,18 +313,20 @@ fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
             };
 
             let table_str = table.to_string();
-            populate_plugins_tokens.extend(quote::quote! {
+            comptime_output_tokens.extend(quote::quote! {
                 endpoint_toml_configs.insert(#endpoint_quote, #table_str.parse::<toml::Table>().unwrap());
             });
         }
         let module = quote::format_ident!("{}", str::replace(&module, "-", "_"));
         let plugin = quote::format_ident!("{}", str::replace(&plugin, "-", "_"));
-        populate_plugins_tokens.extend(quote::quote! {
-            config.modules.insert(PluginModuleId::from(#module_id), Box::new(#module::#plugin::new(endpoint_toml_configs)));
+        let key_id = quote::format_ident!("key_{}", module_id);
+        comptime_output_tokens.extend(quote::quote! {
+            let #key_id = modules.allocate(Box::new(#module::#plugin::new(endpoint_toml_configs))).unwrap(); // TODO
         });
     }
 
-    populate_plugins_tokens
+    comptime_output_tokens.extend(populate_plugins_tokens);
+    comptime_output_tokens
 }
 
 fn gen_io_endpoint_def(endpoint: &IoEndpoint) -> TokenStream {

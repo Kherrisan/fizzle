@@ -1,0 +1,13 @@
+[package]
+name = "fizzle-plugin-fuzz-s1ap"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+asnfuzzgen-codecs = { version = "0.1" }
+asnfuzzgen-codecs-derive = { version = "0.1" }
+bitvec = { version = "1.0" }
+entropic = { version = "0.1", features = ["bitvec", "derive", "std"] }
+fizzle-plugin = { version = "0.1", path = "../fizzle-plugin" }
+log = "0.4"
+toml = "0.8"

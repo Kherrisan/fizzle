@@ -266,8 +266,8 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn pthread_kill(
-        thread: libc::pthread_t,
-        sig: libc::c_int
+        _thread: libc::pthread_t,
+        _sig: libc::c_int
     ) -> libc::c_int => fizzle_pthread_kill(_ctx) {
 
         panic!("`pthread_kill` unimplemented")

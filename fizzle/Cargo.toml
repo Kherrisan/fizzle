@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [features]
-default = []
+default = ["pcr"]
 # Adds code needed to run AFL++ with deferred forkserver mode
 afl = []
 # Adds code needed to run AFL++ Persistent mode with Channel Reset (PCR)
@@ -30,7 +30,7 @@ libc = "0.2"
 log = "0.4"
 rand = { version = "0.8", features = ["small_rng"] }
 toml = "0.8"
-
+fizzle-plugin-fuzz-s1ap = {version = "0.1", path = "../fizzle-plugin-fuzz-s1ap"}
 
 # Start of Fizzle Plugin Dependencies
 

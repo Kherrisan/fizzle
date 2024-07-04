@@ -3,7 +3,7 @@
 //!
 
 use std::net::SocketAddr;
-use std::{mem, ptr};
+use std::{mem, ptr, slice};
 
 use crate::constants::{FIZZLE_BUFFER_LENGTH, FIZZLE_EPHEMERAL_PORT_END, FIZZLE_EPHEMERAL_PORT_START};
 use crate::state::backend::{
@@ -392,6 +392,7 @@ hook_macros::hook! {
 
                 *ctx.global.sockets.get_mut(&socket_id).unwrap() = SocketState::Connected(ConnectedSocket {
                     backend: connected_backend,
+                    local_addr,
                     rem_addr,
                     peer_closed: false,
                 });
@@ -479,8 +480,7 @@ hook_macros::hook! {
                 panic!("unexpected fizzle state--pending socket ID not in PendingConnection state");
             };
 
-            let rem_family = pending_info.rem_addr.family();
-            let rem_protocol = pending_info.rem_addr.protocol();
+            let client_address = pending_info.src_addr.clone();
 
             // Update the linked list of pending clients
             match pending_info.next_pending.clone() {
@@ -496,16 +496,16 @@ hook_macros::hook! {
 
             ctx.raise_polled(&poll);
 
-            let client_address = ctx.global.ephemeral_address(rem_family, rem_protocol);
             if !addr.is_null() {
                 match &client_address {
-                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => 
-                        crate::encode_inet_address(addr, addrlen, &socket_addr),
+                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => {
+                        let address_buf = unsafe { slice::from_raw_parts_mut(addr as *mut u8, addrlen as usize) };
+                        crate::encode_inet_address(address_buf, socket_addr);
+                    }
                     TransportAddress::Unix(unix_addr) => 
                         crate::encode_unix_address(addr, addrlen, &unix_addr),
                 }
             }
-
 
             log::info!("server [{:?}] `accept()`ed pending client [{:?}]", server_addr, &client_address);
 
@@ -527,8 +527,10 @@ hook_macros::hook! {
 
             if !addr.is_null() {
                 match &connecting_info.local_addr {
-                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => 
-                        crate::encode_inet_address(addr, addrlen, &socket_addr),
+                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => {
+                        let address_buf = unsafe { slice::from_raw_parts_mut(addr as *mut u8, addrlen as usize) };
+                        crate::encode_inet_address(address_buf, socket_addr);
+                    }
                     TransportAddress::Unix(unix_addr) => 
                         crate::encode_unix_address(addr, addrlen, &unix_addr),
                 }
@@ -566,8 +568,10 @@ hook_macros::hook! {
             // Write the remote address of the connecting socket for the accept
             if !addr.is_null() {
                 match &connecting_info.local_addr {
-                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => 
-                        crate::encode_inet_address(addr, addrlen, &socket_addr),
+                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => {
+                        let address_buf = unsafe { slice::from_raw_parts_mut(addr as *mut u8, addrlen as usize) };
+                        crate::encode_inet_address(address_buf, socket_addr);
+                    }
                     TransportAddress::Unix(unix_addr) => 
                         crate::encode_unix_address(addr, addrlen, &unix_addr),
                 }
@@ -594,7 +598,7 @@ fn join_socket_pair(
 ) -> libc::c_int {
     let (server_addr, server_backend) = match ctx.global.sockets.get(&server_id).unwrap() {
         SocketState::Server(server_info) => (server_info.local_addr.clone(), server_info.backend.clone()),
-        _ => panic!("internal fizzle state"),
+        _ => unreachable!(),
     };
 
     let (client_addr, connect_backend) = match ctx.global.sockets.get_mut(&connecting_id).unwrap() {
@@ -649,7 +653,8 @@ fn join_socket_pair(
 
         *ctx.global.sockets.get_mut(&connecting_id).unwrap() =
             SocketState::Connected(ConnectedSocket {
-                rem_addr: server_addr,
+                local_addr: client_addr.clone(),
+                rem_addr: server_addr.clone(),
                 backend: connect_backend,
                 peer_closed: false,
             });
@@ -657,6 +662,7 @@ fn join_socket_pair(
         ctx.global
             .sockets
             .allocate(SocketState::Connected(ConnectedSocket {
+                local_addr: server_addr,
                 rem_addr: client_addr,
                 backend: accept_backend,
                 peer_closed: false,
@@ -666,6 +672,7 @@ fn join_socket_pair(
         // Convert the connecting socket into the accepted socket--we don't need two peered sockets.
         *ctx.global.sockets.get_mut(&connecting_id).unwrap() =
             SocketState::Connected(ConnectedSocket {
+                local_addr: server_addr,
                 rem_addr: client_addr,
                 backend: connect_backend,
                 peer_closed: false,
@@ -1307,8 +1314,10 @@ hook_macros::hook! {
         match ctx.global.sockets.get(&socket_id).unwrap() {
             SocketState::Connectionless(conn) => {
                 match &conn.local_addr {
-                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => 
-                        crate::encode_inet_address(addr, addrlen, &socket_addr),
+                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => {
+                        let address_buf = unsafe { slice::from_raw_parts_mut(addr as *mut u8, addrlen as usize) };
+                        crate::encode_inet_address(address_buf, socket_addr);
+                    }
                     TransportAddress::Unix(unix_addr) => 
                         crate::encode_unix_address(addr, addrlen, &unix_addr),
                 }
@@ -1319,16 +1328,20 @@ hook_macros::hook! {
                 };
 
                 match local_addr {
-                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => 
-                        crate::encode_inet_address(addr, addrlen, &socket_addr),
+                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => {
+                        let address_buf = unsafe { slice::from_raw_parts_mut(addr as *mut u8, addrlen as usize) };
+                        crate::encode_inet_address(address_buf, socket_addr);
+                    }
                     TransportAddress::Unix(unix_addr) => 
                         crate::encode_unix_address(addr, addrlen, &unix_addr),
                 }
             }
             SocketState::Server(conn) => {
                 match &conn.local_addr {
-                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => 
-                        crate::encode_inet_address(addr, addrlen, &socket_addr),
+                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => {
+                        let address_buf = unsafe { slice::from_raw_parts_mut(addr as *mut u8, addrlen as usize) };
+                        crate::encode_inet_address(address_buf, socket_addr);
+                    }
                     TransportAddress::Unix(unix_addr) => 
                         crate::encode_unix_address(addr, addrlen, &unix_addr),
                 }
@@ -1336,8 +1349,10 @@ hook_macros::hook! {
             SocketState::PendingConnection(_) => unreachable!(),
             SocketState::Connecting(conn) => {
                 match &conn.local_addr {
-                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => 
-                        crate::encode_inet_address(addr, addrlen, &socket_addr),
+                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => {
+                        let address_buf = unsafe { slice::from_raw_parts_mut(addr as *mut u8, addrlen as usize) };
+                        crate::encode_inet_address(address_buf, socket_addr);
+                    }
                     TransportAddress::Unix(unix_addr) => 
                         crate::encode_unix_address(addr, addrlen, &unix_addr),
                 }

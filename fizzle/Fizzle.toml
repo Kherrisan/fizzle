@@ -6,9 +6,20 @@
 
 # The "io" table lists I/O endpoints and corresponding actions that should be taken for each.
 [io]
-"sctp-client:127.0.0.2:36412" = "fuzz"
+#"sctp-client:127.0.0.2:36412" = "fuzz"
 # stdio = "fuzz" # Consume all input, produce fuzzing data as output
 "file:/dev/null" = "nullsink" # Consume all input, produce repeating 0s
+
+# For Magma only
+"tcp-server:192.168.61.132:3868" = "sink"
+
+[io."tcp-client:127.0.0.2:36412"]
+method = "plugin" # The means of passing I/O on the device
+when = "perround"
+module = "fizzle-plugin-fuzz-s1ap" # The name of the cargo crate to source the plugin from
+plugin = "S1apFuzzClient" # The name of the `FizzlePlugin` implementation to be used
+streams = 1 # Establishes 5 client connections with the given server.
+
 #"file:./myconfig" = "feedback" # Output whatever is given as input
 #"udp-server:127.0.0.1:53" = "passthrough" # Pass on to an actual network service (warning: unstable)
 
@@ -20,11 +31,7 @@
 #module = "fizzle-ngap" # The name of the cargo crate to source the plugin from
 #plugin = "NgapServer" # The name of the `FizzlePlugin` implementation to be used
 
-#[io."tcp-client:127.0.0.1:80"]
-#method = "plugin" # The means of passing I/O on the device
-#module = "fizzle-http" # The name of the cargo crate to source the plugin from
-#plugin = "HttpClient" # The name of the `FizzlePlugin` implementation to be used
-#streams = 5 # Establishes 5 client connections with the given server.
+
 
 #[io."tcp-client:127.0.0.1:80".config]
 

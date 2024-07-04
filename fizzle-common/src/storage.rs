@@ -135,11 +135,11 @@ impl<const N: usize> Buffer<N> {
 
     pub fn write(&mut self, buf: &[u8]) -> usize {
         let amount = cmp::min(N - self.data_end, buf.len());
-        unsafe {
-            let data_ptr = (self.data.as_mut_ptr() as *mut u8).add(self.data_end);
-            let buf_ptr = buf.as_ptr();
-            ptr::copy_nonoverlapping(buf_ptr, data_ptr, amount);
+
+        for (dst, src) in self.data[self.data_end..].iter_mut().zip(buf) {
+            dst.write(*src);
         }
+
         self.data_end += amount;
         amount
     }
@@ -151,11 +151,11 @@ impl<const N: usize> Buffer<N> {
 
     pub fn read(&mut self, buf: &mut [u8]) -> usize {
         let amount = cmp::min(self.data_end - self.data_start, buf.len());
-        unsafe {
-            let data_ptr = (self.data.as_mut_ptr() as *mut u8).add(self.data_start);
-            let buf_ptr = buf.as_ptr();
-            ptr::copy_nonoverlapping(buf_ptr, data_ptr, amount);
+
+        for (dst, src) in buf.iter_mut().zip(&self.data[self.data_start..self.data_end]) {
+            *dst = unsafe { src.assume_init() };
         }
+        
         if amount == self.data_end - self.data_start {
             self.data_start = 0;
             self.data_end = 0;
@@ -334,6 +334,7 @@ impl<K: ArenaKey<Value = V>, V: Sized, const N: usize> KeyedArena<K, V, N> {
         self.max_key = cmp::max(self.max_key, idx);
 
         let item = self.inner[idx].get_mut();
+        debug_assert!(item.ref_cnt == 0);
         item.ref_cnt = 1;
         item.value.write(value);
         
@@ -352,6 +353,15 @@ impl<K: ArenaKey<Value = V>, V: Sized, const N: usize> KeyedArena<K, V, N> {
         }
     }
 
+    pub fn upref(&mut self, key: &K) {
+        let idx: usize = (*key).into();
+        assert!(idx < self.inner.len());
+
+        let item = self.inner[idx].get_mut();
+        assert!(item.ref_cnt > 0);
+        item.ref_cnt += 1;
+    }
+
     /// Decrements the reference count for the given key, returning the new reference count.
     pub fn downref(&mut self, key: &K) -> usize {
         let idx: usize = (*key).into();
@@ -367,15 +377,6 @@ impl<K: ArenaKey<Value = V>, V: Sized, const N: usize> KeyedArena<K, V, N> {
         }
 
         item.ref_cnt as usize
-    }
-
-    pub fn upref(&mut self, key: &K) {
-        let idx: usize = (*key).into();
-        assert!(idx < self.inner.len());
-
-        let item = self.inner[idx].get_mut();
-        assert!(item.ref_cnt > 0);
-        item.ref_cnt += 1;
     }
 
     /// Retrieves the next available key from the value index.
@@ -437,7 +438,7 @@ impl<V: Sized + Clone> Clone for ArenaItem<V> {
 
         Self {
             value,
-            ref_cnt: self.ref_cnt.clone()
+            ref_cnt: self.ref_cnt
         }
     }
 }
@@ -605,6 +606,7 @@ impl<K: ArenaKey> Drop for Rc<K> {
     fn drop(&mut self) {
         unsafe {
             let item = &mut (*(*self.ptr).get());
+            assert!((*(*self.ptr).get()).ref_cnt > 0);
             item.ref_cnt -= 1;
             if item.ref_cnt == 0 {
                 drop(item.value.assume_init_read());
