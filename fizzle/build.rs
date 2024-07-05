@@ -152,13 +152,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let final_tokens = quote::quote! {
         #[allow(unused)]
-        use super::plugins::PluginModules;
-        #[allow(unused)]
         use fizzle_plugin::IoEndpointVariant;
         #[allow(unused)]
         use fizzle_plugin::{FizzlePlugin, FizzlePluginObject};
         #[allow(unused)]
-        use crate::state::{IoEmulationType, PluginConfigEndpoint, PluginId, PluginModuleId};
+        use crate::state::identifiers::{PluginId, PluginModuleId};
+        #[allow(unused)]
+        use crate::state::plugins::{IoEmulationType, PluginModules, PluginConfigEndpoint};
         #[allow(unused)]
         use std::path::PathBuf;
         #[allow(unused)]
@@ -172,16 +172,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             #plugins_impl
         }
 
-        pub fn populate_onstartup_processes(processes: &mut Vec<std::process::Command>) {
+        pub fn populate_onstartup_processes(#[allow(unused)] processes: &mut Vec<std::process::Command>) {
             #onstartup_process_impl
         }
 
-        pub fn populate_onready_processes(processes: &mut Vec<std::process::Command>) {
+        pub fn populate_onready_processes(#[allow(unused)] processes: &mut Vec<std::process::Command>) {
             #onready_process_impl
         }
     };
-    fs::write("src/state/comptime.rs", final_tokens.to_string())?;
-    Command::new("rustfmt").arg("src/state/comptime.rs").output()?;
+    fs::write("src/comptime.rs", final_tokens.to_string())?;
+    Command::new("rustfmt").arg("src/comptime.rs").output()?;
 
     Ok(())
 }

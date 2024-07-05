@@ -6,20 +6,22 @@ use fxhash::FxBuildHasher;
 use crate::state::backend::{ConnectedBackend, ConnectionlessBackend, FileBackend, StdioBackend};
 use crate::state::fd::{FdInfo, FdResource};
 use crate::state::identifiers::{DescriptorId, PolledId};
+use crate::state::singleton::FizzleSingleton;
 use crate::state::{
-    EpollDirection, EpollInfo, EpollInterest, FizzState, PolledStatus, SocketState,
+    EpollDirection, EpollInfo, EpollInterest, PolledStatus, SocketState,
 };
-use crate::{hook_macros, state};
+use crate::hook_macros;
 
 /// Polled for read() operations
-pub fn fd_to_pollin(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
-    let Some(fd_info) = ctx.local.fds.get(&DescriptorId::new(fd)) else {
+pub fn fd_to_pollin(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
+    let state = ctx.acquire();
+    let Some(fd_info) = state.local.fds.get(&DescriptorId::new(fd)) else {
         return PolledStatus::BadFd;
     };
     match &fd_info.resource {
         FdResource::Epoll(_) => panic!("polling an epoll descriptor not supported"),
         FdResource::EventFd(eventfd_id) => PolledStatus::Pollable(
-            ctx.global
+            state.global
                 .event_fds
                 .get(&eventfd_id)
                 .unwrap()
@@ -28,14 +30,14 @@ pub fn fd_to_pollin(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
         ),
         FdResource::Directory(_) => PolledStatus::NotPollable,
         FdResource::File(file_id) => {
-            match ctx.global.files.get(&file_id).unwrap() {
+            match state.global.files.get(&file_id).unwrap() {
                 FileBackend::Passthrough => PolledStatus::ImmediatelyPollable, // TODO: should we `poll()` here instead?
                 FileBackend::Peered(_) => unreachable!(),
                 FileBackend::Feedback(feedback) => {
                     PolledStatus::Pollable(feedback.read_polled.clone())
                 }
                 FileBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                    ctx.global
+                    state.global
                         .plugins
                         .get(plugin_id)
                         .unwrap()
@@ -45,22 +47,22 @@ pub fn fd_to_pollin(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
                 FileBackend::Sink => PolledStatus::NotPollable,
                 FileBackend::NullSink => PolledStatus::ImmediatelyPollable,
                 FileBackend::Fuzz(fuzz_endpoint_id) => PolledStatus::Pollable(
-                    ctx.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().read_polled.clone()
+                    state.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().read_polled.clone()
                 ),
             }
         }
         FdResource::MessageQueue(_) => todo!(),
         FdResource::Pipe(pipe_id) => {
-            PolledStatus::Pollable(ctx.global.pipes.get(&pipe_id).unwrap().read_polled.clone())
+            PolledStatus::Pollable(state.global.pipes.get(&pipe_id).unwrap().read_polled.clone())
         }
-        FdResource::Stdin => match &ctx.global.stdio {
+        FdResource::Stdin => match &state.global.stdio {
             StdioBackend::Passthrough => unreachable!(),
             StdioBackend::Peered(_) => unreachable!(),
             StdioBackend::Feedback(feedback) => {
                 PolledStatus::Pollable(feedback.read_polled.clone())
             }
             StdioBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                ctx.global
+                state.global
                     .plugins
                     .get(&plugin_id)
                     .unwrap()
@@ -70,12 +72,12 @@ pub fn fd_to_pollin(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
             StdioBackend::Sink => PolledStatus::NotPollable,
             StdioBackend::NullSink => PolledStatus::ImmediatelyPollable,
             StdioBackend::Fuzz(fuzz_endpoint_id) => PolledStatus::Pollable(
-                ctx.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().read_polled.clone()
+                state.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().read_polled.clone()
             ),
         },
         FdResource::Stdout => PolledStatus::NotPollable,
         FdResource::Stderr => PolledStatus::NotPollable,
-        FdResource::Socket(socket_id) => match ctx.global.sockets.get(&socket_id).unwrap() {
+        FdResource::Socket(socket_id) => match state.global.sockets.get(&socket_id).unwrap() {
             SocketState::Connectionless(connectionless) => match &connectionless.backend {
                 ConnectionlessBackend::Passthrough => unreachable!(),
                 ConnectionlessBackend::Peered(regular) => {
@@ -85,7 +87,7 @@ pub fn fd_to_pollin(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
                     PolledStatus::Pollable(feedback.read_polled.clone())
                 }
                 ConnectionlessBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                    ctx.global
+                    state.global
                         .plugins
                         .get(&plugin_id)
                         .unwrap()
@@ -95,7 +97,7 @@ pub fn fd_to_pollin(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
                 ConnectionlessBackend::Sink => PolledStatus::NotPollable,
                 ConnectionlessBackend::NullSink => PolledStatus::ImmediatelyPollable,
                 ConnectionlessBackend::Fuzz(fuzz_endpoint_id) => PolledStatus::Pollable(
-                    ctx.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().read_polled.clone()
+                    state.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().read_polled.clone()
                 ),
             },
             SocketState::Unassociated(_) => PolledStatus::NotPollable,
@@ -111,7 +113,7 @@ pub fn fd_to_pollin(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
                     PolledStatus::Pollable(feedback.read_polled.clone())
                 }
                 ConnectedBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                    ctx.global
+                    state.global
                         .plugins
                         .get(&plugin_id)
                         .unwrap()
@@ -121,21 +123,22 @@ pub fn fd_to_pollin(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
                 ConnectedBackend::Sink => PolledStatus::NotPollable,
                 ConnectedBackend::NullSink => PolledStatus::ImmediatelyPollable,
                 ConnectedBackend::Fuzz(fuzz_endpoint_id) => PolledStatus::Pollable(
-                    ctx.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().read_polled.clone()
+                    state.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().read_polled.clone()
                 ),
             },
         },
     }
 }
 
-pub fn fd_to_pollout(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
-    let Some(fd_info) = ctx.local.fds.get(&DescriptorId::new(fd)) else {
+pub fn fd_to_pollout(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
+    let state = ctx.acquire();
+    let Some(fd_info) = state.local.fds.get(&DescriptorId::new(fd)) else {
         return PolledStatus::BadFd;
     };
     match &fd_info.resource {
         FdResource::Epoll(_) => panic!("polling an epoll descriptor not supported"),
         FdResource::EventFd(eventfd_id) => PolledStatus::Pollable(
-            ctx.global
+            state.global
                 .event_fds
                 .get(&eventfd_id)
                 .unwrap()
@@ -144,14 +147,14 @@ pub fn fd_to_pollout(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
         ),
         FdResource::Directory(_) => PolledStatus::NotPollable,
         FdResource::File(file_id) => {
-            match ctx.global.files.get(&file_id).unwrap() {
+            match state.global.files.get(&file_id).unwrap() {
                 FileBackend::Passthrough => PolledStatus::ImmediatelyPollable, // TODO: should we `poll()` here instead?
                 FileBackend::Peered(_) => unreachable!(),
                 FileBackend::Feedback(feedback) => {
                     PolledStatus::Pollable(feedback.write_polled.clone())
                 }
                 FileBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                    ctx.global
+                    state.global
                         .plugins
                         .get(&plugin_id)
                         .unwrap()
@@ -165,21 +168,21 @@ pub fn fd_to_pollout(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
         }
         FdResource::MessageQueue(_) => todo!(),
         FdResource::Pipe(pipe_id) => {
-            if let Some(peer_id) = &ctx.global.pipes.get(&pipe_id).unwrap().peer {
-                PolledStatus::Pollable(ctx.global.pipes.get(&peer_id).unwrap().write_polled.clone())
+            if let Some(peer_id) = &state.global.pipes.get(&pipe_id).unwrap().peer {
+                PolledStatus::Pollable(state.global.pipes.get(&peer_id).unwrap().write_polled.clone())
             } else {
                 PolledStatus::ImmediatelyPollable
             }
         }
         FdResource::Stdin => PolledStatus::NotPollable,
-        FdResource::Stdout => match &ctx.global.stdio {
+        FdResource::Stdout => match &state.global.stdio {
             StdioBackend::Passthrough => unreachable!(),
             StdioBackend::Peered(_) => unreachable!(),
             StdioBackend::Feedback(feedback) => {
                 PolledStatus::Pollable(feedback.write_polled.clone())
             }
             StdioBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                ctx.global
+                state.global
                     .plugins
                     .get(&plugin_id)
                     .unwrap()
@@ -191,7 +194,7 @@ pub fn fd_to_pollout(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
             StdioBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
         },
         FdResource::Stderr => PolledStatus::NotPollable,
-        FdResource::Socket(socket_id) => match ctx.global.sockets.get(&socket_id).unwrap() {
+        FdResource::Socket(socket_id) => match state.global.sockets.get(&socket_id).unwrap() {
             SocketState::Connectionless(connectionless) => match &connectionless.backend {
                 ConnectionlessBackend::Passthrough => unreachable!(),
                 ConnectionlessBackend::Peered(_) => PolledStatus::ImmediatelyPollable, // A connectionless socket can always `send()` TODO: ??
@@ -199,7 +202,7 @@ pub fn fd_to_pollout(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
                     PolledStatus::Pollable(feedback.write_polled.clone())
                 }
                 ConnectionlessBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                    ctx.global
+                    state.global
                         .plugins
                         .get(&plugin_id)
                         .unwrap()
@@ -220,7 +223,7 @@ pub fn fd_to_pollout(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
                 ConnectedBackend::Passthrough => unreachable!(),
                 ConnectedBackend::Peered(peered) => {
                     if let Some(peer_id) = &peered.peer {
-                        let SocketState::Connected(conn) = ctx.global.sockets.get(peer_id).unwrap()
+                        let SocketState::Connected(conn) = state.global.sockets.get(peer_id).unwrap()
                         else {
                             panic!()
                         };
@@ -239,7 +242,7 @@ pub fn fd_to_pollout(ctx: &mut FizzState, fd: RawFd) -> PolledStatus {
                     PolledStatus::Pollable(feedback.write_polled.clone())
                 }
                 ConnectedBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                    ctx.global
+                    state.global
                         .plugins
                         .get(&plugin_id)
                         .unwrap()
@@ -262,8 +265,7 @@ hook_macros::hook! {
         writefds: *mut libc::fd_set,
         exceptfds: *mut libc::fd_set,
         timeout: *const libc::timeval
-    ) -> libc::c_int => fizzle_select(ctx) {
-        drop(ctx);
+    ) -> libc::c_int => fizzle_select(_ctx) {
         let tmo = libc::timespec {
             tv_sec: (*timeout).tv_sec,
             tv_nsec: (*timeout).tv_usec * 1000,
@@ -282,6 +284,7 @@ hook_macros::hook! {
         timeout: *const libc::timespec,
         sigmask: *const libc::sigset_t
     ) -> libc::c_int => fizzle_pselect(ctx) {
+        let state = ctx.acquire();
         
         if !sigmask.is_null() {
             crate::report_strict_failure("fizzle internal error--sigmask unsupported for ppoll");
@@ -295,16 +298,20 @@ hook_macros::hook! {
         let mut read_pollers = HashMap::with_hasher(FxBuildHasher::default());
         let mut write_pollers = HashMap::with_hasher(FxBuildHasher::default());
         
+        drop(state);
+
         for fd in 0..nfds {
-            if!readfds.is_null() && libc::FD_ISSET(fd, readfds) {
+            if !readfds.is_null() && libc::FD_ISSET(fd, readfds) {
                 match fd_to_pollin(&mut ctx, fd) {
                     PolledStatus::Pollable(polled_id) => {
-                        if !ctx.polled_is_ready(&polled_id) {
+                        let mut state = ctx.acquire();
+                        if !state.polled_is_ready(&polled_id) {
                             libc::FD_CLR(fd, readfds);
                             read_pollers.insert(polled_id, fd);
                         } else {
                             total_ready += 1;
                         }
+                        drop(state);
                     },
                     PolledStatus::BadFd => {
                         *libc::__errno_location() = libc::EBADF;
@@ -314,15 +321,19 @@ hook_macros::hook! {
                     PolledStatus::ImmediatelyPollable => total_ready+=1,
 
                     }
-            }if !writefds.is_null() && libc::FD_ISSET(fd, writefds) {
+            }
+            
+            if !writefds.is_null() && libc::FD_ISSET(fd, writefds) {
                 match fd_to_pollout(&mut ctx, fd){
                     PolledStatus::Pollable(polled_id) => {
-                        if!ctx.polled_is_ready(&polled_id){
+                        let mut state = ctx.acquire(); 
+                        if !state.polled_is_ready(&polled_id){
                             libc::FD_CLR(fd, writefds);
                             write_pollers.insert(polled_id, fd);
-                        }else {
+                        } else {
                             total_ready += 1;
                         }
+                        drop(state);
                     },
                     PolledStatus::BadFd => {
                         *libc::__errno_location() = libc::EBADF;
@@ -332,32 +343,36 @@ hook_macros::hook! {
                     PolledStatus::ImmediatelyPollable => total_ready += 1,
                 }
             }
-        }if total_ready > 0 || (!timeout.is_null() && (*timeout).tv_sec == 0 && (*timeout).tv_nsec == 0) {
+        }
+
+        let mut state = ctx.acquire();
+        
+        if total_ready > 0 || (!timeout.is_null() && (*timeout).tv_sec == 0 && (*timeout).tv_nsec == 0) {
             return total_ready
         }
 
-        let poller_id = ctx.new_poller();
+        let poller_id = state.new_poller();
 
         let all_pollers: HashMap<Rc<PolledId>, RawFd, FxBuildHasher> = read_pollers.clone().into_iter().chain(write_pollers.clone()).collect();
         for (polled_id, _) in all_pollers {
-            ctx.register_poller(poller_id.clone(), polled_id.clone());
+            state.register_poller(poller_id.clone(), polled_id.clone());
         }
 
-        drop(ctx);
-        state::FIZZLE_STATE.yield_thread();
-        let mut ctx = state::FIZZLE_STATE.acquire();
+        drop(state);
+        ctx.yield_thread();
+        let mut state = ctx.acquire();
 
-        ctx.delete_poller(poller_id);
+        state.delete_poller(poller_id);
         
         for (polled_id, fd) in read_pollers {
-            if ctx.polled_is_ready(&polled_id) {
+            if state.polled_is_ready(&polled_id) {
                 libc::FD_SET(fd, readfds);
                 total_ready += 1;
             }
         }
         
         for (polled_id, fd) in write_pollers {
-            if ctx.polled_is_ready(&polled_id) {
+            if state.polled_is_ready(&polled_id) {
                 libc::FD_SET(fd, writefds);
                 total_ready += 1;
             }
@@ -372,9 +387,7 @@ hook_macros::hook! {
         fds: *mut libc::pollfd,
         nfds: libc::nfds_t,
         timeout: libc::c_int
-    ) -> libc::c_int => fizzle_poll(ctx) {
-
-        drop(ctx);
+    ) -> libc::c_int => fizzle_poll(_ctx) {
         if timeout < 0 {
             fizzle_ppoll(fds, nfds, ptr::null(), ptr::null())
         } else {
@@ -395,6 +408,7 @@ hook_macros::hook! {
         tmo_p: *const libc::timespec,
         sigmask: *const libc::sigset_t
     ) -> libc::c_int => fizzle_ppoll(ctx) {
+        let state = ctx.acquire();
 
         // TODO: we just ignore the signal mask for now
         // this may produce undefined behavior
@@ -409,14 +423,17 @@ hook_macros::hook! {
         let mut read_pollers = HashMap::with_hasher(FxBuildHasher::default());
         let mut write_pollers = HashMap::with_hasher(FxBuildHasher::default());
 
+        drop(state);
+
         for i in 0..nfds as usize {
             let pollfd = &mut (*fds.add(i));
             pollfd.revents = 0;
             let mut is_ready = false;
+
             if (pollfd.events & libc::POLLIN) != 0 {
                 match fd_to_pollin(&mut ctx, pollfd.fd) {
                     PolledStatus::Pollable(polled_id) => {
-                        if !ctx.polled_is_ready(&polled_id) {
+                        if !ctx.acquire().polled_is_ready(&polled_id) {
                             read_pollers.insert(polled_id, i);
                         } else {
                             pollfd.revents |= libc::POLLIN;
@@ -438,7 +455,7 @@ hook_macros::hook! {
             if (pollfd.events & libc::POLLOUT) != 0 {
                 match fd_to_pollout(&mut ctx, pollfd.fd) {
                     PolledStatus::Pollable(polled_id) => {
-                        if !ctx.polled_is_ready(&polled_id) {
+                        if !ctx.acquire().polled_is_ready(&polled_id) {
                             write_pollers.insert(polled_id, i);
                         } else {
                             pollfd.revents |= libc::POLLOUT;
@@ -462,33 +479,35 @@ hook_macros::hook! {
             }
         }
 
+        let mut state = ctx.acquire();
+
         // TODO: current behavior is to wait indefinitely if there is any timeout
         if total_ready > 0 || (!tmo_p.is_null() && (*tmo_p).tv_sec == 0 && (*tmo_p).tv_nsec == 0) {
             return total_ready
         }
 
-        let poller_id = ctx.new_poller();
+        let poller_id = state.new_poller();
 
         let all_pollers: HashMap<Rc<PolledId>, usize, FxBuildHasher> = read_pollers.clone().into_iter().chain(write_pollers.clone()).collect();
         for (polled_id, _) in all_pollers {
-            ctx.register_poller(poller_id.clone(), polled_id);
+            state.register_poller(poller_id.clone(), polled_id);
         }
 
-        drop(ctx);
-        state::FIZZLE_STATE.yield_thread();
-        let mut ctx = state::FIZZLE_STATE.acquire();
+        drop(state);
+        ctx.yield_thread();
+        let mut state = ctx.acquire();
 
-        ctx.delete_poller(poller_id);
+        state.delete_poller(poller_id);
 
         for (polled_id, offset) in read_pollers {
-            if ctx.polled_is_ready(&polled_id) {
+            if state.polled_is_ready(&polled_id) {
                 (*fds.add(offset)).revents |= libc::POLLIN;
                 total_ready += 1;
             }
         }
 
         for (polled_id, offset) in write_pollers {
-            if ctx.polled_is_ready(&polled_id) {
+            if state.polled_is_ready(&polled_id) {
                 (*fds.add(offset)).revents |= libc::POLLOUT;
                 total_ready += 1;
             }
@@ -501,8 +520,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn epoll_create(
         _size: libc::c_int
-    ) -> libc::c_int => fizzle_epoll_create(ctx) {
-        drop(ctx);
+    ) -> libc::c_int => fizzle_epoll_create(_ctx) {
         fizzle_epoll_create1(0)
     }
 }
@@ -511,10 +529,11 @@ hook_macros::hook! {
     unsafe fn epoll_create1(
         flags: libc::c_int
     ) -> libc::c_int => fizzle_epoll_create1(ctx) {
+        let mut state = ctx.acquire();
 
         let fd = crate::alias_fd_create();
-        let epoll_id = ctx.global.epolls.allocate(EpollInfo { interests: Default::default() }).unwrap();
-        ctx.local.fds.allocate_with_key(DescriptorId::new(fd), FdInfo {
+        let epoll_id = state.global.epolls.allocate(EpollInfo { interests: Default::default() }).unwrap();
+        state.local.fds.allocate_with_key(DescriptorId::new(fd), FdInfo {
             close_on_exec: (flags & libc::EPOLL_CLOEXEC) != 0,
             nonblocking: false,
             is_passthrough: false,
@@ -532,8 +551,9 @@ hook_macros::hook! {
         fd: libc::c_int,
         event: *mut libc::epoll_event
     ) -> libc::c_int => fizzle_epoll_ctl(ctx) {
+        let mut state = ctx.acquire();
 
-        let Some(epfd_info) = ctx.local.fds.get(&DescriptorId::new(epfd)) else {
+        let Some(epfd_info) = state.local.fds.get(&DescriptorId::new(epfd)) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
         };
@@ -543,7 +563,7 @@ hook_macros::hook! {
             return -1
         };
 
-        let Some(_) = ctx.local.fds.get(&DescriptorId::new(fd)) else {
+        let Some(_) = state.local.fds.get(&DescriptorId::new(fd)) else {
             log::error!("`epoll_ctl` fd {} not found (ignoring...)", fd);
             return 0 // TODO: fix fopen rather than this workaround
             //*libc::__errno_location() = libc::EBADF;
@@ -555,7 +575,7 @@ hook_macros::hook! {
             return -1
         }
 
-        let epoll_info = ctx.global.epolls.get_mut(&epoll_id).unwrap();
+        let epoll_info = state.global.epolls.get_mut(&epoll_id).unwrap();
 
         match op {
             libc::EPOLL_CTL_ADD => {
@@ -569,6 +589,8 @@ hook_macros::hook! {
                 let mut read_status = None;
                 let mut write_status = None;
 
+                drop(state);
+
                 if ((*event).events & libc::EPOLLIN as u32) != 0 {
                     read_status = Some(fd_to_pollin(&mut ctx, fd));
                 }
@@ -577,6 +599,8 @@ hook_macros::hook! {
                     write_status = Some(fd_to_pollout(&mut ctx, fd));
                 }
 
+                let mut state = ctx.acquire();
+
                 let direction = match (read_status, write_status) {
                     (None, None) => EpollDirection::None,
                     (Some(status), None) => EpollDirection::Read(status),
@@ -584,7 +608,7 @@ hook_macros::hook! {
                     (Some(read_status), Some(write_status)) => EpollDirection::Both(read_status, write_status),
                 };
 
-                let epoll_info = ctx.global.epolls.get_mut(&epoll_id).unwrap();
+                let epoll_info = state.global.epolls.get_mut(&epoll_id).unwrap();
                 epoll_info.interests.insert(descriptor_id, EpollInterest {
                     direction: direction.clone(),
                     user_data: (*event).u64,
@@ -613,6 +637,8 @@ hook_macros::hook! {
                 let mut read_status = None;
                 let mut write_status = None;
 
+                drop(state);
+
                 if ((*event).events & libc::EPOLLIN as u32) != 0 {
                     read_status = Some(fd_to_pollin(&mut ctx, fd));
                 }
@@ -621,6 +647,8 @@ hook_macros::hook! {
                     write_status = Some(fd_to_pollout(&mut ctx, fd));
                 }
 
+                let mut state = ctx.acquire();
+
                 let direction = match (read_status, write_status) {
                     (None, None) => EpollDirection::None,
                     (Some(status), None) => EpollDirection::Read(status),
@@ -628,7 +656,7 @@ hook_macros::hook! {
                     (Some(read_status), Some(write_status)) => EpollDirection::Both(read_status, write_status),
                 };
 
-                let epoll_info = ctx.global.epolls.get_mut(&epoll_id).unwrap();
+                let epoll_info = state.global.epolls.get_mut(&epoll_id).unwrap();
                 let Some(interest) = epoll_info.interests.get_mut(&DescriptorId::new(fd)) else {
                     *libc::__errno_location() = libc::ENOENT;
                     return -1
@@ -654,8 +682,7 @@ hook_macros::hook! {
         events: *mut libc::epoll_event,
         maxevents: libc::c_int,
         timeout: libc::c_int
-    ) -> libc::c_int => fizzle_epoll_wait(ctx) {
-        drop(ctx);
+    ) -> libc::c_int => fizzle_epoll_wait(_ctx) {
         if timeout < 0 {
             fizzle_epoll_pwait2(epfd, events, maxevents, ptr::null(), ptr::null())
         } else {
@@ -676,8 +703,7 @@ hook_macros::hook! {
         maxevents: libc::c_int,
         timeout: libc::c_int,
         sigmask: *const libc::sigset_t
-    ) -> libc::c_int => fizzle_epoll_pwait(ctx) {
-        drop(ctx);
+    ) -> libc::c_int => fizzle_epoll_pwait(_ctx) {
         if timeout < 0 {
             fizzle_epoll_pwait2(epfd, events, maxevents, ptr::null(), sigmask)
         } else {
@@ -699,12 +725,13 @@ hook_macros::hook! {
         timeout: *const libc::timespec,
         sigmask: *const libc::sigset_t
     ) -> libc::c_int => fizzle_epoll_pwait2(ctx) {
+        let mut state = ctx.acquire();
 
         if !sigmask.is_null() {
             crate::report_strict_failure("sigmask unsupported in epoll_pwait or epoll_pwait2");
         }
 
-        let Some(epfd_info) = ctx.local.fds.get(&DescriptorId::new(epfd)) else {
+        let Some(epfd_info) = state.local.fds.get(&DescriptorId::new(epfd)) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
         };
@@ -716,9 +743,9 @@ hook_macros::hook! {
 
         let mut total_ready = 0;
 
-        let poller_id = ctx.new_poller();
+        let poller_id = state.new_poller();
 
-        let epoll_info = ctx.global.epolls.get(&epoll_id).unwrap();
+        let epoll_info = state.global.epolls.get(&epoll_id).unwrap();
         for interest in epoll_info.interests.clone().values() {
             match &interest.direction {
                 EpollDirection::None => (),
@@ -733,7 +760,7 @@ hook_macros::hook! {
                     }
                     total_ready += 1;
                 },
-                EpollDirection::Read(PolledStatus::Pollable(polled_id)) => if ctx.polled_is_ready(&polled_id) {
+                EpollDirection::Read(PolledStatus::Pollable(polled_id)) => if state.polled_is_ready(&polled_id) {
                     if total_ready < maxevents as usize {
                         let event = &mut (*events.add(total_ready));
                         event.events = libc::EPOLLIN as u32;
@@ -741,7 +768,7 @@ hook_macros::hook! {
                     }
                     total_ready += 1;
                 } else if total_ready == 0 {
-                    ctx.register_poller(poller_id.clone(), polled_id.clone());
+                    state.register_poller(poller_id.clone(), polled_id.clone());
                 }
                 EpollDirection::Write(PolledStatus::NotPollable) => (),
                 EpollDirection::Write(PolledStatus::BadFd) => unreachable!(),
@@ -753,7 +780,7 @@ hook_macros::hook! {
                     }
                     total_ready += 1;
                 },
-                EpollDirection::Write(PolledStatus::Pollable(polled_id)) => if ctx.polled_is_ready(&polled_id) {
+                EpollDirection::Write(PolledStatus::Pollable(polled_id)) => if state.polled_is_ready(&polled_id) {
                     if total_ready < maxevents as usize {
                         let event = &mut (*events.add(total_ready));
                         event.events = libc::EPOLLOUT as u32;
@@ -761,7 +788,7 @@ hook_macros::hook! {
                     }
                     total_ready += 1;
                 } else if total_ready == 0 {
-                    ctx.register_poller(poller_id.clone(), polled_id.clone());
+                    state.register_poller(poller_id.clone(), polled_id.clone());
                 }
                 EpollDirection::Both(read_status, write_status) => {
                     let event = &mut (*events.add(total_ready));
@@ -778,13 +805,13 @@ hook_macros::hook! {
                             }
                             is_ready = true;
                         }
-                        PolledStatus::Pollable(polled_id) => if ctx.polled_is_ready(&polled_id) {
+                        PolledStatus::Pollable(polled_id) => if state.polled_is_ready(&polled_id) {
                             if total_ready < maxevents as usize {
                                 event.events |= libc::EPOLLIN as u32;
                             }
                             is_ready = true;
                         } else if total_ready == 0 {
-                            ctx.register_poller(poller_id.clone(), polled_id.clone());
+                            state.register_poller(poller_id.clone(), polled_id.clone());
                         }
                     }
 
@@ -798,14 +825,14 @@ hook_macros::hook! {
                             }
                             is_ready = true;
                         },
-                        PolledStatus::Pollable(polled_id) => if ctx.polled_is_ready(&polled_id) {
+                        PolledStatus::Pollable(polled_id) => if state.polled_is_ready(&polled_id) {
                             if total_ready < maxevents as usize {
                                 event.events |= libc::EPOLLOUT as u32;
                                 event.u64 = interest.user_data;
                             }
                             is_ready = true;
                         } else if total_ready == 0 {
-                            ctx.register_poller(poller_id.clone(), polled_id.clone());
+                            state.register_poller(poller_id.clone(), polled_id.clone());
                         }
                     }
 
@@ -817,24 +844,24 @@ hook_macros::hook! {
         }
 
         if total_ready != 0 || (!timeout.is_null() && (*timeout).tv_sec == 0 && (*timeout).tv_nsec == 0) {
-            ctx.delete_poller(poller_id);
+            state.delete_poller(poller_id);
             return total_ready as libc::c_int
         }
 
-        drop(ctx);
-        state::FIZZLE_STATE.yield_thread();
-        let mut ctx = state::FIZZLE_STATE.acquire();
+        drop(state);
+        ctx.yield_thread();
+        let mut state = ctx.acquire();
 
         // It's unfortunate that we have to delete the poller each time.
         // This is a worst-case O(m*n) operation, though most times m=1 so it isn't unacceptable performance per se.
         // The issue is that multiple threads could `epoll_wait` on the same epoll fd, which would lead to weird
         // behavior if we kept the poller saved between calls.
-        ctx.delete_poller(poller_id);
+        state.delete_poller(poller_id);
 
-        let epoll_info = ctx.global.epolls.get(&epoll_id).unwrap();
+        let epoll_info = state.global.epolls.get(&epoll_id).unwrap();
         for interest in epoll_info.interests.clone().values() {
             match &interest.direction {
-                EpollDirection::Read(PolledStatus::Pollable(polled_id)) => if ctx.polled_is_ready(&polled_id) {
+                EpollDirection::Read(PolledStatus::Pollable(polled_id)) => if state.polled_is_ready(&polled_id) {
                     if total_ready < maxevents as usize {
                         let event = &mut (*events.add(total_ready));
                         event.events = libc::EPOLLIN as u32;
@@ -843,7 +870,7 @@ hook_macros::hook! {
                     total_ready += 1;
                 }
                 EpollDirection::Read(_) => (),
-                EpollDirection::Write(PolledStatus::Pollable(polled_id)) => if ctx.polled_is_ready(&polled_id) {
+                EpollDirection::Write(PolledStatus::Pollable(polled_id)) => if state.polled_is_ready(&polled_id) {
                     if total_ready < maxevents as usize {
                         let event = &mut (*events.add(total_ready));
                         event.events = libc::EPOLLOUT as u32;
@@ -859,7 +886,7 @@ hook_macros::hook! {
                     event.u64 = interest.user_data;
 
                     if let PolledStatus::Pollable(polled_id) = read_status {
-                        if ctx.polled_is_ready(&polled_id) {
+                        if state.polled_is_ready(&polled_id) {
                             if total_ready < maxevents as usize {
                                 event.events |= libc::EPOLLIN as u32;
                             }
@@ -868,7 +895,7 @@ hook_macros::hook! {
                     }
 
                     if let PolledStatus::Pollable(polled_id) = write_status {
-                        if ctx.polled_is_ready(&polled_id) {
+                        if state.polled_is_ready(&polled_id) {
                             if total_ready < maxevents as usize {
                                 event.events |= libc::EPOLLOUT as u32;
                             }

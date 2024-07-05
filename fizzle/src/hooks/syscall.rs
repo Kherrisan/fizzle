@@ -88,7 +88,9 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
         std::thread::current().id(),
     );
 
-    let mut ctx = state::FIZZLE_STATE.acquire();
+    let mut ctx = state::singleton::fizzle_state_singleton();
+
+    let mut state = ctx.acquire();
 
     let res = 'body: {
         match number {
@@ -97,7 +99,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                 let buf: *mut libc::c_void = va_args.arg();
                 let buflen: libc::size_t = va_args.arg();
                 let flags: libc::c_uint = va_args.arg();
-                drop(ctx);
+                drop(state);
                 crate::hooks::entropy::fizzle_getrandom(buf, buflen, flags) as i64
             }
             libc::SYS_futex => {
@@ -131,7 +133,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                             break 'body -1;
                         }
 
-                        match ctx.local.futex_waiters.entry(uaddr as *const u32) {
+                        match state.local.futex_waiters.entry(uaddr as *const u32) {
                             Entry::Occupied(mut o) => o.get_mut().push_back((
                                 libc::FUTEX_BITSET_MATCH_ANY as u32,
                                 thread::current().id(),
@@ -151,13 +153,13 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                             break 'body -1;
                         }
 
-                        drop(ctx);
-                        state::FIZZLE_STATE.yield_thread();
+                        drop(state);
+                        ctx.yield_thread();
 
                         0
                     }
                     libc::FUTEX_WAKE => {
-                        let Some(queue) = ctx.local.futex_waiters.get_mut(&(uaddr as *const u32))
+                        let Some(queue) = state.local.futex_waiters.get_mut(&(uaddr as *const u32))
                         else {
                             break 'body 0;
                         };
@@ -173,7 +175,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                         let ret = awoken_threads.len() as libc::c_long;
 
                         for (_, thread) in awoken_threads {
-                            ctx.mark_thread_ready(thread);
+                            state.mark_thread_ready(thread);
                         }
 
                         ret
@@ -184,7 +186,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                         let uaddr2: *mut u32 = va_args.arg();
 
                         let Some(mut queue) =
-                            ctx.local.futex_waiters.remove(&(uaddr as *const u32))
+                            state.local.futex_waiters.remove(&(uaddr as *const u32))
                         else {
                             break 'body 0;
                         };
@@ -199,7 +201,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
 
                         let ret = (awoken_threads.len() + queue.len()) as libc::c_long;
 
-                        match ctx.local.futex_waiters.entry(uaddr2 as *const u32) {
+                        match state.local.futex_waiters.entry(uaddr2 as *const u32) {
                             Entry::Occupied(mut o) => o.get_mut().extend(queue),
                             Entry::Vacant(v) => {
                                 v.insert(queue);
@@ -219,7 +221,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                         }
 
                         let Some(mut queue) =
-                            ctx.local.futex_waiters.remove(&(uaddr as *const u32))
+                            state.local.futex_waiters.remove(&(uaddr as *const u32))
                         else {
                             return 0;
                         };
@@ -234,7 +236,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
 
                         let ret = (awoken_threads.len() + queue.len()) as libc::c_long;
 
-                        match ctx.local.futex_waiters.entry(uaddr2 as *const u32) {
+                        match state.local.futex_waiters.entry(uaddr2 as *const u32) {
                             Entry::Occupied(mut o) => o.get_mut().extend(queue),
                             Entry::Vacant(v) => {
                                 v.insert(queue);
@@ -281,7 +283,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                         }
 
                         let woken_1 = if let Some(queue) =
-                            ctx.local.futex_waiters.get_mut(&(uaddr as *const u32))
+                            state.local.futex_waiters.get_mut(&(uaddr as *const u32))
                         {
                             let mut awoken_threads = Vec::new();
                             for _ in 0..val {
@@ -294,7 +296,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                             let ret = awoken_threads.len() as libc::c_long;
 
                             for (_, thread) in awoken_threads {
-                                ctx.mark_thread_ready(thread);
+                                state.mark_thread_ready(thread);
                             }
 
                             ret
@@ -320,7 +322,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
 
                         if should_wake {
                             let woken_2 = if let Some(queue) =
-                                ctx.local.futex_waiters.get_mut(&(uaddr2 as *const u32))
+                                state.local.futex_waiters.get_mut(&(uaddr2 as *const u32))
                             {
                                 let mut awoken_threads = Vec::new();
                                 for _ in 0..val2 {
@@ -333,7 +335,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                                 let ret = awoken_threads.len() as libc::c_long;
 
                                 for (_, thread) in awoken_threads {
-                                    ctx.mark_thread_ready(thread);
+                                    state.mark_thread_ready(thread);
                                 }
 
                                 ret
@@ -356,7 +358,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                             break 'body -1;
                         }
 
-                        match ctx.local.futex_waiters.entry(uaddr as *const u32) {
+                        match state.local.futex_waiters.entry(uaddr as *const u32) {
                             Entry::Occupied(mut o) => {
                                 o.get_mut().push_back((val3, thread::current().id()))
                             }
@@ -372,8 +374,8 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                             break 'body -1;
                         }
 
-                        drop(ctx);
-                        state::FIZZLE_STATE.yield_thread();
+                        drop(state);
+                        ctx.yield_thread();
 
                         0
                     }
@@ -383,7 +385,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                         let _uaddr2: *mut u32 = va_args.arg();
                         let val3: u32 = va_args.arg();
 
-                        let Some(queue) = ctx.local.futex_waiters.get_mut(&(uaddr as *const u32))
+                        let Some(queue) = state.local.futex_waiters.get_mut(&(uaddr as *const u32))
                         else {
                             break 'body 0;
                         };
@@ -403,11 +405,11 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                         let ret = awoken_threads.len() as libc::c_long;
 
                         if queue.is_empty() {
-                            ctx.local.futex_waiters.remove(&(uaddr as *const u32));
+                            state.local.futex_waiters.remove(&(uaddr as *const u32));
                         }
 
                         for thread in awoken_threads {
-                            ctx.mark_thread_ready(thread);
+                            state.mark_thread_ready(thread);
                         }
 
                         ret

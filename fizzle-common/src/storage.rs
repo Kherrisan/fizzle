@@ -584,7 +584,7 @@ impl<T: Sized> Default for ArenaItem<T> {
     }
 }
 
-pub struct Rc<K: ArenaKey> {
+pub struct Rc<K: ArenaKey + 'static> {
     key: K,
     ptr: *const UnsafeCell<ArenaItem<K::Value>>,
 }

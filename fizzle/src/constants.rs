@@ -5,7 +5,7 @@ pub const FIZZLE_MEMORY_ENV: &str = "FIZZLE_MEMORY";
 pub const FIZZLE_MULTIPROCESS_ENV: &str = "FIZZLE_MULTIPROCESS";
 
 /// Instructs the fizzle harness to keep running if the main process would exit normally
-pub const FIZZLE_NOEXIT_ENV: &str = "FIZZLE_NOEXIT";
+// pub const FIZZLE_NOEXIT_ENV: &str = "FIZZLE_NOEXIT";
 
 // Static buffers
 

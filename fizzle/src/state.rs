@@ -1,8 +1,9 @@
 pub mod backend;
-pub mod comptime;
+
 pub mod fd;
 pub mod identifiers;
 pub mod plugins;
+pub mod singleton;
 
 use std::cell::{RefCell, UnsafeCell};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -28,6 +29,7 @@ use heapless::{Deque, FnvIndexMap, FnvIndexSet};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
+use crate::comptime;
 use crate::constants::*;
 use crate::semaphore::Semaphore;
 
@@ -40,8 +42,6 @@ use self::identifiers::*;
 use self::plugins::{IoEmulationType, PluginConfigEndpoint, PluginModules};
 
 const THREAD_LOCK_INIT_VALUE: Option<Box<Semaphore>> = None;
-
-pub static FIZZLE_STATE: FizzCell = FizzCell::new();
 
 // See `set_entered_handler` and `has_entered_handler`
 std::thread_local! {
@@ -96,8 +96,6 @@ unsafe impl Send for FizzCell {}
 
 unsafe impl Sync for FizzCell {}
 
-// TODO: process locks need to be initialized correctly! They are NOT initialized currently...
-
 impl FizzCell {
     const fn new() -> Self {
         Self {
@@ -135,19 +133,20 @@ impl FizzCell {
             comptime::populate_onstartup_processes(&mut processes);
 
             for mut process in processes {
-                let mut ctx = self.acquire();
+                let mut state = self.acquire();
 
                 // This thread should still be able to execute afterwards
-                ctx.mark_thread_ready(thread::current().id());
+                state.mark_thread_ready(thread::current().id());
 
-                let process_id = ctx.global.assign_process_id();
-                ctx.global.passthrough_process_id = process_id;
+                let process_id = state.global.assign_process_id();
+                state.global.passthrough_process_id = process_id;
 
                 // TODO: upref all reference-counted global variables here
                 // For now we just don't free global variables so it's fine...
 
-                drop(ctx);
+                drop(state);
 
+                // TODO: put this in a method on its own
                 process.env("LD_PRELOAD", std::env::var("LD_PRELOAD").unwrap());
                 process.spawn().unwrap();
 
@@ -162,7 +161,7 @@ impl FizzCell {
         }
     }
 
-    fn init_thread_lock(&self, thread_id: &ThreadId) {
+    pub fn init_thread_lock(&self, thread_id: &ThreadId) {
         unsafe {
             (*self.thread_locks.get())[index_of_thread(thread_id)] = Some(Semaphore::new_boxed(0));
         }
@@ -208,12 +207,12 @@ impl FizzCell {
     /// Once all threads/processes have finished executing, this returns control flow to the primary
     /// fuzzing process, which signals to the fuzzer that it is ready for the next input.
     pub fn yield_thread(&self) {
-        let mut ctx = self.acquire();
+        let mut state = self.acquire();
         let mut next_worker = None;
         log::trace!("yield_thread internally called");
 
         // pop PollerId values off `ready_pollers` one at a time
-        while let Some(item) = ctx.global.ready.dequeue() {
+        while let Some(item) = state.global.ready.dequeue() {
             match item {
                 ReadyInfo::Worker(worker_id) => {
                     log::trace!("Scheduling worker {:?} for execution", worker_id);
@@ -226,7 +225,7 @@ impl FizzCell {
                         "Checking if poller {:?} is ready for execution...",
                         poller_id
                     );
-                    let global = &mut ctx.global;
+                    let global = &mut state.global;
                     let poller_info = global.pollers.get(&poller_id).unwrap();
                     for polled_id in poller_info.polled_events.iter() {
                         let polled_info = global.polled_events.get_mut(&polled_id).unwrap();
@@ -244,13 +243,13 @@ impl FizzCell {
             }
         }
 
-        drop(ctx);
+        drop(state);
 
         if let Some(worker_id) = next_worker {
-            let mut ctx = self.acquire();
-            ctx.global.waking_thread_id = Some(worker_id.thread_id);
-            let local_process_id = ctx.local.process_id;
-            drop(ctx);
+            let mut state = self.acquire();
+            state.global.waking_thread_id = Some(worker_id.thread_id);
+            let local_process_id = state.local.process_id;
+            drop(state);
 
             if worker_id.process_id != local_process_id {
                 // Invariant: no FizzGuards are being held here
@@ -282,26 +281,26 @@ impl FizzCell {
             self.yield_thread();
 
         } else if !self.acquire().global.startup_complete {
-            let mut ctx = self.acquire();
-            ctx.global.startup_complete = true;
+            let mut state = self.acquire();
+            state.global.startup_complete = true;
 
             // Now run any applicable processes
             let mut processes = Vec::new();
             comptime::populate_onready_processes(&mut processes);
 
             for mut process in processes {
-                let mut ctx = self.acquire();
+                let mut state = self.acquire();
 
                 // This thread should still be able to execute afterwards
-                ctx.mark_thread_ready(thread::current().id());
+                state.mark_thread_ready(thread::current().id());
 
                 // TODO: upref all reference-counted global variables here
                 // For now we just don't free global variables so it's fine...
 
-                let process_id = ctx.global.assign_process_id();
-                ctx.global.passthrough_process_id = process_id;
+                let process_id = state.global.assign_process_id();
+                state.global.passthrough_process_id = process_id;
 
-                drop(ctx);
+                drop(state);
 
                 process.env("LD_PRELOAD", std::env::var("LD_PRELOAD").unwrap());
                 process.spawn().unwrap();
@@ -311,12 +310,12 @@ impl FizzCell {
         
             self.yield_thread();
         } else if !self.acquire().global.per_round_endpoints.is_empty() {
-            let mut ctx = self.acquire();
+            let mut state = self.acquire();
             let mut endpoints = FnvIndexSet::new();
-            mem::swap(&mut endpoints, &mut ctx.global.per_round_endpoints);
+            mem::swap(&mut endpoints, &mut state.global.per_round_endpoints);
 
             for socket_id in endpoints.into_iter() {
-                let Some(sock_info) = ctx.global.sockets.get_mut(&socket_id) else {
+                let Some(sock_info) = state.global.sockets.get_mut(&socket_id) else {
                     continue
                 };
 
@@ -339,21 +338,21 @@ impl FizzCell {
                             // Now raise all applicable poll events so the reader discovers the peer is closed
                             match connected.backend.clone() {
                                 backend::IoBackend::Plugin(plugin_id) => {
-                                    let plugin = ctx.global.plugins.get(&plugin_id).unwrap();
+                                    let plugin = state.global.plugins.get(&plugin_id).unwrap();
                                     let read_polled = plugin.read_polled.clone();
                                     let write_polled = plugin.write_polled.clone();
-                                    ctx.raise_polled(&read_polled);
-                                    ctx.raise_polled(&write_polled);
+                                    state.raise_polled(&read_polled);
+                                    state.raise_polled(&write_polled);
                                 },
                                 backend::IoBackend::Fuzz(fuzz_endpoint_id) => {
-                                    let read_polled = ctx.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().read_polled.clone();
-                                    ctx.raise_polled(&read_polled);
+                                    let read_polled = state.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().read_polled.clone();
+                                    state.raise_polled(&read_polled);
                                 }
                                 _ => unreachable!(),
                             }
                         }
 
-                        ctx.global.per_round_clients.push(PerRoundClientInfo {
+                        state.global.per_round_clients.push(PerRoundClientInfo {
                             source_address,
                             target_address,
                             backend: client_backend,
@@ -375,7 +374,7 @@ impl FizzCell {
     /// Notifies the fuzzing engine that the current round of fuzzing has finished.
     /// Note that
     fn fuzz_round_complete(&self) {
-        let mut ctx = self.acquire();
+        let mut state = self.acquire();
         // Communicate that process is finished running
 
         // A few notes:
@@ -388,8 +387,8 @@ impl FizzCell {
         // TODO: if using Nyx-Net, handle hypervisor preemption here
 
         #[cfg(feature = "afl")]
-        if !ctx.global.shared_mem_initialized {
-            ctx.global.shared_mem_initialized = true;
+        if !state.global.shared_mem_initialized {
+            state.global.shared_mem_initialized = true;
 
             #[cfg(feature = "pcr")]
             unsafe {
@@ -410,14 +409,14 @@ impl FizzCell {
             let rounds = if crate::__afl_connected == 0 {
                 1
             } else {
-                ctx.global.persistent_rounds as libc::c_uint
+                state.global.persistent_rounds as libc::c_uint
             };
             if crate::__afl_persistent_loop(rounds) == 0 {
                 libc::_exit(0);
             }
 
-            ctx.global.fuzz_input.clear();
-            let fuzz_buffer = ctx.global.fuzz_input.remaining_mut();
+            state.global.fuzz_input.clear();
+            let fuzz_buffer = state.global.fuzz_input.remaining_mut();
 
             if crate::__afl_fuzz_ptr.is_null() {
                 let read_amount =
@@ -433,24 +432,24 @@ impl FizzCell {
                 }
             };
 
-            ctx.global
+            state.global
                 .fuzz_input
                 .did_write(*crate::__afl_fuzz_len as usize);
         }
 
         #[cfg(not(feature = "pcr"))]
         unsafe {
-            let fuzz_buffer = ctx.global.fuzz_input.remaining_mut();
+            let fuzz_buffer = state.global.fuzz_input.remaining_mut();
             let read_amount = libc::read(0, fuzz_buffer.as_mut_ptr() as *mut libc::c_void, 1048576);
             if read_amount <= 0 {
                 panic!("could not read input from stdin")
             }
 
-            ctx.global.fuzz_input.did_write(read_amount as usize);
+            state.global.fuzz_input.did_write(read_amount as usize);
         }
 
         let mut polled_ready = heapless::Vec::<Rc<PolledId>, FIZZLE_MAX_FUZZ_ENDPOINTS>::new();
-        for endpoint_info in ctx.global.fuzz_endpoints.values_mut() {
+        for endpoint_info in state.global.fuzz_endpoints.values_mut() {
             endpoint_info.read_idx = 0;
             polled_ready
                 .push(endpoint_info.read_polled.clone())
@@ -464,42 +463,42 @@ impl FizzCell {
 
         // Mark appropriate processes/threads as ready to receive input from `fuzz` endpoints
         for polled_id in polled_ready {
-            ctx.raise_polled(&polled_id);
+            state.raise_polled(&polled_id);
         }
 
         // TODO: inefficient
-        let fuzz_input = ctx.global.fuzz_input.clone();
+        let fuzz_input = state.global.fuzz_input.clone();
 
         // TODO: this needs to run in the root process, but we don't check this??
-        let modules: Vec<_> = ctx.global.plugins.values().map(|plugin_info| plugin_info.module_id.clone()).collect();
+        let modules: Vec<_> = state.global.plugins.values().map(|plugin_info| plugin_info.module_id.clone()).collect();
         for module in modules {
-            let plugin_module = ctx.local.plugin_modules.as_mut().unwrap().get_mut(&module).unwrap();
+            let plugin_module = state.local.plugin_modules.as_mut().unwrap().get_mut(&module).unwrap();
             plugin_module.fuzz_round_start(fuzz_input.data());
         }
 
-        let plugin_info_ids: Vec<_> = ctx.global.plugins.values().map(|plugin_info| (plugin_info.read_buf.clone(), plugin_info.write_buf.clone(), plugin_info.read_polled.clone(), plugin_info.write_polled.clone())).collect();
+        let plugin_info_ids: Vec<_> = state.global.plugins.values().map(|plugin_info| (plugin_info.read_buf.clone(), plugin_info.write_buf.clone(), plugin_info.read_polled.clone(), plugin_info.write_polled.clone())).collect();
 
         for (read_buf, write_buf, read_polled, write_polled) in plugin_info_ids {
-            ctx.global.buffers.get_mut(&read_buf).unwrap().clear();
-            ctx.global.buffers.get_mut(&write_buf).unwrap().clear();
-            ctx.lower_polled(&read_polled);
-            ctx.raise_polled(&write_polled);
+            state.global.buffers.get_mut(&read_buf).unwrap().clear();
+            state.global.buffers.get_mut(&write_buf).unwrap().clear();
+            state.lower_polled(&read_polled);
+            state.raise_polled(&write_polled);
         }
 
         // Now reload per-round fuzzing clients
         let mut per_round_clients = heapless::Vec::new();
-        mem::swap(&mut per_round_clients, &mut ctx.global.per_round_clients);
+        mem::swap(&mut per_round_clients, &mut state.global.per_round_clients);
 
         for client_info in per_round_clients {
-            let socket_id = ctx.global.add_pending_client(client_info.source_address, client_info.target_address, match client_info.backend {
+            let socket_id = state.global.add_pending_client(client_info.source_address, client_info.target_address, match client_info.backend {
                 PerRoundClientBackend::Fuzz(fuzz_endpoint_id) => PendingBackend::Fuzz(fuzz_endpoint_id),
                 PerRoundClientBackend::Plugin(plugin_id) => PendingBackend::Plugin(plugin_id),
             });
             log::debug!("added pending client {:?}", socket_id);
-            ctx.global.per_round_endpoints.insert(socket_id).unwrap();
+            state.global.per_round_endpoints.insert(socket_id).unwrap();
         }
 
-        drop(ctx);
+        drop(state);
 
         // If the current running thread isn't ready to receive input, pass on to the next thread.
         self.yield_thread(); // This won't recurse beyond a depth of 2, so long as inputs are passed into the appropriate places here...
@@ -509,24 +508,24 @@ impl FizzCell {
         let thread_id = thread::current().id();
         log::info!("thread {:?} being terminated...", thread_id);
 
-        let mut ctx = self.acquire();
-        let mut cleanup_routines = ctx
+        let mut state = self.acquire();
+        let mut cleanup_routines =state 
             .local
             .pthread_cleanup
             .remove(&thread_id)
             .unwrap_or_default();
 
-        let pthread_keys: Vec<u32> = ctx.local.pthread_keys.keys().copied().collect();
+        let pthread_keys: Vec<u32> = state.local.pthread_keys.keys().copied().collect();
         for key in pthread_keys {
-            if let Some(values) = ctx.local.pthread_key_values.get_mut(&key) {
+            if let Some(values) = state.local.pthread_key_values.get_mut(&key) {
                 if let Some(p) = values.remove(&thread_id) {
-                    let mut destructor = *ctx.local.pthread_keys.get(&key).unwrap();
+                    let mut destructor = *state.local.pthread_keys.get(&key).unwrap();
                     destructor.arg = Some(p);
                     cleanup_routines.push_back(destructor);
                 }
             }
         }
-        drop(ctx);
+        drop(state);
 
         set_entered_handler(false);
         for routine in cleanup_routines {
@@ -534,14 +533,14 @@ impl FizzCell {
         }
         set_entered_handler(true);
 
-        let mut ctx = self.acquire();
+        let mut state = self.acquire();
         // Mark this thread as dead for future threads that may wait on it.
-        ctx.local.terminated_threads.insert(thread_id);
+        state.local.terminated_threads.insert(thread_id);
         // Notify any threads awaiting this thread's death
-        if let Some(awaiting_threads) = ctx.local.awaiting_thread_death.remove(&thread_id) {
+        if let Some(awaiting_threads) = state.local.awaiting_thread_death.remove(&thread_id) {
             for thread_id in awaiting_threads {
-                let process_id = ctx.local.process_id;
-                ctx.global
+                let process_id = state.local.process_id;
+                state.global
                     .ready
                     .enqueue(ReadyInfo::Worker(WorkerId {
                         process_id,
@@ -552,39 +551,40 @@ impl FizzCell {
         }
 
         // Delegate execution to another thread via the thread reaper
-        if let Some(reaper_id) = ctx.local.reaper {
-            drop(ctx);
+        if let Some(reaper_id) = state.local.reaper {
+            drop(state);
             // Free this thread's semaphore
             self.destroy_thread_lock();
-            FIZZLE_STATE.get_thread_lock(&reaper_id).post()
+            self.get_thread_lock(&reaper_id).post()
         } else {
-            drop(ctx);
+            drop(state);
             let handle = std::thread::spawn(move || {
+                let mut ctx = unsafe { singleton::fizzle_state_singleton() };
                 // Reaper thread
                 // The thread that spawned the reaper will immediately wait on its thread lock, so
                 // it is safe to `acquire()` global state here.
                 let reaper_id = thread::current().id();
-                let mut ctx = FIZZLE_STATE.acquire();
-                ctx.local.reaper = Some(reaper_id);
-                drop(ctx);
-                FIZZLE_STATE.init_thread_lock(&reaper_id);
+                let mut state = ctx.acquire();
+                state.local.reaper = Some(reaper_id);
+                drop(state);
+                ctx.init_thread_lock(&reaper_id);
                 // Notify thread that initialization has completed
-                FIZZLE_STATE.get_thread_lock(&thread_id).post();
+                ctx.get_thread_lock(&thread_id).post();
                 // Await for thread notification before running reaper loop
-                FIZZLE_STATE.get_thread_lock(&reaper_id).wait();
+                ctx.get_thread_lock(&reaper_id).wait();
 
                 loop {
-                    FIZZLE_STATE.yield_thread();
+                    ctx.yield_thread();
                     // Guaranteed to be listening on the thread-local lock rather than process lock,
                     // as the thread being reaped has to be within the same process as the reaper.
                     // Thus, when the thread being reaped `post()`s, this will return.
                 }
             });
 
-            FIZZLE_STATE.get_thread_lock(&thread_id).wait();
+            self.get_thread_lock(&thread_id).wait();
             // Free this thread's semaphore
             self.destroy_thread_lock();
-            FIZZLE_STATE.get_thread_lock(&handle.thread().id()).post();
+            self.get_thread_lock(&handle.thread().id()).post();
         }
 
         // =======================DANGER ZONE: CONCURRENCY===========================
@@ -612,18 +612,18 @@ impl FizzCell {
         let current_thread = thread::current().id();
         self.get_thread_lock(&current_thread).wait();
 
-        let mut ctx = self.acquire();
-        if ctx.local.cancelling_threads.remove(&current_thread) {
-            drop(ctx);
+        let mut state = self.acquire();
+        if state.local.cancelling_threads.remove(&current_thread) {
+            drop(state);
             self.terminate_thread(ThreadTermination::Cancellation)
         }
     }
 
     pub fn pause_current_process(&self) {
         unsafe {
-            let ctx = self.acquire();
-            ctx.global
-                .process_locks[usize::from(ctx.local.process_id)]
+            let state = self.acquire();
+            state.global
+                .process_locks[usize::from(state.local.process_id)]
                 .assume_init_ref()
                 .wait();
         }
@@ -641,11 +641,11 @@ impl FizzCell {
 
     // call this whenever waiting for a single poll event
     pub fn poll_until_ready(&self, polled_id: Rc<PolledId>) {
-        let mut ctx = self.acquire();
-        if !ctx.polled_is_ready(&polled_id) {
-            let poller_id = ctx.new_poller();
-            ctx.register_poller(poller_id.clone(), polled_id);
-            drop(ctx);
+        let mut state = self.acquire();
+        if !state.polled_is_ready(&polled_id) {
+            let poller_id = state.new_poller();
+            state.register_poller(poller_id.clone(), polled_id);
+            drop(state);
             self.yield_thread();
             self.acquire().delete_poller(poller_id);
         }
@@ -682,6 +682,7 @@ pub struct FizzState {
     pub global: &'static mut FizzGlobal,
 }
 
+/*
 #[no_mangle]
 extern "C" fn fizzle_atexit_suspend() {
     loop {
@@ -689,12 +690,14 @@ extern "C" fn fizzle_atexit_suspend() {
         FIZZLE_STATE.yield_thread()
     }
 }
+*/
 
 impl FizzState {
     fn new() -> Self {
         // This needs to go before `allocate_global_memory`, as this env variable gets set within it.
         let is_initialized = matches!(env::var(FIZZLE_MEMORY_ENV), Ok(_));
 
+        /*
         if env::var(FIZZLE_NOEXIT_ENV).is_ok() {
             unsafe {
                 // Registered before any other atexit handler
@@ -702,6 +705,7 @@ impl FizzState {
                 libc::atexit(fizzle_atexit_suspend);
             }
         }
+        */
 
         let global_uninit = Self::allocate_global_memory();
         let global: &'static mut FizzGlobal;

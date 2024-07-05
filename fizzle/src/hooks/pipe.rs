@@ -8,8 +8,7 @@ use fizzle_common::storage::Buffer;
 hook_macros::hook! {
     unsafe fn pipe(
         pipefd: *mut libc::c_int
-    ) -> libc::c_int => fizzle_pipe(ctx) {
-        drop(ctx);
+    ) -> libc::c_int => fizzle_pipe(_ctx) {
         fizzle_pipe2(pipefd, 0)
     }
 }
@@ -19,6 +18,7 @@ hook_macros::hook! {
         pipefd: *mut libc::c_int,
         flags: libc::c_int
     ) -> libc::c_int => fizzle_pipe2(ctx) {
+        let mut state = ctx.acquire();
 
         let nonblocking = (flags & libc::O_NONBLOCK) != 0;
         let close_on_exec = (flags & libc::O_CLOEXEC) != 0;
@@ -34,25 +34,25 @@ hook_macros::hook! {
         let first_pipe = PipeInfo {
             mode,
             peer: None,
-            read_buf: ctx.global.buffers.allocate(Buffer::new()).unwrap(),
-            read_polled: ctx.global.polled_events.allocate(PolledInfo::new()).unwrap(),
-            write_polled: ctx.global.polled_events.allocate(PolledInfo::new_raised()).unwrap(),
+            read_buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
+            read_polled: state.global.polled_events.allocate(PolledInfo::new()).unwrap(),
+            write_polled: state.global.polled_events.allocate(PolledInfo::new_raised()).unwrap(),
         };
 
-        let first_pipe_id = ctx.global.pipes.allocate(first_pipe).unwrap();
+        let first_pipe_id = state.global.pipes.allocate(first_pipe).unwrap();
 
         let second_pipe = PipeInfo {
             mode,
             peer: Some(first_pipe_id.clone()),
-            read_buf: ctx.global.buffers.allocate(Buffer::new()).unwrap(),
-            read_polled: ctx.global.polled_events.allocate(PolledInfo::new()).unwrap(),
-            write_polled: ctx.global.polled_events.allocate(PolledInfo::new_raised()).unwrap(),
+            read_buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
+            read_polled: state.global.polled_events.allocate(PolledInfo::new()).unwrap(),
+            write_polled: state.global.polled_events.allocate(PolledInfo::new_raised()).unwrap(),
         };
 
-        let second_pipe_id = ctx.global.pipes.allocate(second_pipe).unwrap();
+        let second_pipe_id = state.global.pipes.allocate(second_pipe).unwrap();
 
         // `unwrap()` guaranteed to succeed--we *just* inserted the pipe
-        ctx.global.pipes.get_mut(&first_pipe_id).unwrap().peer = Some(second_pipe_id.clone());
+        state.global.pipes.get_mut(&first_pipe_id).unwrap().peer = Some(second_pipe_id.clone());
 
         let fd1_info = FdInfo {
             close_on_exec,
@@ -69,8 +69,8 @@ hook_macros::hook! {
         };
 
         // Now add the fd -> pipe_id mapping
-        ctx.local.fds.allocate_with_key(DescriptorId::new(fd1), fd1_info).unwrap();
-        ctx.local.fds.allocate_with_key(DescriptorId::new(fd2), fd2_info).unwrap();
+        state.local.fds.allocate_with_key(DescriptorId::new(fd1), fd1_info).unwrap();
+        state.local.fds.allocate_with_key(DescriptorId::new(fd2), fd2_info).unwrap();
 
         *pipefd = fd1;
         *(pipefd.add(1)) = fd2;

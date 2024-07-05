@@ -7,28 +7,28 @@ use std::{array, env, mem, ptr, thread};
 
 use crate::constants::FIZZLE_MEMORY_ENV;
 use crate::hook_macros;
-use crate::state;
 
 const MAX_ARGS: usize = 512;
 
 hook_macros::hook! {
     unsafe fn fork() -> libc::pid_t => fizzle_fork(ctx) {
+        let mut state = ctx.acquire();
         let thread_id = thread::current().id();
 
         // This thread should still be able to execute afterwards
-        ctx.mark_thread_ready(thread_id);
-        drop(ctx);
+        state.mark_thread_ready(thread_id);
+        drop(state);
 
         let pid = hook_macros::real!(fork)();
         match pid {
             0 => {
-                let mut ctx = state::FIZZLE_STATE.acquire();
+                let mut state = ctx.acquire();
                 // Child process--fix all of the local state
-                ctx.local.plugin_modules = None;
+                state.local.plugin_modules = None;
 
                 // Assign a new process ID
-                let process_id = ctx.global.assign_process_id();
-                ctx.local.process_id = process_id;
+                let process_id = state.global.assign_process_id();
+                state.local.process_id = process_id;
 
                 // TODO: upref all reference-counted global variables here
                 // For now we just don't free global variables so it's fine...
@@ -36,11 +36,11 @@ hook_macros::hook! {
             1.. => {
                 // Parent process--await execution
 
-                state::FIZZLE_STATE.pause_current_process();
+                ctx.pause_current_process();
             }
             _ => {
                 // fork() returned -1, but we marked our own process as ready so we need to wait
-                state::FIZZLE_STATE.yield_thread();
+                ctx.yield_thread();
             }
         }
 
@@ -193,33 +193,36 @@ pub unsafe extern "C" fn execle(
 
 hook_macros::hook! {
     unsafe fn execv(pathname: *const libc::c_char, argv: *const *const libc::c_char) -> libc::c_int => fizzle_execv(ctx) {
+        let mut state = ctx.acquire();
         // env is inherited, so no variables need to be defined
-        assert!(ctx.local.plugin_modules.is_none()); // TODO: handle this edge case (parent is `exec`d)
+        assert!(state.local.plugin_modules.is_none()); // TODO: handle this edge case (parent is `exec`d)
 
         // Ensure process ID gets passed through correctly
-        let process_id = ctx.local.process_id;
-        ctx.global.passthrough_process_id = process_id;
-        ctx.copy_exec_fds();
+        let process_id = state.local.process_id;
+        state.global.passthrough_process_id = process_id;
+        state.copy_exec_fds();
         hook_macros::real!(execv)(pathname, argv)
     }
 }
 
 hook_macros::hook! {
      unsafe fn execvp(file: *const libc::c_char, argv: *const *const libc::c_char) -> libc::c_int => fizzle_execvp(ctx) {
+        let mut state = ctx.acquire();
         // env is inherited, so no variables need to be defined
-        assert!(ctx.local.plugin_modules.is_none()); // TODO: handle this edge case (parent is `exec`d)
-        let process_id = ctx.local.process_id;
-        ctx.global.passthrough_process_id = process_id;
-        ctx.copy_exec_fds();
+        assert!(state.local.plugin_modules.is_none()); // TODO: handle this edge case (parent is `exec`d)
+        let process_id = state.local.process_id;
+        state.global.passthrough_process_id = process_id;
+        state.copy_exec_fds();
         hook_macros::real!(execvp)(file, argv)
     }
 }
 
 hook_macros::hook! {
      unsafe fn execve(pathname: *const libc::c_char, argv: *const *const libc::c_char, envp: *const *const libc::c_char) -> libc::c_int => fizzle_execve(ctx) {
+        let mut state = ctx.acquire();
         let mut envp_idx = 0;
 
-        assert!(ctx.local.plugin_modules.is_none()); // TODO: handle this edge case (parent is `exec`d)
+        assert!(state.local.plugin_modules.is_none()); // TODO: handle this edge case (parent is `exec`d)
 
         let fizzle_env = CString::new(format!("{}={}", FIZZLE_MEMORY_ENV, env::var(FIZZLE_MEMORY_ENV).unwrap())).unwrap();
 
@@ -240,38 +243,41 @@ hook_macros::hook! {
 
         assert!(envp_idx + 1 < MAX_ARGS, "`execve` exceeded maximum number of env variables");
 
-        let process_id = ctx.local.process_id;
-        ctx.global.passthrough_process_id = process_id;
-        ctx.copy_exec_fds();
+        let process_id = state.local.process_id;
+        state.global.passthrough_process_id = process_id;
+        state.copy_exec_fds();
         hook_macros::real!(execve)(pathname, argv, ptr::addr_of!(env) as *const *const libc::c_char)
     }
 }
 
 hook_macros::hook! {
     unsafe fn execveat(dirfd: libc::c_int, pathname: *const libc::c_char, argv: *const *const libc::c_char, envp: *const *const libc::c_char, flags: libc::c_int) -> libc::c_int => fizzle_execveat(ctx) {
+        let mut state = ctx.acquire();
         crate::report_strict_failure("unimplemented `execveat`");
-        let process_id = ctx.local.process_id;
-        ctx.global.passthrough_process_id = process_id;
-        ctx.copy_exec_fds();
+        let process_id = state.local.process_id;
+        state.global.passthrough_process_id = process_id;
+        state.copy_exec_fds();
         hook_macros::real!(execveat)(dirfd, pathname, argv, envp, flags)
     }
 }
 
 hook_macros::hook! {
     unsafe fn fexecve(fd: libc::c_int, argv: *const *const libc::c_char, envp: *const *const libc::c_char) -> libc::c_int => fizzle_fexecve(ctx) {
+        let mut state = ctx.acquire();
         crate::report_strict_failure("unimplemented `fexecve`");
-        let process_id = ctx.local.process_id;
-        ctx.global.passthrough_process_id = process_id;
-        ctx.copy_exec_fds();
+        let process_id = state.local.process_id;
+        state.global.passthrough_process_id = process_id;
+        state.copy_exec_fds();
         hook_macros::real!(fexecve)(fd, argv, envp)
     }
 }
 
 hook_macros::hook! {
      unsafe fn execvpe(file: *const libc::c_char, argv: *const *const libc::c_char, envp: *const *const libc::c_char) -> libc::c_int => fizzle_execvpe(ctx) {
+        let mut state = ctx.acquire();
         let mut envp_idx = 0;
 
-        assert!(ctx.local.plugin_modules.is_none()); // TODO: handle this edge case (parent is `exec`d)
+        assert!(state.local.plugin_modules.is_none()); // TODO: handle this edge case (parent is `exec`d)
 
         let fizzle_env = CString::new(format!("{}={}", FIZZLE_MEMORY_ENV, env::var(FIZZLE_MEMORY_ENV).unwrap())).unwrap();
 
@@ -294,9 +300,9 @@ hook_macros::hook! {
             panic!("`execve` exceeded maximum number of env variables")
         }
 
-        let process_id = ctx.local.process_id;
-        ctx.global.passthrough_process_id = process_id;
-        ctx.copy_exec_fds();
+        let process_id = state.local.process_id;
+        state.global.passthrough_process_id = process_id;
+        state.copy_exec_fds();
         hook_macros::real!(execvpe)(file, argv, ptr::addr_of!(env) as *const *const libc::c_char)
     }
 }
@@ -320,15 +326,14 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn exit(status: libc::c_int) => fizzle_exit(ctx) {
         log::warn!("exit called with status {}", status);
-        //if ctx.local.suspend_on_exit {
+        //if state.local.suspend_on_exit {
             // TODO: clean up any polling contexts here so that this process never gets
             // delegated to (other than for the purpose of running modules)
 
             // Temporary hack: whenever processes get delegated to here, just pass back to
             // another process (i.e. ignore inputs)
-        drop(ctx);
         loop {
-            state::FIZZLE_STATE.yield_thread()
+            ctx.yield_thread()
         }
     }
 }
@@ -336,9 +341,8 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn _exit(status: libc::c_int) => fizzle_exit2(ctx) {
         log::warn!("_exit called with status {}", status);
-        drop(ctx);
         loop {
-            state::FIZZLE_STATE.yield_thread()
+            ctx.yield_thread()
         }
     }
 }

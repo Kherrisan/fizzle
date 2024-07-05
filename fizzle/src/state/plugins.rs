@@ -57,14 +57,14 @@ pub enum IoEmulationType {
 /// # Panics
 ///
 /// This method will panic if it is not called in the root process
-pub fn run_plugins(ctx: &mut FizzState) -> bool {
+pub fn run_plugins(state: &mut FizzState) -> bool {
     let mut plugin_activated = false;
 
     let mut read = Vec::new();
     let mut write = Vec::new();
 
     // TODO: turn this into an iterator in the future
-    for plugin_info in ctx.global.plugins.values() {
+    for plugin_info in state.global.plugins.values() {
         let mut raise_read = false;
         let mut lower_write = false;
 
@@ -74,7 +74,7 @@ pub fn run_plugins(ctx: &mut FizzState) -> bool {
             stream_id: plugin_info.stream,
         };
 
-        let plugin_module = ctx
+        let plugin_module = state 
             .local
             .plugin_modules
             .as_mut()
@@ -88,7 +88,7 @@ pub fn run_plugins(ctx: &mut FizzState) -> bool {
         let read_polled = plugin_info.read_polled.clone();
 
         // Check read end
-        let write_buf = ctx.global.buffers.get_mut(&write_buf_id).unwrap();
+        let write_buf = state.global.buffers.get_mut(&write_buf_id).unwrap();
         if plugin_module.can_read(&context) && !write_buf.is_empty() {
             log::debug!("plugin module context {:?} can be read", &context);
             plugin_activated = true;
@@ -106,7 +106,7 @@ pub fn run_plugins(ctx: &mut FizzState) -> bool {
         }
 
         // Check write end
-        let read_buf = ctx.global.buffers.get_mut(&read_buf_id).unwrap();
+        let read_buf = state.global.buffers.get_mut(&read_buf_id).unwrap();
         if plugin_module.can_write(&context) && !read_buf.is_full() {
             log::debug!("plugin module context {:?} can write", &context);
             plugin_activated = true;
@@ -130,11 +130,11 @@ pub fn run_plugins(ctx: &mut FizzState) -> bool {
     }
 
     for read_polled in read {
-        ctx.raise_polled(&read_polled);
+        state.raise_polled(&read_polled);
     }
 
     for write_polled in write {
-        ctx.lower_polled(&write_polled);
+        state.lower_polled(&write_polled);
     }
 
     plugin_activated

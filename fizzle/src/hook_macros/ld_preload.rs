@@ -83,7 +83,7 @@ macro_rules! hook {
 
         pub unsafe fn $hook_fn ( $($v : $t),*) -> $r {
             #[allow(unused_mut)]
-            let mut $state = crate::state::FIZZLE_STATE.acquire();
+            let mut $state = crate::state::singleton::fizzle_state_singleton();
             $body
         }
     };

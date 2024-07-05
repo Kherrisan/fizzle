@@ -3,6 +3,7 @@
 
 extern crate libc;
 
+mod comptime;
 mod constants;
 mod hook_macros;
 pub mod hooks;

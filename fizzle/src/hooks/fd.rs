@@ -12,12 +12,14 @@ hook_macros::hook! {
     unsafe fn close(
         fd: libc::c_int
     ) -> libc::c_int => fizzle_close(ctx) {
+        let mut state = ctx.acquire();
+
         let descriptor_id = DescriptorId::new(fd);
-        let ref_count = ctx.local.fds.ref_count(&descriptor_id);
+        let ref_count = state.local.fds.ref_count(&descriptor_id);
 
         if ref_count == 1 {
             log::debug!("close({}) -> 0 (last fd closed for resource)", fd);
-            match ctx.local.fds.get(&descriptor_id) {
+            match state.local.fds.get(&descriptor_id) {
                 Some(FdInfo { resource: FdResource::Epoll(_), .. }) => crate::alias_fd_destroy(fd),
                 Some(FdInfo { resource: FdResource::EventFd(_), .. }) => crate::alias_fd_destroy(fd),
                 Some(FdInfo { resource: FdResource::Directory(_), .. }) => crate::alias_fd_destroy(fd),
@@ -26,16 +28,16 @@ hook_macros::hook! {
                     assert_eq!(hook_macros::real!(close)(fd), 0, "close() returned nonzero despite valid socket context");
                 
                     let socket_id = socket_id.clone();
-                    let mut ref_count = ctx.global.sockets.ref_count(&socket_id);
-                    match ctx.global.sockets.get(&socket_id).unwrap() {
+                    let mut ref_count = state.global.sockets.ref_count(&socket_id);
+                    match state.global.sockets.get(&socket_id).unwrap() {
                         SocketState::Connectionless(sock_info) => if ref_count <= 3 { // 2 refs we're currently holding + 1 ref in socket_locations
                             let addr = sock_info.local_addr.clone();
-                            ctx.global.socket_locations.remove(&addr).unwrap();
+                            state.global.socket_locations.remove(&addr).unwrap();
                         }
                         SocketState::Unassociated(sock_info) => {
                             if ref_count <= 3 {
                                 if let Some(addr) = sock_info.local_addr.clone() {
-                                    ctx.global.socket_locations.remove(&addr).unwrap();                                   
+                                    state.global.socket_locations.remove(&addr).unwrap();                                   
                                 }
                             }
                         }
@@ -43,20 +45,20 @@ hook_macros::hook! {
                             if ref_count <= 3 {
                                 // TODO: need to handle `connecting` sockets here so that they get rejected correctly
                                 let addr = server_info.local_addr.clone();
-                                ctx.global.socket_locations.remove(&addr).unwrap();
+                                state.global.socket_locations.remove(&addr).unwrap();
                             }
                         }
                         SocketState::Connecting(connecting_info) => {
                             if ref_count <= 3 {
                                 let addr = connecting_info.local_addr.clone();
-                                ctx.global.socket_locations.remove(&addr).unwrap();
+                                state.global.socket_locations.remove(&addr).unwrap();
                             }
                         }
                         SocketState::Connected(connection_info) => {
                             // TODO: local address never bound?? Need to move address location...
                             if let ConnectedBackend::Peered(peer_info) = &connection_info.backend {
                                 let peer_id = peer_info.peer.clone().unwrap();
-                                let SocketState::Connected(peer_info) = ctx.global.sockets.get_mut(&peer_id).unwrap() else {
+                                let SocketState::Connected(peer_info) = state.global.sockets.get_mut(&peer_id).unwrap() else {
                                     unreachable!()
                                 };
 
@@ -70,7 +72,7 @@ hook_macros::hook! {
                                     let addr = peer_info.rem_addr.clone();
 
                                     // TODO: what about accept()ed sockets?
-                                    ctx.global.socket_locations.remove(&addr).unwrap();
+                                    state.global.socket_locations.remove(&addr).unwrap();
                                 }
                             }
                         }
@@ -80,8 +82,8 @@ hook_macros::hook! {
                 Some(FdInfo { resource: FdResource::MessageQueue(_), .. }) => crate::alias_fd_destroy(fd),
                 Some(FdInfo { resource: FdResource::Pipe(pipe_id), .. }) => {
                     crate::alias_fd_destroy(fd);
-                    let peer_id = ctx.global.pipes.get(&pipe_id).unwrap().peer.clone().unwrap();
-                    ctx.global.pipes.get_mut(&peer_id).unwrap().peer = None;
+                    let peer_id = state.global.pipes.get(&pipe_id).unwrap().peer.clone().unwrap();
+                    state.global.pipes.get_mut(&peer_id).unwrap().peer = None;
                 }
                 // TODO: mark stdin as closed after this...
                 Some(FdInfo { resource: FdResource::Stdin, .. }) => (), // We keep stdin for fuzzing input...
@@ -94,7 +96,7 @@ hook_macros::hook! {
             return -1
         }
 
-        assert_eq!(ctx.local.fds.downref(&descriptor_id), ref_count - 1);
+        assert_eq!(state.local.fds.downref(&descriptor_id), ref_count - 1);
 
         0
     }
@@ -107,15 +109,16 @@ hook_macros::hook! {
         cmd: libc::c_int,
         arg: *mut libc::c_void
     ) -> libc::c_int => fizzle_fcntl(ctx) {
+        let mut state = ctx.acquire();
 
-        match ctx.local.fds.get_mut(&DescriptorId::new(fd)) {
+        match state.local.fds.get_mut(&DescriptorId::new(fd)) {
             Some(fd_info) if fd_info.is_passthrough => {
                 let dupfd = hook_macros::real!(fcntl)(fd, cmd, arg);
                 if dupfd >= 0 && (cmd == libc::F_DUPFD || cmd == libc::F_DUPFD_CLOEXEC) {
                     let nonblocking = fd_info.nonblocking;
                     let close_on_exec = cmd == libc::F_DUPFD_CLOEXEC;
                     let resource = fd_info.resource.clone();
-                    ctx.local.fds.allocate_with_key(DescriptorId::new(dupfd), FdInfo {
+                    state.local.fds.allocate_with_key(DescriptorId::new(dupfd), FdInfo {
                         close_on_exec,
                         nonblocking,
                         is_passthrough: true,
@@ -142,7 +145,7 @@ hook_macros::hook! {
                         let resource = fd_info.resource.clone();
 
                         let dupfd = crate::alias_fd_create();
-                        ctx.local.fds.allocate_with_key(DescriptorId::new(dupfd), FdInfo {
+                        state.local.fds.allocate_with_key(DescriptorId::new(dupfd), FdInfo {
                             close_on_exec: cmd == libc::F_DUPFD_CLOEXEC,
                             nonblocking,
                             is_passthrough: false,
@@ -207,7 +210,7 @@ hook_macros::hook! {
         arg: *mut libc::c_void
     ) -> libc::c_int => fizzle_ioctl(_ctx) {
         log::info!("ioctl({}, {}, {})", fd, request, arg as usize);
-        crate::report_strict_failure("`ioctl` unimplemented");
-        hook_macros::real!(ioctl)(fd, request, arg)
+
+        panic!("`ioctl` unimplemented")
     }
 }
