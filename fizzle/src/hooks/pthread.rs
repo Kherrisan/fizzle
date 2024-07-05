@@ -185,20 +185,28 @@ hook_macros::hook! {
     unsafe fn pthread_key_create(
         key: *mut libc::pthread_key_t,
         destructor: PThreadDestructor
-    ) => fizzle_pthread_key_create(ctx) {
-        hook_macros::real!(pthread_key_create)(key, fizzle_do_nothing);
-        ctx.local.pthread_keys.insert(*key, PThreadRoutine { function: destructor, arg: None });
-        ctx.local.pthread_key_values.insert(*key, HashMap::with_hasher(Default::default()));
+    ) -> libc::c_int => fizzle_pthread_key_create(ctx) {
+        let ret = hook_macros::real!(pthread_key_create)(key, fizzle_do_nothing);
+        if ret == 0 {
+            ctx.local.pthread_keys.insert(*key, PThreadRoutine { function: destructor, arg: None });
+            ctx.local.pthread_key_values.insert(*key, HashMap::with_hasher(Default::default()));
+        }
+        
+        ret
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_key_delete(
         key: libc::pthread_key_t
-    ) => fizzle_pthread_key_delete(ctx) {
-        hook_macros::real!(pthread_key_delete)(key);
-        ctx.local.pthread_keys.remove(&key);
-        ctx.local.pthread_key_values.remove(&key);
+    ) -> libc::c_int => fizzle_pthread_key_delete(ctx) {
+        let ret = hook_macros::real!(pthread_key_delete)(key);
+        if ret == 0 {
+            ctx.local.pthread_keys.remove(&key);
+            ctx.local.pthread_key_values.remove(&key);
+        }
+
+        ret
     }
 }
 
@@ -206,8 +214,9 @@ hook_macros::hook! {
     unsafe fn pthread_setspecific(
         key: libc::pthread_key_t,
         pointer: *mut libc::c_void // NOTE: this is actually `*const libc::c_void` in the function definition.
-    ) => fizzle_pthread_key_setspecific(ctx) {
+    ) -> libc::c_int => fizzle_pthread_key_setspecific(ctx) {
         ctx.local.pthread_key_values.get_mut(&key).unwrap().insert(thread::current().id(), pointer);
+        0
     }
 }
 
@@ -256,11 +265,10 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn pthread_detach(
-        thread: libc::pthread_t
-    ) => fizzle_pthread_detach(_ctx) {
+        _thread: libc::pthread_t
+    ) -> libc::c_int => fizzle_pthread_detach(_ctx) {
 
-        crate::report_strict_failure("`pthread_detach` unimplemented");
-        hook_macros::real!(pthread_detach)(thread);
+        panic!("`pthread_detach` unimplemented")
     }
 }
 

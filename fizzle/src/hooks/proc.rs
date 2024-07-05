@@ -17,10 +17,12 @@ hook_macros::hook! {
 
         // This thread should still be able to execute afterwards
         ctx.mark_thread_ready(thread_id);
+        drop(ctx);
 
         let pid = hook_macros::real!(fork)();
         match pid {
             0 => {
+                let mut ctx = state::FIZZLE_STATE.acquire();
                 // Child process--fix all of the local state
                 ctx.local.plugin_modules = None;
 
@@ -33,12 +35,11 @@ hook_macros::hook! {
             }
             1.. => {
                 // Parent process--await execution
-                drop(ctx);
+
                 state::FIZZLE_STATE.pause_current_process();
             }
             _ => {
                 // fork() returned -1, but we marked our own process as ready so we need to wait
-                drop(ctx);
                 state::FIZZLE_STATE.yield_thread();
             }
         }

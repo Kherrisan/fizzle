@@ -116,6 +116,8 @@ impl FizzCell {
         log::info!("First syscall hooked--`env_logger` initialized.");
         log::trace!("Initializing fizzle state");
 
+        let is_initialized = matches!(env::var(FIZZLE_MEMORY_ENV), Ok(_));
+
         unsafe {
             // Initialize the reaper lock.
             Semaphore::initialize(&mut *self.reaper_lock.get(), true, 0);
@@ -126,6 +128,38 @@ impl FizzCell {
         }
 
         log::trace!("Fizzle state initialization complete");
+
+        if !is_initialized { // Main process
+            // Now run any applicable processes
+            let mut processes = Vec::new();
+            comptime::populate_onstartup_processes(&mut processes);
+
+            for mut process in processes {
+                let mut ctx = self.acquire();
+
+                // This thread should still be able to execute afterwards
+                ctx.mark_thread_ready(thread::current().id());
+
+                let process_id = ctx.global.assign_process_id();
+                ctx.global.passthrough_process_id = process_id;
+
+                // TODO: upref all reference-counted global variables here
+                // For now we just don't free global variables so it's fine...
+
+                drop(ctx);
+
+                process.env("LD_PRELOAD", std::env::var("LD_PRELOAD").unwrap());
+                process.spawn().unwrap();
+
+                self.pause_current_process();
+            }
+
+            let mut onready_processes = Vec::new();
+            comptime::populate_onready_processes(&mut onready_processes);
+            if onready_processes.is_empty() {
+                self.acquire().global.startup_complete = true;
+            }
+        }
     }
 
     fn init_thread_lock(&self, thread_id: &ThreadId) {
@@ -206,7 +240,6 @@ impl FizzCell {
                             break;
                         }
                     }
-                    // if current poller has all PolledId values that have false flags, move on to next
                 }
             }
         }
@@ -248,6 +281,35 @@ impl FizzCell {
             // returns `true` but doesn't schedule new workers.
             self.yield_thread();
 
+        } else if !self.acquire().global.startup_complete {
+            let mut ctx = self.acquire();
+            ctx.global.startup_complete = true;
+
+            // Now run any applicable processes
+            let mut processes = Vec::new();
+            comptime::populate_onready_processes(&mut processes);
+
+            for mut process in processes {
+                let mut ctx = self.acquire();
+
+                // This thread should still be able to execute afterwards
+                ctx.mark_thread_ready(thread::current().id());
+
+                // TODO: upref all reference-counted global variables here
+                // For now we just don't free global variables so it's fine...
+
+                let process_id = ctx.global.assign_process_id();
+                ctx.global.passthrough_process_id = process_id;
+
+                drop(ctx);
+
+                process.env("LD_PRELOAD", std::env::var("LD_PRELOAD").unwrap());
+                process.spawn().unwrap();
+
+                self.pause_current_process();
+            }
+        
+            self.yield_thread();
         } else if !self.acquire().global.per_round_endpoints.is_empty() {
             let mut ctx = self.acquire();
             let mut endpoints = FnvIndexSet::new();
@@ -338,7 +400,7 @@ impl FizzCell {
             unsafe {
                 crate::__afl_manual_init();
             }
-            log::debug!("__afl_manual_init finished");
+            log::debug!("__afl_manual_init() finished");
         }
 
         // Wait for input from the fuzzing engine...
@@ -561,9 +623,7 @@ impl FizzCell {
         unsafe {
             let ctx = self.acquire();
             ctx.global
-                .process_locks
-                .get(&ctx.local.process_id)
-                .unwrap()
+                .process_locks[usize::from(ctx.local.process_id)]
                 .assume_init_ref()
                 .wait();
         }
@@ -573,9 +633,7 @@ impl FizzCell {
         unsafe {
             self.acquire()
                 .global
-                .process_locks
-                .get(&process_id)
-                .unwrap()
+                .process_locks[usize::from(process_id)]
                 .assume_init_ref()
                 .post();
         }
@@ -652,7 +710,9 @@ impl FizzState {
         match is_initialized {
             true => {
                 global = unsafe { global_uninit.assume_init_mut() };
-                process_id = global.next_process_id;
+                process_id = global.passthrough_process_id;
+                Semaphore::initialize(&mut global.process_locks[usize::from(process_id)], true, 0);
+
                 let transfer_fds = global.transfer_fds.take();
                 let local = FizzLocal::new(process_id, transfer_fds, true);
                 Self { local, global }
@@ -874,7 +934,7 @@ pub struct FizzLocal {
     pub plugin_modules: Option<Box<PluginModules>>,
     /// A supplamentary thread used to reap exiting threads.
     pub reaper: Option<ThreadId>,
-    pub fds: KeyedArena<DescriptorId, FdInfo, FIZZLE_MAX_FDS>,
+    pub fds: Box<Descriptors>,
     pub dirs: KeyedArena<DirectoryId, FilePath<MAX_PATH_LEN>, FIZZLE_MAX_DIRS>,
     pub barriers: HashMap<BarrierPtr, BarrierInfo, FxBuildHasher>,
     pub condvars: HashMap<CondVarPtr, VecDeque<ThreadId>, FxBuildHasher>,
@@ -929,7 +989,7 @@ impl Debug for FizzLocal {
 impl FizzLocal {
     fn new(
         id: ProcessId,
-        transfer_fds: Option<Descriptors>,
+        transfer_fds: Option<Box<Descriptors>>,
         is_child_process: bool,
     ) -> Self {
         let working_directory =
@@ -938,7 +998,11 @@ impl FizzLocal {
         let fds = match transfer_fds {
             Some(fds) => fds,
             None => {
-                let mut fds = KeyedArena::default();
+                let mut fds: Box<MaybeUninit<Descriptors>> = Box::new(MaybeUninit::uninit());
+                // This needs to remain fixed in a location, so we use a Box with in-place initialization
+                unsafe { KeyedArena::initialize(fds.as_mut_ptr()) };
+
+                let mut fds = unsafe { fds.assume_init() };
                 fds.allocate_with_key(DescriptorId::from(0), FdInfo::new(FdResource::Stdin)).unwrap();
                 fds.allocate_with_key(DescriptorId::from(1), FdInfo::new(FdResource::Stdout)).unwrap();
                 fds.allocate_with_key(DescriptorId::from(2), FdInfo::new(FdResource::Stderr)).unwrap();
@@ -996,14 +1060,15 @@ pub struct FizzGlobal {
     pub next_ephemeral_port: u16,
     /// The thread identifier to be executed by the waking process.
     waking_thread_id: Option<ThreadId>,
-    process_locks: KeyedArena<ProcessId, MaybeUninit<Semaphore>, FIZZLE_MAX_PROCESSES>,
-    transfer_fds: Option<Descriptors>,
+    process_locks: [MaybeUninit<Semaphore>; FIZZLE_MAX_PROCESSES],
+    transfer_fds: Option<Box<Descriptors>>,
     pub shared_mem_initialized: bool,
     pub passthrough_process_id: ProcessId,
     pub epolls: KeyedArena<EpollId, EpollInfo, FIZZLE_MAX_EPOLLS>,
     pub event_fds: KeyedArena<EventFdId, EventFdInfo, FIZZLE_MAX_EVENTFDS>,
     pub file_paths: FnvIndexMap<FilePath<MAX_PATH_LEN>, Rc<FileId>, FIZZLE_MAX_FILE_PATHS>,
     pub files: KeyedArena<FileId, FileBackend, FIZZLE_MAX_FILES>,
+    pub startup_complete: bool,
     pub sem_paths: FnvIndexMap<SemPath, Rc<SemaphoreId>, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub semaphores: KeyedArena<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub pipes: KeyedArena<PipeId, PipeInfo, FIZZLE_MAX_PIPES>,
@@ -1035,12 +1100,14 @@ impl FizzGlobal {
             let state = state.as_mut_ptr();
 
             *ptr::addr_of_mut!((*state).shared_mem_initialized) = false;
-            *ptr::addr_of_mut!((*state).persistent_rounds) = FIZZLE_AFL_LOOP;
+            *ptr::addr_of_mut!((*state).persistent_rounds) = FIZZLE_AFL_LOOP; // TODO: make configurable
             *ptr::addr_of_mut!((*state).next_process_id) = ProcessId::from(1);
             *ptr::addr_of_mut!((*state).next_stream_id) = StreamId::from(0);
             *ptr::addr_of_mut!((*state).next_ephemeral_port) = FIZZLE_EPHEMERAL_PORT_START;
+            *ptr::addr_of_mut!((*state).startup_complete) = false;
             *ptr::addr_of_mut!((*state).waking_thread_id) = None;
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).process_locks));
+            *ptr::addr_of_mut!((*state).process_locks) = array::from_fn(|_| MaybeUninit::uninit());
+            Semaphore::initialize(&mut (*state).process_locks[0], true, 0);
             *ptr::addr_of_mut!((*state).transfer_fds) = None;
             *ptr::addr_of_mut!((*state).passthrough_process_id) = ProcessId::from(1);
             KeyedArena::initialize(ptr::addr_of_mut!((*state).epolls));
@@ -1064,9 +1131,8 @@ impl FizzGlobal {
             *ptr::addr_of_mut!((*state).per_round_clients) = heapless::Vec::new();
             *ptr::addr_of_mut!((*state).per_round_endpoints) = FnvIndexSet::new();
             KeyedArena::initialize(ptr::addr_of_mut!((*state).fuzz_endpoints));
-            // TODO: enable custom seed loading
             *ptr::addr_of_mut!((*state).prefuzz_rng) =
-                SmallRng::seed_from_u64(0xABAD_5EED_ABAD_5EED_u64);
+                SmallRng::seed_from_u64(0xABAD_5EED_ABAD_5EED_u64); // TODO: enable custom seed loading
 
             &mut (*state)
         }

@@ -278,6 +278,7 @@ impl<K: ArenaKey<Value = V>, V: Sized, const N: usize> KeyedArena<K, V, N> {
             (*(ptr::addr_of_mut!((*value_idx).inner) as *mut ArenaItem<V>).add(i)).ref_cnt = 0;
         }
         *ptr::addr_of_mut!((*value_idx).next_key) = 0;
+        *ptr::addr_of_mut!((*value_idx).max_key) = 0;
         *ptr::addr_of_mut!((*value_idx)._phantom) = Default::default();
     }
 

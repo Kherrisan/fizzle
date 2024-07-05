@@ -8,7 +8,6 @@ use bitvec::prelude::*;
 use std::cmp;
 
 use fizzle_plugin::{FizzlePlugin, FizzlePluginObject, PluginError};
-use s1ap::S1SetupRequestProtocolIEs;
 use asnfuzzgen_codecs::aper::AperCodec;
 use asnfuzzgen_codecs::PerCodecData;
 
@@ -77,7 +76,7 @@ impl FizzlePlugin for S1apFuzzClient {
             procedure_code: s1ap::ProcedureCode(17),
             criticality: s1ap::Criticality(s1ap::Criticality::REJECT),
             value: s1ap::InitiatingMessageValue::Id_S1Setup(s1ap::S1SetupRequest {
-                protocol_i_es: S1SetupRequestProtocolIEs(vec![
+                protocol_i_es: s1ap::S1SetupRequestProtocolIEs(vec![
                     s1ap::S1SetupRequestProtocolIEs_Entry {
                         id: s1ap::ProtocolIE_ID(59),
                         criticality: s1ap::Criticality(s1ap::Criticality::REJECT),

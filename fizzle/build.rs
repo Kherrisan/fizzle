@@ -14,11 +14,40 @@ const DEFAULT_CONFIG_PATH: &str = "./Fizzle.toml";
 const FIZZLE_CONFIG_ENV: &str = "FIZZLE_CONFIG";
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)] 
 pub struct FizzleConfiguration {
-    pub io: HashMap<IoEndpoint, IoInputVariant>
+    pub io: HashMap<IoEndpoint, IoInputVariant>,
+    pub process: Vec<ProcessConfiguration>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)] 
+pub struct ProcessConfiguration {
+    path: String,
+    #[serde(default)]
+    when: ProcessTiming,
+    #[serde(default)]
+    args: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)] 
+#[serde(rename_all = "lowercase")]
+pub enum ProcessTiming {
+    /// The desired process is spawned as soon as the Fizzle harness is instantiated.
+    OnStartup,
+    /// The desired process is spawned once the main process has halted (immediately prior to the first fuzzing round).
+    OnReady,
+}
+
+impl Default for ProcessTiming {
+    fn default() -> Self {
+        Self::OnStartup
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)] 
 #[serde(untagged)]
 pub enum IoInputVariant {
     Basic(IoBasicMethod),
@@ -26,6 +55,7 @@ pub enum IoInputVariant {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)] 
 #[serde(rename_all = "lowercase")]
 pub enum IoBasicMethod {
     Fuzz,
@@ -36,6 +66,7 @@ pub enum IoBasicMethod {
 }
 
 #[derive(Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)] 
 #[serde(rename_all = "lowercase")]
 pub enum IoTiming {
     /// Initializes the plugin once and maintains state throughout different fuzzing rounds.
@@ -45,6 +76,7 @@ pub enum IoTiming {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)] 
 pub struct IoPluginConfiguration {
     pub method: String, // TODO: this must be "plugin"
     pub when: IoTiming,
@@ -116,6 +148,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let config: FizzleConfiguration = toml::from_str(&config_string)?;
     let includes = extract_includes(&config);
     let plugins_impl = gen_populate_plugins(&config);
+    let (onstartup_process_impl, onready_process_impl) = gen_processes(&config);
 
     let final_tokens = quote::quote! {
         #[allow(unused)]
@@ -133,11 +166,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         #[allow(unused)]
         use std::collections::HashMap;
 
-
         #includes
 
         pub fn populate_plugins(endpoints: &mut Vec<PluginConfigEndpoint>, modules: &mut PluginModules) {
             #plugins_impl
+        }
+
+        pub fn populate_onstartup_processes(processes: &mut Vec<std::process::Command>) {
+            #onstartup_process_impl
+        }
+
+        pub fn populate_onready_processes(processes: &mut Vec<std::process::Command>) {
+            #onready_process_impl
         }
     };
     fs::write("src/state/comptime.rs", final_tokens.to_string())?;
@@ -162,6 +202,38 @@ fn extract_includes(config: &FizzleConfiguration) -> TokenStream {
             });
     }
     include_tokens
+}
+
+fn gen_processes(config: &FizzleConfiguration) -> (TokenStream, TokenStream) {
+    let mut onstartup_process_tokens = TokenStream::new();
+    let mut onready_process_tokens = TokenStream::new();
+
+    for process_info in config.process.iter() {
+        let tokens = match &process_info.when {
+            ProcessTiming::OnStartup => &mut onstartup_process_tokens,
+            ProcessTiming::OnReady => {
+                unimplemented!() // &mut onready_process_tokens
+            },
+        };
+
+        let path = &process_info.path;
+
+        tokens.extend(quote::quote! {
+            let mut command = std::process::Command::new(#path);
+        });
+
+        for arg in &process_info.args {
+            tokens.extend(quote::quote! {
+                command.arg(#arg);
+            });
+        }
+
+        tokens.extend(quote::quote! {
+            processes.push(command);
+        })
+    }
+
+    (onstartup_process_tokens, onready_process_tokens)
 }
 
 fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
