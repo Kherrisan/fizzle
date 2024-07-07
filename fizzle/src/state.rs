@@ -1,47 +1,62 @@
-pub mod backend;
-
-pub mod fd;
-pub mod identifiers;
-pub mod plugins;
-pub mod singleton;
-
-use std::cell::{RefCell, UnsafeCell};
+use std::cell::{Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
-use std::hash::{Hash, Hasher};
 use std::mem::MaybeUninit;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::ops::{Deref, DerefMut};
 use std::os::unix::ffi::OsStrExt;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::ThreadId;
 use std::{array, env, mem, ptr, slice, thread};
 
-use fizzle_common::io::{AddressFamily, SocketType, TransportAddress, TransportProtocol, UnixAddr, MAX_PATH_LEN};
+use fizzle_common::io::{AddressFamily, TransportAddress, TransportProtocol, UnixAddr, MAX_PATH_LEN};
 use fizzle_common::path::{FilePath, SemPath};
-use fizzle_common::storage::{Buffer, Rc, KeyedArena};
+use fizzle_common::storage::Buffer;
 
 use fizzle_plugin::{IoEndpointVariant, StreamId};
-use heapless::spsc::Queue;
-
 use fxhash::FxBuildHasher;
-use heapless::{Deque, FnvIndexMap, FnvIndexSet};
+use heapless::{FnvIndexMap, FnvIndexSet};
+use heapless::spsc::Queue;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
-use crate::comptime;
+use crate::{comptime, state};
+use crate::arena::{KeyedArena, Rc};
 use crate::constants::*;
+use crate::handlers::barrier::{BarrierInfo, BarrierPtr};
+use crate::handlers::buffer::BufferId;
+use crate::handlers::condvar::CondVarPtr;
+use crate::handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource};
+use crate::handlers::directory::DirectoryId;
+use crate::handlers::epoll::{EpollId, EpollInfo};
+use crate::handlers::eventfd::{EventfdId, EventfdInfo};
+use crate::handlers::file::{FileId, FileObject, FilePtr};
+use crate::handlers::fuzz_endpoint::{FuzzEndpointId, FuzzEndpointInfo};
+use crate::handlers::message_queue::{MessageQueueId, MessageQueueInfo};
+use crate::handlers::mutex::MutexPtr;
+use crate::handlers::pipe::{PipeId, PipeInfo};
+use crate::handlers::plugin::{PluginId, PluginInfo};
+use crate::handlers::plugin_module::PluginModuleId;
+use crate::handlers::polled::{PolledId, PolledInfo};
+use crate::handlers::poller::{PollerId, PollerInfo};
+use crate::handlers::process::ProcessId;
+use crate::handlers::rwlock::{RwLockInfo, RwLockPtr};
+use crate::handlers::semaphore::{SemaphoreId, SemaphoreInfo, SemaphorePtr};
+use crate::handlers::socket::{PendingInfo, PendingSocket, ServerSocket, SocketId, SocketLocationInfo, SocketState};
+use crate::handlers::spinlock::SpinlockPtr;
+use crate::handlers::thread::{PThreadRoutine, ThreadTermination};
+use crate::once::NcOnceCell;
+use crate::plugins::{IoEmulationType, PluginConfigEndpoint, PluginModules};
 use crate::semaphore::Semaphore;
 
-use self::backend::{
-    ConnectedBackend, ConnectingBackend, ConnectionlessBackend, FileBackend, PendingBackend,
-    ServerBackend, StandardFeedback, StdioBackend,
+use crate::backend::{
+    ConnectedBackend, FileBackend, IoBackend, PendingBackend, ServerBackend, StandardFeedback, StdioBackend
 };
-use self::fd::{FdInfo, FdResource};
-use self::identifiers::*;
-use self::plugins::{IoEmulationType, PluginConfigEndpoint, PluginModules};
 
-const THREAD_LOCK_INIT_VALUE: Option<Box<Semaphore>> = None;
+static FIZZLE_STATE: NcOnceCell<RefCell<FizzState>> = NcOnceCell::new();
+
+static REAPER_LOCK: NcOnceCell<Semaphore> = NcOnceCell::new();
+
+static THREAD_LOCKS: NcOnceCell<[RefCell<Option<Semaphore>>; FIZZLE_MAX_THREADS]> = NcOnceCell::new();
 
 // See `set_entered_handler` and `has_entered_handler`
 std::thread_local! {
@@ -68,121 +83,128 @@ pub fn has_entered_handler() -> bool {
     entered
 }
 
-/// A global Cell of memory containing all Fizzle state.
-///
-/// # Safety
-///
-/// Mutable aliasing within a process is UB in Rust; as such, we use
-/// [`thread_locks`](FizzCell::thread_locks) to ensure that only one thread mutably accesses
-/// `FizzCell` at a given time.
-///
-/// Shared mutable memory aliasing across processes isn't technically undefined behavior in Rust, so
-/// we don't need them to be separate from the `UnsafeCell` like we do with thread locks.
-/// That being said, this data structure aims to provide the guarantee that only one thread
-/// of one process is accessing the shared state at any given time when used in tandem with the
-/// hooks defined in `src/hooks/pthread.rs` and `src/hooks/proc.rs`.
-pub struct FizzCell {
-    /// Checked at runtime to ensure that `FizzCell` is not mutably aliased by one process.
-    acquired: AtomicBool,
-    initialized: AtomicBool,
-    reaper_lock: UnsafeCell<MaybeUninit<Semaphore>>,
-    /// These are safe as long as the first access
-    thread_locks: UnsafeCell<[Option<Box<Semaphore>>; FIZZLE_MAX_THREADS]>,
-    // Inter-process locks are held within `FizzState`.
-    inner: UnsafeCell<MaybeUninit<FizzState>>,
+pub struct FizzleSingleton {
+    /// Empty private field to ensure `FizzleSingleton` isn't constructed outside of
+    /// `fizzle_state_singleton()`.
+    _private: (),
 }
 
-unsafe impl Send for FizzCell {}
+impl FizzleSingleton {
+    /// Acquires the global shared state for mutable access.
+    pub fn acquire(&mut self) -> RefMut<'_, FizzState> {
+        FIZZLE_STATE.get_or_init(|| {
+            env_logger::init();
+            log::info!("First syscall hooked--initializing Fizzle state...");
 
-unsafe impl Sync for FizzCell {}
+            let is_initialized = matches!(env::var(FIZZLE_MEMORY_ENV), Ok(_));
 
-impl FizzCell {
-    const fn new() -> Self {
-        Self {
-            acquired: AtomicBool::new(false),
-            initialized: AtomicBool::new(false),
-            reaper_lock: UnsafeCell::new(MaybeUninit::uninit()),
-            thread_locks: UnsafeCell::new([THREAD_LOCK_INIT_VALUE; FIZZLE_MAX_THREADS]),
-            inner: UnsafeCell::new(MaybeUninit::uninit()),
-        }
-    }
+            let state = RefCell::new(FizzState::new());
+            let process_id = state.borrow_mut().local.process_id;
+            process_id.initialize_process_lock(self);
 
-    #[cold]
-    #[inline(never)]
-    fn initialize_inner(&self) {
-        env_logger::init();
-        log::info!("First syscall hooked--`env_logger` initialized.");
-        log::trace!("Initializing fizzle state");
+            log::info!("Fizzle state initialization complete.");
 
-        let is_initialized = matches!(env::var(FIZZLE_MEMORY_ENV), Ok(_));
+            if !is_initialized { // Main process
+                // Now run any applicable processes
+                let mut processes = Vec::new();
+                comptime::populate_onstartup_processes(&mut processes);
 
-        unsafe {
-            // Initialize the reaper lock.
-            Semaphore::initialize(&mut *self.reaper_lock.get(), true, 0);
-            // Initialize the per-thread semaphore for this thread.
-            self.init_thread_lock(&thread::current().id());
-            // Initialize FizzState
-            (*self.inner.get()).write(FizzState::new());
-        }
+                for mut process in processes {
+                    let mut state = self.acquire();
 
-        log::trace!("Fizzle state initialization complete");
+                    // This thread should still be able to execute afterwards
+                    state.mark_thread_ready(thread::current().id());
 
-        if !is_initialized { // Main process
-            // Now run any applicable processes
-            let mut processes = Vec::new();
-            comptime::populate_onstartup_processes(&mut processes);
+                    let process_id = state.global.assign_process_id();
+                    state.global.passthrough_process_id = process_id;
 
-            for mut process in processes {
-                let mut state = self.acquire();
+                    // TODO: upref all reference-counted global variables here
+                    // For now we just don't free global variables so it's fine...
 
-                // This thread should still be able to execute afterwards
-                state.mark_thread_ready(thread::current().id());
+                    drop(state);
 
-                let process_id = state.global.assign_process_id();
-                state.global.passthrough_process_id = process_id;
+                    // TODO: put this in a method on its own
+                    process.env("LD_PRELOAD", std::env::var("LD_PRELOAD").unwrap());
+                    process.spawn().unwrap();
 
-                // TODO: upref all reference-counted global variables here
-                // For now we just don't free global variables so it's fine...
+                    self.pause_current_process();
+                }
 
-                drop(state);
-
-                // TODO: put this in a method on its own
-                process.env("LD_PRELOAD", std::env::var("LD_PRELOAD").unwrap());
-                process.spawn().unwrap();
-
-                self.pause_current_process();
+                let mut onready_processes = Vec::new();
+                comptime::populate_onready_processes(&mut onready_processes);
+                if onready_processes.is_empty() {
+                    self.acquire().global.startup_complete = true;
+                }
             }
 
-            let mut onready_processes = Vec::new();
-            comptime::populate_onready_processes(&mut onready_processes);
-            if onready_processes.is_empty() {
-                self.acquire().global.startup_complete = true;
-            }
-        }
+            state
+        }).borrow_mut()
     }
 
-    pub fn init_thread_lock(&self, thread_id: &ThreadId) {
-        unsafe {
-            (*self.thread_locks.get())[index_of_thread(thread_id)] = Some(Semaphore::new_boxed(0));
-        }
+    pub fn run_outside_shim<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce() -> R
+    {
+        debug_assert!(state::has_entered_handler());
+        state::set_entered_handler(false);
+        let ret = f();
+        state::set_entered_handler(true);
+        ret
     }
 
-    pub fn get_thread_lock(&self, thread_id: &ThreadId) -> &Semaphore {
+    fn reaper_lock(&mut self) -> &Semaphore {
+        REAPER_LOCK.get_or_situate(|uninit| Semaphore::initialize(uninit, false, 0))
+    }
+
+    pub fn thread_lock(&mut self, thread_id: &ThreadId) -> Ref<'_, Option<Semaphore>> {
+        let locks = THREAD_LOCKS.get_or_situate(Self::thread_locks_situate);
+
+        let thread_idx = crate::handlers::thread::index_of_thread(thread_id);
+        locks[thread_idx].borrow()
+    }
+
+    fn thread_locks_situate(uninit: &mut MaybeUninit<[RefCell<Option<Semaphore>>; FIZZLE_MAX_THREADS]>) -> &mut [RefCell<Option<Semaphore>>; FIZZLE_MAX_THREADS] {
+        let locks = uninit.write(array::from_fn(|_| RefCell::new(None)));
+
+        // Now initialize the current thread's lock.
+        let current_thread_idx = crate::handlers::thread::index_of_thread(&thread::current().id());
+        let mut sem_opt = locks[current_thread_idx].borrow_mut();
+        let sem_opt_deref = sem_opt.deref_mut();
+
+        // TODO: this seems to behave safely, but check with Miri
         unsafe {
-            (*self.thread_locks.get())[index_of_thread(thread_id)]
-                .as_deref()
-                .unwrap()
+            let uninit_sem = (*(ptr::from_mut(sem_opt_deref) as *mut Option<MaybeUninit<Semaphore>>)).insert(MaybeUninit::uninit());
+            Semaphore::initialize(uninit_sem, false, 0);
         }
+        drop(sem_opt);
+
+        locks
+    }
+
+    fn init_thread_lock(&mut self, thread_id: &ThreadId) {
+        let locks = THREAD_LOCKS.get_or_situate(Self::thread_locks_situate);
+        let thread_idx = crate::handlers::thread::index_of_thread(thread_id);
+
+        let mut sem_opt = locks[thread_idx].borrow_mut();
+        let sem_opt_deref = sem_opt.deref_mut();
+
+        // TODO: this seems to behave safely, but check with Miri
+        unsafe {
+            let uninit_sem = (*(ptr::from_mut(sem_opt_deref) as *mut Option<MaybeUninit<Semaphore>>)).insert(MaybeUninit::uninit());
+            Semaphore::initialize(uninit_sem, false, 0);
+        }
+        drop(sem_opt);
     }
 
     /// Destroys the thread lock of the calling thread.
-    fn destroy_thread_lock(&self) {
-        unsafe {
-            (*self.thread_locks.get())[index_of_thread(&thread::current().id())] = None;
-        }
+    fn destroy_thread_lock(&mut self) {
+        let locks = THREAD_LOCKS.get_or_situate(Self::thread_locks_situate);
+        let thread_idx = crate::handlers::thread::index_of_thread(&thread::current().id());
+        *locks[thread_idx].borrow_mut() = None;
     }
 
-    pub fn init_new_thread(&self) {
+    pub fn init_new_thread(&mut self) {
+        // SAFETY: `libc::pthread_self()` has no safety concerns.
         self.acquire()
             .local
             .pthreads
@@ -190,23 +212,12 @@ impl FizzCell {
         self.init_thread_lock(&thread::current().id());
     }
 
-    pub fn acquire(&self) -> FizzGuard<'_> {
-        // TODO: benchmark the perf overhead of this
-        if self.acquired.fetch_and(true, Ordering::Relaxed) {
-            panic!("internal fizzle error--`FizzCell` global state accessed mutably twice")
-        }
-
-        if !self.initialized.fetch_or(true, Ordering::Relaxed) {
-            self.initialize_inner()
-        }
-
-        FizzGuard { cell: self }
-    }
+    // TODO: yield_thread has become ugly, long and incomprehensible. Refactor.
 
     /// Pauses execution of the current thread and delegates control flow to another thread/process.
     /// Once all threads/processes have finished executing, this returns control flow to the primary
     /// fuzzing process, which signals to the fuzzer that it is ready for the next input.
-    pub fn yield_thread(&self) {
+    pub fn yield_thread(&mut self) {
         let mut state = self.acquire();
         let mut next_worker = None;
         log::trace!("yield_thread internally called");
@@ -265,13 +276,13 @@ impl FizzCell {
             if thread::current().id() != thread_id {
                 log::trace!("Scheduling thread {:?} for execution", thread_id);
                 // Invariant: no FizzGuards are being held here
-                self.get_thread_lock(&thread_id).post();
+                self.thread_lock(&thread_id).as_ref().unwrap().post();
                 self.pause_current_thread();
             }
             // Now it's this thread's turn to execute
             // TODO: this NEEDS to run in the root process, but we don't check this?
 
-        } else if self::plugins::run_plugins(&mut self.acquire()) {
+        } else if crate::plugins::run_plugins(&mut self.acquire()) {
             // Plugins have queued more workers as ready
             log::trace!(
                 "Plugins emitted new input--yielding thread to start next available worker"
@@ -287,6 +298,8 @@ impl FizzCell {
             // Now run any applicable processes
             let mut processes = Vec::new();
             comptime::populate_onready_processes(&mut processes);
+
+            drop(state);
 
             for mut process in processes {
                 let mut state = self.acquire();
@@ -337,14 +350,14 @@ impl FizzCell {
 
                             // Now raise all applicable poll events so the reader discovers the peer is closed
                             match connected.backend.clone() {
-                                backend::IoBackend::Plugin(plugin_id) => {
+                                IoBackend::Plugin(plugin_id) => {
                                     let plugin = state.global.plugins.get(&plugin_id).unwrap();
                                     let read_polled = plugin.read_polled.clone();
                                     let write_polled = plugin.write_polled.clone();
                                     state.raise_polled(&read_polled);
                                     state.raise_polled(&write_polled);
                                 },
-                                backend::IoBackend::Fuzz(fuzz_endpoint_id) => {
+                                IoBackend::Fuzz(fuzz_endpoint_id) => {
                                     let read_polled = state.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().read_polled.clone();
                                     state.raise_polled(&read_polled);
                                 }
@@ -362,6 +375,8 @@ impl FizzCell {
                 }
             }
 
+            drop(state);
+
             self.yield_thread();
 
         } else {
@@ -371,9 +386,11 @@ impl FizzCell {
         }
     }
 
+    // TODO: refactor `fuzz_round_complete` as well
+
     /// Notifies the fuzzing engine that the current round of fuzzing has finished.
     /// Note that
-    fn fuzz_round_complete(&self) {
+    fn fuzz_round_complete(&mut self) {
         let mut state = self.acquire();
         // Communicate that process is finished running
 
@@ -504,7 +521,7 @@ impl FizzCell {
         self.yield_thread(); // This won't recurse beyond a depth of 2, so long as inputs are passed into the appropriate places here...
     }
 
-    pub fn terminate_thread(&self, term_method: ThreadTermination) -> ! {
+    pub fn terminate_thread(&mut self, term_method: ThreadTermination) -> ! {
         let thread_id = thread::current().id();
         log::info!("thread {:?} being terminated...", thread_id);
 
@@ -555,11 +572,11 @@ impl FizzCell {
             drop(state);
             // Free this thread's semaphore
             self.destroy_thread_lock();
-            self.get_thread_lock(&reaper_id).post()
+            self.thread_lock(&reaper_id).as_ref().unwrap().post()
         } else {
             drop(state);
             let handle = std::thread::spawn(move || {
-                let mut ctx = unsafe { singleton::fizzle_state_singleton() };
+                let mut ctx = unsafe { fizzle_state_singleton() };
                 // Reaper thread
                 // The thread that spawned the reaper will immediately wait on its thread lock, so
                 // it is safe to `acquire()` global state here.
@@ -569,9 +586,9 @@ impl FizzCell {
                 drop(state);
                 ctx.init_thread_lock(&reaper_id);
                 // Notify thread that initialization has completed
-                ctx.get_thread_lock(&thread_id).post();
+                ctx.thread_lock(&thread_id).as_ref().unwrap().post();
                 // Await for thread notification before running reaper loop
-                ctx.get_thread_lock(&reaper_id).wait();
+                ctx.thread_lock(&reaper_id).as_ref().unwrap().wait();
 
                 loop {
                     ctx.yield_thread();
@@ -581,10 +598,10 @@ impl FizzCell {
                 }
             });
 
-            self.get_thread_lock(&thread_id).wait();
+            self.thread_lock(&thread_id).as_ref().unwrap().wait();
             // Free this thread's semaphore
             self.destroy_thread_lock();
-            self.get_thread_lock(&handle.thread().id()).post();
+            self.thread_lock(&handle.thread().id()).as_ref().unwrap().post();
         }
 
         // =======================DANGER ZONE: CONCURRENCY===========================
@@ -608,9 +625,9 @@ impl FizzCell {
         }
     }
 
-    pub fn pause_current_thread(&self) {
+    pub fn pause_current_thread(&mut self) {
         let current_thread = thread::current().id();
-        self.get_thread_lock(&current_thread).wait();
+        self.thread_lock(&current_thread).as_ref().unwrap().wait();
 
         let mut state = self.acquire();
         if state.local.cancelling_threads.remove(&current_thread) {
@@ -619,28 +636,26 @@ impl FizzCell {
         }
     }
 
-    pub fn pause_current_process(&self) {
-        unsafe {
-            let state = self.acquire();
-            state.global
-                .process_locks[usize::from(state.local.process_id)]
-                .assume_init_ref()
-                .wait();
-        }
+    pub fn pause_current_process(&mut self) {
+        let state = self.acquire();
+        state.global
+            .process_locks[usize::from(state.local.process_id)]
+            .as_ref()
+            .unwrap()
+            .wait();
     }
 
-    fn wake_process(&self, process_id: ProcessId) {
-        unsafe {
-            self.acquire()
-                .global
-                .process_locks[usize::from(process_id)]
-                .assume_init_ref()
-                .post();
-        }
+    fn wake_process(&mut self, process_id: ProcessId) {
+        self.acquire()
+            .global
+            .process_locks[usize::from(process_id)]
+            .as_ref()
+            .unwrap()
+            .post();
     }
 
     // call this whenever waiting for a single poll event
-    pub fn poll_until_ready(&self, polled_id: Rc<PolledId>) {
+    pub fn poll_until_ready(&mut self, polled_id: Rc<PolledId>) {
         let mut state = self.acquire();
         if !state.polled_is_ready(&polled_id) {
             let poller_id = state.new_poller();
@@ -652,27 +667,21 @@ impl FizzCell {
     }
 }
 
-pub struct FizzGuard<'a> {
-    cell: &'a FizzCell,
-}
-
-impl Deref for FizzGuard<'_> {
-    type Target = FizzState;
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { &*(self.cell.inner.get() as *const FizzState) }
-    }
-}
-
-impl DerefMut for FizzGuard<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { (*self.cell.inner.get()).assume_init_mut() }
-    }
-}
-
-impl Drop for FizzGuard<'_> {
-    fn drop(&mut self) {
-        self.cell.acquired.store(false, Ordering::Relaxed)
+/// Produces a new `FizzleSingleton` instance that can be used to acquire global state in a safe manner.
+/// 
+/// WARNING: this function SHOULD NOT be used in any methods other than a) the hook macro, or b)
+/// those that create new threads, such as `pthread_create`. The `FizzleSingleton` is designed to
+/// ensure that the global `FIZZLE_STATE` variable is never mutably referenced more than once. A
+/// single instantiation of it is provided for each LD_PRELOAD hook; this instance is passed around
+/// and is meant to be the _sole_ means of accessing global state.
+/// 
+/// WARNING 2: the `FizzleSingleton` prevents mutable aliasing within a single-threaded context, but
+/// it cannot inherently prevent mutable access to data by multiple threads. Thread creation hooks
+/// and scheduling routines need to ensure that any acquired `FizzGuard` instances are dropped prior
+/// to another thread acquiring the global state.
+pub unsafe fn fizzle_state_singleton() -> FizzleSingleton {
+    FizzleSingleton {
+        _private: (),
     }
 }
 
@@ -682,30 +691,10 @@ pub struct FizzState {
     pub global: &'static mut FizzGlobal,
 }
 
-/*
-#[no_mangle]
-extern "C" fn fizzle_atexit_suspend() {
-    loop {
-        // TODO: clean up any dangling polling items here, like for `_exit()`/`exit()`
-        FIZZLE_STATE.yield_thread()
-    }
-}
-*/
-
 impl FizzState {
     fn new() -> Self {
         // This needs to go before `allocate_global_memory`, as this env variable gets set within it.
         let is_initialized = matches!(env::var(FIZZLE_MEMORY_ENV), Ok(_));
-
-        /*
-        if env::var(FIZZLE_NOEXIT_ENV).is_ok() {
-            unsafe {
-                // Registered before any other atexit handler
-                // TODO: handle this different with proc interface
-                libc::atexit(fizzle_atexit_suspend);
-            }
-        }
-        */
 
         let global_uninit = Self::allocate_global_memory();
         let global: &'static mut FizzGlobal;
@@ -715,7 +704,6 @@ impl FizzState {
             true => {
                 global = unsafe { global_uninit.assume_init_mut() };
                 process_id = global.passthrough_process_id;
-                Semaphore::initialize(&mut global.process_locks[usize::from(process_id)], true, 0);
 
                 let transfer_fds = global.transfer_fds.take();
                 let local = FizzLocal::new(process_id, transfer_fds, true);
@@ -912,7 +900,7 @@ impl FizzState {
         let mut downref_keys  = Vec::new();
 
         for key in fds.keys() {
-            if let Some(FdInfo {
+            if let Some(DescriptorInfo {
                 close_on_exec: true,
                 ..
             }) = fds.get(&key) {
@@ -1007,9 +995,9 @@ impl FizzLocal {
                 unsafe { KeyedArena::initialize(fds.as_mut_ptr()) };
 
                 let mut fds = unsafe { fds.assume_init() };
-                fds.allocate_with_key(DescriptorId::from(0), FdInfo::new(FdResource::Stdin)).unwrap();
-                fds.allocate_with_key(DescriptorId::from(1), FdInfo::new(FdResource::Stdout)).unwrap();
-                fds.allocate_with_key(DescriptorId::from(2), FdInfo::new(FdResource::Stderr)).unwrap();
+                fds.allocate_with_key(DescriptorId::from_raw_fd(0), DescriptorInfo::new(FdResource::Stdin)).unwrap();
+                fds.allocate_with_key(DescriptorId::from_raw_fd(1), DescriptorInfo::new(FdResource::Stdout)).unwrap();
+                fds.allocate_with_key(DescriptorId::from_raw_fd(2), DescriptorInfo::new(FdResource::Stderr)).unwrap();
                 fds
             }
         };
@@ -1056,20 +1044,20 @@ impl FizzLocal {
 
 #[derive(Debug)]
 pub struct FizzGlobal {
-    persistent_rounds: usize,
-    next_process_id: ProcessId,
+    pub persistent_rounds: usize,
+    pub next_process_id: ProcessId,
     /// The next StreamId available to be assigned to an emulated stream.
-    next_stream_id: StreamId,
+    pub next_stream_id: StreamId,
     /// The next ephemeral port to be assigned to a socket.
     pub next_ephemeral_port: u16,
     /// The thread identifier to be executed by the waking process.
-    waking_thread_id: Option<ThreadId>,
-    process_locks: [MaybeUninit<Semaphore>; FIZZLE_MAX_PROCESSES],
-    transfer_fds: Option<Box<Descriptors>>,
+    pub waking_thread_id: Option<ThreadId>,
+    pub process_locks: [Option<Semaphore>; FIZZLE_MAX_PROCESSES],
+    pub transfer_fds: Option<Box<Descriptors>>,
     pub shared_mem_initialized: bool,
     pub passthrough_process_id: ProcessId,
     pub epolls: KeyedArena<EpollId, EpollInfo, FIZZLE_MAX_EPOLLS>,
-    pub event_fds: KeyedArena<EventFdId, EventFdInfo, FIZZLE_MAX_EVENTFDS>,
+    pub event_fds: KeyedArena<EventfdId, EventfdInfo, FIZZLE_MAX_EVENTFDS>,
     pub file_paths: FnvIndexMap<FilePath<MAX_PATH_LEN>, Rc<FileId>, FIZZLE_MAX_FILE_PATHS>,
     pub files: KeyedArena<FileId, FileBackend, FIZZLE_MAX_FILES>,
     pub startup_complete: bool,
@@ -1110,8 +1098,7 @@ impl FizzGlobal {
             *ptr::addr_of_mut!((*state).next_ephemeral_port) = FIZZLE_EPHEMERAL_PORT_START;
             *ptr::addr_of_mut!((*state).startup_complete) = false;
             *ptr::addr_of_mut!((*state).waking_thread_id) = None;
-            *ptr::addr_of_mut!((*state).process_locks) = array::from_fn(|_| MaybeUninit::uninit());
-            Semaphore::initialize(&mut (*state).process_locks[0], true, 0);
+            *ptr::addr_of_mut!((*state).process_locks) = array::from_fn(|_| None);
             *ptr::addr_of_mut!((*state).transfer_fds) = None;
             *ptr::addr_of_mut!((*state).passthrough_process_id) = ProcessId::from(1);
             KeyedArena::initialize(ptr::addr_of_mut!((*state).epolls));
@@ -1606,80 +1593,11 @@ impl FizzGlobal {
     }
 }
 
+/// The unique identifying information for a given thread in a process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ThreadTermination {
-    Cancellation,
-    Exit(*mut libc::c_void),
-    #[allow(unused)]
-    SigTerm, // TODO: implement
-}
-
-#[derive(Clone, Debug)]
-pub struct FuzzEndpointInfo {
-    pub read_polled: Rc<PolledId>,
-    pub read_idx: usize,
-}
-
-#[derive(Clone, Debug)]
-pub struct EventFdInfo {
-    pub read_polled: Rc<PolledId>,
-    pub write_polled: Rc<PolledId>,
-    pub is_semaphore: bool,
-    pub counter: u64,
-}
-
-pub type PThreadDestructor = unsafe extern "C" fn(*mut libc::c_void);
-
-#[derive(Clone, Copy, Debug)]
-pub struct PThreadRoutine {
-    pub function: PThreadDestructor,
-    pub arg: Option<*mut libc::c_void>,
-}
-
-impl PThreadRoutine {
-    /// Calls the given routine
-    pub fn call(self) {
-        if let Some(arg) = self.arg {
-            unsafe {
-                (self.function)(arg);
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct FileObject {
-    pub descriptor_id: DescriptorId,
-    pub buf: Buffer<FIZZLE_FOPEN_BUFSIZE>,
-}
-
-// Each time a Polled is *raised* (i.e., goes from `event_raised: false` to `event_raised: true`),
-// the PolledInfo will move all of its `pollers` into the ready queue (if they are not already there).
-#[derive(Debug)]
-pub struct PolledInfo {
-    /// Pollers that this Polled instance is meant to awaken
-    pub pollers: heapless::Vec<Rc<PollerId>, FIZZLE_MAX_PER_EVENT_QUEUED_POLLERS>,
-    /// Indicates that the item being polled is "ready" for the `Poller`.
-    pub event_raised: bool,
-    // /// Indicates that a `Poller` has been sent to the ready queue from this `Polled` instance and
-    // /// has not yet been executed.
-    // pub poller_dispatched: bool,
-}
-
-impl PolledInfo {
-    pub fn new() -> Self {
-        Self {
-            pollers: heapless::Vec::new(),
-            event_raised: false,
-        }
-    }
-
-    pub fn new_raised() -> Self {
-        Self {
-            pollers: heapless::Vec::new(),
-            event_raised: true,
-        }
-    }
+pub struct WorkerId {
+    pub process_id: ProcessId,
+    pub thread_id: ThreadId,
 }
 
 #[derive(Debug)]
@@ -1695,27 +1613,6 @@ pub enum PerRoundClientBackend {
     Plugin(Rc<PluginId>),
 }
 
-#[derive(Debug)]
-pub struct SocketLocationInfo {
-    /// The socket bound to the given location.
-    pub bound_socket: Option<Rc<SocketId>>,
-    /// Points to an optional linked list of clients that are awaiting this location to exist.
-    pub pending: Option<PendingInfo>,
-}
-
-#[derive(Clone, Debug)]
-pub struct PendingInfo {
-    pub client: Rc<SocketId>,
-    pub poll: Rc<PolledId>,
-}
-
-#[derive(Debug)]
-pub struct PollerInfo {
-    worker_id: WorkerId,
-    polled_events: heapless::Vec<Rc<PolledId>, FIZZLE_MAX_PER_POLLER_QUEUED_EVENTS>,
-    in_raised_queue: bool,
-}
-
 // TODO: rename...
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReadyInfo {
@@ -1723,222 +1620,6 @@ pub enum ReadyInfo {
     Worker(WorkerId),
 }
 
-#[derive(Debug)]
-pub enum SocketState {
-    Connectionless(ConnectionlessSocket),
-    Unassociated(UnassociatedSocket),
-    Server(ServerSocket),
-    PendingConnection(PendingSocket),
-    Connecting(ConnectingSocket),
-    Connected(ConnectedSocket),
-    //    Error state?
-}
+type Descriptors = KeyedArena<DescriptorId, DescriptorInfo, FIZZLE_MAX_FDS>;
 
-#[derive(Debug)]
-pub struct ConnectionlessSocket {
-    pub backend: ConnectionlessBackend,
-    pub local_addr: TransportAddress,
-    pub rem_addr: Option<TransportAddress>,
-}
 
-#[derive(Debug)]
-pub struct UnassociatedSocket {
-    pub local_addr: Option<TransportAddress>,
-    pub family: AddressFamily,
-    pub protocol: TransportProtocol,
-    pub socktype: SocketType,
-}
-
-#[derive(Debug)]
-pub struct ServerSocket {
-    pub backend: ServerBackend,
-    pub local_addr: TransportAddress,
-    pub connecting: Queue<Rc<SocketId>, FIZZLE_SOMAXCONN>,
-    pub ready_to_connect: Rc<PolledId>,
-}
-
-#[derive(Clone, Debug)]
-pub struct PendingSocket {
-    pub backend: PendingBackend,
-    pub next_pending: Option<Rc<SocketId>>,
-    pub src_addr: TransportAddress,
-    pub rem_addr: TransportAddress,
-}
-
-#[derive(Debug)]
-pub struct ConnectingSocket {
-    pub backend: ConnectingBackend,
-    pub connect_polled: Rc<PolledId>,
-    pub local_addr: TransportAddress,
-}
-
-#[derive(Debug)]
-pub struct ConnectedSocket {
-    pub backend: ConnectedBackend,
-    pub local_addr: TransportAddress,
-    pub rem_addr: TransportAddress,
-    pub peer_closed: bool,
-}
-
-// Runtime active plugin I/O information
-#[derive(Clone, Debug)]
-pub struct PluginInfo {
-    pub endpoint: IoEndpointVariant,
-    pub stream: StreamId,
-    /// The plugin module to read/write from.
-    pub module_id: Rc<PluginModuleId>,
-    pub read_buf: Rc<BufferId>,
-    pub read_polled: Rc<PolledId>,
-    pub write_buf: Rc<BufferId>,
-    pub write_polled: Rc<PolledId>,
-}
-
-#[derive(Debug)]
-pub struct EpollInfo {
-    pub interests: FnvIndexMap<DescriptorId, EpollInterest, FIZZLE_MAX_EPOLL_FDS>,
-}
-
-#[derive(Clone, Debug)]
-pub struct EpollInterest {
-    pub direction: EpollDirection,
-    pub user_data: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum EpollDirection {
-    None,
-    Read(PolledStatus),
-    Write(PolledStatus),
-    Both(PolledStatus, PolledStatus),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PolledStatus {
-    Pollable(Rc<PolledId>),
-    /// The file descriptor was invalid.
-    BadFd,
-    /// The requested object will never return polled output (such as attempting to read `stdout`).
-    NotPollable,
-    /// The requested object will immediately return polled output (such as writing to `stderr`).
-    ImmediatelyPollable,
-}
-
-type Descriptors = KeyedArena<DescriptorId, FdInfo, FIZZLE_MAX_FDS>;
-
-#[derive(Debug)]
-pub struct BarrierInfo {
-    pub curr: Vec<ThreadId>,
-    pub needed: usize,
-}
-
-#[derive(Debug)]
-pub struct PipeInfo {
-    /// The transmission mode of the packet.
-    ///
-    /// See [`PipeMode`] for more details.
-    pub mode: PipeMode,
-    /// The peer pipe that this pipe is connected to.
-    ///
-    /// If this value is `None`, then the pipe has broken (e.g., the other end has shut).
-    pub peer: Option<Rc<PipeId>>,
-    /// The buffer this pipe reads in data from.
-    pub read_buf: Rc<BufferId>,
-    pub read_polled: Rc<PolledId>,
-    pub write_polled: Rc<PolledId>,
-}
-
-/// The mode of operation by which data is passed over the pipe.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PipeMode {
-    /// Performs I/O in "packet" mode--writes are treated as individual packets.
-    Direct,
-    /// Performs I/O as if data is a constant stream.
-    Streamed,
-}
-
-#[derive(Debug)]
-pub struct MessageQueueInfo {}
-
-#[derive(Debug)]
-pub struct RwLockInfo {
-    pub state: RwLockState,
-    pub awaiting_read: VecDeque<ThreadId>,
-    pub awaiting_write: VecDeque<ThreadId>,
-    pub holding_state: HashSet<ThreadId, FxBuildHasher>,
-}
-
-impl Default for RwLockInfo {
-    fn default() -> Self {
-        Self {
-            state: RwLockState::Available,
-            awaiting_read: VecDeque::new(),
-            awaiting_write: VecDeque::new(),
-            holding_state: HashSet::with_hasher(Default::default()),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RwLockState {
-    Available,
-    Reading,
-    Writing,
-}
-
-#[derive(Debug)]
-pub struct SemaphoreInfo {
-    pub refs: usize,
-    pub unlinked: bool,
-    pub value: usize,
-    pub waiting: Deque<WorkerId, FIZZLE_MAX_WAITING_SEMAPHORES>,
-}
-
-/// A hasher that correctly outputs the internal value of a [`ThreadId`] for its hash.
-pub struct ThreadHasher {
-    value: u64,
-}
-
-impl ThreadHasher {
-    pub fn new() -> Self {
-        Self { value: 0 }
-    }
-}
-
-impl Hasher for ThreadHasher {
-    fn finish(&self) -> u64 {
-        self.value
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        let mut idx = 0usize;
-        while bytes.len() - idx >= 8 {
-            let bytearray: [u8; 8] = bytes[idx..idx + 8].try_into().unwrap();
-            self.value += u64::from_le_bytes(bytearray);
-            idx += 8;
-        }
-
-        if idx != bytes.len() {
-            let mut bytearray = [0u8; 8];
-            for (i, b) in bytes[idx..].iter().rev().enumerate() {
-                bytearray[i] = *b;
-            }
-            self.value += u64::from_le_bytes(bytearray);
-        }
-    }
-
-    fn write_u32(&mut self, i: u32) {
-        self.value += i as u64;
-    }
-
-    fn write_u64(&mut self, i: u64) {
-        self.value += i;
-    }
-}
-
-// ====== Helper Functions ======
-
-fn index_of_thread(thread: &ThreadId) -> usize {
-    let mut hasher = ThreadHasher::new();
-    thread.hash(&mut hasher);
-    hasher.finish() as usize
-}

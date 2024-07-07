@@ -1,11 +1,8 @@
-use crate::{
-    hook_macros,
-    state::{
-        fd::{FdInfo, FdResource},
-        identifiers::DescriptorId,
-        EventFdInfo, PolledInfo,
-    },
-};
+use crate::handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource};
+use crate::handlers::eventfd::EventfdInfo;
+use crate::handlers::polled::PolledInfo;
+use crate::hook_macros;
+
 
 hook_macros::hook! {
     unsafe fn eventfd(
@@ -24,14 +21,14 @@ hook_macros::hook! {
         let read_polled = state.global.polled_events.allocate(if initval == 0 { PolledInfo::new() } else { PolledInfo::new_raised() }).unwrap();
         let write_polled = state.global.polled_events.allocate(PolledInfo::new_raised()).unwrap();
 
-        let eventfd_id = state.global.event_fds.allocate(EventFdInfo {
+        let eventfd_id = state.global.event_fds.allocate(EventfdInfo {
             read_polled,
             write_polled,
             is_semaphore,
             counter: initval as u64,
         }).unwrap();
 
-        state.local.fds.allocate_with_key(DescriptorId::new(fd), FdInfo {
+        state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
             close_on_exec,
             nonblocking,
             is_passthrough: false,

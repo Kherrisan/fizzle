@@ -156,9 +156,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         #[allow(unused)]
         use fizzle_plugin::{FizzlePlugin, FizzlePluginObject};
         #[allow(unused)]
-        use crate::state::identifiers::{PluginId, PluginModuleId};
+        use crate::handlers::plugin::PluginId;
         #[allow(unused)]
-        use crate::state::plugins::{IoEmulationType, PluginModules, PluginConfigEndpoint};
+        use crate::handlers::plugin_module::PluginModuleId;
+        #[allow(unused)]
+        use crate::plugins::{IoEmulationType, PluginModules, PluginConfigEndpoint};
         #[allow(unused)]
         use std::path::PathBuf;
         #[allow(unused)]

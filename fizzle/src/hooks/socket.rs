@@ -5,21 +5,21 @@
 use std::net::SocketAddr;
 use std::{mem, ptr, slice};
 
+use crate::arena::Rc;
 use crate::constants::{FIZZLE_BUFFER_LENGTH, FIZZLE_EPHEMERAL_PORT_END, FIZZLE_EPHEMERAL_PORT_START};
-use crate::state::backend::{
+use crate::backend::{
     ConnectedBackend, ConnectingBackend, ConnectionlessBackend, IoBackend, RegularConnected,
     RegularConnectionless, ServerBackend, StandardFeedback,
 };
-use crate::state::fd::{FdInfo, FdResource};
-use crate::state::identifiers::{DescriptorId, SocketId};
-use crate::state::singleton::FizzleSingleton;
-use crate::state::{
-    ConnectedSocket, ConnectingSocket, ConnectionlessSocket, PendingInfo,
-    PolledInfo, ServerSocket, SocketLocationInfo, SocketState, UnassociatedSocket,
-};
+use crate::handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource};
+use crate::handlers::polled::PolledInfo;
+use crate::handlers::socket::{ConnectedSocket, ConnectingSocket, ConnectionlessSocket, PendingInfo, ServerSocket, SocketId, SocketLocationInfo, SocketState, UnassociatedSocket};
 use crate::hook_macros;
+use crate::state::FizzleSingleton;
+
+
 use fizzle_common::io::{AddressFamily, SocketType, TransportAddress, TransportProtocol};
-use fizzle_common::storage::{Buffer, Rc};
+use fizzle_common::storage::Buffer;
 use heapless::spsc::Queue;
 
 hook_macros::hook! {
@@ -89,8 +89,8 @@ hook_macros::hook! {
             }
         };
 
-        let descriptor_id = DescriptorId::new(fd);
-        state.local.fds.allocate_with_key(descriptor_id, FdInfo {
+        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        state.local.fds.allocate_with_key(descriptor_id, DescriptorInfo {
             close_on_exec,
             nonblocking,
             is_passthrough: false,
@@ -109,7 +109,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_bind(ctx) {
         let mut state = ctx.acquire();
 
-        let descriptor_id = DescriptorId::new(fd);
+        let descriptor_id = DescriptorId::from_raw_fd(fd);
         let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
@@ -221,7 +221,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_listen(ctx) {
         let mut state = ctx.acquire();
 
-        let descriptor_id = DescriptorId::new(fd);
+        let descriptor_id = DescriptorId::from_raw_fd(fd);
         let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
@@ -287,7 +287,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_connect(ctx) {
         let mut state = ctx.acquire();
 
-        let descriptor_id = DescriptorId::new(fd);
+        let descriptor_id = DescriptorId::from_raw_fd(fd);
         let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
@@ -457,7 +457,7 @@ hook_macros::hook! {
             return -1;
         }
 
-        let descriptor_id = DescriptorId::new(fd);
+        let descriptor_id = DescriptorId::from_raw_fd(fd);
         let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
@@ -691,8 +691,8 @@ fn join_socket_pair(
     let new_fd = crate::alias_fd_create();
     // The two sockets are now joined--add a file descriptor to the accepted socket
     state.local.fds.allocate_with_key(
-        DescriptorId::new(new_fd),
-        FdInfo {
+        DescriptorId::from_raw_fd(new_fd),
+        DescriptorInfo {
             close_on_exec: (flags & libc::O_CLOEXEC) != 0,
             is_passthrough: false,
             nonblocking: (flags & libc::O_NONBLOCK) != 0,
@@ -796,7 +796,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_getsockopt(ctx) {
         let state = ctx.acquire();
 
-        let descriptor_id = DescriptorId::new(sockfd);
+        let descriptor_id = DescriptorId::from_raw_fd(sockfd);
         let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
@@ -1212,7 +1212,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_setsockopt(ctx) {
         let state = ctx.acquire();
 
-        let descriptor_id = DescriptorId::new(sockfd);
+        let descriptor_id = DescriptorId::from_raw_fd(sockfd);
         let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
@@ -1310,7 +1310,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_getsockname(ctx) {
         let state = ctx.acquire();
 
-        let descriptor_id = DescriptorId::new(sockfd);
+        let descriptor_id = DescriptorId::from_raw_fd(sockfd);
         let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
             *libc::__errno_location() = libc::EBADF;
             return -1

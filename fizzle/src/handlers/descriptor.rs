@@ -1,9 +1,31 @@
-use fizzle_common::storage::Rc;
+use crate::arena::{ArenaKey, Rc}; 
+use super::directory::DirectoryId;
+use super::epoll::EpollId;
+use super::eventfd::EventfdId;
+use super::file::FileId;
+use super::message_queue::MessageQueueId;
+use super::pipe::PipeId;
+use super::socket::SocketId;
 
-use crate::state::identifiers::*;
+pub use private::DescriptorId;
+
+// This is to forbid access to the SocketId's inner `usize` field.
+mod private {
+    use std::os::fd::RawFd;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct DescriptorId(usize);
+
+    impl DescriptorId {
+        pub fn from_raw_fd(fd: RawFd) -> Self {
+            DescriptorId(fd as usize)
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
-pub struct FdInfo {
+pub struct DescriptorInfo {
     /// Whether the file descriptor associated with closes on calls to `exec()`.
     pub close_on_exec: bool,
     /// Whether the descriptor is configured to block on input or not.
@@ -13,7 +35,7 @@ pub struct FdInfo {
     pub resource: FdResource,
 }
 
-impl FdInfo {
+impl DescriptorInfo {
     pub fn new(resource: FdResource) -> Self {
         Self {
             close_on_exec: false,
@@ -31,7 +53,7 @@ pub enum FdResource {
     /// Epoll descriptors.
     Epoll(Rc<EpollId>),
     /// Event file descriptor.
-    EventFd(Rc<EventFdId>),
+    EventFd(Rc<EventfdId>),
     /// Files that are accessed via the virtual filesystem.
     File(Rc<FileId>),
     /// Cross-process message queues.
@@ -47,4 +69,12 @@ pub enum FdResource {
     Stderr,
     /// Network sockets.
     Socket(Rc<SocketId>),
+}
+
+impl ArenaKey for DescriptorId {
+    type Value = DescriptorInfo;
+}
+
+impl DescriptorId {
+
 }

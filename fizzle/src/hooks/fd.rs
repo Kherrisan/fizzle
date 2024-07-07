@@ -1,12 +1,10 @@
 //! Hooks for general functions that can be applied to any file descriptor.
 //!
 
+use crate::backend::ConnectedBackend;
+use crate::handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource};
+use crate::handlers::socket::SocketState;
 use crate::hook_macros;
-
-use crate::state::backend::ConnectedBackend;
-use crate::state::fd::{FdInfo, FdResource};
-use crate::state::identifiers::DescriptorId;
-use crate::state::SocketState;
 
 hook_macros::hook! {
     unsafe fn close(
@@ -14,17 +12,17 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_close(ctx) {
         let mut state = ctx.acquire();
 
-        let descriptor_id = DescriptorId::new(fd);
+        let descriptor_id = DescriptorId::from_raw_fd(fd);
         let ref_count = state.local.fds.ref_count(&descriptor_id);
 
         if ref_count == 1 {
             log::debug!("close({}) -> 0 (last fd closed for resource)", fd);
             match state.local.fds.get(&descriptor_id) {
-                Some(FdInfo { resource: FdResource::Epoll(_), .. }) => crate::alias_fd_destroy(fd),
-                Some(FdInfo { resource: FdResource::EventFd(_), .. }) => crate::alias_fd_destroy(fd),
-                Some(FdInfo { resource: FdResource::Directory(_), .. }) => crate::alias_fd_destroy(fd),
-                Some(FdInfo { resource: FdResource::File(_), .. }) => crate::alias_fd_destroy(fd),
-                Some(FdInfo { resource: FdResource::Socket(socket_id), .. }) => {
+                Some(DescriptorInfo { resource: FdResource::Epoll(_), .. }) => crate::alias_fd_destroy(fd),
+                Some(DescriptorInfo { resource: FdResource::EventFd(_), .. }) => crate::alias_fd_destroy(fd),
+                Some(DescriptorInfo { resource: FdResource::Directory(_), .. }) => crate::alias_fd_destroy(fd),
+                Some(DescriptorInfo { resource: FdResource::File(_), .. }) => crate::alias_fd_destroy(fd),
+                Some(DescriptorInfo { resource: FdResource::Socket(socket_id), .. }) => {
                     assert_eq!(hook_macros::real!(close)(fd), 0, "close() returned nonzero despite valid socket context");
                 
                     let socket_id = socket_id.clone();
@@ -79,16 +77,16 @@ hook_macros::hook! {
                         SocketState::PendingConnection(_) => unreachable!(),
                     }
                 },
-                Some(FdInfo { resource: FdResource::MessageQueue(_), .. }) => crate::alias_fd_destroy(fd),
-                Some(FdInfo { resource: FdResource::Pipe(pipe_id), .. }) => {
+                Some(DescriptorInfo { resource: FdResource::MessageQueue(_), .. }) => crate::alias_fd_destroy(fd),
+                Some(DescriptorInfo { resource: FdResource::Pipe(pipe_id), .. }) => {
                     crate::alias_fd_destroy(fd);
                     let peer_id = state.global.pipes.get(&pipe_id).unwrap().peer.clone().unwrap();
                     state.global.pipes.get_mut(&peer_id).unwrap().peer = None;
                 }
                 // TODO: mark stdin as closed after this...
-                Some(FdInfo { resource: FdResource::Stdin, .. }) => (), // We keep stdin for fuzzing input...
-                Some(FdInfo { resource: FdResource::Stdout, .. }) => (),
-                Some(FdInfo { resource: FdResource::Stderr, .. }) => (), // ... and stderr for reporting Fizzle errors.
+                Some(DescriptorInfo { resource: FdResource::Stdin, .. }) => (), // We keep stdin for fuzzing input...
+                Some(DescriptorInfo { resource: FdResource::Stdout, .. }) => (),
+                Some(DescriptorInfo { resource: FdResource::Stderr, .. }) => (), // ... and stderr for reporting Fizzle errors.
                 None => unreachable!(),
             }
         } else if ref_count == 0 {
@@ -111,14 +109,14 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_fcntl(ctx) {
         let mut state = ctx.acquire();
 
-        match state.local.fds.get_mut(&DescriptorId::new(fd)) {
+        match state.local.fds.get_mut(&DescriptorId::from_raw_fd(fd)) {
             Some(fd_info) if fd_info.is_passthrough => {
                 let dupfd = hook_macros::real!(fcntl)(fd, cmd, arg);
                 if dupfd >= 0 && (cmd == libc::F_DUPFD || cmd == libc::F_DUPFD_CLOEXEC) {
                     let nonblocking = fd_info.nonblocking;
                     let close_on_exec = cmd == libc::F_DUPFD_CLOEXEC;
                     let resource = fd_info.resource.clone();
-                    state.local.fds.allocate_with_key(DescriptorId::new(dupfd), FdInfo {
+                    state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(dupfd), DescriptorInfo {
                         close_on_exec,
                         nonblocking,
                         is_passthrough: true,
@@ -145,7 +143,7 @@ hook_macros::hook! {
                         let resource = fd_info.resource.clone();
 
                         let dupfd = crate::alias_fd_create();
-                        state.local.fds.allocate_with_key(DescriptorId::new(dupfd), FdInfo {
+                        state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(dupfd), DescriptorInfo {
                             close_on_exec: cmd == libc::F_DUPFD_CLOEXEC,
                             nonblocking,
                             is_passthrough: false,

@@ -3,13 +3,18 @@
 
 extern crate libc;
 
+mod arena;
+mod backend;
 mod comptime;
 mod constants;
+mod handlers;
 mod hook_macros;
-pub mod hooks;
+mod once;
+mod plugins;
 mod semaphore;
 mod state;
 mod streams;
+pub mod hooks;
 
 use fizzle_common::io::{UnixAddr, MAX_UNIX_ABSTRACT_LEN, MAX_UNIX_PATH_LEN};
 use fizzle_common::path::FilePath;

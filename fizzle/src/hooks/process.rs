@@ -55,12 +55,12 @@ pub unsafe extern "C" fn execl(
     mut va_args: ...
 ) -> libc::c_int {
     if crate::state::has_entered_handler() {
-        panic!("recursive calls to `syscall` not allowed");
+        panic!("recursive calls to `execl` not allowed");
     }
     crate::state::set_entered_handler(true);
 
     log::trace!(
-        "Thread {:?} invoked function `syscall`",
+        "Thread {:?} invoked function `execl`",
         std::thread::current().id(),
     );
 
@@ -101,12 +101,12 @@ pub unsafe extern "C" fn execlp(
     mut va_args: ...
 ) -> libc::c_int {
     if crate::state::has_entered_handler() {
-        panic!("recursive calls to `syscall` not allowed");
+        panic!("recursive calls to `execlp` not allowed");
     }
     crate::state::set_entered_handler(true);
 
     log::trace!(
-        "Thread {:?} invoked function `syscall`",
+        "Thread {:?} invoked function `execlp`",
         std::thread::current().id(),
     );
 
@@ -126,13 +126,13 @@ pub unsafe extern "C" fn execlp(
     });
 
     if !end_reached {
-        panic!("`execl` exceeded maximum number of va_args")
+        panic!("`execlp` exceeded maximum number of va_args")
     }
 
     let ret = fizzle_execvp(pathname, ptr::addr_of!(argv) as *const *const libc::c_char);
 
     log::trace!(
-        "Function `execl` returned {:?}", // TODO: add process info in the future
+        "Function `execlp` returned {:?}", // TODO: add process info in the future
         ret
     );
     crate::state::set_entered_handler(false);
@@ -147,12 +147,12 @@ pub unsafe extern "C" fn execle(
     mut va_args: ...
 ) -> libc::c_int {
     if crate::state::has_entered_handler() {
-        panic!("recursive calls to `syscall` not allowed");
+        panic!("recursive calls to `execle` not allowed");
     }
     crate::state::set_entered_handler(true);
 
     log::trace!(
-        "Thread {:?} invoked function `syscall`",
+        "Thread {:?} invoked function `execle`",
         std::thread::current().id(),
     );
 
@@ -183,7 +183,7 @@ pub unsafe extern "C" fn execle(
     );
 
     log::trace!(
-        "Function `execl` returned {:?}", // TODO: add process info in the future
+        "Function `execle` returned {:?}", // TODO: add process info in the future
         ret
     );
     crate::state::set_entered_handler(false);

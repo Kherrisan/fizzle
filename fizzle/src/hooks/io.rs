@@ -2,21 +2,17 @@ use std::mem::MaybeUninit;
 use std::{array, cmp, mem, ptr, slice};
 
 use fizzle_common::io::{AddressFamily, TransportAddress, TransportProtocol};
-use fizzle_common::storage::{Buffer, Rc};
+use fizzle_common::storage::Buffer;
 
+use crate::arena::Rc;
+use crate::backend::{ConnectedBackend, ConnectionlessBackend, FileBackend, RegularConnected, StdioBackend};
 use crate::constants::FIZZLE_BUFFER_LENGTH;
-use crate::state::backend::{
-    ConnectedBackend, ConnectionlessBackend, FileBackend, IoBackend, RegularConnected, StdioBackend,
-};
-use crate::state::fd::FdResource;
-use crate::state::identifiers::DescriptorId;
-use crate::state::identifiers::SocketId;
-use crate::state::singleton::FizzleSingleton;
-use crate::state::{
-    ConnectedSocket, ConnectionlessSocket, FuzzEndpointInfo, PipeMode, SocketLocationInfo,
-    SocketState,
-};
+use crate::handlers::descriptor::{DescriptorId, FdResource};
+use crate::handlers::fuzz_endpoint::FuzzEndpointInfo;
+use crate::handlers::pipe::PipeMode;
+use crate::handlers::socket::{ConnectedSocket, ConnectionlessSocket, SocketId, SocketLocationInfo, SocketState};
 use crate::hook_macros;
+use crate::state::FizzleSingleton;
 
 const PIPE_BUF: usize = 4096;
 const IOV_MAX: usize = 16;
@@ -29,7 +25,7 @@ hook_macros::hook! {
     ) -> libc::ssize_t => fizzle_write(ctx) {
         let mut state = ctx.acquire();
 
-        let Some(fd_info) = state.local.fds.get(&DescriptorId::new(fd)) else {
+        let Some(fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(fd)) else {
             log::warn!("write() called with unknown file descriptor");
             return hook_macros::real!(write)(fd, buf, len)
             /*
@@ -129,7 +125,7 @@ hook_macros::hook! {
                     state.lower_polled(&write_polled);
                 }
 
-                8
+                8 // Yes, this is meant to be 8, not 0.
             }
             FdResource::File(file_id) => match state.global.files.get(&file_id).unwrap() {
                 FileBackend::Passthrough => hook_macros::real!(write)(fd, buf, len),
@@ -347,7 +343,7 @@ hook_macros::hook! {
             crate::report_strict_failure("fizzle does not currently implement TCP Fast Open")
         }
 
-        let Some(fd_info) = state.local.fds.get(&DescriptorId::new(fd)) else {
+        let Some(fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(fd)) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
         };
@@ -392,7 +388,7 @@ hook_macros::hook! {
             crate::report_strict_failure("fizzle does not currently implement TCP Fast Open")
         }
 
-        let Some(fd_info) = state.local.fds.get(&DescriptorId::new(fd)) else {
+        let Some(fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(fd)) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
         };
@@ -460,7 +456,7 @@ hook_macros::hook! {
             crate::report_strict_failure("fizzle does not currently implement TCP Fast Open")
         }
 
-        let Some(fd_info) = state.local.fds.get(&DescriptorId::new(fd)) else {
+        let Some(fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(fd)) else {
             log::warn!("invalid file descriptor `{}` passed to `sendmsg`", fd);
             *libc::__errno_location() = libc::EBADF;
             return -1
@@ -534,7 +530,7 @@ hook_macros::hook! {
 
         log::debug!("read({}, buf length: {})", fd, len);
 
-        let Some(fd_info) = state.local.fds.get(&DescriptorId::new(fd)) else {
+        let Some(fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(fd)) else {
             log::warn!("read() called with unknown file descriptor");
             return hook_macros::real!(read)(fd, buf, len)
             /*
@@ -888,7 +884,7 @@ hook_macros::hook! {
     ) -> libc::ssize_t => fizzle_recvfrom(ctx) {
         let state = ctx.acquire();
 
-        let Some(fd_info) = state.local.fds.get(&DescriptorId::new(fd)) else {
+        let Some(fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(fd)) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
         };
@@ -943,7 +939,7 @@ hook_macros::hook! {
         (*msg).msg_controllen = 0;
         (*msg).msg_flags = libc::MSG_EOR;
 
-        let Some(fd_info) = state.local.fds.get(&DescriptorId::new(fd)) else {
+        let Some(fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(fd)) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
         };
@@ -1230,7 +1226,7 @@ fn send_connected_socket(
             }
 
             let Some(SocketState::Connected(ConnectedSocket {
-                backend: IoBackend::Peered(regular_peer),
+                backend: ConnectedBackend::Peered(regular_peer),
                 ..
             })) = state.global.sockets.get(&peer)
             else {
@@ -1258,7 +1254,7 @@ fn send_connected_socket(
 
             // We need to verify that this connection has not shut down before writing to the same buffer_id
             let Some(SocketState::Connected(ConnectedSocket {
-                backend: IoBackend::Peered(RegularConnected { peer: Some(_), .. }),
+                backend: ConnectedBackend::Peered(RegularConnected { peer: Some(_), .. }),
                 ..
             })) = state.global.sockets.get(&socket_id)
             else {
@@ -1306,7 +1302,7 @@ fn send_connected_socket(
 
             // We need to verify that this connection has not shut down before writing to the same buffer_id
             let Some(SocketState::Connected(ConnectedSocket {
-                backend: IoBackend::Peered(RegularConnected { peer: Some(_), .. }),
+                backend: ConnectedBackend::Peered(RegularConnected { peer: Some(_), .. }),
                 ..
             })) = state.global.sockets.get(&socket_id)
             else {
@@ -1354,7 +1350,7 @@ fn send_connected_socket(
 
             // We need to verify that this connection has not shut down before writing to the same buffer_id
             let Some(SocketState::Connected(ConnectedSocket {
-                backend: IoBackend::Peered(RegularConnected { peer: Some(_), .. }),
+                backend: ConnectedBackend::Peered(RegularConnected { peer: Some(_), .. }),
                 ..
             })) = state.global.sockets.get(&socket_id)
             else {
@@ -1463,7 +1459,7 @@ fn send_connectionless_socket(
             };
 
             let SocketState::Connectionless(ConnectionlessSocket {
-                backend: IoBackend::Peered(regular_peer),
+                backend: ConnectionlessBackend::Peered(regular_peer),
                 ..
             }) = state.global.sockets.get(&peer_sock_id).unwrap()
             else {
@@ -1607,8 +1603,8 @@ fn recv_connected_socket(
     };
 
     match &sock_info.backend {
-        IoBackend::Passthrough => unimplemented!(),
-        IoBackend::Peered(regular) => {
+        ConnectedBackend::Passthrough => unimplemented!(),
+        ConnectedBackend::Peered(regular) => {
             let buf_id = regular.recv_buf.clone();
             let write_polled = regular.write_polled.clone();
             let read_polled = regular.read_polled.clone();
@@ -1671,7 +1667,7 @@ fn recv_connected_socket(
 
             total_read as libc::ssize_t
         }
-        IoBackend::Feedback(feedback_info) => {
+        ConnectedBackend::Feedback(feedback_info) => {
             let buf_id = feedback_info.buf.clone();
             let write_polled = feedback_info.write_polled.clone();
             let read_polled = feedback_info.read_polled.clone();
@@ -1729,7 +1725,7 @@ fn recv_connected_socket(
 
             total_read as libc::ssize_t
         }
-        IoBackend::Plugin(plugin_id) => {
+        ConnectedBackend::Plugin(plugin_id) => {
             let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
             let buffer_id = plugin_info.read_buf.clone();
             let read_polled = plugin_info.read_polled.clone();
@@ -1772,8 +1768,8 @@ fn recv_connected_socket(
 
             total_read as libc::ssize_t
         }
-        IoBackend::Sink => 0 as libc::ssize_t,
-        IoBackend::NullSink => {
+        ConnectedBackend::Sink => 0 as libc::ssize_t,
+        ConnectedBackend::NullSink => {
             let mut total_len = 0;
             for slice in data.iter_mut() {
                 for b in slice.iter_mut() {
@@ -1784,7 +1780,7 @@ fn recv_connected_socket(
 
             total_len as libc::ssize_t
         }
-        IoBackend::Fuzz(fuzz_endpoint_id) => {
+        ConnectedBackend::Fuzz(fuzz_endpoint_id) => {
             let fuzz_endpoint_id = fuzz_endpoint_id.clone();
             let FuzzEndpointInfo {
                 mut read_idx,
@@ -1842,7 +1838,7 @@ fn recv_connectionless_socket(
 
     // TODO: this isn't finished...
     let SocketState::Connectionless(ConnectionlessSocket {
-        backend: IoBackend::Peered(regular),
+        backend: ConnectionlessBackend::Peered(regular),
         ..
     }) = state.global.sockets.get(&socket_id).unwrap()
     else {

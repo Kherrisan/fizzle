@@ -1,11 +1,10 @@
 use std::ffi::CStr;
 use std::ptr;
 
+use crate::backend::FileBackend;
+use crate::handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource};
+use crate::handlers::file::{FileObject, FilePtr};
 use crate::hook_macros;
-use crate::state::backend::FileBackend;
-use crate::state::fd::{FdInfo, FdResource};
-use crate::state::identifiers::{DescriptorId, FilePtr};
-use crate::state::FileObject;
 
 use fizzle_common::path::FilePath;
 use fizzle_common::storage::Buffer;
@@ -17,7 +16,7 @@ hook_macros::hook! {
     ) -> *mut libc::FILE => fizzle_fdopen(ctx) {
         let mut state = ctx.acquire();
 
-        let descriptor_id = DescriptorId::new(fd);
+        let descriptor_id = DescriptorId::from_raw_fd(fd);
 
         let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
             log::debug!("`fdopen` called with unrecognized file descriptor");
@@ -119,7 +118,7 @@ hook_macros::hook! {
 
             let fd = crate::alias_fd_create();
 
-            state.local.fds.allocate_with_key(DescriptorId::new(fd), FdInfo {
+            state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
                 close_on_exec,
                 nonblocking: false,
                 is_passthrough: false,
@@ -132,7 +131,7 @@ hook_macros::hook! {
             // TODO: what about O_CREAT here?
             let fd = hook_macros::real!(open)(pathname, flags, mode);
             let dir_id = state.local.dirs.allocate(path).unwrap();
-            state.local.fds.allocate_with_key(DescriptorId::new(fd), FdInfo {
+            state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
                 close_on_exec,
                 nonblocking: false,
                 is_passthrough: true,
@@ -143,7 +142,7 @@ hook_macros::hook! {
 
         } else if let Some(file_id) = state.global.file_paths.get(&path).cloned() {
             let fd = crate::alias_fd_create();
-            state.local.fds.allocate_with_key(DescriptorId::new(fd), FdInfo {
+            state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
                 close_on_exec,
                 nonblocking: false,
                 is_passthrough: true,
@@ -156,7 +155,7 @@ hook_macros::hook! {
             if fd >= 0 {
                 let file_id = state.global.files.allocate(FileBackend::Passthrough).unwrap();
 
-                state.local.fds.allocate_with_key(DescriptorId::new(fd), FdInfo {
+                state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
                     close_on_exec: false,
                     nonblocking: false,
                     is_passthrough: true,
@@ -201,7 +200,7 @@ hook_macros::hook! {
 
         let fd = crate::alias_fd_create();
 
-        state.local.fds.allocate_with_key(DescriptorId::new(fd), FdInfo {
+        state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
             close_on_exec: false,
             nonblocking: false,
             is_passthrough: false,
@@ -240,7 +239,7 @@ hook_macros::hook! {
                 let cwd = &state.local.working_directory;
                 path = cwd.clone().concat(&path).unwrap();
             } else {
-                let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::new(dirfd)).cloned() else {
+                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(dirfd)).cloned() else {
                     log::debug!("`openat` called with unrecognized file descriptor");
                     *libc::__errno_location() = libc::ENOTDIR;
                     return -1
@@ -273,7 +272,7 @@ hook_macros::hook! {
 
             let fd = crate::alias_fd_create();
 
-            state.local.fds.allocate_with_key(DescriptorId::new(fd), FdInfo {
+            state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
                 close_on_exec,
                 nonblocking: false,
                 is_passthrough: false,
@@ -286,7 +285,7 @@ hook_macros::hook! {
             // TODO: what about O_CREAT here?
             let fd = hook_macros::real!(open)(pathname, flags, mode);
             let dir_id = state.local.dirs.allocate(path).unwrap();
-            state.local.fds.allocate_with_key(DescriptorId::new(fd), FdInfo {
+            state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
                 close_on_exec,
                 nonblocking: false,
                 is_passthrough: true,
@@ -297,7 +296,7 @@ hook_macros::hook! {
 
         } else if let Some(file_id) = state.global.file_paths.get(&path).cloned() {
             let fd = crate::alias_fd_create();
-            state.local.fds.allocate_with_key(DescriptorId::new(fd), FdInfo {
+            state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
                 close_on_exec,
                 nonblocking: false,
                 is_passthrough: true,
@@ -310,7 +309,7 @@ hook_macros::hook! {
             if fd >= 0 {
                 let file_id = state.global.files.allocate(FileBackend::Passthrough).unwrap();
 
-                state.local.fds.allocate_with_key(DescriptorId::new(fd), FdInfo {
+                state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
                     close_on_exec: false,
                     nonblocking: false,
                     is_passthrough: true,
@@ -429,27 +428,27 @@ hook_macros::hook! {
 
         let descriptor_id = if let Some(&file_id) = state.global.file_paths.get(&path) {
             let fd = crate::alias_fd_create();
-            state.local.fds.insert(DescriptorId::new(fd), FdInfo {
+            state.local.fds.insert(DescriptorId::from_raw_fd(fd), FdInfo {
                 close_on_exec: false,
                 nonblocking: false,
                 is_passthrough: false,
                 resource: FdResource::File(file_id),
             });
-            DescriptorId::new(fd)
+            DescriptorId::from_raw_fd(fd)
 
         } else {
             let fd = hook_macros::real!(open)(pathname, 0, 0); // TODO: account for mode here
             if fd >= 0 {
                 let file_id = state.global.files.put(FileBackend::Passthrough);
 
-                state.local.fds.insert(DescriptorId::new(fd), FdInfo {
+                state.local.fds.insert(DescriptorId::from_raw_fd(fd), FdInfo {
                     close_on_exec: false,
                     nonblocking: false,
                     is_passthrough: true,
                     resource: FdResource::File(file_id),
                 });
             }
-            DescriptorId::new(fd)
+            DescriptorId::from_raw_fd(fd)
         };
 
         let file = crate::unique_mem_create() as *mut libc::FILE;
@@ -590,7 +589,7 @@ hook_macros::hook! {
 
         let res = hook_macros::real!(fchdir)(fd);
         if res == 0 {
-            let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::new(fd)) else {
+            let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(fd)) else {
                 log::debug!("`fchdir` called with unrecognized fd");
                 *libc::__errno_location() = libc::EBADF;
                 return -1
@@ -678,7 +677,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_fchown(ctx) {
         let state = ctx.acquire();
 
-        if let Some(_fd_info) = state.local.fds.get(&DescriptorId::new(fd)) {
+        if let Some(_fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(fd)) {
             0 // TODO: handle ownership permissions?
         } else {
             hook_macros::real!(fchown)(fd, owner, group)
@@ -693,7 +692,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_fchmod(ctx) {
         let state = ctx.acquire();
 
-        if let Some(_fd_info) = state.local.fds.get(&DescriptorId::new(fd)) {
+        if let Some(_fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(fd)) {
             0 // TODO: handle ownership permissions?
         } else {
             hook_macros::real!(fchmod)(fd, mode)
@@ -721,7 +720,7 @@ hook_macros::hook! {
                 let cwd = &state.local.working_directory;
                 path = cwd.clone().concat(&path).unwrap();
             } else {
-                let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::new(dirfd)) else {
+                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(dirfd)) else {
                     log::debug!("`fchownat` called with unrecognized file descriptor");
                     *libc::__errno_location() = libc::ENOTDIR;
                     return -1
@@ -763,7 +762,7 @@ hook_macros::hook! {
                 let cwd = &state.local.working_directory;
                 path = cwd.clone().concat(&path).unwrap();
             } else {
-                let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::new(dirfd)) else {
+                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(dirfd)) else {
                     log::debug!("`fchmodat` called with unrecognized file descriptor");
                     *libc::__errno_location() = libc::ENOTDIR;
                     return -1
@@ -935,7 +934,7 @@ hook_macros::hook! {
                 let cwd = &state.local.working_directory;
                 path = cwd.clone().concat(&path).unwrap();
             } else {
-                let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::new(dirfd)) else {
+                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(dirfd)) else {
                     log::debug!("`faccessat` called with unrecognized file descriptor");
                     *libc::__errno_location() = libc::ENOTDIR;
                     return -1
@@ -1017,7 +1016,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_fstat(ctx) {
         let state = ctx.acquire();
 
-        if let Some(_fd_info) = state.local.fds.get(&DescriptorId::new(fd)) {
+        if let Some(_fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(fd)) {
             crate::report_strict_failure("`fstat` not implemented for fizzle virtual fs");
             -1
         } else {
@@ -1045,7 +1044,7 @@ hook_macros::hook! {
                 let cwd = &state.local.working_directory;
                 path = cwd.clone().concat(&path).unwrap();
             } else {
-                let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::new(dirfd)) else {
+                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(dirfd)) else {
                     log::debug!("`fstatat` called with unrecognized file descriptor");
                     *libc::__errno_location() = libc::ENOTDIR;
                     return -1
@@ -1089,7 +1088,7 @@ hook_macros::hook! {
                 let cwd = &state.local.working_directory;
                 path = cwd.clone().concat(&path).unwrap();
             } else {
-                let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::new(dirfd)) else {
+                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(dirfd)) else {
                     log::debug!("`statx` called with unrecognized file descriptor");
                     *libc::__errno_location() = libc::ENOTDIR;
                     return -1
@@ -1249,7 +1248,7 @@ hook_macros::hook! {
                 let cwd = &state.local.working_directory;
                 old = cwd.clone().concat(&old).unwrap();
             } else {
-                let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::new(olddirfd)) else {
+                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(olddirfd)) else {
                     log::debug!("`renameat` called with unrecognized file descriptor `olddirfd`");
                     *libc::__errno_location() = libc::ENOTDIR;
                     return -1
@@ -1274,7 +1273,7 @@ hook_macros::hook! {
                 let cwd = &state.local.working_directory;
                 _new = cwd.clone().concat(&_new).unwrap();
             } else {
-                let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::new(newdirfd)) else {
+                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(newdirfd)) else {
                     log::debug!("`renameat` called with unrecognized file descriptor `newdirfd`");
                     *libc::__errno_location() = libc::ENOTDIR;
                     return -1
@@ -1318,7 +1317,7 @@ hook_macros::hook! {
                 let cwd = &state.local.working_directory;
                 old = cwd.clone().concat(&old).unwrap();
             } else {
-                let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::new(olddirfd)) else {
+                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(olddirfd)) else {
                     log::debug!("`renameat2` called with unrecognized file descriptor `olddirfd`");
                     *libc::__errno_location() = libc::ENOTDIR;
                     return -1
@@ -1343,7 +1342,7 @@ hook_macros::hook! {
                 let cwd = &state.local.working_directory;
                 _new = cwd.clone().concat(&_new).unwrap();
             } else {
-                let Some(FdInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::new(newdirfd)) else {
+                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(newdirfd)) else {
                     log::debug!("`renameat2` called with unrecognized file descriptor `newdirfd`");
                     *libc::__errno_location() = libc::ENOTDIR;
                     return -1

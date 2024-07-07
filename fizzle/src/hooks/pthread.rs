@@ -2,11 +2,12 @@ use std::collections::{HashMap, VecDeque};
 use std::ptr;
 use std::thread::{self, ThreadId};
 
-use crate::state::identifiers::{BarrierPtr, CondVarPtr, MutexPtr, RwLockPtr, SpinlockPtr};
-use crate::state::{
-    set_entered_handler, BarrierInfo, PThreadDestructor, PThreadRoutine, RwLockInfo, RwLockState,
-    ThreadTermination,
-};
+use crate::handlers::barrier::{BarrierInfo, BarrierPtr};
+use crate::handlers::condvar::CondVarPtr;
+use crate::handlers::mutex::MutexPtr;
+use crate::handlers::rwlock::{RwLockInfo, RwLockPtr, RwLockState};
+use crate::handlers::spinlock::SpinlockPtr;
+use crate::handlers::thread::{PThreadDestructor, PThreadRoutine, ThreadTermination};
 use crate::{hook_macros, state};
 
 pub type PTFunction = unsafe extern "C" fn(*mut libc::c_void) -> *mut libc::c_void;
@@ -22,19 +23,15 @@ unsafe extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void 
 
     // Before we do ANYTHING, we need to set this to avoid accidental preload hook recursion
     state::set_entered_handler(true);
-
-    let mut ctx = state::singleton::fizzle_state_singleton();
+    let mut ctx = state::fizzle_state_singleton();
 
     ctx.init_new_thread();
 
-    // Now enable preload hooks to actually work during this thread's execution
-    state::set_entered_handler(false);
+    let res = ctx.run_outside_shim(|| {
+        (wrapped_arg.wrapped_fn)(wrapped_arg.wrapped_arg)
+    });
 
-    let res = (wrapped_arg.wrapped_fn)(wrapped_arg.wrapped_arg);
     // Thread has exited...
-
-    // Once again, avoid accidental preload hook recursion
-    state::set_entered_handler(true);
 
     ctx.terminate_thread(ThreadTermination::Exit(res))
 }
@@ -148,7 +145,7 @@ hook_macros::hook! {
         drop(state);
         // Invariant: the cancelled thread will be waiting on its per-thread lock rather than the
         // process lock, as our thread is currently executing (i.e. the process is active).
-        ctx.get_thread_lock(&thread_id).post();
+        ctx.thread_lock(&thread_id).as_ref().unwrap().post();
         ctx.pause_current_thread();
 
         0
@@ -176,9 +173,10 @@ hook_macros::hook! {
         if let Some(routine) = state.local.pthread_cleanup.get_mut(&thread::current().id()).unwrap().pop_front() {
             if execute != 0 {
                 drop(state);
-                set_entered_handler(false);
-                routine.call();
-                set_entered_handler(true);
+
+                ctx.run_outside_shim(|| {
+                    routine.call();
+                });
             }
         }
     }

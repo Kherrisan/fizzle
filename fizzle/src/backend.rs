@@ -1,8 +1,11 @@
 use std::fmt::Debug;
 
-use fizzle_common::storage::Rc;
-
-use crate::state::identifiers::*;
+use crate::arena::Rc;
+use crate::handlers::buffer::BufferId;
+use crate::handlers::fuzz_endpoint::FuzzEndpointId;
+use crate::handlers::plugin::PluginId;
+use crate::handlers::polled::PolledId;
+use crate::handlers::socket::SocketId;
 
 use self::private::Sealed;
 

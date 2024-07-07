@@ -1,0 +1,55 @@
+use crate::arena::{ArenaKey, Rc}; 
+use crate::constants::FIZZLE_MAX_EPOLL_FDS;
+use super::descriptor::DescriptorId;
+use super::polled::PolledId;
+
+use heapless::FnvIndexMap;
+
+pub use private::EpollId;
+
+
+
+// This is to forbid access to the SocketId's inner `usize` field.
+mod private {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    #[repr(transparent)]
+    pub struct EpollId(usize);
+}
+
+#[derive(Debug)]
+pub struct EpollInfo {
+    pub interests: FnvIndexMap<DescriptorId, EpollInterest, FIZZLE_MAX_EPOLL_FDS>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EpollInterest {
+    pub direction: EpollDirection,
+    pub user_data: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EpollDirection {
+    None,
+    Read(PolledStatus),
+    Write(PolledStatus),
+    Both(PolledStatus, PolledStatus),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PolledStatus {
+    Pollable(Rc<PolledId>),
+    /// The file descriptor was invalid.
+    BadFd,
+    /// The requested object will never return polled output (such as attempting to read `stdout`).
+    NotPollable,
+    /// The requested object will immediately return polled output (such as writing to `stderr`).
+    ImmediatelyPollable,
+}
+
+impl ArenaKey for EpollId {
+    type Value = EpollInfo;
+}
+
+impl EpollId {
+
+}

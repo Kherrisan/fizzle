@@ -7,7 +7,7 @@ pub mod io_uring;
 pub mod mq;
 pub mod pipe;
 pub mod poll;
-pub mod proc;
+pub mod process;
 pub mod pthread;
 pub mod semaphore;
 pub mod signal;

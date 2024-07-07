@@ -1,7 +1,7 @@
+use crate::handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource};
+use crate::handlers::polled::PolledInfo;
 use crate::hook_macros;
-use crate::state::fd::{FdInfo, FdResource};
-use crate::state::identifiers::DescriptorId;
-use crate::state::{PipeInfo, PipeMode, PolledInfo};
+use crate::handlers::pipe::{PipeInfo, PipeMode};
 
 use fizzle_common::storage::Buffer;
 
@@ -54,14 +54,14 @@ hook_macros::hook! {
         // `unwrap()` guaranteed to succeed--we *just* inserted the pipe
         state.global.pipes.get_mut(&first_pipe_id).unwrap().peer = Some(second_pipe_id.clone());
 
-        let fd1_info = FdInfo {
+        let fd1_info = DescriptorInfo {
             close_on_exec,
             nonblocking,
             is_passthrough: false,
             resource: FdResource::Pipe(first_pipe_id),
         };
 
-        let fd2_info = FdInfo {
+        let fd2_info = DescriptorInfo {
             close_on_exec,
             nonblocking,
             is_passthrough: false,
@@ -69,8 +69,8 @@ hook_macros::hook! {
         };
 
         // Now add the fd -> pipe_id mapping
-        state.local.fds.allocate_with_key(DescriptorId::new(fd1), fd1_info).unwrap();
-        state.local.fds.allocate_with_key(DescriptorId::new(fd2), fd2_info).unwrap();
+        state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd1), fd1_info).unwrap();
+        state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd2), fd2_info).unwrap();
 
         *pipefd = fd1;
         *(pipefd.add(1)) = fd2;

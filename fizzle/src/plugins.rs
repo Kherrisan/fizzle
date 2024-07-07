@@ -1,9 +1,10 @@
-use crate::constants::*;
+use crate::arena::{KeyedArena, Rc};
+use crate::constants::FIZZLE_MAX_PLUGINS;
+use crate::handlers::plugin_module::PluginModuleId;
 
-use fizzle_common::storage::{Rc, KeyedArena};
 use fizzle_plugin::{Context, FizzlePluginObject, IoEndpointVariant};
 
-use super::{FizzState, PluginModuleId};
+use crate::state::FizzState;
 
 pub type PluginModules =
     KeyedArena<PluginModuleId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>;

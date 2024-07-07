@@ -1,21 +1,20 @@
 use std::{collections::HashMap, os::fd::RawFd, ptr};
 
-use fizzle_common::storage::Rc;
 use fxhash::FxBuildHasher;
 
-use crate::state::backend::{ConnectedBackend, ConnectionlessBackend, FileBackend, StdioBackend};
-use crate::state::fd::{FdInfo, FdResource};
-use crate::state::identifiers::{DescriptorId, PolledId};
-use crate::state::singleton::FizzleSingleton;
-use crate::state::{
-    EpollDirection, EpollInfo, EpollInterest, PolledStatus, SocketState,
-};
+use crate::arena::Rc;
+use crate::backend::{ConnectedBackend, ConnectionlessBackend, FileBackend, StdioBackend};
+use crate::handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource};
+use crate::handlers::epoll::{EpollDirection, EpollInfo, EpollInterest, PolledStatus};
+use crate::handlers::polled::PolledId;
+use crate::handlers::socket::SocketState;
 use crate::hook_macros;
+use crate::state::FizzleSingleton;
 
 /// Polled for read() operations
 pub fn fd_to_pollin(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
     let state = ctx.acquire();
-    let Some(fd_info) = state.local.fds.get(&DescriptorId::new(fd)) else {
+    let Some(fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(fd)) else {
         return PolledStatus::BadFd;
     };
     match &fd_info.resource {
@@ -132,7 +131,7 @@ pub fn fd_to_pollin(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
 
 pub fn fd_to_pollout(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
     let state = ctx.acquire();
-    let Some(fd_info) = state.local.fds.get(&DescriptorId::new(fd)) else {
+    let Some(fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(fd)) else {
         return PolledStatus::BadFd;
     };
     match &fd_info.resource {
@@ -533,7 +532,7 @@ hook_macros::hook! {
 
         let fd = crate::alias_fd_create();
         let epoll_id = state.global.epolls.allocate(EpollInfo { interests: Default::default() }).unwrap();
-        state.local.fds.allocate_with_key(DescriptorId::new(fd), FdInfo {
+        state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
             close_on_exec: (flags & libc::EPOLL_CLOEXEC) != 0,
             nonblocking: false,
             is_passthrough: false,
@@ -553,7 +552,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_epoll_ctl(ctx) {
         let mut state = ctx.acquire();
 
-        let Some(epfd_info) = state.local.fds.get(&DescriptorId::new(epfd)) else {
+        let Some(epfd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(epfd)) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
         };
@@ -563,7 +562,7 @@ hook_macros::hook! {
             return -1
         };
 
-        let Some(_) = state.local.fds.get(&DescriptorId::new(fd)) else {
+        let Some(_) = state.local.fds.get(&DescriptorId::from_raw_fd(fd)) else {
             log::error!("`epoll_ctl` fd {} not found (ignoring...)", fd);
             return 0 // TODO: fix fopen rather than this workaround
             //*libc::__errno_location() = libc::EBADF;
@@ -580,7 +579,7 @@ hook_macros::hook! {
         match op {
             libc::EPOLL_CTL_ADD => {
                 assert!(!event.is_null());
-                let descriptor_id = DescriptorId::new(fd);
+                let descriptor_id = DescriptorId::from_raw_fd(fd);
                 if epoll_info.interests.contains_key(&descriptor_id) {
                     *libc::__errno_location() = libc::EEXIST;
                     return -1
@@ -624,7 +623,7 @@ hook_macros::hook! {
                 0
             }
             libc::EPOLL_CTL_DEL => {
-                let Some(_) = epoll_info.interests.remove(&DescriptorId::new(fd)) else {
+                let Some(_) = epoll_info.interests.remove(&DescriptorId::from_raw_fd(fd)) else {
                     *libc::__errno_location() = libc::ENOENT;
                     return -1
                 };
@@ -657,7 +656,7 @@ hook_macros::hook! {
                 };
 
                 let epoll_info = state.global.epolls.get_mut(&epoll_id).unwrap();
-                let Some(interest) = epoll_info.interests.get_mut(&DescriptorId::new(fd)) else {
+                let Some(interest) = epoll_info.interests.get_mut(&DescriptorId::from_raw_fd(fd)) else {
                     *libc::__errno_location() = libc::ENOENT;
                     return -1
                 };
@@ -731,7 +730,7 @@ hook_macros::hook! {
             crate::report_strict_failure("sigmask unsupported in epoll_pwait or epoll_pwait2");
         }
 
-        let Some(epfd_info) = state.local.fds.get(&DescriptorId::new(epfd)) else {
+        let Some(epfd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(epfd)) else {
             *libc::__errno_location() = libc::EBADF;
             return -1
         };
