@@ -52,9 +52,7 @@ use crate::backend::{
     ConnectedBackend, FileBackend, IoBackend, PendingBackend, ServerBackend, StandardFeedback, StdioBackend
 };
 
-static FIZZLE_STATE: NcOnceCell<RefCell<FizzState>> = NcOnceCell::new();
-
-static REAPER_LOCK: NcOnceCell<Semaphore> = NcOnceCell::new();
+static FIZZLE_STATE: NcOnceCell<RefCell<FizzleState>> = NcOnceCell::new();
 
 static THREAD_LOCKS: NcOnceCell<[RefCell<Option<Semaphore>>; FIZZLE_MAX_THREADS]> = NcOnceCell::new();
 
@@ -91,16 +89,16 @@ pub struct FizzleSingleton {
 
 impl FizzleSingleton {
     /// Acquires the global shared state for mutable access.
-    pub fn acquire(&mut self) -> RefMut<'_, FizzState> {
+    pub fn acquire(&mut self) -> RefMut<'_, FizzleState> {
         FIZZLE_STATE.get_or_init(|| {
             env_logger::init();
             log::info!("First syscall hooked--initializing Fizzle state...");
 
             let is_initialized = matches!(env::var(FIZZLE_MEMORY_ENV), Ok(_));
 
-            let state = RefCell::new(FizzState::new());
+            let state = RefCell::new(FizzleState::new());
             let process_id = state.borrow_mut().local.process_id;
-            process_id.initialize_process_lock(self);
+            process_id.init_process_lock(self);
 
             log::info!("Fizzle state initialization complete.");
 
@@ -150,10 +148,6 @@ impl FizzleSingleton {
         let ret = f();
         state::set_entered_handler(true);
         ret
-    }
-
-    fn reaper_lock(&mut self) -> &Semaphore {
-        REAPER_LOCK.get_or_situate(|uninit| Semaphore::initialize(uninit, false, 0))
     }
 
     pub fn thread_lock(&mut self, thread_id: &ThreadId) -> Ref<'_, Option<Semaphore>> {
@@ -544,19 +538,21 @@ impl FizzleSingleton {
         }
         drop(state);
 
-        set_entered_handler(false);
-        for routine in cleanup_routines {
-            routine.call();
-        }
-        set_entered_handler(true);
+        self.run_outside_shim(|| {
+            for routine in cleanup_routines {
+                routine.call();
+            }
+        });
 
         let mut state = self.acquire();
+
         // Mark this thread as dead for future threads that may wait on it.
         state.local.terminated_threads.insert(thread_id);
+
         // Notify any threads awaiting this thread's death
         if let Some(awaiting_threads) = state.local.awaiting_thread_death.remove(&thread_id) {
+            let process_id = state.local.process_id;
             for thread_id in awaiting_threads {
-                let process_id = state.local.process_id;
                 state.global
                     .ready
                     .enqueue(ReadyInfo::Worker(WorkerId {
@@ -686,18 +682,18 @@ pub unsafe fn fizzle_state_singleton() -> FizzleSingleton {
 }
 
 #[derive(Debug)]
-pub struct FizzState {
-    pub local: FizzLocal,
-    pub global: &'static mut FizzGlobal,
+pub struct FizzleState {
+    pub local: ProcessLocalState,
+    pub global: &'static mut InterprocessState,
 }
 
-impl FizzState {
+impl FizzleState {
     fn new() -> Self {
         // This needs to go before `allocate_global_memory`, as this env variable gets set within it.
         let is_initialized = matches!(env::var(FIZZLE_MEMORY_ENV), Ok(_));
 
         let global_uninit = Self::allocate_global_memory();
-        let global: &'static mut FizzGlobal;
+        let global: &'static mut InterprocessState;
         let process_id: ProcessId;
 
         match is_initialized {
@@ -706,15 +702,15 @@ impl FizzState {
                 process_id = global.passthrough_process_id;
 
                 let transfer_fds = global.transfer_fds.take();
-                let local = FizzLocal::new(process_id, transfer_fds, true);
+                let local = ProcessLocalState::new(process_id, transfer_fds, true);
                 Self { local, global }
             }
             false => {
-                global = FizzGlobal::initialize(global_uninit);
+                global = InterprocessState::initialize(global_uninit);
                 process_id = ProcessId::from(0);
 
                 let transfer_fds = global.transfer_fds.take();
-                let mut local = FizzLocal::new(process_id, transfer_fds, false);
+                let mut local = ProcessLocalState::new(process_id, transfer_fds, false);
 
                 // Initialize plugins
                 let mut endpoints = Vec::new();
@@ -725,8 +721,8 @@ impl FizzState {
         }
     }
 
-    fn allocate_global_memory() -> &'static mut MaybeUninit<FizzGlobal> {
-        let size = mem::size_of::<FizzGlobal>();
+    fn allocate_global_memory() -> &'static mut MaybeUninit<InterprocessState> {
+        let size = mem::size_of::<InterprocessState>();
         let is_multiprocess =
             matches!(env::var(FIZZLE_MULTIPROCESS_ENV), Ok(s) if s.as_str() == "1");
 
@@ -744,7 +740,7 @@ impl FizzState {
                     panic!("failed to mmap")
                 }
 
-                return &mut *(location as *mut MaybeUninit<FizzGlobal>);
+                return &mut *(location as *mut MaybeUninit<InterprocessState>);
             }
         }
 
@@ -799,11 +795,9 @@ impl FizzState {
                 *libc::__errno_location()
             );
 
-            &mut *(location as *mut MaybeUninit<FizzGlobal>)
+            &mut *(location as *mut MaybeUninit<InterprocessState>)
         }
     }
-
-    /* TODO: fix from here onward */
 
     /// Adds a thread from the current process to the `ready` queue.
     pub fn mark_thread_ready(&mut self, thread_id: ThreadId) {
@@ -916,7 +910,7 @@ impl FizzState {
     }
 }
 
-pub struct FizzLocal {
+pub struct ProcessLocalState {
     pub process_id: ProcessId,
     /// Indicates that the thread being awoken should be immediately cancelled and delegate execution back to this thread.
     /// Plugin modules for handling I/O.
@@ -951,7 +945,7 @@ pub struct FizzLocal {
     pub working_directory: FilePath<MAX_PATH_LEN>,
 }
 
-impl Debug for FizzLocal {
+impl Debug for ProcessLocalState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FizzLocal")
             .field("process_id", &self.process_id)
@@ -978,7 +972,7 @@ impl Debug for FizzLocal {
     }
 }
 
-impl FizzLocal {
+impl ProcessLocalState {
     fn new(
         id: ProcessId,
         transfer_fds: Option<Box<Descriptors>>,
@@ -1043,7 +1037,7 @@ impl FizzLocal {
 }
 
 #[derive(Debug)]
-pub struct FizzGlobal {
+pub struct InterprocessState {
     pub persistent_rounds: usize,
     pub next_process_id: ProcessId,
     /// The next StreamId available to be assigned to an emulated stream.
@@ -1082,12 +1076,12 @@ pub struct FizzGlobal {
     pub prefuzz_rng: rand::rngs::SmallRng,
 }
 
-impl FizzGlobal {
+impl InterprocessState {
     // TODO: initialize() is unsafe--whenever we change the fields in InterprocessState, it becomes
     // unsound until we add the corresponding definition. We should really change it to a trait +
     // proc macro derive.
     /// Takes an uninitialized InterprocessState and initializes it in place.
-    fn initialize(state: &mut MaybeUninit<FizzGlobal>) -> &mut FizzGlobal {
+    fn initialize(state: &mut MaybeUninit<InterprocessState>) -> &mut InterprocessState {
         unsafe {
             let state = state.as_mut_ptr();
 

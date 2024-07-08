@@ -4,7 +4,7 @@ use crate::handlers::plugin_module::PluginModuleId;
 
 use fizzle_plugin::{Context, FizzlePluginObject, IoEndpointVariant};
 
-use crate::state::FizzState;
+use crate::state::FizzleState;
 
 pub type PluginModules =
     KeyedArena<PluginModuleId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>;
@@ -58,7 +58,7 @@ pub enum IoEmulationType {
 /// # Panics
 ///
 /// This method will panic if it is not called in the root process
-pub fn run_plugins(state: &mut FizzState) -> bool {
+pub fn run_plugins(state: &mut FizzleState) -> bool {
     let mut plugin_activated = false;
 
     let mut read = Vec::new();

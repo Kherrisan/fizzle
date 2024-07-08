@@ -20,7 +20,7 @@ impl From<usize> for ProcessId {
 }
 
 impl ProcessId {
-    pub fn initialize_process_lock(&self, ctx: &mut FizzleSingleton) {
+    pub fn init_process_lock(&self, ctx: &mut FizzleSingleton) {
         let sem_opt = &mut ctx.acquire().global.process_locks[usize::from(*self)];
 
         // TODO: this seems to behave safely, but check with Miri
@@ -28,7 +28,5 @@ impl ProcessId {
             let uninit_sem = (*(ptr::from_mut(sem_opt) as *mut Option<MaybeUninit<Semaphore>>)).insert(MaybeUninit::uninit());
             Semaphore::initialize(uninit_sem, false, 0);
         }
-        
-        drop(sem_opt);
     }
 }
