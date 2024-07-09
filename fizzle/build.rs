@@ -17,6 +17,7 @@ const FIZZLE_CONFIG_ENV: &str = "FIZZLE_CONFIG";
 #[serde(deny_unknown_fields)] 
 pub struct FizzleConfiguration {
     pub io: HashMap<IoEndpoint, IoInputVariant>,
+    #[serde(default)]
     pub process: Vec<ProcessConfiguration>,
 }
 

@@ -14,21 +14,21 @@ const FUTEX_OP_SHIFT_NAND: i32 = libc::FUTEX_OP_OPARG_SHIFT | libc::FUTEX_OP_AND
 const FUTEX_OP_SHIFT_XOR: i32 = libc::FUTEX_OP_OPARG_SHIFT | libc::FUTEX_OP_XOR;
 
 fn format_futex_op(futex_op: libc::c_int) -> &'static str {
-    if (futex_op & libc::FUTEX_WAIT) != 0 {
+    if futex_op == libc::FUTEX_WAIT {
         "FUTEX_WAIT"
-    } else if (futex_op & libc::FUTEX_WAKE) != 0 {
+    } else if futex_op == libc::FUTEX_WAKE {
         "FUTEX_WAKE"
-    } else if (futex_op & libc::FUTEX_FD) != 0 {
+    } else if futex_op == libc::FUTEX_FD {
         "FUTEX_FD"
-    } else if (futex_op & libc::FUTEX_REQUEUE) != 0 {
+    } else if futex_op == libc::FUTEX_REQUEUE {
         "FUTEX_REQUEUE"
-    } else if (futex_op & libc::FUTEX_CMP_REQUEUE) != 0 {
+    } else if futex_op == libc::FUTEX_CMP_REQUEUE {
         "FUTEX_CMP_REQUEUE"
-    } else if (futex_op & libc::FUTEX_WAKE_OP) != 0 {
+    } else if futex_op == libc::FUTEX_WAKE_OP {
         "FUTEX_WAKE_OP"
-    } else if (futex_op & libc::FUTEX_WAIT_BITSET) != 0 {
+    } else if futex_op == libc::FUTEX_WAIT_BITSET {
         "FUTEX_WAIT_BITSET"
-    } else if (futex_op & libc::FUTEX_WAKE_BITSET) != 0 {
+    } else if futex_op == libc::FUTEX_WAKE_BITSET {
         "FUTEX_WAKE_BITSET"
     } else {
         "UNIMPLEMENTED OP"
@@ -51,35 +51,28 @@ fn format_futex_op(futex_op: libc::c_int) -> &'static str {
     res
 */
 
-// VA_ARGS cannot
-struct SyscallReal {
-    __private_field: (),
-}
-
-static SYSCALL_SINGLETON: SyscallReal = SyscallReal {
-    __private_field: (),
-};
-
-impl SyscallReal {
-    pub fn get(&self) -> unsafe extern "C" fn(libc::c_long, ...) -> libc::c_long {
-        use std::sync::Once;
-
-        static mut REAL: *const u8 = 0 as *const u8;
-        static mut ONCE: Once = Once::new();
-
-        unsafe {
-            ONCE.call_once(|| {
-                REAL = hook_macros::ld_preload::dlsym_next(concat!("syscall", "\0"));
-            });
-            ::std::mem::transmute(REAL)
-        }
-    }
-}
-
 #[no_mangle]
 pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc::c_long {
     if crate::state::has_entered_handler() {
-        panic!("recursive calls to `syscall` not allowed");
+        return match number {
+            libc::SYS_statx => {
+                let dirfd: libc::c_int = va_args.arg();
+                let pathname: *const libc::c_char = va_args.arg();
+                let flags: libc::c_int = va_args.arg();
+                let mask:  libc::c_uint = va_args.arg();
+                let statxbuf: *mut libc::statx = va_args.arg();
+                
+                hook_macros::real_syscall()(number, dirfd, pathname, flags, mask, statxbuf)
+            }
+            _ => {
+                log::debug!(
+                    "syscall({}, ...)",
+                    number
+                );
+
+                panic!("recursive calls to `syscall` not allowed")
+            }
+        }
     }
     crate::state::set_entered_handler(true);
 
@@ -94,7 +87,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
 
     let res = 'body: {
         match number {
-            libc::SYS_gettid => SYSCALL_SINGLETON.get()(number),
+            libc::SYS_gettid => hook_macros::real_syscall()(number),
             libc::SYS_getrandom => {
                 let buf: *mut libc::c_void = va_args.arg();
                 let buflen: libc::size_t = va_args.arg();
@@ -107,6 +100,10 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                 let futex_op: libc::c_int = va_args.arg();
                 let val: u32 = va_args.arg();
 
+                let futex_private_flag = (futex_op & libc::FUTEX_PRIVATE_FLAG) != 0;
+                let _futex_clock_realtime = (futex_op & libc::FUTEX_CLOCK_REALTIME) != 0;
+                let futex_op = futex_op & !(libc::FUTEX_PRIVATE_FLAG | libc::FUTEX_CLOCK_REALTIME);
+
                 log::debug!(
                     "syscall(SYS_futex, {:?}, {} ({}), {}, ...)",
                     uaddr,
@@ -115,8 +112,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                     val
                 );
 
-                let futex_private_flag = (futex_op & libc::FUTEX_PRIVATE_FLAG) != 0;
-                let _futex_clock_realtime = (futex_op & libc::FUTEX_CLOCK_REALTIME) != 0;
+
 
                 if !futex_private_flag {
                     log::warn!("SYS_futex syscall used non-private futex--fizzle does not currently support process-shared futex operations, so this may cause bugs if used in a multiprocess context");

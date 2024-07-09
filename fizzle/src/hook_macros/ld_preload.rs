@@ -46,20 +46,13 @@ macro_rules! hook {
             pub unsafe extern fn $real_fn ( $($v : $t),* ) -> $r {
                 ::std::panic::catch_unwind(|| {
                     if crate::state::has_entered_handler() {
-                        /*
-                        // If we want to drop the `has_entered_handler` flag at this invocation
-                        if crate::state::has_passthrough_handler() {
-                            crate::state::set_passthrough_handler(false);
-                            crate::state::set_entered_handler(false);
-                        }
-                        */
-                        // Use actual function instead of fizzle
                         return $real_fn.get() ( $($v),* )
                     }
                     crate::state::set_entered_handler(true);
 
                     log::trace!(
-                        "Thread {:?} invoked function {}", // TODO: add process info in the future
+                        "PID {}/Thread {:?} invoked function {}", // TODO: add process info in the future
+                        std::process::id(),
                         std::thread::current().id(),
                         stringify!($real_fn)
                     );
@@ -103,3 +96,18 @@ macro_rules! real {
 }
 
 pub(crate) use real;
+
+
+pub fn real_syscall() -> extern "C" fn (libc::c_long, ...) -> libc::c_long {
+    use ::std::sync::Once;
+
+    static mut REAL: *const u8 = 0 as *const u8;
+    static mut ONCE: Once = Once::new();
+
+    unsafe {
+        ONCE.call_once(|| {
+            REAL = crate::hook_macros::ld_preload::dlsym_next(concat!("syscall", "\0"));
+        });
+        ::std::mem::transmute(REAL)
+    }
+}

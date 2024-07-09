@@ -80,8 +80,9 @@ hook_macros::hook! {
                 Some(DescriptorInfo { resource: FdResource::MessageQueue(_), .. }) => crate::alias_fd_destroy(fd),
                 Some(DescriptorInfo { resource: FdResource::Pipe(pipe_id), .. }) => {
                     crate::alias_fd_destroy(fd);
-                    let peer_id = state.global.pipes.get(&pipe_id).unwrap().peer.clone().unwrap();
-                    state.global.pipes.get_mut(&peer_id).unwrap().peer = None;
+                    if let Some(peer_id) = state.global.pipes.get(&pipe_id).unwrap().peer.clone() {
+                        state.global.pipes.get_mut(&peer_id).unwrap().peer = None;                       
+                    }
                 }
                 // TODO: mark stdin as closed after this...
                 Some(DescriptorInfo { resource: FdResource::Stdin, .. }) => (), // We keep stdin for fuzzing input...

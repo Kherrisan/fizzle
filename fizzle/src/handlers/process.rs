@@ -20,6 +20,10 @@ impl From<usize> for ProcessId {
 }
 
 impl ProcessId {
+    pub fn is_main_process(&self) -> bool {
+        self.0 == 0
+    }
+
     pub fn init_process_lock(&self, ctx: &mut FizzleSingleton) {
         let sem_opt = &mut ctx.acquire().global.process_locks[usize::from(*self)];
 

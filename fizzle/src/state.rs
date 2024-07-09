@@ -49,8 +49,29 @@ use crate::plugins::{IoEmulationType, PluginConfigEndpoint, PluginModules};
 use crate::semaphore::Semaphore;
 
 use crate::backend::{
-    ConnectedBackend, FileBackend, IoBackend, PendingBackend, ServerBackend, StandardFeedback, StdioBackend
+    FileBackend, PendingBackend, ServerBackend, StandardFeedback, StdioBackend
 };
+
+pub use private::FizzleSingleton;
+
+mod private {
+    pub struct FizzleSingleton {
+        /// Empty private field to ensure `FizzleSingleton` isn't constructed outside of
+        /// `fizzle_state_singleton()`.
+        _private: (),
+    }
+
+    impl FizzleSingleton {
+        pub(super) fn new() -> Self {
+            let mut singleton = FizzleSingleton {
+                _private: (),
+            };
+
+            singleton.post_init();
+            singleton
+        }
+    }
+}
 
 static FIZZLE_STATE: NcOnceCell<RefCell<FizzleState>> = NcOnceCell::new();
 
@@ -81,62 +102,137 @@ pub fn has_entered_handler() -> bool {
     entered
 }
 
-pub struct FizzleSingleton {
-    /// Empty private field to ensure `FizzleSingleton` isn't constructed outside of
-    /// `fizzle_state_singleton()`.
-    _private: (),
+
+/// Produces a new `FizzleSingleton` instance that can be used to acquire global state in a safe manner.
+/// 
+/// WARNING: this function SHOULD NOT be used in any methods other than a) the hook macro, or b)
+/// those that create new threads, such as `pthread_create`. The `FizzleSingleton` is designed to
+/// ensure that the global `FIZZLE_STATE` variable is never mutably referenced more than once. A
+/// single instantiation of it is provided for each LD_PRELOAD hook; this instance is passed around
+/// and is meant to be the _sole_ means of accessing global state.
+/// 
+/// WARNING 2: the `FizzleSingleton` prevents mutable aliasing within a single-threaded context, but
+/// it cannot inherently prevent mutable access to data by multiple threads. Thread creation hooks
+/// and scheduling routines need to ensure that any acquired `FizzGuard` instances are dropped prior
+/// to another thread acquiring the global state.
+pub unsafe fn fizzle_state_singleton() -> FizzleSingleton {
+    FizzleSingleton::new()
 }
 
 impl FizzleSingleton {
-    /// Acquires the global shared state for mutable access.
-    pub fn acquire(&mut self) -> RefMut<'_, FizzleState> {
-        FIZZLE_STATE.get_or_init(|| {
-            env_logger::init();
-            log::info!("First syscall hooked--initializing Fizzle state...");
+    pub fn init() -> RefCell<FizzleState> {
+        env_logger::init();
+        log::info!("First syscall hooked--initializing Fizzle state...");
 
-            let is_initialized = matches!(env::var(FIZZLE_MEMORY_ENV), Ok(_));
+        let ctx = RefCell::new(FizzleState::new());
+        let mut state = ctx.borrow_mut();
+        let process_id = state.local.process_id;
+        let sem_opt = &mut state.global.process_locks[usize::from(process_id)];
 
-            let state = RefCell::new(FizzleState::new());
-            let process_id = state.borrow_mut().local.process_id;
-            process_id.init_process_lock(self);
+        // TODO: this seems to behave safely, but check with Miri
+        unsafe {
+            let uninit_sem = (*(ptr::from_mut(sem_opt) as *mut Option<MaybeUninit<Semaphore>>)).insert(MaybeUninit::uninit());
+            Semaphore::initialize(uninit_sem, true, 0);
+        }
 
-            log::info!("Fizzle state initialization complete.");
+        drop(state);
 
-            if !is_initialized { // Main process
-                // Now run any applicable processes
-                let mut processes = Vec::new();
-                comptime::populate_onstartup_processes(&mut processes);
+        log::info!("Fizzle state initialization complete.");
 
-                for mut process in processes {
-                    let mut state = self.acquire();
+        ctx
+    }
 
-                    // This thread should still be able to execute afterwards
-                    state.mark_thread_ready(thread::current().id());
+    pub fn post_init(&mut self) {
+        let mut state = self.acquire(); // Runs init()
+        if state.local.post_init_done {
+            return
+        }
+        state.local.post_init_done = true;
 
-                    let process_id = state.global.assign_process_id();
-                    state.global.passthrough_process_id = process_id;
+        log::trace!("running post-initialization.");
 
-                    // TODO: upref all reference-counted global variables here
-                    // For now we just don't free global variables so it's fine...
+        if state.local.process_id.is_main_process() {
+            // Spawn the plugin handler (MUST run in main process)
+            let thread_id = thread::current().id();
+            drop(state);
+            thread::spawn(move || {
+                set_entered_handler(true);
+                let mut ctx = unsafe { fizzle_state_singleton() };
+                let plugin_thread_id = thread::current().id();
+                // The thread that spawned the reaper will immediately wait on its thread lock, so
+                // it is safe to `acquire()` global state here.
+                let mut state = ctx.acquire();
 
-                    drop(state);
+                let plugin_worker = WorkerId {
+                    process_id: state.local.process_id,
+                    thread_id: plugin_thread_id,
+                };
 
-                    // TODO: put this in a method on its own
-                    process.env("LD_PRELOAD", std::env::var("LD_PRELOAD").unwrap());
-                    process.spawn().unwrap();
+                state.global.plugin_worker = Some(plugin_worker);
 
-                    self.pause_current_process();
+                drop(state);
+
+                ctx.init_thread_lock(&plugin_thread_id);
+                // Notify thread that initialization has completed
+                ctx.thread_lock(&thread_id).as_ref().unwrap().post();
+
+                // Wait for plugin worker to be delegated execution
+                ctx.thread_lock(&plugin_thread_id).as_ref().unwrap().wait();
+                
+                loop {
+                    crate::handlers::plugin::handle_plugins(&mut ctx);
+                    ctx.yield_thread();
                 }
+            });
 
-                let mut onready_processes = Vec::new();
-                comptime::populate_onready_processes(&mut onready_processes);
-                if onready_processes.is_empty() {
-                    self.acquire().global.startup_complete = true;
-                }
+            self.thread_lock(&thread::current().id()).as_ref().unwrap().wait();
+            // Plugin process initialization is complete
+            
+            // Now run any applicable processes
+            let mut processes = Vec::new();
+            comptime::populate_onstartup_processes(&mut processes);
+
+            for mut process in processes {
+                let mut state = self.acquire();
+
+                // This thread should still be able to execute afterwards
+                state.mark_thread_delayed_ready(thread::current().id());
+
+                let process_id = state.global.assign_process_id();
+                state.global.passthrough_process_id = process_id;
+
+                // TODO: upref all reference-counted global variables here
+                // For now we just don't free global variables so it's fine...
+
+                // TODO: put this in a method on its own
+                process.env("LD_PRELOAD", std::env::var("LD_PRELOAD").unwrap());
+                process.env(FIZZLE_MEMORY_ENV, std::env::var(FIZZLE_MEMORY_ENV).unwrap());
+                process.spawn().unwrap();
+
+                log::debug!("waiting on process_id {:?}", state.local.process_id);
+
+                state.global
+                    .process_locks[usize::from(state.local.process_id)]
+                    .as_ref()
+                    .unwrap()
+                    .wait();
+
+                drop(state);
             }
 
-            state
-        }).borrow_mut()
+            let mut onready_processes = Vec::new();
+            comptime::populate_onready_processes(&mut onready_processes);
+            if onready_processes.is_empty() {
+                let mut state = self.acquire();
+                state.global.startup_complete = true;
+                drop(state);
+            }
+        }
+    }
+
+    /// Acquires the global shared state for mutable access.
+    pub fn acquire(&mut self) -> RefMut<'_, FizzleState> {
+        FIZZLE_STATE.get_or_init(Self::init).borrow_mut()       
     }
 
     pub fn run_outside_shim<F, R>(&mut self, f: F) -> R
@@ -248,10 +344,7 @@ impl FizzleSingleton {
             }
         }
 
-        drop(state);
-
         if let Some(worker_id) = next_worker {
-            let mut state = self.acquire();
             state.global.waking_thread_id = Some(worker_id.thread_id);
             let local_process_id = state.local.process_id;
             drop(state);
@@ -273,110 +366,20 @@ impl FizzleSingleton {
                 self.thread_lock(&thread_id).as_ref().unwrap().post();
                 self.pause_current_thread();
             }
-            // Now it's this thread's turn to execute
-            // TODO: this NEEDS to run in the root process, but we don't check this?
-
-        } else if crate::plugins::run_plugins(&mut self.acquire()) {
-            // Plugins have queued more workers as ready
-            log::trace!(
-                "Plugins emitted new input--yielding thread to start next available worker"
-            );
-            // This shouldn't lead to a stack overflow unless `run_plugins` erroneously
-            // returns `true` but doesn't schedule new workers.
-            self.yield_thread();
-
-        } else if !self.acquire().global.startup_complete {
-            let mut state = self.acquire();
-            state.global.startup_complete = true;
-
-            // Now run any applicable processes
-            let mut processes = Vec::new();
-            comptime::populate_onready_processes(&mut processes);
-
-            drop(state);
-
-            for mut process in processes {
-                let mut state = self.acquire();
-
-                // This thread should still be able to execute afterwards
-                state.mark_thread_ready(thread::current().id());
-
-                // TODO: upref all reference-counted global variables here
-                // For now we just don't free global variables so it's fine...
-
-                let process_id = state.global.assign_process_id();
-                state.global.passthrough_process_id = process_id;
-
-                drop(state);
-
-                process.env("LD_PRELOAD", std::env::var("LD_PRELOAD").unwrap());
-                process.spawn().unwrap();
-
-                self.pause_current_process();
-            }
-        
-            self.yield_thread();
-        } else if !self.acquire().global.per_round_endpoints.is_empty() {
-            let mut state = self.acquire();
-            let mut endpoints = FnvIndexSet::new();
-            mem::swap(&mut endpoints, &mut state.global.per_round_endpoints);
-
-            for socket_id in endpoints.into_iter() {
-                let Some(sock_info) = state.global.sockets.get_mut(&socket_id) else {
-                    continue
-                };
-
-                match sock_info {
-                    SocketState::PendingConnection(_) => (), // Leave be
-                    SocketState::Connected(connected) => {
-                        log::debug!("removing connected fuzz/plugin client socket");
-
-                        let target_address = connected.local_addr.clone();
-                        let source_address = connected.rem_addr.clone();
-                        let client_backend = match &connected.backend {
-                            ConnectedBackend::Plugin(plugin_id) => PerRoundClientBackend::Plugin(plugin_id.clone()),
-                            ConnectedBackend::Fuzz(fuzz_endpoint_id) => PerRoundClientBackend::Fuzz(fuzz_endpoint_id.clone()),
-                            _ => unreachable!(),
-                        };
-
-                        if !connected.peer_closed {
-                            connected.peer_closed = true;
-
-                            // Now raise all applicable poll events so the reader discovers the peer is closed
-                            match connected.backend.clone() {
-                                IoBackend::Plugin(plugin_id) => {
-                                    let plugin = state.global.plugins.get(&plugin_id).unwrap();
-                                    let read_polled = plugin.read_polled.clone();
-                                    let write_polled = plugin.write_polled.clone();
-                                    state.raise_polled(&read_polled);
-                                    state.raise_polled(&write_polled);
-                                },
-                                IoBackend::Fuzz(fuzz_endpoint_id) => {
-                                    let read_polled = state.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().read_polled.clone();
-                                    state.raise_polled(&read_polled);
-                                }
-                                _ => unreachable!(),
-                            }
-                        }
-
-                        state.global.per_round_clients.push(PerRoundClientInfo {
-                            source_address,
-                            target_address,
-                            backend: client_backend,
-                        }).unwrap();
-                    }
-                    _ => unreachable!(),
-                }
-            }
-
-            drop(state);
-
-            self.yield_thread();
 
         } else {
-            log::trace!("No workers were ready to execute--fuzzing round complete.");
-            // No events were triggered for any pollers--move on to next input
-            self.fuzz_round_complete();
+            let plugin_worker = state.global.plugin_worker.unwrap();
+
+            // Schedule the plugin worker for execution
+            state.global.mark_worker_ready(plugin_worker);
+            drop(state);
+
+            // Yield to the plugin worker
+            self.yield_thread();
+        }
+
+        if false {
+
         }
     }
 
@@ -384,7 +387,7 @@ impl FizzleSingleton {
 
     /// Notifies the fuzzing engine that the current round of fuzzing has finished.
     /// Note that
-    fn fuzz_round_complete(&mut self) {
+    pub fn fuzz_round_complete(&mut self) {
         let mut state = self.acquire();
         // Communicate that process is finished running
 
@@ -480,7 +483,6 @@ impl FizzleSingleton {
         // TODO: inefficient
         let fuzz_input = state.global.fuzz_input.clone();
 
-        // TODO: this needs to run in the root process, but we don't check this??
         let modules: Vec<_> = state.global.plugins.values().map(|plugin_info| plugin_info.module_id.clone()).collect();
         for module in modules {
             let plugin_module = state.local.plugin_modules.as_mut().unwrap().get_mut(&module).unwrap();
@@ -510,9 +512,6 @@ impl FizzleSingleton {
         }
 
         drop(state);
-
-        // If the current running thread isn't ready to receive input, pass on to the next thread.
-        self.yield_thread(); // This won't recurse beyond a depth of 2, so long as inputs are passed into the appropriate places here...
     }
 
     pub fn terminate_thread(&mut self, term_method: ThreadTermination) -> ! {
@@ -572,6 +571,7 @@ impl FizzleSingleton {
         } else {
             drop(state);
             let handle = std::thread::spawn(move || {
+                set_entered_handler(true);
                 let mut ctx = unsafe { fizzle_state_singleton() };
                 // Reaper thread
                 // The thread that spawned the reaper will immediately wait on its thread lock, so
@@ -663,24 +663,6 @@ impl FizzleSingleton {
     }
 }
 
-/// Produces a new `FizzleSingleton` instance that can be used to acquire global state in a safe manner.
-/// 
-/// WARNING: this function SHOULD NOT be used in any methods other than a) the hook macro, or b)
-/// those that create new threads, such as `pthread_create`. The `FizzleSingleton` is designed to
-/// ensure that the global `FIZZLE_STATE` variable is never mutably referenced more than once. A
-/// single instantiation of it is provided for each LD_PRELOAD hook; this instance is passed around
-/// and is meant to be the _sole_ means of accessing global state.
-/// 
-/// WARNING 2: the `FizzleSingleton` prevents mutable aliasing within a single-threaded context, but
-/// it cannot inherently prevent mutable access to data by multiple threads. Thread creation hooks
-/// and scheduling routines need to ensure that any acquired `FizzGuard` instances are dropped prior
-/// to another thread acquiring the global state.
-pub unsafe fn fizzle_state_singleton() -> FizzleSingleton {
-    FizzleSingleton {
-        _private: (),
-    }
-}
-
 #[derive(Debug)]
 pub struct FizzleState {
     pub local: ProcessLocalState,
@@ -723,10 +705,10 @@ impl FizzleState {
 
     fn allocate_global_memory() -> &'static mut MaybeUninit<InterprocessState> {
         let size = mem::size_of::<InterprocessState>();
-        let is_multiprocess =
-            matches!(env::var(FIZZLE_MULTIPROCESS_ENV), Ok(s) if s.as_str() == "1");
+        let is_singleprocess =
+            matches!(env::var(FIZZLE_SINGLEPROCESS_ENV), Ok(s) if s.as_str() == "1");
 
-        if !is_multiprocess {
+        if is_singleprocess {
             unsafe {
                 let location = libc::mmap(
                     ptr::null_mut(),
@@ -736,27 +718,28 @@ impl FizzleState {
                     -1,
                     0,
                 );
+
                 if location == libc::MAP_FAILED {
-                    panic!("failed to mmap")
+                    panic!("failed to mmap global memory (errno {})", *libc::__errno_location())
                 }
 
                 return &mut *(location as *mut MaybeUninit<InterprocessState>);
             }
         }
 
+        // Shared memory doesn't play well with the forkserver, so we need to make sure that 
+        // processes are forked *before* any shared memory is created.
+        #[cfg(feature = "afl")]
+        unsafe {
+            crate::__afl_manual_init();
+        }
+
         let (key, flags) = match env::var(FIZZLE_MEMORY_ENV) {
-            Err(_) if !is_multiprocess => {
-                log::debug!("allocating IPC_PRIVATE shared memory");
-                (
-                    libc::IPC_PRIVATE,
-                    (libc::S_IRUSR | libc::S_IWUSR) as libc::c_int,
-                )
-            }
             Ok(var) => {
                 log::debug!("attaching to already-created shared memory");
                 (
                     var.parse().unwrap(),
-                    (libc::S_IRUSR | libc::S_IWUSR) as libc::c_int,
+                    (libc::S_IRUSR | libc::S_IWUSR) as i32
                 )
             }
             Err(_) => unsafe {
@@ -765,9 +748,8 @@ impl FizzleState {
                 log::debug!("allocating public shared memory object with key {}", key);
                 (
                     key,
-                    libc::IPC_CREAT
-                        | libc::IPC_EXCL
-                        | (libc::S_IRUSR | libc::S_IWUSR) as libc::c_int,
+                    (libc::S_IRUSR | libc::S_IWUSR) as i32
+                    | libc::IPC_CREAT | libc::IPC_EXCL
                 )
             },
         };
@@ -776,9 +758,11 @@ impl FizzleState {
             let shmid = libc::shmget(key, size, flags);
             assert!(
                 shmid >= 0,
-                "shared memory creation failed (errno {})",
+                "shared memory creation for key {} failed (errno {})",
+                key,
                 *libc::__errno_location()
             );
+            log::debug!("shared memory allocated with shmid {}", shmid);
 
             let location = libc::shmat(shmid, ptr::null_mut(), 0);
             assert!(
@@ -787,6 +771,7 @@ impl FizzleState {
                 *libc::__errno_location()
             );
 
+            /*
             let ret = libc::shmctl(shmid, libc::IPC_RMID, ptr::null_mut());
             assert_eq!(
                 ret,
@@ -794,6 +779,7 @@ impl FizzleState {
                 "failed to make shared memory ephemeral (errno {})",
                 *libc::__errno_location()
             );
+            */
 
             &mut *(location as *mut MaybeUninit<InterprocessState>)
         }
@@ -804,6 +790,17 @@ impl FizzleState {
         let process_id = self.local.process_id;
         self.global
             .ready
+            .enqueue(ReadyInfo::Worker(WorkerId {
+                process_id,
+                thread_id,
+            }))
+            .unwrap();
+    }
+
+    pub fn mark_thread_delayed_ready(&mut self, thread_id: ThreadId) {
+        let process_id = self.local.process_id;
+        self.global
+            .delayed_ready
             .enqueue(ReadyInfo::Worker(WorkerId {
                 process_id,
                 thread_id,
@@ -911,6 +908,7 @@ impl FizzleState {
 }
 
 pub struct ProcessLocalState {
+    pub post_init_done: bool,
     pub process_id: ProcessId,
     /// Indicates that the thread being awoken should be immediately cancelled and delegate execution back to this thread.
     /// Plugin modules for handling I/O.
@@ -1010,6 +1008,7 @@ impl ProcessLocalState {
         };
 
         Self {
+            post_init_done: false,
             process_id: id,
             plugin_modules, 
             reaper: None,
@@ -1038,6 +1037,7 @@ impl ProcessLocalState {
 
 #[derive(Debug)]
 pub struct InterprocessState {
+    pub plugin_worker: Option<WorkerId>,
     pub persistent_rounds: usize,
     pub next_process_id: ProcessId,
     /// The next StreamId available to be assigned to an emulated stream.
@@ -1068,7 +1068,10 @@ pub struct InterprocessState {
     pub plugins: KeyedArena<PluginId, PluginInfo, FIZZLE_MAX_PLUGIN_STREAMS>,
     pub polled_events: KeyedArena<PolledId, PolledInfo, FIZZLE_MAX_POLLED_EVENTS>,
     pub pollers: KeyedArena<PollerId, PollerInfo, FIZZLE_MAX_POLLERS>,
+    /// Pollers/Workers that can be immediately scheduled.
     pub ready: Queue<ReadyInfo, FIZZLE_MAX_QUEUED_READY_POLLERS>,
+    /// Pollers/Workers that should be scheduled once the system has reached a halted state.
+    pub delayed_ready: Queue<ReadyInfo, FIZZLE_MAX_QUEUED_READY_POLLERS>,
     pub fuzz_input: Buffer<FIZZLE_MAX_FUZZ_INPUT>,
     pub per_round_clients: heapless::Vec<PerRoundClientInfo, FIZZLE_MAX_PER_ROUND_ENDPOINTS>,
     pub per_round_endpoints: FnvIndexSet<Rc<SocketId>, FIZZLE_MAX_PER_ROUND_ENDPOINTS>,
@@ -1084,7 +1087,7 @@ impl InterprocessState {
     fn initialize(state: &mut MaybeUninit<InterprocessState>) -> &mut InterprocessState {
         unsafe {
             let state = state.as_mut_ptr();
-
+            *ptr::addr_of_mut!((*state).plugin_worker) = None;
             *ptr::addr_of_mut!((*state).shared_mem_initialized) = false;
             *ptr::addr_of_mut!((*state).persistent_rounds) = FIZZLE_AFL_LOOP; // TODO: make configurable
             *ptr::addr_of_mut!((*state).next_process_id) = ProcessId::from(1);
@@ -1596,9 +1599,9 @@ pub struct WorkerId {
 
 #[derive(Debug)]
 pub struct PerRoundClientInfo {
-    source_address: TransportAddress,
-    target_address: TransportAddress,
-    backend: PerRoundClientBackend,
+    pub source_address: TransportAddress,
+    pub target_address: TransportAddress,
+    pub backend: PerRoundClientBackend,
 }
 
 #[derive(Clone, Debug)]

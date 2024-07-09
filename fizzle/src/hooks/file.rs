@@ -1,4 +1,4 @@
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::ptr;
 
 use crate::backend::FileBackend;
@@ -406,6 +406,30 @@ hook_macros::hook! {
         pathname: *const libc::c_char,
         mode: *const libc::c_char
     ) -> *mut libc::FILE => fizzle_fopen(_ctx) {
+
+        let path = CStr::from_ptr(pathname).to_str().unwrap();
+        if &path[..6] == "/proc/" && &path[path.len() - 7..] == "/status" {
+            // Temporary workaround for Magma, as `oai_mme` checks process count
+
+            let tmp_path = format!("/tmp/{}-status", libc::getpid());
+
+            let mut data = std::fs::read_to_string(path).unwrap();
+
+            if let Some(mut offset) = data.find("Threads:") {
+                offset += "Threads:".len();
+                let data_slice = &mut data.as_bytes_mut();
+
+                while data_slice[offset] != b'\n' {
+                    data_slice[offset] = b' ';
+                    offset += 1;
+                }
+                data_slice[offset - 1] = b'1';
+            }
+
+            std::fs::write(&tmp_path, data).unwrap();
+            let tmp_cstr = CString::new(tmp_path.as_str()).unwrap();
+            return hook_macros::real!(fopen)(tmp_cstr.as_ptr(), mode)
+        }
         hook_macros::real!(fopen)(pathname, mode)
 
         /*
@@ -1068,6 +1092,7 @@ hook_macros::hook! {
     }
 }
 
+/*/
 hook_macros::hook! {
     unsafe fn statx(
         dirfd: libc::c_int,
@@ -1112,6 +1137,7 @@ hook_macros::hook! {
         }
     }
 }
+*/
 
 hook_macros::hook! {
     unsafe fn readlink(

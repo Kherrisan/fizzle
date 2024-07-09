@@ -8,6 +8,9 @@ pub(crate) use ld_preload::hook;
 #[cfg(any(target_env = "gnu", target_os = "android"))]
 pub(crate) use ld_preload::real;
 
+#[cfg(any(target_env = "gnu", target_os = "android"))]
+pub(crate) use ld_preload::real_syscall;
+
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod dyld_insert_libraries;
 

@@ -22,3 +22,15 @@ hook_macros::hook! {
         libc::EINVAL
     }
 }
+
+hook_macros::hook! {
+    unsafe fn sigtimedwait(
+        _set: *const libc::sigset_t,
+        _info: *mut libc::siginfo_t,
+        _timeout: *const libc::timespec
+    ) -> libc::c_int => fizzle_sigtimedwait(ctx) {
+        ctx.yield_thread();
+
+        libc::EINVAL
+    }
+}

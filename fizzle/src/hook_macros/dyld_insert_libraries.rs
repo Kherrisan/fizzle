@@ -23,18 +23,28 @@ macro_rules! hook {
 
         pub unsafe extern fn $hook_fn ( $($v : $t),* ) -> $r {
             ::std::panic::catch_unwind(|| {
-                if state::has_entered_handler() {
-                    // Use actual function instead of fizzle
-                    return $real_fn ( $($v),* )
-                }
-                state::set_entered_handler(true);
-                state::fizzle_initialize();
-                let res = {
-                    let fizzle_state = state::get_fizzle_state();
-                    $body
-                };
-                state::set_entered_handler(false);
-                res
+                    if crate::state::has_entered_handler() {
+                        return $real_fn.get() ( $($v),* )
+                    }
+                    crate::state::set_entered_handler(true);
+
+                    log::trace!(
+                        "Thread {:?} invoked function {}", // TODO: add process info in the future
+                        std::thread::current().id(),
+                        stringify!($real_fn)
+                    );
+
+                    let res = {
+                        $hook_fn ( $($v),*)
+                    };
+
+                    log::trace!(
+                        "Function {} returned {:?}", // TODO: add process info in the future
+                        stringify!($real_fn),
+                        res
+                    );
+                    crate::state::set_entered_handler(false);
+                    res
             }).unwrap_or_else(|_| $real_fn ( $($v),* ))
         }
     };

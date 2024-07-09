@@ -1,8 +1,10 @@
 // Environment variables
 /// Indicates the shared memory key that child processes should access
 pub const FIZZLE_MEMORY_ENV: &str = "FIZZLE_MEMORY";
-/// Indicates that the user will be fuzzing a single-process application
-pub const FIZZLE_MULTIPROCESS_ENV: &str = "FIZZLE_MULTIPROCESS";
+/// Indicates that the user will be fuzzing a single-process application.
+/// 
+/// Setting this may slightly speed up the execution rate of a program due to deferred forkserver initialization.
+pub const FIZZLE_SINGLEPROCESS_ENV: &str = "FIZZLE_SINGLEPROCESS";
 
 /// Instructs the fizzle harness to keep running if the main process would exit normally
 // pub const FIZZLE_NOEXIT_ENV: &str = "FIZZLE_NOEXIT";

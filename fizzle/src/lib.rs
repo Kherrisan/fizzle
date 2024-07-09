@@ -1,6 +1,8 @@
 #![feature(c_variadic)]
 #![feature(new_uninit)]
 
+#![feature(string_remove_matches)]
+
 extern crate libc;
 
 mod arena;
