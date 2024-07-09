@@ -22,6 +22,33 @@ use fizzle_common::io::{AddressFamily, SocketType, TransportAddress, TransportPr
 use fizzle_common::storage::Buffer;
 use heapless::spsc::Queue;
 
+fn print_socktype(socktype: i32) -> String {
+    let nonblock = (socktype & libc::SOCK_NONBLOCK) > 0;
+    let cloexec = (socktype & libc::SOCK_CLOEXEC) > 0;
+    let socktype = socktype & !(libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC);
+
+    let mut out = String::new();
+
+    if nonblock {
+        out += "NONBLOCK | ";
+    }
+
+    if cloexec {
+        out += "CLOEXEC | ";
+    }
+
+    match socktype {
+        libc::SOCK_STREAM => out += "SOCK_STREAM",
+        libc::SOCK_DGRAM => out += "SOCK_DGRAM",
+        libc::SOCK_SEQPACKET => out += "SOCK_SEQPACKET",
+        libc::SOCK_RAW => out += "SOCK_RAW",
+        libc::SOCK_RDM => out += "SOCK_RDM",
+        _ => out += &format!("UNKNOWN({})", socktype),
+    }
+
+    out
+}
+
 hook_macros::hook! {
     unsafe fn socket(
         domain: libc::c_int,
@@ -56,7 +83,8 @@ hook_macros::hook! {
         };
 
         let fd = hook_macros::real!(socket)(domain, socktype, protocol);
-        log::debug!("socket({}, {}, {}) -> {}", family, socktype, transport_protocol, fd);
+
+        log::info!("socket({}, {}, {}) -> {}", family, print_socktype(socktype), transport_protocol, fd);
         
         if fd < 0 {
             return fd
