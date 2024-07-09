@@ -265,12 +265,17 @@ hook_macros::hook! {
         exceptfds: *mut libc::fd_set,
         timeout: *const libc::timeval
     ) -> libc::c_int => fizzle_select(_ctx) {
-        let tmo = libc::timespec {
-            tv_sec: (*timeout).tv_sec,
-            tv_nsec: (*timeout).tv_usec * 1000,
-        };
 
-        fizzle_pselect(nfds, readfds, writefds, exceptfds, ptr::addr_of!(tmo), ptr::null())
+        if !timeout.is_null() {
+            let tmo = libc::timespec {
+                tv_sec: (*timeout).tv_sec,
+                tv_nsec: (*timeout).tv_usec * 1000,
+            };
+
+            fizzle_pselect(nfds, readfds, writefds, exceptfds, ptr::addr_of!(tmo), ptr::null())
+        } else {
+            fizzle_pselect(nfds, readfds, writefds, exceptfds, ptr::null(), ptr::null())
+        }
     }
 }
 
