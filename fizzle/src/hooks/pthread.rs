@@ -276,7 +276,8 @@ hook_macros::hook! {
         _thread: libc::pthread_t
     ) -> libc::c_int => fizzle_pthread_detach(_ctx) {
 
-        panic!("`pthread_detach` unimplemented")
+        log::warn!("pthread_detach not fully supported");
+        0
     }
 }
 
