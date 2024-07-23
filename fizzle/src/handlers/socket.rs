@@ -226,7 +226,7 @@ impl Rc<SocketId> {
                     reuse_port,
                     bound_sockets,
                     pending: None,
-                });
+                }).unwrap();
             }
         }
 
@@ -283,7 +283,7 @@ impl Rc<SocketId> {
                 }
 
                 let mut bound_sockets = heapless::Deque::new();
-                bound_sockets.push_back(self.clone());
+                bound_sockets.push_back(self.clone()).unwrap();
 
                 state.global.socket_locations.insert(addr.clone(), TransportLocationInfo {
                     bound_sockets,

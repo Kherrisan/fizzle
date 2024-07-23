@@ -790,22 +790,6 @@ hook_macros::hook! {
     }
 }
 
-fn sockopt_level_name(level: libc::c_int, name: libc::c_int) -> (&'static str, &'static str) {
-    match level {
-        libc::SOL_SOCKET => ("SOL_SOCKET", match name {
-            libc::SO_KEEPALIVE => "SO_KEEPALIVE",
-            libc::SO_OOBINLINE => "SO_OOBINLINE",
-            _ => stringify!(name)
-        }),
-        libc::SOL_TCP => ("SOL_TCP", match name {
-            libc::TCP_USER_TIMEOUT => "TCP_USER_TIMEOUT",
-            _ => stringify!(name)
-        }),
-        _ => (stringify!(level), stringify!(name)),
-    }
-}
-
-
 hook_macros::hook! {
     unsafe fn setsockopt(
         sockfd: libc::c_int,

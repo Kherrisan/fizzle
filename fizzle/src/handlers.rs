@@ -56,6 +56,8 @@ pub fn read_stream(msg: &mut MsgHdrOut, data: &[u8]) -> usize {
     total_read
 }
 
+// MaybeUninit would help here...
+/*
 pub fn write_stream(msg: &impl MsgHdr, data: &mut [u8]) -> usize {
     let mut total_written = 0;
 
@@ -67,6 +69,7 @@ pub fn write_stream(msg: &impl MsgHdr, data: &mut [u8]) -> usize {
 
     total_written
 }
+*/
 
 /// The data of a datagram is written sequentially as follows:
 /// 

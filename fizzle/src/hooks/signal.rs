@@ -56,9 +56,9 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn signalfd(
-        fd: libc::c_int,
-        mask: *const libc::sigset_t,
-        flags: libc::c_int
+        _fd: libc::c_int,
+        _mask: *const libc::sigset_t,
+        _flags: libc::c_int
     ) -> libc::c_int => fizzle_signalfd(_ctx) {
         log::error!("signalfd() unimplemented");
         0
@@ -67,8 +67,8 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn sigaction(
-        act: *const libc::sigaction,
-        oldact: *mut libc::sigaction
+        _act: *const libc::sigaction,
+        _oldact: *mut libc::sigaction
     ) -> libc::c_int => fizzle_sigaction(_ctx) {
         log::error!("sigaction() unimplemented");
         0
@@ -77,9 +77,9 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn setitimer(
-        which: libc::c_int,
-        new_value: *mut libc::itimerval,
-        old_value: *mut libc::itimerval
+        _which: libc::c_int,
+        _new_value: *mut libc::itimerval,
+        _old_value: *mut libc::itimerval
     ) -> libc::c_int => fizzle_setitimer(_ctx) {
         log::error!("setitimer() unimplemented");
         0
@@ -88,8 +88,8 @@ hook_macros::hook! {
 
 hook_macros::hook!{
     unsafe fn getitimer(
-        which: libc::c_int,
-        curr_value: *mut libc::itimerval
+        _which: libc::c_int,
+        _curr_value: *mut libc::itimerval
     ) -> libc::c_int => fizzle_getitimer(_ctx) {
         log::error!("getitimer() unimplemented");
         0
@@ -98,7 +98,7 @@ hook_macros::hook!{
 
 hook_macros::hook!{
     unsafe fn sigsuspend(
-        mask: *const libc::sigset_t
+        _mask: *const libc::sigset_t
     ) -> libc::c_int => fizzle_sigsuspend(_ctx) {
         log::error!("sigsuspend() unimplemented");
         0

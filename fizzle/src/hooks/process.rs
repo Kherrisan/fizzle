@@ -2,17 +2,13 @@
 //!
 //!
 
-use std::collections::HashMap;
 use std::ffi::CString;
 use std::{array, env, mem, ptr, thread};
-
-use fxhash::FxBuildHasher;
 
 use crate::arena::Rc;
 use crate::constants::FIZZLE_MEMORY_ENV;
 use crate::handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource};
 use crate::hook_macros;
-use crate::state::ProcessLocalState;
 
 const MAX_ARGS: usize = 512;
 
@@ -411,7 +407,7 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
-    unsafe fn wait(wstatus: *mut libc::c_int) -> libc::pid_t => fizzle_wait(_ctx) {
+    unsafe fn wait(_wstatus: *mut libc::c_int) -> libc::pid_t => fizzle_wait(_ctx) {
         panic!("wait() unimplemented")
     }
 }
@@ -423,8 +419,8 @@ hook_macros::hook! {
         options: libc::c_int
     ) -> libc::pid_t => fizzle_waitpid(_ctx) {
         let no_hang = (options & libc::WNOHANG) > 0;
-        let untraced = (options & libc::WUNTRACED) > 0;
-        let continued = (options & libc::WCONTINUED) > 0;
+        let _untraced = (options & libc::WUNTRACED) > 0;
+        let _continued = (options & libc::WCONTINUED) > 0;
 
         if no_hang {
             return hook_macros::real!(waitpid)(pid, wstatus, options)
@@ -435,10 +431,10 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn waitid(
-        idtype: libc::idtype_t,
-        id: libc::id_t,
-        infop: *mut libc::siginfo_t,
-        options: libc::c_int
+        _idtype: libc::idtype_t,
+        _id: libc::id_t,
+        _infop: *mut libc::siginfo_t,
+        _options: libc::c_int
     ) -> libc::pid_t => fizzle_waitid(_ctx) {
         panic!("waitid() unimplemented")
     }

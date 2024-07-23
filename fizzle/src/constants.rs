@@ -26,10 +26,6 @@ pub const FIZZLE_SOMAXCONN: usize = 64;
 pub const FIZZLE_MAX_SOCKETS: usize = 512;
 pub const FIZZLE_MAX_SOCKADDRS: usize = 128;
 pub const FIZZLE_MAX_REUSEPORT: usize = 16;
-pub const FIZZLE_MAX_WILDCARD_ADDRS: usize = 32;
-pub const FIZZLE_MAX_WILDCARD_BINDS: usize = 16;
-
-pub const FIZZLE_IOV_MAX: usize = 16;
 
 pub const FIZZLE_MAX_PLUGINS: usize = 128;
 

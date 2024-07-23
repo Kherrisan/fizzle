@@ -4,9 +4,6 @@ use crate::handlers::descriptor::{DescriptorId, DescriptorInfo};
 use crate::handlers::{FfiOutput, IoVec, IoVecOut, MsgFlags, MsgHdrOut, MsgHdrRef};
 use crate::hook_macros;
 
-const PIPE_BUF: usize = 4096;
-const IOV_MAX: usize = 16;
-
 hook_macros::hook! {
     unsafe fn write(
         fd: libc::c_int,
@@ -334,6 +331,7 @@ hook_macros::hook! {
     }
 }
 
+/*
 #[repr(C)]
 #[derive(Clone, Copy)]
 #[allow(non_camel_case_types)]
@@ -345,6 +343,7 @@ struct sctp_shutdown_event {
 }
 
 const SCTP_SHUTDOWN_EVENT: u16 = (1 << 15) + 5;
+*/
 
 hook_macros::hook! {
     unsafe fn recvmsg(

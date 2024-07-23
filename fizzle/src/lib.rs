@@ -43,10 +43,13 @@ extern "C" {
     #[cfg(feature = "pcr")]
     pub static mut __afl_sharedmem_fuzzing: libc::c_int;
 
+    #[allow(unused)]
     static mut stdin: *mut libc::FILE;
 
+    #[allow(unused)]
     static mut stdout: *mut libc::FILE;
 
+    #[allow(unused)]
     static mut stderr: *mut libc::FILE;
 }
 

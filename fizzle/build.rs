@@ -208,7 +208,9 @@ fn extract_includes(config: &FizzleConfiguration) -> TokenStream {
 }
 
 fn gen_processes(config: &FizzleConfiguration) -> (TokenStream, TokenStream) {
+    #[allow(unused_mut)]
     let mut onstartup_process_tokens = TokenStream::new();
+    #[allow(unused_mut)]
     let mut onready_process_tokens = TokenStream::new();
 
     for process_info in config.process.iter() {

@@ -1623,10 +1623,3 @@ pub enum ReadyInfo {
 }
 
 type Descriptors = KeyedArena<DescriptorId, DescriptorInfo, FIZZLE_MAX_FDS>;
-
-#[derive(Debug)]
-pub struct WildcardAddress {
-    pub protocol: TransportProtocol,
-    pub family: AddressFamily,
-    pub port: u16,
-}
