@@ -18,16 +18,10 @@ mod state;
 mod streams;
 pub mod hooks;
 
-use fizzle_common::io::{UnixAddr, MAX_UNIX_ABSTRACT_LEN, MAX_UNIX_PATH_LEN};
-use fizzle_common::path::FilePath;
-use fizzle_common::storage::Buffer;
 pub(crate) use hook_macros::hook;
 
-use std::ffi::CStr;
-use std::mem::MaybeUninit;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::RawFd;
-use std::{array, cmp, mem, ptr, slice};
+use std::ptr;
 
 extern "C" {
     #[cfg(feature = "afl")]
@@ -48,11 +42,46 @@ extern "C" {
 
     #[cfg(feature = "pcr")]
     pub static mut __afl_sharedmem_fuzzing: libc::c_int;
+
+    static mut stdin: *mut libc::FILE;
+
+    static mut stdout: *mut libc::FILE;
+
+    static mut stderr: *mut libc::FILE;
 }
 
 pub fn report_strict_failure(explanation: &'static str) {
     debug_assert!(false, "{}", explanation);
     log::error!("{}", explanation);
+}
+
+/// Converts the given errno value into string representation.
+/// 
+/// This function acts like `strerrorname_np`, except without the race conditions or platform incompatibilities.
+fn errno_str() -> &'static str {
+    let errno = unsafe { *libc::__errno_location() };
+    match errno {
+        libc::E2BIG => "E2BIG",
+        libc::EACCES => "EACCESS",
+        libc::EADDRINUSE => "EADDRINUSE",
+        libc::EADDRNOTAVAIL => "EADDRNOTAVAIL",
+        libc::EAFNOSUPPORT => "EAFNOSUPPORT",
+        libc::EAGAIN => "EAGAIN",
+        libc::EALREADY => "EALREADY",
+        libc::EBADE => "EBADE",
+        libc::EBADF => "EBADF",
+        libc::EBADFD => "EBADFD",
+        libc::EBADMSG => "EBADMSG",
+        libc::EBADR => "EBADR",
+        libc::EBADRQC => "EBADRQC",
+        libc::EINVAL => "EINVAL",
+        libc::EMFILE => "EMFILE",
+        libc::ENFILE => "ENFILE",
+        libc::ENOBUFS => "ENOBUFS",
+        libc::ENOMEM => "ENOMEM",
+        libc::EPROTONOSUPPORT => "EPROTONOSUPPORT",
+        _ => panic!("Fizzle internal error: add errno string for errno number {}", errno),
+    }
 }
 
 /// Creates a new location in memory that is guaranteed to be unique to others.
@@ -99,175 +128,15 @@ fn alias_fd_destroy(fd: RawFd) {
     }
 }
 
-pub struct SockAddrError;
+/// Utility for logging the `strace`-formatted output of each glibc call.
+/// This is meant to make it easy for the strace log level to be raised/lowered as desired.
+macro_rules! strace {
+    // log_strace!(target: "my_target", key1 = 42, key2 = true; "a {} event", "log")
+    // log_strace!(target: "my_target", "a {} event", "log")
+    (target: $target:expr, $($arg:tt)+) => (log::log!(target: $target, log::Level::Info, $($arg)+));
 
-unsafe fn decode_inet_address(
-    addr: *const libc::sockaddr,
-    addrlen: libc::socklen_t,
-) -> Result<SocketAddr, SockAddrError> {
-    if addr.is_null() || addrlen < 2 {
-        return Err(SockAddrError);
-    }
-
-    match (*addr).sa_family as i32 {
-        libc::AF_INET => {
-            let addr = addr as *const libc::sockaddr_in;
-            if (addrlen as usize) < mem::size_of::<libc::sockaddr_in>() {
-                return Err(SockAddrError);
-            }
-
-            // TODO: verify correctness of these conversions
-            let addr_bytes = u32::from_be((*addr).sin_addr.s_addr).to_be_bytes();
-            let port = u16::from_be((*addr).sin_port);
-            Ok(SocketAddr::V4(SocketAddrV4::new(
-                Ipv4Addr::new(addr_bytes[0], addr_bytes[1], addr_bytes[2], addr_bytes[3]),
-                port,
-            )))
-        }
-        libc::AF_INET6 => {
-            let addr = addr as *const libc::sockaddr_in6;
-            if (addrlen as usize) < mem::size_of::<libc::sockaddr_in6>() {
-                return Err(SockAddrError);
-            }
-
-            // TODO: verify correctness of these conversions
-            let addr_segments: [u16; 8] = array::from_fn(|i| {
-                u16::from_be_bytes(
-                    (*addr).sin6_addr.s6_addr[2 * i..(2 * i) + 2]
-                        .try_into()
-                        .unwrap(),
-                )
-            }); // TODO: replace with newer libc functions when they arrive
-            let port = u16::from_be((*addr).sin6_port);
-            let flow_info = u32::from_be((*addr).sin6_flowinfo);
-            let scope_id = u32::from_be((*addr).sin6_scope_id);
-            Ok(SocketAddr::V6(SocketAddrV6::new(
-                Ipv6Addr::new(
-                    addr_segments[0],
-                    addr_segments[1],
-                    addr_segments[2],
-                    addr_segments[3],
-                    addr_segments[4],
-                    addr_segments[5],
-                    addr_segments[6],
-                    addr_segments[7],
-                ),
-                port,
-                flow_info,
-                scope_id,
-            )))
-        }
-        _ => panic!(
-            "fizzle does not currently support address family {}",
-            (*addr).sa_family
-        ),
-    }
+    // log_strace!("a {} event", "log")
+    ($($arg:tt)+) => (log::log!(log::Level::Info, $($arg)+))
 }
 
-///
-/// # Safety
-///
-/// It is the responsibility of the caller to ensure that `addr` points to valid bytes that are
-/// sized according to the address family in the address (e.g., the address length for an `AF_INET`
-/// sockaddr should be equal to `mem::size_of::<libc::sockaddr_in>()`).
-fn encode_inet_address(buffer: &mut [u8], address: &SocketAddr) -> libc::socklen_t {
-    match address {
-        SocketAddr::V4(v4) => {
-            let inet_addr = libc::sockaddr_in {
-                sin_family: libc::AF_INET as u16,
-                sin_port: v4.port().to_be(),
-                sin_addr: libc::in_addr {
-                    s_addr: u32::from_be_bytes(v4.ip().octets()).to_be(),  
-                },
-                sin_zero: [0u8; 8],
-            };
-            let storage_bytes = unsafe { slice::from_raw_parts(ptr::addr_of!(inet_addr) as *const u8, mem::size_of_val(&inet_addr)) };
-
-            let copy_len = cmp::min(storage_bytes.len(), buffer.len());
-            buffer[..copy_len].copy_from_slice(&storage_bytes[..copy_len]);
-
-            copy_len as libc::socklen_t
-        }
-        SocketAddr::V6(v6) => {
-            let inet6_addr = libc::sockaddr_in6 {
-                sin6_family: libc::AF_INET6 as u16,
-                sin6_port: v6.port().to_be(),
-                sin6_flowinfo: v6.flowinfo().to_be(),
-                sin6_addr: libc::in6_addr {
-                    s6_addr: v6.ip().octets(),
-                },
-                sin6_scope_id: v6.scope_id(),
-            };
-            let storage_bytes = unsafe { slice::from_raw_parts(ptr::addr_of!(inet6_addr) as *const u8, mem::size_of_val(&inet6_addr)) };
-
-            let copy_len = cmp::min(storage_bytes.len(), buffer.len());
-            buffer[..copy_len].copy_from_slice(&storage_bytes[..copy_len]);
-
-            copy_len as libc::socklen_t
-        }
-    }
-}
-
-fn decode_unix_address(
-    addr: *const libc::sockaddr,
-    addrlen: libc::socklen_t,
-) -> Result<UnixAddr, SockAddrError> {
-    unsafe {
-        if addr.is_null() || addrlen < 2 || (*addr).sa_family != libc::AF_UNIX as u16 {
-            return Err(SockAddrError);
-        }
-
-        let unix_addr = addr as *const libc::sockaddr_un;
-        let unix_path = ptr::addr_of!((*unix_addr).sun_path) as *const u8;
-        if addrlen == 2 {
-            Ok(UnixAddr::Unnamed)
-        } else if *unix_path == 0 {
-            let abstract_path = slice::from_raw_parts(unix_path.add(1), cmp::min(MAX_UNIX_ABSTRACT_LEN, addrlen as usize - 3));
-
-            let mut abstract_buf = Buffer::new();
-            abstract_buf.write(abstract_path);
-
-            Ok(UnixAddr::Abstract(abstract_buf))
-        } else {
-            let Ok(path) = CStr::from_bytes_until_nul(slice::from_raw_parts(unix_path, cmp::min(MAX_UNIX_PATH_LEN, addrlen as usize - 2))) else {
-                return Err(SockAddrError) // Unix path must be null-terminated
-            };
-
-            let Ok(file) = FilePath::from_cstr(path) else {
-                return Err(SockAddrError)
-            };
-
-            Ok(UnixAddr::Pathname(file))
-        }
-    }
-}
-
-/// # Safety
-///
-/// It is the responsibility of the caller to ensure that `addr` points to valid bytes that are
-/// sized according to the address family in the address (e.g., the address length for an `AF_INET`
-/// sockaddr should be equal to `mem::size_of::<libc::sockaddr_in>()`).
-fn encode_unix_address(addr: *mut libc::sockaddr, addrlen: *mut libc::socklen_t, address: &UnixAddr) {
-    let mut storage = MaybeUninit::<libc::sockaddr_storage>::uninit();
-    let storage_addr = ptr::addr_of_mut!(storage) as *mut libc::sockaddr_un;
-
-    unsafe {
-        (*storage_addr).sun_family = libc::AF_UNIX as u16;
-        
-        *addrlen = match address {
-            UnixAddr::Abstract(abstract_addr) => {
-                let path_ptr = ptr::addr_of_mut!((*storage_addr).sun_path) as *mut u8;
-                ptr::copy_nonoverlapping(abstract_addr.data().as_ptr(), path_ptr, abstract_addr.data().len());
-                cmp::min(*addrlen, 2 + abstract_addr.data().len() as u32)
-            }
-            UnixAddr::Pathname(pathname_addr) => {
-                let path_ptr = ptr::addr_of_mut!((*storage_addr).sun_path) as *mut u8;
-                ptr::copy_nonoverlapping(pathname_addr.data().as_ptr(), path_ptr, pathname_addr.data().len());
-                cmp::min(*addrlen, 2 + pathname_addr.data().len() as u32)
-            }
-            UnixAddr::Unnamed => cmp::min(*addrlen, 2),
-        };
-
-        ptr::copy_nonoverlapping(storage_addr as *mut u8, addr as *mut u8, *addrlen as usize);
-    }
-}
+pub(crate) use strace;

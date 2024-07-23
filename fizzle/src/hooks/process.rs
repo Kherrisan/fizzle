@@ -2,11 +2,17 @@
 //!
 //!
 
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::{array, env, mem, ptr, thread};
 
+use fxhash::FxBuildHasher;
+
+use crate::arena::Rc;
 use crate::constants::FIZZLE_MEMORY_ENV;
+use crate::handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource};
 use crate::hook_macros;
+use crate::state::ProcessLocalState;
 
 const MAX_ARGS: usize = 512;
 
@@ -15,6 +21,21 @@ hook_macros::hook! {
         let mut state = ctx.acquire();
         let thread_id = thread::current().id();
 
+        let mut fds = state.local.fds.clone();
+
+        let raw_fds: Vec<DescriptorId> = fds.keys().collect();
+        for fd in raw_fds {
+            if let Some(DescriptorInfo { close_on_exec: true, .. }) = fds.get(&fd) {
+                fds.downref(&fd);
+                debug_assert!(matches!(fds.get(&fd), None));
+            }
+        }
+
+        state.global.transfer_fds = Some(fds);
+
+        let process_id = state.global.assign_process_id();
+        state.global.passthrough_process_id = process_id;
+
         // This thread should still be able to execute afterwards
         state.mark_thread_ready(thread_id);
         drop(state);
@@ -22,16 +43,50 @@ hook_macros::hook! {
         let pid = hook_macros::real!(fork)();
         match pid {
             0 => {
+                // Not sure this is necessary, but going to do it anyways
+                crate::state::set_entered_handler(true);
+
                 let mut state = ctx.acquire();
-                // Child process--fix all of the local state
+
+                // Reset local state
                 state.local.plugin_modules = None;
+                state.local.reaper = None;
+                state.local.pthreads.clear();
+                state.local.pthreads.insert(unsafe { libc::pthread_self() }, thread::current().id());
+
+                // TODO: should these be done??
+                state.local.pthread_cleanup.clear();
+                state.local.pthread_keys.clear();
+                state.local.pthread_key_values.clear();
+                state.local.terminated_threads.clear();
+                state.local.cancelling_threads.clear();
+                state.local.awaiting_thread_death.clear();
 
                 // Assign a new process ID
                 let process_id = state.global.assign_process_id();
                 state.local.process_id = process_id;
 
-                // TODO: upref all reference-counted global variables here
-                // For now we just don't free global variables so it's fine...
+                let fds = state.global.transfer_fds.take().unwrap();
+                state.local.fds = fds;
+
+                let raw_fds: Vec<DescriptorId> = state.local.fds.keys().collect();
+                for fd in raw_fds {
+                    let fd_info = state.local.fds.get_mut(&fd).unwrap();
+                    match &mut fd_info.resource {
+                        FdResource::Directory(dir_id) => Rc::upref(dir_id),
+                        FdResource::Epoll(epoll_id) => Rc::upref(epoll_id),
+                        FdResource::EventFd(eventfd_id) => Rc::upref(eventfd_id),
+                        FdResource::File(file_id) => Rc::upref(file_id),
+                        FdResource::MessageQueue(mq_id) => Rc::upref(mq_id),
+                        FdResource::Pipe(pipe_id) => Rc::upref(pipe_id),
+                        FdResource::Stdin => (),
+                        FdResource::Stdout => (),
+                        FdResource::Stderr => (),
+                        FdResource::Socket(socket_id) => Rc::upref(socket_id),
+                    }
+                }
+
+                // TODO: are there any resources other than file descriptors that need to be upreferenced?
             }
             1.. => {
                 // Parent process--await execution
@@ -41,6 +96,7 @@ hook_macros::hook! {
             _ => {
                 // fork() returned -1, but we marked our own process as ready so we need to wait
                 ctx.yield_thread();
+                log::error!("fork() returned -1 (errno {}", *libc::__errno_location());
             }
         }
 
@@ -351,5 +407,39 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn atexit(cb: extern "C" fn()) => fizzle_atexit(_ctx) {
         hook_macros::real!(atexit)(cb)
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn wait(wstatus: *mut libc::c_int) -> libc::pid_t => fizzle_wait(_ctx) {
+        panic!("wait() unimplemented")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn waitpid(
+        pid: libc::pid_t,
+        wstatus: *mut libc::c_int,
+        options: libc::c_int
+    ) -> libc::pid_t => fizzle_waitpid(_ctx) {
+        let no_hang = (options & libc::WNOHANG) > 0;
+        let untraced = (options & libc::WUNTRACED) > 0;
+        let continued = (options & libc::WCONTINUED) > 0;
+
+        if no_hang {
+            return hook_macros::real!(waitpid)(pid, wstatus, options)
+        }
+        panic!("waitpid() unimplemented")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn waitid(
+        idtype: libc::idtype_t,
+        id: libc::id_t,
+        infop: *mut libc::siginfo_t,
+        options: libc::c_int
+    ) -> libc::pid_t => fizzle_waitid(_ctx) {
+        panic!("waitid() unimplemented")
     }
 }

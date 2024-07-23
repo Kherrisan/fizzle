@@ -37,7 +37,7 @@ impl<const T: usize> Clone for Buffer<T> {
     }
 }
 
-impl<const T: usize> PartialEq for Buffer<T> {
+impl<const N: usize> PartialEq for Buffer<N> {
     fn eq(&self, other: &Self) -> bool {
         unsafe {
             slice_init(&self.data[self.data_start..self.data_end])
@@ -46,9 +46,9 @@ impl<const T: usize> PartialEq for Buffer<T> {
     }
 }
 
-impl<const T: usize> Eq for Buffer<T> {}
+impl<const N: usize> Eq for Buffer<N> {}
 
-impl<const T: usize> Hash for Buffer<T> {
+impl<const N: usize> Hash for Buffer<N> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         unsafe {
             slice_init(&self.data[self.data_start..self.data_end]).hash(state);
@@ -56,7 +56,7 @@ impl<const T: usize> Hash for Buffer<T> {
     }
 }
 
-impl<const T: usize> Default for Buffer<T> {
+impl<const N: usize> Default for Buffer<N> {
     fn default() -> Self {
         Self::new()
     }
@@ -69,6 +69,13 @@ impl<const N: usize> Buffer<N> {
             data_start: 0,
             data_end: 0,
         }
+    }
+
+    pub fn from_slice(slice: &[u8]) -> Self {
+        assert!(slice.len() <= N);
+        let mut buf = Self::new();
+        buf.write(slice);
+        buf
     }
 
     pub fn clear(&mut self) {
@@ -141,6 +148,22 @@ impl<const N: usize> Buffer<N> {
 
         for (dst, src) in buf.iter_mut().zip(&self.data[self.data_start..self.data_end]) {
             *dst = unsafe { src.assume_init() };
+        }
+        
+        if amount == self.data_end - self.data_start {
+            self.data_start = 0;
+            self.data_end = 0;
+        } else {
+            self.data_start += amount;
+        }
+        amount
+    }
+
+    pub fn read_uninit(&mut self, buf: &mut [MaybeUninit<u8>]) -> usize {
+        let amount = cmp::min(self.data_end - self.data_start, buf.len());
+
+        for (dst, src) in buf.iter_mut().zip(&self.data[self.data_start..self.data_end]) {
+            dst.write(unsafe { src.assume_init() });
         }
         
         if amount == self.data_end - self.data_start {

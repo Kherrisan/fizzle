@@ -1,6 +1,8 @@
 //! Hooks for general functions that can be applied to any file descriptor.
 //!
 
+use std::mem;
+
 use crate::backend::ConnectedBackend;
 use crate::handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource};
 use crate::handlers::socket::SocketState;
@@ -211,5 +213,105 @@ hook_macros::hook! {
         log::info!("ioctl({}, {}, {})", fd, request, arg as usize);
 
         panic!("`ioctl` unimplemented")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn dup(
+        oldfd: libc::c_int
+    ) -> libc::c_int => fizzle_dup(ctx) {
+        let mut state = ctx.acquire();
+
+        match state.local.fds.get_mut(&DescriptorId::from_raw_fd(oldfd)) {
+            Some(fd_info) => {
+                let new_fd_info = fd_info.clone();
+                let new_fd = crate::alias_fd_create();
+                state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(new_fd), new_fd_info).unwrap();
+                new_fd
+            }
+            None => {
+                log::warn!("dup() called on unrecognized file descriptor {}", oldfd);
+                *libc::__errno_location() = libc::EBADF;
+                -1
+            }
+        }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn dup2(
+        oldfd: libc::c_int,
+        newfd: libc::c_int
+    ) -> libc::c_int => fizzle_dup2(ctx) {
+        if oldfd == newfd {
+            return newfd
+        }
+
+        let mut state = ctx.acquire();
+
+        match state.local.fds.get_mut(&DescriptorId::from_raw_fd(oldfd)) {
+            Some(fd_info) => {
+                let mut new_fd_info = fd_info.clone();
+
+                match state.local.fds.get_mut(&DescriptorId::from_raw_fd(newfd)) {
+                    Some(old_info) => {
+                        mem::swap(old_info, &mut new_fd_info);
+                        drop(new_fd_info);
+                    }
+                    None => {
+                        libc::dup2(oldfd, newfd);
+                        state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(newfd), new_fd_info).unwrap();
+                    }
+                }
+
+                newfd
+            }
+            None => {
+                log::warn!("dup() called on unrecognized file descriptor {}", oldfd);
+                *libc::__errno_location() = libc::EBADF;
+                -1
+            }
+        }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn dup3(
+        oldfd: libc::c_int,
+        newfd: libc::c_int,
+        _flags: libc::c_int
+    ) -> libc::c_int => fizzle_dup3(ctx) {
+
+        // TODO: handle flags; handle lack of flags in other dups
+
+        if oldfd == newfd {
+            return newfd
+        }
+
+        let mut state = ctx.acquire();
+
+        match state.local.fds.get_mut(&DescriptorId::from_raw_fd(oldfd)) {
+            Some(fd_info) => {
+                let mut new_fd_info = fd_info.clone();
+
+                match state.local.fds.get_mut(&DescriptorId::from_raw_fd(newfd)) {
+                    Some(old_info) => {
+                        mem::swap(old_info, &mut new_fd_info);
+                        drop(new_fd_info);
+                    }
+                    None => {
+                        libc::dup2(oldfd, newfd);
+                        state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(newfd), new_fd_info).unwrap();
+                    }
+                }
+
+                newfd
+            }
+            None => {
+                log::warn!("dup() called on unrecognized file descriptor {}", oldfd);
+                *libc::__errno_location() = libc::EBADF;
+                -1
+            }
+        }
     }
 }

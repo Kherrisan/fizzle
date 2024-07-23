@@ -50,22 +50,32 @@ macro_rules! hook {
                     }
                     crate::state::set_entered_handler(true);
 
-                    log::trace!(
-                        "PID {}/Thread {:?} invoked function {}", // TODO: add process info in the future
-                        std::process::id(),
-                        std::thread::current().id(),
-                        stringify!($real_fn)
-                    );
+                    let should_log = match stringify!($real_fn) {
+                        "pthread_mutex_init" | "pthread_rwlock_init" | "pthread_rwlock_rdlock" | "pthread_mutex_lock" | "pthread_mutex_unlock" | "pthread_rwlock_unlock" | "pthread_rwlock_wrlock" | "pthread_setspecific" | "pthread_getspecific" => false,
+                        _ => true,
+                    };
+
+                    if should_log {
+                        log::trace!(
+                            "PID {}/Thread {:?} invoked function {}", // TODO: add process info in the future
+                            std::process::id(),
+                            std::thread::current().id(),
+                            stringify!($real_fn)
+                        );
+                    }
 
                     let res = {
                         $hook_fn ( $($v),*)
                     };
 
-                    log::trace!(
-                        "Function {} returned {:?}", // TODO: add process info in the future
-                        stringify!($real_fn),
-                        res
-                    );
+                    if should_log {
+                        log::trace!(
+                            "Function {} returned {:?}", // TODO: add process info in the future
+                            stringify!($real_fn),
+                            res
+                        );
+                    }
+
                     crate::state::set_entered_handler(false);
                     res
                 }).unwrap_or_else(|_| {

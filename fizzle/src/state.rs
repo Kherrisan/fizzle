@@ -6,16 +6,15 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::ops::{Deref, DerefMut};
 use std::os::unix::ffi::OsStrExt;
 use std::thread::ThreadId;
-use std::{array, env, mem, ptr, slice, thread};
+use std::{array, env, mem, ptr, thread};
 
-use fizzle_common::io::{AddressFamily, TransportAddress, TransportProtocol, UnixAddr, MAX_PATH_LEN};
+use fizzle_common::io::{AddressFamily, SocketAddrUnix, TransportAddress, TransportProtocol, MAX_PATH_LEN};
 use fizzle_common::path::{FilePath, SemPath};
 use fizzle_common::storage::Buffer;
 
 use fizzle_plugin::{IoEndpointVariant, StreamId};
 use fxhash::FxBuildHasher;
-use heapless::{FnvIndexMap, FnvIndexSet};
-use heapless::spsc::Queue;
+use heapless::{Deque, FnvIndexMap, FnvIndexSet};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
@@ -41,7 +40,7 @@ use crate::handlers::poller::{PollerId, PollerInfo};
 use crate::handlers::process::ProcessId;
 use crate::handlers::rwlock::{RwLockInfo, RwLockPtr};
 use crate::handlers::semaphore::{SemaphoreId, SemaphoreInfo, SemaphorePtr};
-use crate::handlers::socket::{PendingInfo, PendingSocket, ServerSocket, SocketId, SocketLocationInfo, SocketState};
+use crate::handlers::socket::{PendingInfo, PendingSocket, ServerSocket, SocketId, SocketState, TransportLocationInfo};
 use crate::handlers::spinlock::SpinlockPtr;
 use crate::handlers::thread::{PThreadRoutine, ThreadTermination};
 use crate::once::NcOnceCell;
@@ -313,7 +312,7 @@ impl FizzleSingleton {
         log::trace!("yield_thread internally called");
 
         // pop PollerId values off `ready_pollers` one at a time
-        while let Some(item) = state.global.ready.dequeue() {
+        while let Some(item) = state.global.ready.pop_front() {
             match item {
                 ReadyInfo::Worker(worker_id) => {
                     log::trace!("Scheduling worker {:?} for execution", worker_id);
@@ -376,10 +375,6 @@ impl FizzleSingleton {
 
             // Yield to the plugin worker
             self.yield_thread();
-        }
-
-        if false {
-
         }
     }
 
@@ -502,6 +497,8 @@ impl FizzleSingleton {
         let mut per_round_clients = heapless::Vec::new();
         mem::swap(&mut per_round_clients, &mut state.global.per_round_clients);
 
+        log::info!("{} per-round clients to be initialized...", per_round_clients.len());
+
         for client_info in per_round_clients {
             let socket_id = state.global.add_pending_client(client_info.source_address, client_info.target_address, match client_info.backend {
                 PerRoundClientBackend::Fuzz(fuzz_endpoint_id) => PendingBackend::Fuzz(fuzz_endpoint_id),
@@ -554,7 +551,7 @@ impl FizzleSingleton {
             for thread_id in awaiting_threads {
                 state.global
                     .ready
-                    .enqueue(ReadyInfo::Worker(WorkerId {
+                    .push_back(ReadyInfo::Worker(WorkerId {
                         process_id,
                         thread_id,
                     }))
@@ -790,7 +787,7 @@ impl FizzleState {
         let process_id = self.local.process_id;
         self.global
             .ready
-            .enqueue(ReadyInfo::Worker(WorkerId {
+            .push_back(ReadyInfo::Worker(WorkerId {
                 process_id,
                 thread_id,
             }))
@@ -801,7 +798,7 @@ impl FizzleState {
         let process_id = self.local.process_id;
         self.global
             .delayed_ready
-            .enqueue(ReadyInfo::Worker(WorkerId {
+            .push_back(ReadyInfo::Worker(WorkerId {
                 process_id,
                 thread_id,
             }))
@@ -815,7 +812,7 @@ impl FizzleState {
 
     /// Marks the given polled event as ready.
     ///
-    /// If not already raised, this method will enqueue a poller waiting on this polled event
+    /// If not already raised, this method will push_back a poller waiting on this polled event
     /// (if such a poller exists).
     pub fn raise_polled(&mut self, polled_id: &Rc<PolledId>) {
         self.global.raise_polled(polled_id);
@@ -860,10 +857,10 @@ impl FizzleState {
         if poller.deref().in_raised_queue {
             // TODO: make queue indexable in future
             for _ in 0..self.global.ready.len() {
-                let ready = self.global.ready.dequeue().unwrap();
+                let ready = self.global.ready.pop_front().unwrap();
                 if let ReadyInfo::Poller(current_poller_id) = &ready {
                     if *current_poller_id != poller_id {
-                        self.global.ready.enqueue(ready).unwrap();
+                        self.global.ready.push_back(ready).unwrap();
                     }
                 }
             }
@@ -931,10 +928,10 @@ pub struct ProcessLocalState {
     pub spinlocks: HashMap<SpinlockPtr, VecDeque<ThreadId>, FxBuildHasher>,
     pub pthreads: HashMap<libc::pthread_t, ThreadId, FxBuildHasher>,
     pub pthread_cleanup: HashMap<ThreadId, VecDeque<PThreadRoutine>, FxBuildHasher>,
-    pub pthread_keys: HashMap<libc::pthread_key_t, PThreadRoutine>,
+    pub pthread_keys: HashMap<libc::pthread_key_t, PThreadRoutine, FxBuildHasher>,
     pub pthread_key_values:
-        HashMap<libc::pthread_key_t, HashMap<ThreadId, *mut libc::c_void, FxBuildHasher>>,
-    pub futex_waiters: HashMap<*const u32, VecDeque<(u32, ThreadId)>>,
+        HashMap<libc::pthread_key_t, HashMap<ThreadId, *mut libc::c_void, FxBuildHasher>, FxBuildHasher>,
+    pub futex_waiters: HashMap<*const u32, VecDeque<(u32, ThreadId)>, FxBuildHasher>,
     pub terminated_threads: HashSet<ThreadId, FxBuildHasher>,
     pub cancelling_threads: HashSet<ThreadId, FxBuildHasher>,
     /// Indicates which thread(s) are awaiting the death of a specific thread (via pthread_join)
@@ -1060,7 +1057,7 @@ pub struct InterprocessState {
     pub pipes: KeyedArena<PipeId, PipeInfo, FIZZLE_MAX_PIPES>,
     pub message_queues: KeyedArena<MessageQueueId, MessageQueueInfo, FIZZLE_MAX_MESSAGE_QUEUES>,
     // TODO: SO_REUSEPORT breaks this...
-    pub socket_locations: FnvIndexMap<TransportAddress, SocketLocationInfo, FIZZLE_MAX_SOCKADDRS>,
+    pub socket_locations: FnvIndexMap<TransportAddress, TransportLocationInfo, FIZZLE_MAX_SOCKADDRS>,
     pub sockets: KeyedArena<SocketId, SocketState, FIZZLE_MAX_SOCKETS>,
     pub buffers: KeyedArena<BufferId, Buffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
     pub stdio: StdioBackend,
@@ -1069,9 +1066,9 @@ pub struct InterprocessState {
     pub polled_events: KeyedArena<PolledId, PolledInfo, FIZZLE_MAX_POLLED_EVENTS>,
     pub pollers: KeyedArena<PollerId, PollerInfo, FIZZLE_MAX_POLLERS>,
     /// Pollers/Workers that can be immediately scheduled.
-    pub ready: Queue<ReadyInfo, FIZZLE_MAX_QUEUED_READY_POLLERS>,
+    pub ready: Deque<ReadyInfo, FIZZLE_MAX_QUEUED_READY_POLLERS>,
     /// Pollers/Workers that should be scheduled once the system has reached a halted state.
-    pub delayed_ready: Queue<ReadyInfo, FIZZLE_MAX_QUEUED_READY_POLLERS>,
+    pub delayed_ready: Deque<ReadyInfo, FIZZLE_MAX_QUEUED_READY_POLLERS>,
     pub fuzz_input: Buffer<FIZZLE_MAX_FUZZ_INPUT>,
     pub per_round_clients: heapless::Vec<PerRoundClientInfo, FIZZLE_MAX_PER_ROUND_ENDPOINTS>,
     pub per_round_endpoints: FnvIndexSet<Rc<SocketId>, FIZZLE_MAX_PER_ROUND_ENDPOINTS>,
@@ -1114,7 +1111,7 @@ impl InterprocessState {
             KeyedArena::initialize(ptr::addr_of_mut!((*state).plugins));
             KeyedArena::initialize(ptr::addr_of_mut!((*state).polled_events));
             KeyedArena::initialize(ptr::addr_of_mut!((*state).pollers));
-            *ptr::addr_of_mut!((*state).ready) = Queue::new();
+            *ptr::addr_of_mut!((*state).ready) = Deque::new();
             *ptr::addr_of_mut!((*state).fuzz_input) = Buffer::new();
             *ptr::addr_of_mut!((*state).per_round_clients) = heapless::Vec::new();
             *ptr::addr_of_mut!((*state).per_round_endpoints) = FnvIndexSet::new();
@@ -1153,7 +1150,7 @@ impl InterprocessState {
                                 let fuzz_endpoint_id = self.add_fuzz_endpoint();
                                 StdioBackend::Fuzz(fuzz_endpoint_id)
                             }
-                            IoEmulationType::Passthrough => StdioBackend::Passthrough,
+                            IoEmulationType::Passthrough => unimplemented!(),
                         }
                     }
                     IoEndpointVariant::File(pathbuf) => {
@@ -1212,7 +1209,7 @@ impl InterprocessState {
                             IoEmulationType::Passthrough => ServerBackend::Passthrough,
                         };
 
-                        self.add_server(TransportAddress::Tcp(addr), backend)
+                        self.add_server(TransportAddress::new_inet(addr, TransportProtocol::Tcp), backend)
                     }
                     IoEndpointVariant::TcpClient(addr) => {
                         let backend = match &endpoint.emulation_type {
@@ -1226,7 +1223,7 @@ impl InterprocessState {
                             IoEmulationType::Passthrough => PendingBackend::Passthrough,
                         };
 
-                        let target_address = TransportAddress::Tcp(addr);
+                        let target_address = TransportAddress::new_inet(addr, TransportProtocol::Tcp);
                         let source_address = self.ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
                             self.per_round_clients.push(PerRoundClientInfo {
@@ -1254,7 +1251,7 @@ impl InterprocessState {
                             IoEmulationType::Passthrough => ServerBackend::Passthrough,
                         };
 
-                        self.add_server(TransportAddress::Udp(addr), backend)
+                        self.add_server(TransportAddress::new_inet(addr, TransportProtocol::Udp), backend)
                     }
                     IoEndpointVariant::UdpClient(addr) => {
                         let backend = match &endpoint.emulation_type {
@@ -1268,7 +1265,7 @@ impl InterprocessState {
                             IoEmulationType::Passthrough => PendingBackend::Passthrough,
                         };
 
-                        let target_address = TransportAddress::Tcp(addr);
+                        let target_address = TransportAddress::new_inet(addr, TransportProtocol::Udp);
                         let source_address = self.ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
                             self.per_round_clients.push(PerRoundClientInfo {
@@ -1296,7 +1293,7 @@ impl InterprocessState {
                             IoEmulationType::Passthrough => ServerBackend::Passthrough,
                         };
 
-                        self.add_server(TransportAddress::Sctp(addr), backend)
+                        self.add_server(TransportAddress::new_inet(addr, TransportProtocol::Sctp), backend)
                     }
                     IoEndpointVariant::SctpClient(addr) => {
                         let backend = match &endpoint.emulation_type {
@@ -1310,7 +1307,7 @@ impl InterprocessState {
                             IoEmulationType::Passthrough => PendingBackend::Passthrough,
                         };
 
-                        let target_address = TransportAddress::Sctp(addr);
+                        let target_address = TransportAddress::new_inet(addr, TransportProtocol::Sctp);
                         let source_address = self.ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
                             self.per_round_clients.push(PerRoundClientInfo {
@@ -1349,7 +1346,7 @@ impl InterprocessState {
 
     /// Marks the given polled event as ready.
     ///
-    /// If not already raised, this method will enqueue a poller waiting on this polled event
+    /// If not already raised, this method will push_back a poller waiting on this polled event
     /// (if such a poller exists).
     fn raise_polled(&mut self, polled_id: &Rc<PolledId>) {
         let polled = self.polled_events.get_mut(polled_id).unwrap();
@@ -1359,7 +1356,7 @@ impl InterprocessState {
             for poller in pollers {
                 if !self.pollers.get(&poller).unwrap().in_raised_queue {
                     self.ready
-                        .enqueue(ReadyInfo::Poller(poller))
+                        .push_back(ReadyInfo::Poller(poller))
                         .unwrap();
                 }
             }
@@ -1396,7 +1393,7 @@ impl InterprocessState {
         let client_socket_id = self
             .sockets
             .allocate(SocketState::PendingConnection(PendingSocket {
-                src_addr,
+                local_addr: src_addr,
                 rem_addr: rem_addr.clone(),
                 backend,
                 next_pending: None,
@@ -1406,13 +1403,13 @@ impl InterprocessState {
         // Add the client to the pending client chain, if applicable
         match self.socket_locations.get_mut(&rem_addr) {
             None => {
-                log::debug!("THE LOCATION INFOR IS GONE SOME");
                 let polled_id = self.polled_events.allocate(PolledInfo::new()).unwrap();
                 self.socket_locations
                     .insert(
                         rem_addr,
-                        SocketLocationInfo {
-                            bound_socket: None,
+                        TransportLocationInfo {
+                            reuse_port: false,
+                            bound_sockets: Deque::new(),
                             pending: Some(PendingInfo {
                                 client: client_socket_id.clone(),
                                 poll: polled_id,
@@ -1452,8 +1449,9 @@ impl InterprocessState {
                     }
                 }
 
-                if let Some(socket_id) = location_info.bound_socket.clone() {
+                if let Some(socket_id) = location_info.bound_sockets.pop_front() {
                     log::debug!("found bound socket at location for pending connection");
+                    location_info.bound_sockets.push_back(socket_id.clone()).unwrap();
                     match self.sockets.get(&socket_id).unwrap() {
                         SocketState::Server(server_info) => {
                             log::debug!("notifying server that pending connection exists...");
@@ -1479,24 +1477,31 @@ impl InterprocessState {
             .allocate(SocketState::Server(ServerSocket {
                 backend,
                 local_addr: transport_addr.clone(),
-                connecting: Queue::new(),
+                connecting: Deque::new(),
                 ready_to_connect: connect_polled_id,
             }))
             .unwrap();
 
         match self.socket_locations.get_mut(&transport_addr) {
             None => {
+                let mut bound_sockets = heapless::Deque::new();
+                bound_sockets.push_back(socket_id).unwrap();
+
                 self.socket_locations
                     .insert(
                         transport_addr.clone(),
-                        SocketLocationInfo {
-                            bound_socket: Some(socket_id),
+                        TransportLocationInfo {
                             pending: None,
+                            reuse_port: false,
+                            bound_sockets,
                         },
                     )
                     .unwrap();
             }
-            Some(location_info) => location_info.bound_socket = Some(socket_id),
+            Some(location_info) => {
+                assert!(location_info.bound_sockets.is_empty());
+                location_info.bound_sockets.push_back(socket_id).unwrap();
+            }
         };
     }
 
@@ -1537,7 +1542,7 @@ impl InterprocessState {
                 } else {
                     self.next_ephemeral_port += 1;
                 }
-                TransportAddress::new_internet(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port)), protocol)
+                TransportAddress::new_inet(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port)), protocol)
             }
             AddressFamily::Ipv6 => {
                 let port = self.next_ephemeral_port;
@@ -1546,9 +1551,9 @@ impl InterprocessState {
                 } else {
                     self.next_ephemeral_port += 1;
                 }
-                TransportAddress::new_internet(SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1), port, 0, 0)), protocol)
+                TransportAddress::new_inet(SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1), port, 0, 0)), protocol)
             }
-            AddressFamily::Unix => TransportAddress::Unix(UnixAddr::Unnamed)
+            AddressFamily::Unix => TransportAddress::new_unix(SocketAddrUnix::Unnamed)
         }
     }
 
@@ -1561,7 +1566,7 @@ impl InterprocessState {
 
     /// Marks the given process/thread pair as having further work to execute.
     pub fn mark_worker_ready(&mut self, worker_id: WorkerId) {
-        self.ready.enqueue(ReadyInfo::Worker(worker_id)).unwrap();
+        self.ready.push_back(ReadyInfo::Worker(worker_id)).unwrap();
     }
 
     /// This method returns `Ok` if the file was created, and `Err` if a file already
@@ -1619,4 +1624,9 @@ pub enum ReadyInfo {
 
 type Descriptors = KeyedArena<DescriptorId, DescriptorInfo, FIZZLE_MAX_FDS>;
 
-
+#[derive(Debug)]
+pub struct WildcardAddress {
+    pub protocol: TransportProtocol,
+    pub family: AddressFamily,
+    pub port: u16,
+}

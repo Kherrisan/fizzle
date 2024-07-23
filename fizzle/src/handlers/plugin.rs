@@ -136,8 +136,8 @@ pub fn handle_plugins(ctx: &mut FizzleSingleton) {
         }
 
     } else if !state.global.delayed_ready.is_empty() {
-        let ready = state.global.delayed_ready.dequeue().unwrap();
-        state.global.ready.enqueue(ready).unwrap();
+        let ready = state.global.delayed_ready.pop_front().unwrap();
+        state.global.ready.push_back(ready).unwrap();
     
     } else {
         drop(state);

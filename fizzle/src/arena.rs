@@ -154,6 +154,24 @@ impl<K: ArenaKey<Value = V>, V: Sized, const N: usize> KeyedArena<K, V, N> {
         item.ref_cnt += 1;
     }
 
+    /*
+    /// Promotes the given key value into a reference-counted key, incrementing the reference count
+    /// in the process.
+    pub fn promote(&mut self, key: &K) -> Rc<K> {
+        let idx: usize = (*key).to_usize();
+        assert!(idx < self.inner.len());
+
+        let item = self.inner[idx].get_mut();
+        assert!(item.ref_cnt > 0);
+        item.ref_cnt += 1;
+
+        Rc {
+            key: K::from_usize(idx),
+            ptr: ptr::addr_of!(self.inner[idx]),
+        }
+    }
+    */
+
     /// Decrements the reference count for the given key, returning the new reference count.
     pub fn downref(&mut self, key: &K) -> usize {
         let idx: usize = (*key).to_usize();
@@ -375,6 +393,16 @@ impl<T: Sized> Default for ArenaItem<T> {
 pub struct Rc<K: ArenaKey + 'static> {
     key: K,
     ptr: *const UnsafeCell<ArenaItem<K::Value>>,
+}
+
+impl<K: ArenaKey + 'static> Rc<K> {
+    pub fn upref(rc: &mut Self) {
+        unsafe {
+            let item = &mut (*(*rc.ptr).get());
+            assert!((*(*rc.ptr).get()).ref_cnt > 0);
+            item.ref_cnt += 1;
+        }
+    }
 }
 
 impl<K: ArenaKey> Deref for Rc<K> {

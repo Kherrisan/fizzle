@@ -146,7 +146,7 @@ impl<const N: usize> FilePath<N> {
                     write_idx += segment_len;
 
                     // copy '/' if exists
-                    if read_idx + segment_len == path.len() - 1 {
+                    if read_idx + segment_len <= path.len() - 1 {
                         data[write_idx] = b'/';
                         write_idx += 1;
                     }

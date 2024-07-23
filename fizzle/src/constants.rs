@@ -1,3 +1,5 @@
+use std::mem;
+
 // Environment variables
 /// Indicates the shared memory key that child processes should access
 pub const FIZZLE_MEMORY_ENV: &str = "FIZZLE_MEMORY";
@@ -22,9 +24,17 @@ pub const FIZZLE_MAX_EPOLL_FDS: usize = 128;
 
 pub const FIZZLE_SOMAXCONN: usize = 64;
 pub const FIZZLE_MAX_SOCKETS: usize = 512;
-pub const FIZZLE_MAX_SOCKADDRS: usize = 256;
+pub const FIZZLE_MAX_SOCKADDRS: usize = 128;
+pub const FIZZLE_MAX_REUSEPORT: usize = 16;
+pub const FIZZLE_MAX_WILDCARD_ADDRS: usize = 32;
+pub const FIZZLE_MAX_WILDCARD_BINDS: usize = 16;
+
+pub const FIZZLE_IOV_MAX: usize = 16;
 
 pub const FIZZLE_MAX_PLUGINS: usize = 128;
+
+pub const FIZZLE_MAX_ANCILLARY: usize = 65536;
+pub const FIZZLE_MIN_CONNECTIONLESS: usize = 65536 + mem::size_of::<libc::sockaddr_storage>() + FIZZLE_MAX_ANCILLARY;
 
 pub const FIZZLE_MAX_PROCESSES: usize = 128;
 
@@ -43,7 +53,7 @@ pub const FIZZLE_MAX_BUFFERS: usize = 256; // 256 * 128 KB = 64 MB total
 pub const FIZZLE_MAX_NAMED_SEMAPHORES: usize = 128;
 pub const FIZZLE_MAX_FDS: usize = 4096;
 pub const FIZZLE_MAX_WAITING_SEMAPHORES: usize = 32;
-pub const FIZZLE_FOPEN_BUFSIZE: usize = 8192;
+pub const FIZZLE_FOPEN_BUFSIZE: usize = 4096;
 
 pub const FIZZLE_MAX_PER_ROUND_ENDPOINTS: usize = 128;
 

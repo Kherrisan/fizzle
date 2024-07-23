@@ -49,7 +49,7 @@ impl ArenaKey for PolledId {
 impl PolledId {
     /// Marks the given polled event as ready.
     ///
-    /// If not already raised, this method will enqueue a poller waiting on this polled event
+    /// If not already raised, this method will push_back a poller waiting on this polled event
     /// (if such a poller exists).
     fn raise_polled(&self, ctx: &mut FizzleSingleton) {
         let mut state = ctx.acquire();
@@ -60,7 +60,7 @@ impl PolledId {
             for poller in pollers {
                 if !state.global.pollers.get(&poller).unwrap().in_raised_queue {
                     state.global.ready
-                        .enqueue(ReadyInfo::Poller(poller))
+                        .push_back(ReadyInfo::Poller(poller))
                         .unwrap();
                 }
             }

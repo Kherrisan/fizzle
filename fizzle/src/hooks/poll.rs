@@ -30,7 +30,7 @@ pub fn fd_to_pollin(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
         FdResource::Directory(_) => PolledStatus::NotPollable,
         FdResource::File(file_id) => {
             match state.global.files.get(&file_id).unwrap() {
-                FileBackend::Passthrough => PolledStatus::ImmediatelyPollable, // TODO: should we `poll()` here instead?
+                FileBackend::Passthrough => PolledStatus::ImmediatelyPollable,
                 FileBackend::Peered(_) => unreachable!(),
                 FileBackend::Feedback(feedback) => {
                     PolledStatus::Pollable(feedback.read_polled.clone())
@@ -55,7 +55,7 @@ pub fn fd_to_pollin(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
             PolledStatus::Pollable(state.global.pipes.get(&pipe_id).unwrap().read_polled.clone())
         }
         FdResource::Stdin => match &state.global.stdio {
-            StdioBackend::Passthrough => unreachable!(),
+            StdioBackend::Passthrough => PolledStatus::ImmediatelyPollable,
             StdioBackend::Peered(_) => unreachable!(),
             StdioBackend::Feedback(feedback) => {
                 PolledStatus::Pollable(feedback.read_polled.clone())
@@ -78,7 +78,7 @@ pub fn fd_to_pollin(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
         FdResource::Stderr => PolledStatus::NotPollable,
         FdResource::Socket(socket_id) => match state.global.sockets.get(&socket_id).unwrap() {
             SocketState::Connectionless(connectionless) => match &connectionless.backend {
-                ConnectionlessBackend::Passthrough => unreachable!(),
+                ConnectionlessBackend::Passthrough => PolledStatus::ImmediatelyPollable,
                 ConnectionlessBackend::Peered(regular) => {
                     PolledStatus::Pollable(regular.read_polled.clone())
                 }
@@ -104,7 +104,7 @@ pub fn fd_to_pollin(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
             SocketState::PendingConnection(_) => PolledStatus::NotPollable,
             SocketState::Connecting(_) => PolledStatus::NotPollable, // Need to select for writing, not reading
             SocketState::Connected(connected) => match &connected.backend {
-                ConnectedBackend::Passthrough => unreachable!(),
+                ConnectedBackend::Passthrough => PolledStatus::ImmediatelyPollable,
                 ConnectedBackend::Peered(regular) => {
                     PolledStatus::Pollable(regular.read_polled.clone())
                 }
@@ -147,8 +147,7 @@ pub fn fd_to_pollout(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
         FdResource::Directory(_) => PolledStatus::NotPollable,
         FdResource::File(file_id) => {
             match state.global.files.get(&file_id).unwrap() {
-                FileBackend::Passthrough => PolledStatus::ImmediatelyPollable, // TODO: should we `poll()` here instead?
-                FileBackend::Peered(_) => unreachable!(),
+                FileBackend::Passthrough | FileBackend::Peered(_) => unreachable!(),
                 FileBackend::Feedback(feedback) => {
                     PolledStatus::Pollable(feedback.write_polled.clone())
                 }
@@ -266,6 +265,8 @@ hook_macros::hook! {
         timeout: *const libc::timeval
     ) -> libc::c_int => fizzle_select(_ctx) {
 
+        log::info!("select(nfds={})", nfds);
+
         if !timeout.is_null() {
             let tmo = libc::timespec {
                 tv_sec: (*timeout).tv_sec,
@@ -291,7 +292,7 @@ hook_macros::hook! {
         let state = ctx.acquire();
         
         if !sigmask.is_null() {
-            crate::report_strict_failure("fizzle internal error--sigmask unsupported for ppoll");
+            log::error!("sigmask unsupported for `pselect`");
         }
 
         let mut total_ready = 0;
@@ -308,43 +309,61 @@ hook_macros::hook! {
             if !readfds.is_null() && libc::FD_ISSET(fd, readfds) {
                 match fd_to_pollin(&mut ctx, fd) {
                     PolledStatus::Pollable(polled_id) => {
+
                         let mut state = ctx.acquire();
                         if !state.polled_is_ready(&polled_id) {
+                            log::trace!("select(): fd {} was set for reading (Pollable | NotReady)", fd);
                             libc::FD_CLR(fd, readfds);
                             read_pollers.insert(polled_id, fd);
                         } else {
+                            log::trace!("select(): fd {} was set for reading (Pollable | Ready)", fd);
                             total_ready += 1;
                         }
                         drop(state);
                     },
                     PolledStatus::BadFd => {
+                        log::warn!("select(): fd {} in readfds was not recognized (returning EBADF)", fd);
                         *libc::__errno_location() = libc::EBADF;
                         return -1
                     },
-                    PolledStatus::NotPollable => libc::FD_CLR(fd, readfds),
-                    PolledStatus::ImmediatelyPollable => total_ready+=1,
-
+                    PolledStatus::NotPollable => {
+                        log::trace!("select(): fd {} was set for reading (NotPollable)", fd);
+                        libc::FD_CLR(fd, readfds)
                     }
+                    PolledStatus::ImmediatelyPollable => {
+                        log::trace!("select(): fd {} was set for reading (ImmediatelyPollable)", fd);
+                        total_ready += 1
+                    }
+                }
             }
             
             if !writefds.is_null() && libc::FD_ISSET(fd, writefds) {
                 match fd_to_pollout(&mut ctx, fd){
                     PolledStatus::Pollable(polled_id) => {
                         let mut state = ctx.acquire(); 
-                        if !state.polled_is_ready(&polled_id){
+                        if !state.polled_is_ready(&polled_id) {
+                            log::trace!("select(): fd {} was set for reading (Pollable | NotReady)", fd);
                             libc::FD_CLR(fd, writefds);
                             write_pollers.insert(polled_id, fd);
                         } else {
+                            log::trace!("select(): fd {} was set for writing (Pollable | Ready)", fd);
                             total_ready += 1;
                         }
                         drop(state);
                     },
                     PolledStatus::BadFd => {
+                        log::warn!("select(): fd {} in writefds was not recognized (returning EBADF)", fd);
                         *libc::__errno_location() = libc::EBADF;
                         return-1
                     },
-                    PolledStatus::NotPollable => libc::FD_CLR(fd, readfds),
-                    PolledStatus::ImmediatelyPollable => total_ready += 1,
+                    PolledStatus::NotPollable => {
+                        log::trace!("select(): fd {} was set for writing (NotPollable)", fd);
+                        libc::FD_CLR(fd, readfds)
+                    }
+                    PolledStatus::ImmediatelyPollable => {
+                        log::trace!("select(): fd {} was set for writing (ImmediatelyPollable)", fd);
+                        total_ready += 1
+                    }
                 }
             }
         }
@@ -357,7 +376,9 @@ hook_macros::hook! {
 
         let poller_id = state.new_poller();
 
-        let all_pollers: HashMap<Rc<PolledId>, RawFd, FxBuildHasher> = read_pollers.clone().into_iter().chain(write_pollers.clone()).collect();
+        let mut all_pollers = read_pollers.clone();
+        all_pollers.extend(write_pollers.clone());
+
         for (polled_id, _) in all_pollers {
             state.register_poller(poller_id.clone(), polled_id.clone());
         }
@@ -382,7 +403,7 @@ hook_macros::hook! {
             }
         }
 
-        total_ready
+        total_ready // TODO: this may not be accurate
     }
 }
 

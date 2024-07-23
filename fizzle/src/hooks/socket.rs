@@ -2,52 +2,21 @@
 //!
 //!
 
-use std::net::SocketAddr;
+use std::mem::MaybeUninit;
 use std::{mem, ptr, slice};
 
-use crate::arena::Rc;
-use crate::constants::{FIZZLE_BUFFER_LENGTH, FIZZLE_EPHEMERAL_PORT_END, FIZZLE_EPHEMERAL_PORT_START};
+use crate::constants::FIZZLE_BUFFER_LENGTH;
 use crate::backend::{
-    ConnectedBackend, ConnectingBackend, ConnectionlessBackend, IoBackend, RegularConnected,
-    RegularConnectionless, ServerBackend, StandardFeedback,
+    ConnectionlessBackend, RegularConnectionless
 };
 use crate::handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource};
 use crate::handlers::polled::PolledInfo;
-use crate::handlers::socket::{ConnectedSocket, ConnectingSocket, ConnectionlessSocket, PendingInfo, ServerSocket, SocketId, SocketLocationInfo, SocketState, UnassociatedSocket};
+use crate::handlers::socket::{ConnectionlessSocket, SocketState, UnassociatedSocket};
+use crate::handlers::FfiOutput;
 use crate::hook_macros;
-use crate::state::FizzleSingleton;
 
-
-use fizzle_common::io::{AddressFamily, SocketType, TransportAddress, TransportProtocol};
+use fizzle_common::io::{AddressFamily, SockAddr, SocketType, TransportProtocol};
 use fizzle_common::storage::Buffer;
-use heapless::spsc::Queue;
-
-fn print_socktype(socktype: i32) -> String {
-    let nonblock = (socktype & libc::SOCK_NONBLOCK) > 0;
-    let cloexec = (socktype & libc::SOCK_CLOEXEC) > 0;
-    let socktype = socktype & !(libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC);
-
-    let mut out = String::new();
-
-    if nonblock {
-        out += "NONBLOCK | ";
-    }
-
-    if cloexec {
-        out += "CLOEXEC | ";
-    }
-
-    match socktype {
-        libc::SOCK_STREAM => out += "SOCK_STREAM",
-        libc::SOCK_DGRAM => out += "SOCK_DGRAM",
-        libc::SOCK_SEQPACKET => out += "SOCK_SEQPACKET",
-        libc::SOCK_RAW => out += "SOCK_RAW",
-        libc::SOCK_RDM => out += "SOCK_RDM",
-        _ => out += &format!("UNKNOWN({})", socktype),
-    }
-
-    out
-}
 
 hook_macros::hook! {
     unsafe fn socket(
@@ -59,6 +28,7 @@ hook_macros::hook! {
 
         let nonblocking = (socktype & libc::SOCK_NONBLOCK) != 0;
         let close_on_exec = (socktype & libc::SOCK_CLOEXEC) != 0;
+        let socktype = socktype & !(libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC);
 
         let family = match domain {
             libc::AF_INET => AddressFamily::Ipv4,
@@ -67,7 +37,7 @@ hook_macros::hook! {
             _ => panic!("unsupported socket domain {}", domain),
         };
 
-        let socket_type = match socktype & !(libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC) {
+        let socket_type = match socktype {
             libc::SOCK_STREAM => SocketType::Stream,
             libc::SOCK_SEQPACKET => SocketType::SeqPacket,
             libc::SOCK_DGRAM => SocketType::Datagram,
@@ -83,22 +53,16 @@ hook_macros::hook! {
         };
 
         let fd = hook_macros::real!(socket)(domain, socktype, protocol);
-
-        log::info!("socket({}, {}, {}) -> {}", family, print_socktype(socktype), transport_protocol, fd);
         
         if fd < 0 {
+            crate::strace!("socket(domain={}, socktype={}, protocol={}) -> -1 ({})", family, socket_type, transport_protocol, crate::errno_str());
             return fd
         }
 
         let socket_id = match socket_type {
-            SocketType::SeqPacket | SocketType::Stream => {
-                state.global.sockets.allocate(SocketState::Unassociated(UnassociatedSocket {
-                    local_addr: None,
-                    family,
-                    protocol: transport_protocol,
-                    socktype: socket_type,
-                })).unwrap()
-            } 
+            SocketType::SeqPacket | SocketType::Stream => state.global.sockets.allocate(SocketState::Unassociated(
+                UnassociatedSocket::new(family, socket_type, transport_protocol))
+            ).unwrap(),
             SocketType::Datagram => {
                 let local_addr = state.global.ephemeral_address(family, transport_protocol);
                 let recv_buf = state.global.buffers.allocate(Buffer::new()).unwrap();
@@ -113,6 +77,7 @@ hook_macros::hook! {
                     }),
                     local_addr,
                     rem_addr: None,
+                    reuse_port: false,
                 })).unwrap()
             }
         };
@@ -125,6 +90,8 @@ hook_macros::hook! {
             resource: FdResource::Socket(socket_id)
         }).unwrap();
 
+        crate::strace!("socket(domain={}, socktype={}, protocol={}) -> 0", family, socket_type, transport_protocol);
+
         fd
     }
 }
@@ -135,7 +102,7 @@ hook_macros::hook! {
         addr: *const libc::sockaddr,
         addrlen: libc::socklen_t
     ) -> libc::c_int => fizzle_bind(ctx) {
-        let mut state = ctx.acquire();
+        let state = ctx.acquire();
 
         let descriptor_id = DescriptorId::from_raw_fd(fd);
         let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
@@ -148,106 +115,28 @@ hook_macros::hook! {
             return -1
         };
 
-        // TODO: support AF_UNSPEC?
-        let transport_addr = match state.global.sockets.get(&socket_id).unwrap() {
-            SocketState::Connectionless(ConnectionlessSocket { local_addr: TransportAddress::Udp(_), .. }) => {
-                let Ok(mut socket_addr) = crate::decode_inet_address(addr, addrlen) else {
-                    *libc::__errno_location() = libc::EINVAL;
-                    return -1
-                };
-                if socket_addr.port() == 0 {
-                    socket_addr = SocketAddr::new(socket_addr.ip(), state.global.next_ephemeral_port);
-                    if state.global.next_ephemeral_port >= FIZZLE_EPHEMERAL_PORT_END {
-                        state.global.next_ephemeral_port = FIZZLE_EPHEMERAL_PORT_START;
-                    } else {
-                        state.global.next_ephemeral_port += 1
-                    }
-                }
-                TransportAddress::Udp(socket_addr)
-            }
-            SocketState::Connectionless(ConnectionlessSocket { local_addr: TransportAddress::Unix(_), .. }) => {
-                let Ok(socket_addr) = crate::decode_unix_address(addr, addrlen) else {
-                    *libc::__errno_location() = libc::EINVAL;
-                    return -1
-                };
-                TransportAddress::Unix(socket_addr)
-            }
-            SocketState::Unassociated(UnassociatedSocket { local_addr: Some(_), .. }) => {
-                // Socket is already bound
-                *libc::__errno_location() = libc::EINVAL;
-                return -1
-            },
-            SocketState::Unassociated(UnassociatedSocket { protocol: protocol @ (TransportProtocol::Tcp | TransportProtocol::Sctp), .. }) => {
-                let protocol = *protocol;
-                let Ok(mut socket_addr) = crate::decode_inet_address(addr, addrlen) else {
-                    *libc::__errno_location() = libc::EINVAL;
-                    return -1
-                };
-                if socket_addr.port() == 0 {
-                    socket_addr = SocketAddr::new(socket_addr.ip(), state.global.next_ephemeral_port);
-                    if state.global.next_ephemeral_port >= FIZZLE_EPHEMERAL_PORT_END {
-                        state.global.next_ephemeral_port = FIZZLE_EPHEMERAL_PORT_START;
-                    } else {
-                        state.global.next_ephemeral_port += 1
-                    }
-                }
-                TransportAddress::new_internet(socket_addr, protocol)
-            }
-            SocketState::Unassociated(UnassociatedSocket { protocol: TransportProtocol::Unix, .. }) => {
-                let Ok(unix_addr) = crate::decode_unix_address(addr, addrlen) else {
-                    *libc::__errno_location() = libc::EINVAL;
-                    return -1
-                };
-                TransportAddress::Unix(unix_addr)
-            }
-            _ => {
-                log::warn!("`bind` called on socket in unexpected state");
-                *libc::__errno_location() = libc::EINVAL;
-                return -1
-            }
+        // SAFETY: caller ensures addr points to a valid buffer of `adderlen` bytes.
+        let addr_bytes = slice::from_raw_parts(addr as *const u8, addrlen as usize);
+
+        let Ok(addr) = SockAddr::decode(addr_bytes) else {
+            *libc::__errno_location() = libc::EINVAL;
+            return -1
         };
 
-        match state.global.socket_locations.entry(transport_addr.clone()) {
-            heapless::Entry::Occupied(mut o) => if o.get().bound_socket.is_some() {
-                log::warn!("application attempted to bind to address {:?} that was already in use", &transport_addr);
-                *libc::__errno_location() = libc::EADDRINUSE;
-                return -1
-            } else {
-                o.get_mut().bound_socket = Some(socket_id.clone());
-            },
-            heapless::Entry::Vacant(v) => {
-                v.insert(SocketLocationInfo {
-                    bound_socket: Some(socket_id.clone()),
-                    pending: None,
-                }).unwrap();
-            },
-        }
+        drop(state);
 
-        match state.global.sockets.get_mut(&socket_id).unwrap() {
-            SocketState::Unassociated(UnassociatedSocket { local_addr, .. }) => {
-                local_addr.replace(transport_addr);
-            }
-            SocketState::Connectionless(ConnectionlessSocket { local_addr, .. }) => {
-                let prev_addr = local_addr.clone();
-                *local_addr = transport_addr;
-
-                // Just in case the connectionless socket was bound.
-                state.global.socket_locations.remove(&prev_addr);
-
-            }
-            _ => panic!("internal state error in fizzle--unreachable code reached"),
-        };
-
-        0
+        let res = socket_id.bind(&mut ctx, addr.clone());
+        crate::strace!("bind(fd={}, addr={}) -> {}", fd, &addr, res.display());
+        res.out()
     }
 }
 
 hook_macros::hook! {
     unsafe fn listen(
         fd: libc::c_int,
-        _backlog: libc::c_int
+        backlog: libc::c_int
     ) -> libc::c_int => fizzle_listen(ctx) {
-        let mut state = ctx.acquire();
+        let state = ctx.acquire();
 
         let descriptor_id = DescriptorId::from_raw_fd(fd);
         let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
@@ -260,50 +149,11 @@ hook_macros::hook! {
             return -1
         };
 
-        let SocketState::Unassociated(socket_info) = state.global.sockets.get_mut(&socket_id).unwrap() else {
-            panic!("internal fizzle error--`listen()` called on socket in unexpected state");
-        };
+        drop(state);
 
-        let local_addr = match &socket_info.local_addr {
-            Some(addr) => addr.clone(),
-            None => {
-                log::warn!("socket `listen`ing without prior `bind`");
-
-                let family = socket_info.family;
-                let protocol = socket_info.protocol;
-
-                let addr = state.global.ephemeral_address(family, protocol);
-                if state.global.socket_locations.contains_key(&addr) {
-                    *libc::__errno_location() = libc::EADDRINUSE;
-                    return -1
-                }
-
-                state.global.socket_locations.insert(addr.clone(), SocketLocationInfo {
-                    bound_socket: Some(socket_id.clone()),
-                    pending: None,
-                }).unwrap();
-
-                addr
-            }
-        };
-
-        // Allocate server context and set up polling
-        let ready_to_connect = state.global.polled_events.allocate(PolledInfo::new()).unwrap();
-
-        if state.global.socket_locations.get_mut(&local_addr).unwrap().pending.is_some() {
-            state.raise_polled(&ready_to_connect);
-        }
-
-        *state.global.sockets.get_mut(&socket_id).unwrap() = SocketState::Server(ServerSocket {
-            backend: IoBackend::Peered(()),
-            local_addr,
-            connecting: Queue::new(),
-            ready_to_connect,
-        });
-
-
-
-        0
+        let res = socket_id.listen(&mut ctx);
+        crate::strace!("listen(fd={}, backlog={}) -> {}", fd, backlog, res.display());
+        res.out()
     }
 }
 
@@ -313,7 +163,7 @@ hook_macros::hook! {
         addr: *const libc::sockaddr,
         addrlen: libc::socklen_t
     ) -> libc::c_int => fizzle_connect(ctx) {
-        let mut state = ctx.acquire();
+        let state = ctx.acquire();
 
         let descriptor_id = DescriptorId::from_raw_fd(fd);
         let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
@@ -321,142 +171,30 @@ hook_macros::hook! {
             return -1
         };
 
-        let is_nonblocking = fd_info.nonblocking;
+        let nonblocking = fd_info.nonblocking;
 
         let FdResource::Socket(socket_id) = fd_info.resource.clone() else {
             *libc::__errno_location() = libc::ENOTSOCK;
             return -1
         };
 
-        match state.global.sockets.get(&socket_id).unwrap() {
-            SocketState::Unassociated(sock) => {
-                let protocol = sock.protocol;
-                let family = sock.family;
-                let local_addr = match &sock.local_addr {
-                    Some(addr) => addr.clone(),
-                    None => state.global.ephemeral_address(family, protocol),
-                };
+        // SAFETY: caller ensures addr points to a valid buffer of `adderlen` bytes.
+        let addr_bytes = slice::from_raw_parts(addr as *const u8, addrlen as usize);
 
-                // TODO: support AF_UNSPEC?
-                let rem_addr = match protocol {
-                    TransportProtocol::Tcp | TransportProtocol::Udp | TransportProtocol::Sctp => {
-                        let Ok(socket_addr) = crate::decode_inet_address(addr, addrlen) else {
-                            *libc::__errno_location() = libc::EINVAL;
-                            return -1
-                        };
-                        TransportAddress::new_internet(socket_addr, protocol)
-                    }
-                    TransportProtocol::Unix => {
-                        let Ok(unix_addr) = crate::decode_unix_address(addr, addrlen) else {
-                            *libc::__errno_location() = libc::EINVAL;
-                            return -1
-                        };
-                        TransportAddress::Unix(unix_addr)
-                    }
-                };
+        let Ok(rem_addr) = SockAddr::decode(addr_bytes) else {
+            *libc::__errno_location() = libc::EINVAL;
+            return -1
+        };
 
-                // First: is the address currently bound?
-                let Some(SocketLocationInfo { bound_socket: Some(server_socket_id), .. }) = state.global.socket_locations.get(&rem_addr) else {
-                    // No socket is bound to the given address...
-                    // TODO: support catch-all addresses (0.0.0.0)
-                    // TODO: maybe wait until a server does exist at the location??
-                    *libc::__errno_location() = libc::ECONNREFUSED;
-                    return -1;
-                };
-                let server_socket_id = server_socket_id.clone();
+        drop(state);
 
-                let SocketState::Server(server_info) = state.global.sockets.get_mut(&server_socket_id).unwrap() else {
-                    *libc::__errno_location() = libc::ECONNREFUSED;
-                    return -1 // TODO: in the future, wait until a server does exist
-                };
-
-                let server_backend = server_info.backend.clone();
-
-                let connected_backend = match server_backend {
-                    ServerBackend::Passthrough => unimplemented!(),
-                    ServerBackend::Peered(()) => {
-                        let SocketState::Server(server_info) = state.global.sockets.get_mut(&server_socket_id).unwrap() else {
-                            *libc::__errno_location() = libc::ECONNREFUSED;
-                            return -1 // TODO: in the future, wait until a server does exist
-                        };
-
-                        // Don't actually create a connected backend--
-                        let Ok(_) = server_info.connecting.enqueue(socket_id.clone()) else {
-                            *libc::__errno_location() = libc::ECONNREFUSED;
-                            return -1
-                        };
-
-                        let server_poll = server_info.ready_to_connect.clone();
-                        state.raise_polled(&server_poll);
-
-                        let client_poll = state.global.polled_events.allocate(PolledInfo::new()).unwrap();
-                        *state.global.sockets.get_mut(&socket_id).unwrap() = SocketState::Connecting(ConnectingSocket {
-                            backend: ConnectingBackend::Peered(()),
-                            connect_polled: client_poll.clone(),
-                            local_addr,
-                        });
-
-                        return if is_nonblocking {
-                            *libc::__errno_location() = libc::EINPROGRESS;
-                            -1
-                        } else {
-                            drop(state);
-                            ctx.poll_until_ready(client_poll); // TODO: if the server deletes this poll... UAF???
-                            0
-                        }
-                    }
-                    ServerBackend::Plugin(plugin_id) => {
-                        // Create new plugin
-                        let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
-                        let endpoint = plugin_info.endpoint.clone();
-                        let module_id = plugin_info.module_id.clone();
-                        let connect_plugin_id = state.global.add_plugin(endpoint, module_id);
-                        ConnectedBackend::Plugin(connect_plugin_id)
-                    },
-                    ServerBackend::Sink => ConnectedBackend::Sink,
-                    ServerBackend::Fuzz(_) => ConnectedBackend::Fuzz(state.global.add_fuzz_endpoint()),
-                    ServerBackend::NullSink => ConnectedBackend::NullSink,
-                    ServerBackend::Feedback(()) => ConnectedBackend::Feedback(StandardFeedback {
-                            buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
-                            read_polled: state.global.polled_events.allocate(PolledInfo::new()).unwrap(),
-                            write_polled: state.global.polled_events.allocate(PolledInfo::new_raised()).unwrap(),
-                    })
-                };
-
-                *state.global.sockets.get_mut(&socket_id).unwrap() = SocketState::Connected(ConnectedSocket {
-                    backend: connected_backend,
-                    local_addr,
-                    rem_addr,
-                    peer_closed: false,
-                });
-
-                0
-            },
-            SocketState::Server(_) => {
-                panic!("unexpected fizzle state--`connect()` called on listening socket")
-            },
-            SocketState::PendingConnection(_) => panic!("unexpected fizzle state--PendingConnection had `connect` called on it"),
-            SocketState::Connecting(_) => if is_nonblocking {
-                *libc::__errno_location() = libc::EALREADY;
-                -1
-            } else {
-                drop(state);
-                ctx.yield_thread();
-                // TODO: more work to be done here... (see above)
-                0
-            }
-            SocketState::Connected(_) => {
-                *libc::__errno_location() = libc::EISCONN;
-                -1
-            }
-            /*
-            SocketState::Error => {
-                *libc::__errno_location() = libc::ECONNREFUSED;
-                -1
-            }
-            */
-            SocketState::Connectionless(_) => panic!("invalid fizzle state--unexpected connectionless socket being connected to")
+        if nonblocking {
+            crate::strace!("connect(fd={}, rem_addr={}) -> ...", fd, rem_addr);
         }
+
+        let res = socket_id.connect(&mut ctx, rem_addr.clone(), nonblocking);
+        crate::strace!("connect(fd={}, rem_addr={}) -> {}", fd, rem_addr, res.display());
+        res.out()
     }
 }
 
@@ -466,6 +204,7 @@ hook_macros::hook! {
         addr: *mut libc::sockaddr,
         addrlen: *mut libc::socklen_t
     ) -> libc::c_int => fizzle_accept(_ctx) {
+        crate::strace!("accept -> accept4");
         fizzle_accept4(fd, addr, addrlen, 0)
     }
 }
@@ -477,13 +216,7 @@ hook_macros::hook! {
         addrlen: *mut libc::socklen_t,
         flags: libc::c_int
     ) -> libc::c_int => fizzle_accept4(ctx) {
-        let mut state = ctx.acquire();
-
-        if !addr.is_null() && ((*addr).sa_family as i32 == libc::AF_INET && (*addrlen) as usize != mem::size_of::<libc::sockaddr_in>()
-                || (*addr).sa_family as i32 == libc::AF_INET6 && (*addrlen) as usize != mem::size_of::<libc::sockaddr_in6>()) {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1;
-        }
+        let state = ctx.acquire();
 
         let descriptor_id = DescriptorId::from_raw_fd(fd);
         let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
@@ -491,248 +224,68 @@ hook_macros::hook! {
             return -1
         };
 
-        let is_nonblocking = fd_info.nonblocking;
+        let nonblocking = fd_info.nonblocking | (flags & libc::O_NONBLOCK > 0);
+        let close_on_exec = flags & libc::O_CLOEXEC > 0;
 
         let FdResource::Socket(server_id) = fd_info.resource.clone() else {
             *libc::__errno_location() = libc::ENOTSOCK;
             return -1
         };
 
-        let SocketState::Server(server_info) = state.global.sockets.get_mut(&server_id).unwrap() else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1;
-        };
+        drop(state);
+        let res = server_id.accept(&mut ctx, nonblocking, close_on_exec);
+        crate::strace!("accept4(fd={}, flags={}) -> {}", fd, match (nonblocking, close_on_exec) {
+            (false, false) => "0",
+            (false, true) => "O_CLOEXEC",
+            (true, false) => "O_NONBLOCK",
+            (true, true) => "O_NONBLOCK | O_CLOEXEC",
+        }, res.display());
 
-        let has_connecting = !server_info.connecting.is_empty();
-        let server_addr = server_info.local_addr.clone();
-        let ready_to_connect = server_info.ready_to_connect.clone();
-
-        let bound_info = state.global.socket_locations.get(&server_addr).unwrap();
-        if let Some(PendingInfo { client, poll }) = bound_info.pending.clone() {
-            let SocketState::PendingConnection(pending_info) = state.global.sockets.get_mut(&client).unwrap() else {
-                panic!("unexpected fizzle state--pending socket ID not in PendingConnection state");
-            };
-
-            let client_address = pending_info.src_addr.clone();
-
-            // Update the linked list of pending clients
-            match pending_info.next_pending.clone() {
-                Some(pending_id) => state.global.socket_locations.get_mut(&server_addr).unwrap().pending.as_mut().unwrap().client = pending_id,
-                None => {
-                    state.global.socket_locations.get_mut(&server_addr).unwrap().pending = None;
-
-                    if !has_connecting {
-                        state.lower_polled(&ready_to_connect);
-                    }
-                }
+        if !addr.is_null() && !addrlen.is_null() {
+            if let Ok((_, conn_addr)) = res.as_ref() {
+                log::info!("accepted connection from address {}", conn_addr);
+                let addr_bytes = slice::from_raw_parts_mut(addr as *mut MaybeUninit<u8>, *addrlen as usize);
+                *addrlen = conn_addr.encode(addr_bytes) as libc::socklen_t;
             }
-
-            state.raise_polled(&poll);
-
-            if !addr.is_null() {
-                match &client_address {
-                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => {
-                        let address_buf = unsafe { slice::from_raw_parts_mut(addr as *mut u8, addrlen as usize) };
-                        crate::encode_inet_address(address_buf, socket_addr);
-                    }
-                    TransportAddress::Unix(unix_addr) => 
-                        crate::encode_unix_address(addr, addrlen, &unix_addr),
-                }
-            }
-
-            log::info!("server [{:?}] `accept()`ed pending client [{:?}]", server_addr, &client_address);
-            drop(state);
-            return join_socket_pair(&mut ctx, server_id.clone(), client.clone(), flags, Some(client_address))
         }
 
-        let SocketState::Server(server_info) = state.global.sockets.get_mut(&server_id).unwrap() else {
-            panic!()
-        };
-
-        if let Some(connecting_id) = server_info.connecting.dequeue() {
-            if server_info.connecting.len() == 1 {
-                state.lower_polled(&ready_to_connect);
-            }
-
-            let SocketState::Connecting(connecting_info) = state.global.sockets.get(&connecting_id).unwrap() else {
-                panic!("unexpected fizzle internal state--socket in server connecting queue was not `Connecting` variant")
-            };
-
-            if !addr.is_null() {
-                match &connecting_info.local_addr {
-                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => {
-                        let address_buf = unsafe { slice::from_raw_parts_mut(addr as *mut u8, addrlen as usize) };
-                        crate::encode_inet_address(address_buf, socket_addr);
-                    }
-                    TransportAddress::Unix(unix_addr) => 
-                        crate::encode_unix_address(addr, addrlen, &unix_addr),
-                }
-            }
-
-            log::info!("server [{:?}] `accept()`ed connecting client [{:?}]", server_addr, &connecting_info.local_addr);
-
-            let polled = connecting_info.connect_polled.clone();
-            state.raise_polled(&polled);
-            drop(state);
-            return join_socket_pair(&mut ctx, server_id, connecting_id, flags, None);
-
-        } else if is_nonblocking {
-            log::debug!("server [{:?}] `accept()` had no connections to accept (EAGAIN)", server_addr);
-            *libc::__errno_location() = libc::EAGAIN; // or EWOULDBLOCK
-            return -1
-
-        } else { // !is_nonblocking
-            log::debug!("server [{:?}] blocking on `accept()`", server_addr);
-            drop(state);
-            ctx.poll_until_ready(ready_to_connect.clone());
-            let mut state = ctx.acquire();
-
-            // Now there's a connected socket ready
-            let SocketState::Server(server_info) = state.global.sockets.get_mut(&server_id).unwrap() else {
-                panic!("internal fizzle error")
-            };
-            let connecting_num = server_info.connecting.len();
-
-            let connecting_id = server_info.connecting.dequeue().unwrap();
-            let SocketState::Connecting(connecting_info) = state.global.sockets.get(&connecting_id).unwrap() else {
-                panic!("unexpected fizzle internal state--socket in server connecting queue was not `Connecting` variant")
-            };
-
-            // Write the remote address of the connecting socket for the accept
-            if !addr.is_null() {
-                match &connecting_info.local_addr {
-                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => {
-                        let address_buf = unsafe { slice::from_raw_parts_mut(addr as *mut u8, addrlen as usize) };
-                        crate::encode_inet_address(address_buf, socket_addr);
-                    }
-                    TransportAddress::Unix(unix_addr) => 
-                        crate::encode_unix_address(addr, addrlen, &unix_addr),
-                }
-            }
-
-            log::info!("server [{:?}] `accept()`ed connecting client [{:?}]", server_addr, connecting_info.local_addr);
-
-            if connecting_num == 1 {
-                state.lower_polled(&ready_to_connect);
-            }
-            drop(state);
-            return join_socket_pair(&mut ctx, server_id, connecting_id, flags, None);
-        }
+        res.out()
     }
 }
 
-/// Helper function for `accept()`--creates two connected sockets based on a connecting and server socket and returns both.
-fn join_socket_pair(
-    ctx: &mut FizzleSingleton,
-    server_id: Rc<SocketId>,
-    connecting_id: Rc<SocketId>,
-    flags: libc::c_int,
-    addr: Option<TransportAddress>,
-) -> libc::c_int {
-    let mut state = ctx.acquire();
+hook_macros::hook! {
+    unsafe fn getsockname(
+        sockfd: libc::c_int,
+        addr: *mut libc::sockaddr,
+        addrlen: *mut libc::socklen_t
+    ) -> libc::c_int => fizzle_getsockname(ctx) {
+        let state = ctx.acquire();
 
-    let (server_addr, server_backend) = match state.global.sockets.get(&server_id).unwrap() {
-        SocketState::Server(server_info) => (server_info.local_addr.clone(), server_info.backend.clone()),
-        _ => unreachable!(),
-    };
-
-    let (client_addr, connect_backend) = match state.global.sockets.get_mut(&connecting_id).unwrap() {
-        SocketState::PendingConnection(pending_info) => {
-            (addr.unwrap(), pending_info.backend.clone())
-        }
-        SocketState::Connecting(connecting_info) => {
-            let client_addr = connecting_info.local_addr.clone();
-            let connect_backend = connecting_info.backend.clone();
-            (client_addr, connect_backend)
-        }
-        _ => unreachable!(),
-    };
-
-    let connect_backend = match connect_backend {
-        IoBackend::Passthrough => unimplemented!(),
-        IoBackend::Peered(()) => ConnectedBackend::Peered(RegularConnected {
-            peer: Some(connecting_id.clone()),
-            recv_buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
-            read_polled: state.global.polled_events.allocate(PolledInfo::new()).unwrap(),
-            write_polled: state.global.polled_events.allocate(PolledInfo::new_raised()).unwrap(),
-        }),
-        IoBackend::Plugin(plugin_id) => {
-            // Create new plugin
-            let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
-            let endpoint = plugin_info.endpoint.clone();
-            let module_id = plugin_info.module_id.clone();
-            let connect_plugin_id = state.global.add_plugin(endpoint, module_id);
-            ConnectedBackend::Plugin(connect_plugin_id)
-        }
-        IoBackend::Sink => ConnectedBackend::Sink,
-        IoBackend::Fuzz(endpoint) => ConnectedBackend::Fuzz(endpoint),
-        IoBackend::NullSink => ConnectedBackend::NullSink,
-        IoBackend::Feedback(()) => ConnectedBackend::Feedback(StandardFeedback {
-            buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
-            read_polled: state.global.polled_events.allocate(PolledInfo::new()).unwrap(),
-            write_polled: state.global.polled_events.allocate(PolledInfo::new_raised()).unwrap(),
-        }),
-    };
-
-    let socket_id = if let IoBackend::Peered(_) = connect_backend {
-        let accept_backend = match server_backend {
-            IoBackend::Passthrough => unimplemented!(),
-            IoBackend::Peered(_) => ConnectedBackend::Peered(RegularConnected {
-                peer: Some(connecting_id.clone()),
-                recv_buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
-                read_polled: state.global.polled_events.allocate(PolledInfo::new()).unwrap(),
-                write_polled: state.global.polled_events.allocate(PolledInfo::new_raised()).unwrap(),
-            }),
-            _ => unreachable!(),
+        let descriptor_id = DescriptorId::from_raw_fd(sockfd);
+        let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
+            *libc::__errno_location() = libc::EBADF;
+            return -1
         };
 
-        *state.global.sockets.get_mut(&connecting_id).unwrap() =
-            SocketState::Connected(ConnectedSocket {
-                local_addr: client_addr.clone(),
-                rem_addr: server_addr.clone(),
-                backend: connect_backend,
-                peer_closed: false,
-            });
+        let FdResource::Socket(socket_id) = fd_info.resource.clone() else {
+            *libc::__errno_location() = libc::ENOTSOCK;
+            return -1
+        };
 
-        state.global
-            .sockets
-            .allocate(SocketState::Connected(ConnectedSocket {
-                local_addr: server_addr,
-                rem_addr: client_addr,
-                backend: accept_backend,
-                peer_closed: false,
-            })).unwrap()
-    } else {
-        // The connecting socket was emulated in some way (`fuzz`, `sink` or the like).
-        // Convert the connecting socket into the accepted socket--we don't need two peered sockets.
-        *state.global.sockets.get_mut(&connecting_id).unwrap() =
-            SocketState::Connected(ConnectedSocket {
-                local_addr: server_addr,
-                rem_addr: client_addr,
-                backend: connect_backend,
-                peer_closed: false,
-            });
+        drop(state);
 
-        connecting_id
-    };
+        let res = socket_id.socket_name(&mut ctx);
+        crate::strace!("getsockname(fd={}) -> {}", sockfd, res.display());
 
-    let new_fd = crate::alias_fd_create();
-    // The two sockets are now joined--add a file descriptor to the accepted socket
-    state.local.fds.allocate_with_key(
-        DescriptorId::from_raw_fd(new_fd),
-        DescriptorInfo {
-            close_on_exec: (flags & libc::O_CLOEXEC) != 0,
-            is_passthrough: false,
-            nonblocking: (flags & libc::O_NONBLOCK) != 0,
-            resource: FdResource::Socket(socket_id),
-        },
-    ).unwrap();
+        if let Ok(sockname) = res.as_ref() {
+            log::debug!("getsockname() mapped fd {} to address {}", sockfd, sockname);
+            let addr_bytes = slice::from_raw_parts_mut(addr as *mut MaybeUninit<u8>, *addrlen as usize);
+            *addrlen = sockname.encode(addr_bytes) as libc::socklen_t;
+        }
 
-    // TODO: need to account for error conditions within this function
-    new_fd
+        res.out()
+    }
 }
-
-// TODO: UDP sockets bound addresses (yes, even ephemeral) need to be registered
 
 #[repr(C)]
 struct SctpRtoInfo {
@@ -836,8 +389,16 @@ hook_macros::hook! {
         };
 
         match (level, optname) {
+            (libc::SOL_IP, libc::IP_OPTIONS) => {
+                *optlen = 0;
+                0
+            }
+            (libc::SOL_IP, _) => {
+                log::error!("Unrecognized socket option: SOL_IP, optname {}", optname);
+                panic!("Unrecognized socket option: SOL_IP, optname {}", optname);
+            }
             (libc::SOL_TCP, libc::TCP_USER_TIMEOUT) => {
-                *(optval as *mut libc::c_int) = 0;
+                *(optval as *mut libc::c_int) = 20000;
                 0
             }
             (libc::SOL_TCP, libc::TCP_NODELAY) => {
@@ -1041,8 +602,7 @@ hook_macros::hook! {
                     return -1
                 }
 
-                // Never any timeouts among sockets
-                *(optval as *mut libc::c_int) = 0;
+                *(optval as *mut libc::c_int) = 1;
                 0
             }
             (libc::SOL_SOCKET, _) => panic!("unrecognized getsockopt SOL_SOCKET, optname {}", optname),
@@ -1230,15 +790,33 @@ hook_macros::hook! {
     }
 }
 
+fn sockopt_level_name(level: libc::c_int, name: libc::c_int) -> (&'static str, &'static str) {
+    match level {
+        libc::SOL_SOCKET => ("SOL_SOCKET", match name {
+            libc::SO_KEEPALIVE => "SO_KEEPALIVE",
+            libc::SO_OOBINLINE => "SO_OOBINLINE",
+            _ => stringify!(name)
+        }),
+        libc::SOL_TCP => ("SOL_TCP", match name {
+            libc::TCP_USER_TIMEOUT => "TCP_USER_TIMEOUT",
+            _ => stringify!(name)
+        }),
+        _ => (stringify!(level), stringify!(name)),
+    }
+}
+
+
 hook_macros::hook! {
     unsafe fn setsockopt(
         sockfd: libc::c_int,
         level: libc::c_int,
         optname: libc::c_int,
-        _optval: *const libc::c_void,
+        optval: *const libc::c_void,
         optlen: libc::socklen_t
     ) -> libc::c_int => fizzle_setsockopt(ctx) {
         let state = ctx.acquire();
+
+        log::info!("setsockopt({}, {}, {}, {:?}, {} (value {}))", sockfd, level, optname, optval, optlen, *(optval as *const libc::c_int));
 
         let descriptor_id = DescriptorId::from_raw_fd(sockfd);
         let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
@@ -1252,9 +830,19 @@ hook_macros::hook! {
         };
 
         match (level, optname) {
-            // Pretend to support (but don't)
-            (libc::SOL_TCP, libc::TCP_NODELAY | libc::TCP_MAXSEG | libc::TCP_USER_TIMEOUT) => {
+            (libc::SOL_IP, libc::IP_OPTIONS) => {
                 0
+            }
+            (libc::SOL_IP, _) => {
+                log::error!("Unrecognized socket option: SOL_IP, optname {}", optname);
+                panic!("Unrecognized socket option: SOL_IP, optname {}", optname);
+            }
+            // Pretend to support (but don't)
+            (libc::SOL_TCP, libc::TCP_NODELAY | libc::TCP_MAXSEG | libc::TCP_USER_TIMEOUT | libc::TCP_FASTOPEN) => {
+                0
+            }
+            (libc::SOL_TCP, _) => {
+                panic!("Unrecognized socket option: SOL_TCP, optname {}", optname);
             }
             // Socket options that are readonly
             (libc::SOL_SOCKET, libc::SO_ACCEPTCONN | libc::SO_DOMAIN | libc::SO_ERROR | libc::SO_PROTOCOL) => {
@@ -1273,17 +861,17 @@ hook_macros::hook! {
                 0
             }
             (libc::SOL_SOCKET, libc::SO_ATTACH_FILTER | libc::SO_LOCK_FILTER | libc::SO_ATTACH_BPF | libc::SO_ATTACH_REUSEPORT_CBPF | libc::SO_ATTACH_REUSEPORT_EBPF) => {
-                crate::report_strict_failure("unsupported BPF `getsockopt` option requested");
+                crate::report_strict_failure("unsupported BPF `setsockopt` option requested");
                 *libc::__errno_location() = libc::EINVAL;
                 -1
             }
             (libc::SOL_SOCKET, libc::SO_BINDTODEVICE) => {
-                crate::report_strict_failure("unsupported SO_BINDTODEVICE `getsockopt` option requested");
+                crate::report_strict_failure("unsupported SO_BINDTODEVICE `setsockopt` option requested");
                 *libc::__errno_location() = libc::EINVAL;
                 -1
             }
             (libc::SOL_SOCKET, libc::SO_BROADCAST) => {
-                crate::report_strict_failure("unsupported SO_BROADCAST `getsockopt` option requested");
+                crate::report_strict_failure("unsupported SO_BROADCAST `setsockopt` option requested");
                 *libc::__errno_location() = libc::EINVAL;
                 -1
             }
@@ -1330,77 +918,5 @@ hook_macros::hook! {
     }
 }
 
-hook_macros::hook! {
-    unsafe fn getsockname(
-        sockfd: libc::c_int,
-        addr: *mut libc::sockaddr,
-        addrlen: *mut libc::socklen_t
-    ) -> libc::c_int => fizzle_getsockname(ctx) {
-        let state = ctx.acquire();
 
-        let descriptor_id = DescriptorId::from_raw_fd(sockfd);
-        let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
-            *libc::__errno_location() = libc::EBADF;
-            return -1
-        };
-
-        let FdResource::Socket(socket_id) = fd_info.resource.clone() else {
-            *libc::__errno_location() = libc::ENOTSOCK;
-            return -1
-        };
-
-        match state.global.sockets.get(&socket_id).unwrap() {
-            SocketState::Connectionless(conn) => {
-                match &conn.local_addr {
-                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => {
-                        let address_buf = unsafe { slice::from_raw_parts_mut(addr as *mut u8, addrlen as usize) };
-                        crate::encode_inet_address(address_buf, socket_addr);
-                    }
-                    TransportAddress::Unix(unix_addr) => 
-                        crate::encode_unix_address(addr, addrlen, &unix_addr),
-                }
-            }
-            SocketState::Unassociated(conn) => {
-                let Some(local_addr) = conn.local_addr.as_ref() else {
-                    panic!("getsockname() called on unassociated socket")
-                };
-
-                match local_addr {
-                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => {
-                        let address_buf = unsafe { slice::from_raw_parts_mut(addr as *mut u8, addrlen as usize) };
-                        crate::encode_inet_address(address_buf, socket_addr);
-                    }
-                    TransportAddress::Unix(unix_addr) => 
-                        crate::encode_unix_address(addr, addrlen, &unix_addr),
-                }
-            }
-            SocketState::Server(conn) => {
-                match &conn.local_addr {
-                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => {
-                        let address_buf = unsafe { slice::from_raw_parts_mut(addr as *mut u8, addrlen as usize) };
-                        crate::encode_inet_address(address_buf, socket_addr);
-                    }
-                    TransportAddress::Unix(unix_addr) => 
-                        crate::encode_unix_address(addr, addrlen, &unix_addr),
-                }
-            }
-            SocketState::PendingConnection(_) => unreachable!(),
-            SocketState::Connecting(conn) => {
-                match &conn.local_addr {
-                    TransportAddress::Tcp(socket_addr) | TransportAddress::Udp(socket_addr) | TransportAddress::Sctp(socket_addr) => {
-                        let address_buf = unsafe { slice::from_raw_parts_mut(addr as *mut u8, addrlen as usize) };
-                        crate::encode_inet_address(address_buf, socket_addr);
-                    }
-                    TransportAddress::Unix(unix_addr) => 
-                        crate::encode_unix_address(addr, addrlen, &unix_addr),
-                }
-            }
-            SocketState::Connected(_) => {
-                panic!("getsockname() not implemented for connected sockets")
-            }
-        }
-
-        0
-    }
-}
 
