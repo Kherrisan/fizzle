@@ -1107,7 +1107,7 @@ impl InterprocessState {
             KeyedArena::initialize(ptr::addr_of_mut!((*state).sockets));
             KeyedArena::initialize(ptr::addr_of_mut!((*state).buffers));
 
-            *ptr::addr_of_mut!((*state).stdio) = StdioBackend::Sink;
+            *ptr::addr_of_mut!((*state).stdio) = StdioBackend::Passthrough;
             KeyedArena::initialize(ptr::addr_of_mut!((*state).plugins));
             KeyedArena::initialize(ptr::addr_of_mut!((*state).polled_events));
             KeyedArena::initialize(ptr::addr_of_mut!((*state).pollers));
@@ -1150,7 +1150,7 @@ impl InterprocessState {
                                 let fuzz_endpoint_id = self.add_fuzz_endpoint();
                                 StdioBackend::Fuzz(fuzz_endpoint_id)
                             }
-                            IoEmulationType::Passthrough => unimplemented!(),
+                            IoEmulationType::Passthrough => StdioBackend::Passthrough,
                         }
                     }
                     IoEndpointVariant::File(pathbuf) => {
