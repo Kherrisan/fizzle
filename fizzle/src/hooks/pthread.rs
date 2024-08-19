@@ -50,6 +50,8 @@ hook_macros::hook! {
             wrapped_arg: arg,
         };
 
+        // TODO: attr may have a pthread sigmask... (pthread_attr_getsigmask_np)
+
         #[cfg(feature = "afl")]
         if !state.global.shared_mem_initialized {
             state.global.shared_mem_initialized = true;
@@ -278,16 +280,6 @@ hook_macros::hook! {
 
         log::warn!("pthread_detach not fully supported");
         0
-    }
-}
-
-hook_macros::hook! {
-    unsafe fn pthread_kill(
-        _thread: libc::pthread_t,
-        _sig: libc::c_int
-    ) -> libc::c_int => fizzle_pthread_kill(_ctx) {
-
-        panic!("`pthread_kill` unimplemented")
     }
 }
 

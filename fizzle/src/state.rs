@@ -8,10 +8,10 @@ use std::os::unix::ffi::OsStrExt;
 use std::thread::ThreadId;
 use std::{array, env, mem, ptr, thread};
 
+use bitflags::bitflags;
 use fizzle_common::io::{AddressFamily, SocketAddrUnix, TransportAddress, TransportProtocol, MAX_PATH_LEN};
 use fizzle_common::path::{FilePath, SemPath};
 use fizzle_common::storage::Buffer;
-
 use fizzle_plugin::{IoEndpointVariant, StreamId};
 use fxhash::FxBuildHasher;
 use heapless::{Deque, FnvIndexMap, FnvIndexSet};
@@ -293,11 +293,12 @@ impl FizzleSingleton {
     }
 
     pub fn init_new_thread(&mut self) {
-        // SAFETY: `libc::pthread_self()` has no safety concerns.
-        self.acquire()
-            .local
+        let mut state = self.acquire();
+        state.local
             .pthreads
             .insert(unsafe { libc::pthread_self() }, thread::current().id());
+        state.local.pthread_sigmasks.insert(thread::current().id(), SignalSet::empty());
+        drop(state);
         self.init_thread_lock(&thread::current().id());
     }
 
@@ -558,6 +559,11 @@ impl FizzleSingleton {
                     .unwrap();
             }
         }
+
+        // Clean up local state of thread
+        state.local.pthread_cleanup.remove(&thread::current().id());
+        state.local.pthread_sigmasks.remove(&thread::current().id());
+        state.local.pthreads.remove(&unsafe { libc::pthread_self() });
 
         // Delegate execution to another thread via the thread reaper
         if let Some(reaper_id) = state.local.reaper {
@@ -931,6 +937,7 @@ pub struct ProcessLocalState {
     pub pthread_keys: HashMap<libc::pthread_key_t, PThreadRoutine, FxBuildHasher>,
     pub pthread_key_values:
         HashMap<libc::pthread_key_t, HashMap<ThreadId, *mut libc::c_void, FxBuildHasher>, FxBuildHasher>,
+    pub pthread_sigmasks: HashMap<ThreadId, SignalSet, FxBuildHasher>,
     pub futex_waiters: HashMap<*const u32, VecDeque<(u32, ThreadId)>, FxBuildHasher>,
     pub terminated_threads: HashSet<ThreadId, FxBuildHasher>,
     pub cancelling_threads: HashSet<ThreadId, FxBuildHasher>,
@@ -1023,6 +1030,7 @@ impl ProcessLocalState {
             pthread_cleanup: HashMap::with_hasher(Default::default()),
             pthread_keys: HashMap::with_hasher(Default::default()),
             pthread_key_values: HashMap::with_hasher(Default::default()),
+            pthread_sigmasks: HashMap::with_hasher(Default::default()),
             futex_waiters: HashMap::with_hasher(Default::default()),
             terminated_threads: HashSet::with_hasher(Default::default()),
             cancelling_threads: HashSet::with_hasher(Default::default()),
@@ -1044,6 +1052,8 @@ pub struct InterprocessState {
     /// The thread identifier to be executed by the waking process.
     pub waking_thread_id: Option<ThreadId>,
     pub process_locks: [Option<Semaphore>; FIZZLE_MAX_PROCESSES],
+    pub process_sigmasks: KeyedArena<ProcessId, SignalInfo, FIZZLE_MAX_PROCESSES>,
+    pub pids: FnvIndexMap<libc::pid_t, ProcessId, FIZZLE_MAX_PROCESSES>,
     pub transfer_fds: Option<Box<Descriptors>>,
     pub shared_mem_initialized: bool,
     pub passthrough_process_id: ProcessId,
@@ -1093,6 +1103,7 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).startup_complete) = false;
             *ptr::addr_of_mut!((*state).waking_thread_id) = None;
             *ptr::addr_of_mut!((*state).process_locks) = array::from_fn(|_| None);
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).process_sigmasks));
             *ptr::addr_of_mut!((*state).transfer_fds) = None;
             *ptr::addr_of_mut!((*state).passthrough_process_id) = ProcessId::from(1);
             KeyedArena::initialize(ptr::addr_of_mut!((*state).epolls));
@@ -1620,6 +1631,70 @@ pub enum PerRoundClientBackend {
 pub enum ReadyInfo {
     Poller(Rc<PollerId>),
     Worker(WorkerId),
+}
+
+bitflags! {
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct SignalSet: u64 {
+        const SIGHUP = 1 << 0;
+        const SIGINT = 1 << 1;
+        const SIGQUIT = 1 << 2;
+        const SIGILL = 1 << 3;
+        const SIGTRAP = 1 << 4;
+        const SIGABRT = 1 << 5;
+        const SIGIOT = 1 << 5;
+        const SIGBUS = 1 << 6;
+        const SIGFPE = 1 << 7;
+        const SIGKILL = 1 << 8;
+        const SIGUSR1 = 1 << 9;
+        const SIGSEGV = 1 << 10;
+        const SIGUSR2 = 1 << 11;
+        const SIGPIPE = 1 << 12;
+        const SIGALRM = 1 << 13;
+        const SIGTERM = 1 << 14;
+        const SIGSTKFLT = 1 << 15;
+        const SIGCHLD = 1 << 16;
+        const SIGCONT = 1 << 17;
+        const SIGSTOP = 1 << 18;
+        const SIGTSTP = 1 << 19;
+        const SIGTTIN = 1 << 20;
+        const SIGTTOU = 1 << 21;
+        const SIGURG = 1 << 22;
+        const SIGXCPU = 1 << 23;
+        const SIGXFSZ = 1 << 24;
+        const SIGVTALRM = 1 << 25;
+        const SIGGPROF = 1 << 26;
+        const SIGWINCH = 1 << 27;
+        const SIGIO = 1 << 28;
+        const SIGPOLL = 1 << 28;
+        const SIGLOST = 1 << 28;
+        const SIGPWR = 1 << 29;
+        const SIGSYS = 1 << 30;
+        const SIGUNUSED = 1 << 30;
+        const SIGRTMIN = 1 << 31;
+    }
+}
+
+
+type SigAction = fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void);
+
+#[derive(Clone, Debug)]
+pub struct SignalInfo {
+    mask: SignalSet,
+    raised: SignalSet,
+    handlers: [Option<SigAction>; 32],
+}
+
+impl SignalInfo {
+    pub fn new() -> Self {
+        // TODO: initialize from existing signals       
+
+        Self {
+            mask: SignalSet::empty(),
+            raised: SignalSet::empty(),
+            handlers: array::from_fn(|_| None),
+        }
+    }
 }
 
 type Descriptors = KeyedArena<DescriptorId, DescriptorInfo, FIZZLE_MAX_FDS>;

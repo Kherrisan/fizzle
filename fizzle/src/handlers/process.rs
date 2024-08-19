@@ -1,8 +1,9 @@
 use std::mem::MaybeUninit;
 use std::ptr;
 
+use crate::arena::ArenaKey;
 use crate::semaphore::Semaphore;
-use crate::state::FizzleSingleton;
+use crate::state::{FizzleSingleton, SignalInfo};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ProcessId(usize);
@@ -17,6 +18,10 @@ impl From<usize> for ProcessId {
     fn from(value: usize) -> Self {
         ProcessId(value)
     }
+}
+
+impl ArenaKey for ProcessId {
+    type Value = SignalInfo;
 }
 
 impl ProcessId {

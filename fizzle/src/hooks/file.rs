@@ -159,7 +159,7 @@ hook_macros::hook! {
         let mut state = ctx.acquire();
 
         if pathname.is_null() { // Reopen the pathname associated with the stream
-            
+
 
 
         } else {

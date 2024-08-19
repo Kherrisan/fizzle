@@ -60,8 +60,7 @@ hook_macros::hook! {
         _mask: *const libc::sigset_t,
         _flags: libc::c_int
     ) -> libc::c_int => fizzle_signalfd(_ctx) {
-        log::error!("signalfd() unimplemented");
-        0
+        panic!("signalfd() unimplemented")
     }
 }
 
@@ -71,6 +70,15 @@ hook_macros::hook! {
         _oldact: *mut libc::sigaction
     ) -> libc::c_int => fizzle_sigaction(_ctx) {
         log::error!("sigaction() unimplemented");
+        0
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn sigpending(
+        _set: *mut libc::sigset_t
+    ) -> libc::c_int => fizzle_sigpending(_ctx) {
+        log::error!("sigpending() unimplemented");
         0
     }
 }
@@ -105,3 +113,34 @@ hook_macros::hook!{
     }
 }
 
+hook_macros::hook!{
+    unsafe fn sigprocmask(
+        _how: libc::c_int,
+        _set: *const libc::sigset_t,
+        _oldset: *mut libc::sigset_t
+    ) -> libc::c_int => fizzle_sigprocmask(_ctx) {
+        log::error!("sigprocmask() unimplemented");
+        0
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn pthread_kill(
+        _thread: libc::pthread_t,
+        _sig: libc::c_int
+    ) -> libc::c_int => fizzle_pthread_kill(_ctx) {
+
+        panic!("`pthread_kill` unimplemented")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn pthread_sigmask(
+        _how: libc::c_int,
+        _set: *const libc::sigset_t,
+        _oldset: *mut libc::sigset_t
+    ) -> libc::c_int => fizzle_pthread_sigmask(_ctx) {
+
+        panic!("`pthread_kill` unimplemented")
+    }
+}
