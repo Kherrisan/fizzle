@@ -25,6 +25,7 @@ pub mod poller;
 pub mod process;
 pub mod rwlock;
 pub mod semaphore;
+pub mod signal;
 pub mod spinlock;
 pub mod socket;
 pub mod thread;

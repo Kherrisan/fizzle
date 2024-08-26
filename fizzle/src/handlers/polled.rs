@@ -15,7 +15,7 @@ mod private {
 
 // Each time a Polled is *raised* (i.e., goes from `event_raised: false` to `event_raised: true`),
 // the PolledInfo will move all of its `pollers` into the ready queue (if they are not already there).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct PolledInfo {
     /// Pollers that this Polled instance is meant to awaken
     pub pollers: heapless::Vec<Rc<PollerId>, FIZZLE_MAX_PER_EVENT_QUEUED_POLLERS>,
@@ -51,20 +51,30 @@ impl PolledId {
     ///
     /// If not already raised, this method will push_back a poller waiting on this polled event
     /// (if such a poller exists).
-    fn raise_polled(&self, ctx: &mut FizzleSingleton) {
+    pub fn raise_polled(&self, ctx: &mut FizzleSingleton) {
         let mut state = ctx.acquire();
         let polled = state.global.polled_events.get_mut(self).unwrap();
         if !polled.event_raised {
             polled.event_raised = true;
             let pollers = polled.pollers.clone();
             for poller in pollers {
-                if !state.global.pollers.get(&poller).unwrap().in_raised_queue {
+                if !state.global.pollers.get(&poller).unwrap().in_raised_queue() {
                     state.global.ready
                         .push_back(ReadyInfo::Poller(poller))
                         .unwrap();
                 }
             }
         }
+    }
+
+    pub fn lower_polled(&self, ctx: &mut FizzleSingleton) {
+        let mut state = ctx.acquire();
+         let polled = state.global
+            .polled_events
+            .get_mut(self)
+            .unwrap();
+        debug_assert!(polled.event_raised);
+        polled.event_raised = false;       
     }
 
 }

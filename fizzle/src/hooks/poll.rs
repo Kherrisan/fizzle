@@ -384,7 +384,7 @@ hook_macros::hook! {
         }
 
         drop(state);
-        ctx.yield_thread();
+        poller_id.poll(&mut ctx);
         let mut state = ctx.acquire();
 
         state.delete_poller(poller_id);
@@ -519,7 +519,7 @@ hook_macros::hook! {
         }
 
         drop(state);
-        ctx.yield_thread();
+        poller_id.poll(&mut ctx);
         let mut state = ctx.acquire();
 
         state.delete_poller(poller_id);
@@ -874,7 +874,7 @@ hook_macros::hook! {
         }
 
         drop(state);
-        ctx.yield_thread();
+        poller_id.poll(&mut ctx);
         let mut state = ctx.acquire();
 
         // It's unfortunate that we have to delete the poller each time.

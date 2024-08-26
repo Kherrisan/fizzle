@@ -3,7 +3,9 @@ use std::ptr;
 
 use crate::arena::ArenaKey;
 use crate::semaphore::Semaphore;
-use crate::state::{FizzleSingleton, SignalInfo};
+use crate::state::FizzleSingleton;
+
+use super::signal::ProcessSignalInfo;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ProcessId(usize);
@@ -21,7 +23,7 @@ impl From<usize> for ProcessId {
 }
 
 impl ArenaKey for ProcessId {
-    type Value = SignalInfo;
+    type Value = ProcessSignalInfo;
 }
 
 impl ProcessId {

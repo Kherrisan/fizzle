@@ -14,9 +14,8 @@ pub struct Semaphore {
 impl Semaphore {
     /// Constructs a new semaphore within a boxed memory region.
     ///
-    /// This method is safe to use under
-    /// most normal circumstances, but the enclosed `Sem` must not be moved out of the box or
-    /// undefined behavior will occur.
+    /// This method is safe to use under most normal circumstances, but the enclosed `Sem` must
+    /// not be moved out of the box or undefined behavior will occur.
     pub fn new_boxed(value: u32) -> Box<Semaphore> {
         let mut s: Box<MaybeUninit<Semaphore>> = Box::new(MaybeUninit::uninit());
 

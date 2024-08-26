@@ -8,7 +8,6 @@ use std::os::unix::ffi::OsStrExt;
 use std::thread::ThreadId;
 use std::{array, env, mem, ptr, thread};
 
-use bitflags::bitflags;
 use fizzle_common::io::{AddressFamily, SocketAddrUnix, TransportAddress, TransportProtocol, MAX_PATH_LEN};
 use fizzle_common::path::{FilePath, SemPath};
 use fizzle_common::storage::Buffer;
@@ -18,6 +17,7 @@ use heapless::{Deque, FnvIndexMap, FnvIndexSet};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
+use crate::handlers::signal::{ProcessSignalInfo, SignalSet, ThreadSignalInfo};
 use crate::{comptime, state};
 use crate::arena::{KeyedArena, Rc};
 use crate::constants::*;
@@ -72,6 +72,8 @@ mod private {
     }
 }
 
+type Descriptors = KeyedArena<DescriptorId, DescriptorInfo, FIZZLE_MAX_FDS>;
+
 static FIZZLE_STATE: NcOnceCell<RefCell<FizzleState>> = NcOnceCell::new();
 
 static THREAD_LOCKS: NcOnceCell<[RefCell<Option<Semaphore>>; FIZZLE_MAX_THREADS]> = NcOnceCell::new();
@@ -80,6 +82,8 @@ static THREAD_LOCKS: NcOnceCell<[RefCell<Option<Semaphore>>; FIZZLE_MAX_THREADS]
 std::thread_local! {
     static ENTERED_HANDLER: RefCell<bool> = const { RefCell::new(false) };
 }
+
+// TODO: add a signalfd that can handle SIGCHLD responses
 
 /// Marks the thread as currently executing within a fizzle handler.
 pub fn set_entered_handler(entered: bool) {
@@ -101,7 +105,6 @@ pub fn has_entered_handler() -> bool {
     entered
 }
 
-
 /// Produces a new `FizzleSingleton` instance that can be used to acquire global state in a safe manner.
 /// 
 /// WARNING: this function SHOULD NOT be used in any methods other than a) the hook macro, or b)
@@ -121,6 +124,12 @@ pub unsafe fn fizzle_state_singleton() -> FizzleSingleton {
 impl FizzleSingleton {
     pub fn init() -> RefCell<FizzleState> {
         env_logger::init();
+
+        // Ensures that child processes will be cleaned up if the parent is terminated
+        unsafe {
+            assert_eq!(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM), 0);
+        }
+
         log::info!("First syscall hooked--initializing Fizzle state...");
 
         let ctx = RefCell::new(FizzleState::new());
@@ -230,8 +239,10 @@ impl FizzleSingleton {
     }
 
     /// Acquires the global shared state for mutable access.
+    /// 
+    /// This access does not involve any atomic or locking operations.
     pub fn acquire(&mut self) -> RefMut<'_, FizzleState> {
-        FIZZLE_STATE.get_or_init(Self::init).borrow_mut()       
+        FIZZLE_STATE.get_or_init(Self::init).borrow_mut()
     }
 
     pub fn run_outside_shim<F, R>(&mut self, f: F) -> R
@@ -327,8 +338,10 @@ impl FizzleSingleton {
                         poller_id
                     );
                     let global = &mut state.global;
-                    let poller_info = global.pollers.get(&poller_id).unwrap();
-                    for polled_id in poller_info.polled_events.iter() {
+
+                    let poller_info = global.pollers.get_mut(&poller_id).unwrap();
+                    
+                    for polled_id in poller_info.raised_events.iter() {
                         let polled_info = global.polled_events.get_mut(&polled_id).unwrap();
                         if polled_info.event_raised {
                             next_worker = Some(poller_info.worker_id);
@@ -340,6 +353,7 @@ impl FizzleSingleton {
                             break;
                         }
                     }
+                    poller_info.raised_events.clear();
                 }
             }
         }
@@ -660,7 +674,7 @@ impl FizzleSingleton {
             let poller_id = state.new_poller();
             state.register_poller(poller_id.clone(), polled_id);
             drop(state);
-            self.yield_thread();
+            poller_id.poll(self);
             self.acquire().delete_poller(poller_id);
         }
     }
@@ -674,35 +688,43 @@ pub struct FizzleState {
 
 impl FizzleState {
     fn new() -> Self {
-        // This needs to go before `allocate_global_memory`, as this env variable gets set within it.
-        let is_initialized = matches!(env::var(FIZZLE_MEMORY_ENV), Ok(_));
+        // NOTE: must go before `allocate_global_memory`, as this env variable gets set within it.
+        let is_child_process = matches!(env::var(FIZZLE_MEMORY_ENV), Ok(_));
 
+        // Allocate shared memory for process-shared state
         let global_uninit = Self::allocate_global_memory();
-        let global: &'static mut InterprocessState;
-        let process_id: ProcessId;
 
-        match is_initialized {
-            true => {
-                global = unsafe { global_uninit.assume_init_mut() };
-                process_id = global.passthrough_process_id;
+        // Initialize process-shared state
+        let global = if is_child_process {
+            unsafe { global_uninit.assume_init_mut() }
+        } else {
+            InterprocessState::initialize(global_uninit)
+        };
 
-                let transfer_fds = global.transfer_fds.take();
-                let local = ProcessLocalState::new(process_id, transfer_fds, true);
-                Self { local, global }
-            }
-            false => {
-                global = InterprocessState::initialize(global_uninit);
-                process_id = ProcessId::from(0);
+        // Assign the ID to be used for this process
+        let process_id = if is_child_process {
+            global.passthrough_process_id
+        } else {
+            ProcessId::from(0)
+        };
 
-                let transfer_fds = global.transfer_fds.take();
-                let mut local = ProcessLocalState::new(process_id, transfer_fds, false);
+        // Set up the signal storage for this process
+        global.process_signals.allocate(ProcessSignalInfo::default()).unwrap();
 
-                // Initialize plugins
-                let mut endpoints = Vec::new();
-                comptime::populate_plugins(&mut endpoints, local.plugin_modules.as_mut().unwrap());
-                global.load_config_mappings(endpoints);
-                Self { local, global }
-            }
+        // Initialize process-local state
+        let transfer_fds = global.transfer_fds.take();
+        let mut local = ProcessLocalState::new(process_id, transfer_fds, is_child_process);
+
+        if !is_child_process {
+            // Initialize plugins (but only in the parent process)
+            let mut endpoints = Vec::new();
+            comptime::populate_plugins(&mut endpoints, local.plugin_modules.as_mut().unwrap());
+            global.load_config_mappings(endpoints);
+        }
+
+        Self {
+            local,
+            global,
         }
     }
 
@@ -826,11 +848,12 @@ impl FizzleState {
 
     // if buffer is empty, then call this
     pub fn lower_polled(&mut self, polled_id: &Rc<PolledId>) {
-        self.global
+        let polled = self.global
             .polled_events
             .get_mut(polled_id)
-            .unwrap()
-            .event_raised = false;
+            .unwrap();
+        debug_assert!(polled.event_raised);
+        polled.event_raised = false;
     }
 
     /// Creates a new poller for the currently executing worker.
@@ -842,7 +865,7 @@ impl FizzleState {
             .allocate(PollerInfo {
                 worker_id,
                 polled_events: heapless::Vec::new(),
-                in_raised_queue: false,
+                raised_events: heapless::FnvIndexSet::new(),
             })
             .unwrap()
     }
@@ -852,6 +875,7 @@ impl FizzleState {
         let poller = self.global.pollers.get_mut(&poller_id).unwrap();
         poller.polled_events.push(polled_id.clone()).unwrap();
         let polled = self.global.polled_events.get_mut(&polled_id).unwrap();
+        debug_assert!(!polled.event_raised);
         polled.pollers.push(poller_id).unwrap();
     }
 
@@ -860,8 +884,10 @@ impl FizzleState {
     pub fn delete_poller(&mut self, poller_id: Rc<PollerId>) {
         let poller = self.global.pollers.get_mut(&poller_id).unwrap();
 
-        if poller.deref().in_raised_queue {
-            // TODO: make queue indexable in future
+        if poller.deref().in_raised_queue() {
+            // TODO: make queue indexable in future to improve speed here
+
+            // Remove the poller from the ready queue, leaving the others in the same order
             for _ in 0..self.global.ready.len() {
                 let ready = self.global.ready.pop_front().unwrap();
                 if let ReadyInfo::Poller(current_poller_id) = &ready {
@@ -872,6 +898,7 @@ impl FizzleState {
             }
         }
 
+        // Remove the poller from each polled instance it was registered to
         for polled_id in poller.polled_events.iter() {
             let polled = self.global.polled_events.get_mut(&polled_id).unwrap();
             for i in 0..polled.pollers.len() {
@@ -940,6 +967,7 @@ pub struct ProcessLocalState {
     pub pthread_sigmasks: HashMap<ThreadId, SignalSet, FxBuildHasher>,
     pub futex_waiters: HashMap<*const u32, VecDeque<(u32, ThreadId)>, FxBuildHasher>,
     pub terminated_threads: HashSet<ThreadId, FxBuildHasher>,
+    pub signals: HashMap<ThreadId, ThreadSignalInfo, FxBuildHasher>,
     pub cancelling_threads: HashSet<ThreadId, FxBuildHasher>,
     /// Indicates which thread(s) are awaiting the death of a specific thread (via pthread_join)
     pub awaiting_thread_death: HashMap<ThreadId, Vec<ThreadId>, FxBuildHasher>,
@@ -1031,6 +1059,7 @@ impl ProcessLocalState {
             pthread_keys: HashMap::with_hasher(Default::default()),
             pthread_key_values: HashMap::with_hasher(Default::default()),
             pthread_sigmasks: HashMap::with_hasher(Default::default()),
+            signals: HashMap::with_hasher(Default::default()),
             futex_waiters: HashMap::with_hasher(Default::default()),
             terminated_threads: HashSet::with_hasher(Default::default()),
             cancelling_threads: HashSet::with_hasher(Default::default()),
@@ -1052,7 +1081,6 @@ pub struct InterprocessState {
     /// The thread identifier to be executed by the waking process.
     pub waking_thread_id: Option<ThreadId>,
     pub process_locks: [Option<Semaphore>; FIZZLE_MAX_PROCESSES],
-    pub process_sigmasks: KeyedArena<ProcessId, SignalInfo, FIZZLE_MAX_PROCESSES>,
     pub pids: FnvIndexMap<libc::pid_t, ProcessId, FIZZLE_MAX_PROCESSES>,
     pub transfer_fds: Option<Box<Descriptors>>,
     pub shared_mem_initialized: bool,
@@ -1075,6 +1103,7 @@ pub struct InterprocessState {
     pub plugins: KeyedArena<PluginId, PluginInfo, FIZZLE_MAX_PLUGIN_STREAMS>,
     pub polled_events: KeyedArena<PolledId, PolledInfo, FIZZLE_MAX_POLLED_EVENTS>,
     pub pollers: KeyedArena<PollerId, PollerInfo, FIZZLE_MAX_POLLERS>,
+    pub process_signals: KeyedArena<ProcessId, ProcessSignalInfo, FIZZLE_MAX_PROCESSES>,
     /// Pollers/Workers that can be immediately scheduled.
     pub ready: Deque<ReadyInfo, FIZZLE_MAX_QUEUED_READY_POLLERS>,
     /// Pollers/Workers that should be scheduled once the system has reached a halted state.
@@ -1103,7 +1132,7 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).startup_complete) = false;
             *ptr::addr_of_mut!((*state).waking_thread_id) = None;
             *ptr::addr_of_mut!((*state).process_locks) = array::from_fn(|_| None);
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).process_sigmasks));
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).process_signals));
             *ptr::addr_of_mut!((*state).transfer_fds) = None;
             *ptr::addr_of_mut!((*state).passthrough_process_id) = ProcessId::from(1);
             KeyedArena::initialize(ptr::addr_of_mut!((*state).epolls));
@@ -1365,13 +1394,14 @@ impl InterprocessState {
             polled.event_raised = true;
             let pollers = polled.pollers.clone();
             for poller in pollers {
-                if !self.pollers.get(&poller).unwrap().in_raised_queue {
+                if !self.pollers.get(&poller).unwrap().in_raised_queue() {
                     self.ready
-                        .push_back(ReadyInfo::Poller(poller))
+                        .push_back(ReadyInfo::Poller(poller.clone()))
                         .unwrap();
                 }
+                self.pollers.get_mut(&poller).unwrap().raised_events.insert(polled_id.clone()).unwrap();
             }
-        }
+        } 
     }
 
     pub fn gen_random_array<const N: usize>(&mut self) -> [u8; N] {
@@ -1510,7 +1540,7 @@ impl InterprocessState {
                     .unwrap();
             }
             Some(location_info) => {
-                assert!(location_info.bound_sockets.is_empty());
+                debug_assert!(location_info.bound_sockets.is_empty());
                 location_info.bound_sockets.push_back(socket_id).unwrap();
             }
         };
@@ -1632,69 +1662,3 @@ pub enum ReadyInfo {
     Poller(Rc<PollerId>),
     Worker(WorkerId),
 }
-
-bitflags! {
-    #[derive(Clone, Copy, Debug, Default)]
-    pub struct SignalSet: u64 {
-        const SIGHUP = 1 << 0;
-        const SIGINT = 1 << 1;
-        const SIGQUIT = 1 << 2;
-        const SIGILL = 1 << 3;
-        const SIGTRAP = 1 << 4;
-        const SIGABRT = 1 << 5;
-        const SIGIOT = 1 << 5;
-        const SIGBUS = 1 << 6;
-        const SIGFPE = 1 << 7;
-        const SIGKILL = 1 << 8;
-        const SIGUSR1 = 1 << 9;
-        const SIGSEGV = 1 << 10;
-        const SIGUSR2 = 1 << 11;
-        const SIGPIPE = 1 << 12;
-        const SIGALRM = 1 << 13;
-        const SIGTERM = 1 << 14;
-        const SIGSTKFLT = 1 << 15;
-        const SIGCHLD = 1 << 16;
-        const SIGCONT = 1 << 17;
-        const SIGSTOP = 1 << 18;
-        const SIGTSTP = 1 << 19;
-        const SIGTTIN = 1 << 20;
-        const SIGTTOU = 1 << 21;
-        const SIGURG = 1 << 22;
-        const SIGXCPU = 1 << 23;
-        const SIGXFSZ = 1 << 24;
-        const SIGVTALRM = 1 << 25;
-        const SIGGPROF = 1 << 26;
-        const SIGWINCH = 1 << 27;
-        const SIGIO = 1 << 28;
-        const SIGPOLL = 1 << 28;
-        const SIGLOST = 1 << 28;
-        const SIGPWR = 1 << 29;
-        const SIGSYS = 1 << 30;
-        const SIGUNUSED = 1 << 30;
-        const SIGRTMIN = 1 << 31;
-    }
-}
-
-
-type SigAction = fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void);
-
-#[derive(Clone, Debug)]
-pub struct SignalInfo {
-    mask: SignalSet,
-    raised: SignalSet,
-    handlers: [Option<SigAction>; 32],
-}
-
-impl SignalInfo {
-    pub fn new() -> Self {
-        // TODO: initialize from existing signals       
-
-        Self {
-            mask: SignalSet::empty(),
-            raised: SignalSet::empty(),
-            handlers: array::from_fn(|_| None),
-        }
-    }
-}
-
-type Descriptors = KeyedArena<DescriptorId, DescriptorInfo, FIZZLE_MAX_FDS>;

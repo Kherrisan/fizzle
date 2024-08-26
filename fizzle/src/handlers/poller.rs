@@ -1,6 +1,6 @@
 use crate::arena::{ArenaKey, Rc};
 use crate::constants::FIZZLE_MAX_PER_POLLER_QUEUED_EVENTS;
-use crate::state::WorkerId;
+use crate::state::{FizzleSingleton, WorkerId};
 
 pub use private::PollerId;
 
@@ -19,7 +19,17 @@ mod private {
 pub struct PollerInfo {
     pub worker_id: WorkerId,
     pub polled_events: heapless::Vec<Rc<PolledId>, FIZZLE_MAX_PER_POLLER_QUEUED_EVENTS>,
-    pub in_raised_queue: bool,
+    /// Polled events that have been raised for the Poller prior to it being evaluated.
+    /// 
+    /// A poller will have raised events if and only if it is in the ready_queue; this invariant is
+    /// reflected in the `in_raised_queue()` method defined below.
+    pub raised_events: heapless::FnvIndexSet<Rc<PolledId>, FIZZLE_MAX_PER_POLLER_QUEUED_EVENTS>,
+}
+
+impl PollerInfo {
+    pub fn in_raised_queue(&self) -> bool {
+        !self.raised_events.is_empty()
+    }
 }
 
 impl ArenaKey for PollerId {
@@ -27,5 +37,7 @@ impl ArenaKey for PollerId {
 }
 
 impl PollerId {
-
+    pub fn poll(&self, ctx: &mut FizzleSingleton) {
+        ctx.yield_thread()
+    }
 }
