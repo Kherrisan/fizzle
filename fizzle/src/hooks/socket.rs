@@ -97,6 +97,17 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
+    unsafe fn socketpair(
+        _domain: libc::c_int,
+        _ty: libc::c_int,
+        _protocol: libc::c_int,
+        _sv: *mut [libc::c_int; 2]
+    ) => fizzle_clearerr(_ctx) {
+        unimplemented!("socketpair()")
+    }
+}
+
+hook_macros::hook! {
     unsafe fn bind(
         fd: libc::c_int,
         addr: *const libc::sockaddr,

@@ -1,3 +1,4 @@
+pub mod dir;
 pub mod entropy;
 pub mod event;
 pub mod fd;
@@ -5,6 +6,7 @@ pub mod file;
 pub mod filesystem;
 pub mod io;
 pub mod io_uring;
+pub mod mem;
 pub mod mq;
 pub mod pipe;
 pub mod poll;
@@ -16,3 +18,5 @@ pub mod sleep;
 pub mod socket;
 pub mod syscall;
 pub mod time;
+pub mod vm;
+pub mod xattr;

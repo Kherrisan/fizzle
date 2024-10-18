@@ -45,6 +45,8 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_pthread_create(ctx) {
         let mut state = ctx.acquire();
 
+        // TODO: if attr contains sigmask, make sure to set
+
         let mut wrapped_arg = PTWrapperArgs {
             wrapped_fn: start_routine,
             wrapped_arg: arg,
@@ -1381,3 +1383,13 @@ hook_macros::hook! {
         }
     }
 }
+
+hook_macros::hook! {
+    unsafe fn setns(
+        _fd: libc::c_int,
+        _nstype: libc::c_int
+    ) => fizzle_setns(_ctx) {
+        unimplemented!("setns()")
+    }
+}
+

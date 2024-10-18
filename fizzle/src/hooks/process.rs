@@ -435,7 +435,22 @@ hook_macros::hook! {
         _id: libc::id_t,
         _infop: *mut libc::siginfo_t,
         _options: libc::c_int
-    ) -> libc::pid_t => fizzle_waitid(_ctx) {
+    ) -> libc::c_int => fizzle_waitid(_ctx) {
         panic!("waitid() unimplemented")
     }
 }
+
+hook_macros::hook! {
+    unsafe fn clone(
+        _fn: Option<unsafe extern "C" fn(*mut libc::c_void) -> libc::c_int>,
+        _stack: *mut libc::c_void,
+        flags: libc::c_int,
+        arg: *mut libc::c_void,
+        parent_tid: *mut libc::pid_t,
+        tls: *mut libc::c_void,
+        child_tid: *mut libc::pid_t
+    ) => fizzle_clone(_ctx) {
+        unimplemented!("clone()")
+    }
+}
+

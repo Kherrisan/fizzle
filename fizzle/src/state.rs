@@ -17,7 +17,7 @@ use heapless::{Deque, FnvIndexMap, FnvIndexSet};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
-use crate::handlers::signal::{ProcessSignalInfo, SignalSet, ThreadSignalInfo};
+use crate::handlers::signal::{ProcessSignalInfo, ThreadSignalInfo};
 use crate::{comptime, state};
 use crate::arena::{KeyedArena, Rc};
 use crate::constants::*;
@@ -304,11 +304,12 @@ impl FizzleSingleton {
     }
 
     pub fn init_new_thread(&mut self) {
+        let thread_id = thread::current().id();
         let mut state = self.acquire();
         state.local
             .pthreads
-            .insert(unsafe { libc::pthread_self() }, thread::current().id());
-        state.local.pthread_sigmasks.insert(thread::current().id(), SignalSet::empty());
+            .insert(unsafe { libc::pthread_self() }, thread_id);
+        state.local.signals.insert(thread_id, ThreadSignalInfo::default());
         drop(state);
         self.init_thread_lock(&thread::current().id());
     }
@@ -575,8 +576,8 @@ impl FizzleSingleton {
         }
 
         // Clean up local state of thread
-        state.local.pthread_cleanup.remove(&thread::current().id());
-        state.local.pthread_sigmasks.remove(&thread::current().id());
+        state.local.pthread_cleanup.remove(&thread_id);
+        state.local.signals.remove(&thread_id);
         state.local.pthreads.remove(&unsafe { libc::pthread_self() });
 
         // Delegate execution to another thread via the thread reaper
@@ -964,7 +965,6 @@ pub struct ProcessLocalState {
     pub pthread_keys: HashMap<libc::pthread_key_t, PThreadRoutine, FxBuildHasher>,
     pub pthread_key_values:
         HashMap<libc::pthread_key_t, HashMap<ThreadId, *mut libc::c_void, FxBuildHasher>, FxBuildHasher>,
-    pub pthread_sigmasks: HashMap<ThreadId, SignalSet, FxBuildHasher>,
     pub futex_waiters: HashMap<*const u32, VecDeque<(u32, ThreadId)>, FxBuildHasher>,
     pub terminated_threads: HashSet<ThreadId, FxBuildHasher>,
     pub signals: HashMap<ThreadId, ThreadSignalInfo, FxBuildHasher>,
@@ -1008,6 +1008,8 @@ impl ProcessLocalState {
         transfer_fds: Option<Box<Descriptors>>,
         is_child_process: bool,
     ) -> Self {
+        let thread_id = thread::current().id();
+
         let working_directory =
             FilePath::from_raw_bytes(env::current_dir().unwrap().as_os_str().as_bytes()).unwrap();
 
@@ -1039,6 +1041,9 @@ impl ProcessLocalState {
             Some(unsafe { modules.assume_init() })
         };
 
+        let mut signals = HashMap::with_hasher(Default::default());
+        signals.insert(thread_id, ThreadSignalInfo::default()); // TODO: passthrough signal state from parent process...
+
         Self {
             post_init_done: false,
             process_id: id,
@@ -1058,8 +1063,7 @@ impl ProcessLocalState {
             pthread_cleanup: HashMap::with_hasher(Default::default()),
             pthread_keys: HashMap::with_hasher(Default::default()),
             pthread_key_values: HashMap::with_hasher(Default::default()),
-            pthread_sigmasks: HashMap::with_hasher(Default::default()),
-            signals: HashMap::with_hasher(Default::default()),
+            signals,
             futex_waiters: HashMap::with_hasher(Default::default()),
             terminated_threads: HashSet::with_hasher(Default::default()),
             cancelling_threads: HashSet::with_hasher(Default::default()),

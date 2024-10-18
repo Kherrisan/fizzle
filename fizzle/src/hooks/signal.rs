@@ -313,7 +313,7 @@ hook_macros::hook! {
         _pid: libc::pid_t,
         _sig: libc::c_int
     ) -> libc::c_int => fizzle_kill(_ctx) {
-        panic!("kill() unimplemented")
+        unimplemented!("kill()")
     }
 }
 
@@ -323,7 +323,7 @@ hook_macros::hook! {
         _mask: *const libc::sigset_t,
         _flags: libc::c_int
     ) -> libc::c_int => fizzle_signalfd(_ctx) {
-        panic!("signalfd() unimplemented")
+        unimplemented!("signalfd()")
     }
 }
 

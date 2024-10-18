@@ -747,6 +747,60 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
+    unsafe fn statvfs(
+        _path: *mut libc::c_char,
+        _buf: *mut libc::statvfs
+    ) => fizzle_statvfs(_ctx) {
+        unimplemented!("statvfs()")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn fstatvfs(
+        fd: libc::c_int,
+        buf: *mut libc::statvfs
+    ) => fizzle_fstatvfs(_ctx) {
+        unimplemented!("fstatvfs()")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn truncate(
+        path: *const libc::c_char,
+        length: libc::off_t
+    ) => fizzle_truncate(_ctx) {
+        unimplemented!("truncate()")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn ftruncate(
+        fd: libc::c_int,
+        length: libc::off_t
+    ) => fizzle_ftruncate(_ctx) {
+        unimplemented!("ftruncate()")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn fsync(
+        fd: libc::c_int
+    ) => fizzle_fsync(_ctx) {
+        unimplemented!("fsync()")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn fdatasync(
+        fd: libc::c_int
+    ) => fizzle_fdatasync(_ctx) {
+        unimplemented!("fdatasync()")
+    }
+}
+
+
+
+hook_macros::hook! {
     unsafe fn readlink(
         pathname: *mut libc::c_char,
         buf: *mut libc::c_char,

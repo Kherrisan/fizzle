@@ -7,6 +7,40 @@ args = ["-e", "-h"]
 when = "onstartup"
 
 
+# Potential improvements (Seaver)
+
+# look at something random to increase coverage -- statically analyze functions that do good stuff?
+# Look at coverage! Does it help?
+
+# Some binaries are some networking, mostly not...
+# How would it do on binaries that are .5% networking?
+
+# Run it on a non-networked binary!
+# Hello world?
+# Run on FuzzBench--does it increase fuzzing speed generally? Show a control for the experiment
+# -> Show you didn't break anything with AFL++
+
+# Expect to find about this much vulns, found this much vulns
+
+# Stuff is hard to model! (network stuff)
+# You'll need to test a lot of programs and make sure it makes right
+# File: Copy on Write
+
+# Edge case: YubiKeys (won't be able to model deterministically)
+# Copy on Write won't handle correctly
+
+# Programs that depend on the hardware could have bitflips that make nondeterministic
+
+# Reviewers will come up with a bunch of edge cases that are out of scope but nonetheless technically
+# make the system non-deterministic
+
+# "Even if you control 100% of your software, there can be nondeterminism in your hardware"
+# As long as:
+# - We control all timing primitives
+# - We control all inputs into the process (via syscall interposition)
+
+# The more (less?) threads that exist, the more faster it runs!
+
 
 #[fizzle]
 #max_fds = "100" # TODO: implement this in the future with build.rs

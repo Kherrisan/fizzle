@@ -425,9 +425,7 @@ hook_macros::hook! {
         iov: *const libc::iovec,
         iovcnt: libc::c_int
     ) -> libc::ssize_t => fizzle_readv(_ctx) {
-
-        crate::report_strict_failure("`readv` unimplemented");
-        hook_macros::real!(readv)(fd, iov, iovcnt)
+        unimplemented!("readv()")
     }
 }
 
@@ -484,7 +482,7 @@ hook_macros::hook! {
             return res
         };
 
-        panic!("`pread()` unimplemented by Fizzle")
+        unimplemented!("pread()")
     }
 }
 
@@ -505,7 +503,7 @@ hook_macros::hook! {
             return res
         };
 
-        panic!("`pwritev()` unimplemented by Fizzle")
+        unimplemented!("pwrite()")
     }
 }
 
@@ -526,7 +524,7 @@ hook_macros::hook! {
             return res
         };
 
-        panic!("`preadv()` unimplemented by Fizzle")
+        unimplemented!("preadv()")
     }
 }
 
@@ -547,7 +545,7 @@ hook_macros::hook! {
             return res
         };
 
-        panic!("`pwritev()` unimplemented by Fizzle")
+        unimplemented!("pwritev()")
     }
 }
 
@@ -569,7 +567,7 @@ hook_macros::hook! {
             return res
         };
 
-        panic!("`preadv2()` unimplemented by Fizzle")
+        unimplemented!("preadv2()")
     }
 }
 
@@ -591,6 +589,43 @@ hook_macros::hook! {
             return res
         };
 
-        panic!("`pwritev2()` unimplemented by Fizzle")
+        unimplemented!("pwritev2()")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn splice(
+        _fd_in: libc::c_int,
+        _off_in: *mut libc::off64_t,
+        _fd_out: libc::c_int,
+        _off_out: *mut libc::off64_t,
+        _len: libc::size_t,
+        _flags: libc::c_uint
+    ) => fizzle_splice(_ctx) {
+        unimplemented!("splice()")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn tee(
+        _fd_in: libc::c_int,
+        _fd_out: libc::c_int,
+        _len: libc::size_t,
+        _flags: libc::c_uint
+    ) => fizzle_tee(_ctx) {
+        unimplemented!("tee()")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn copy_file_range(
+        _fd_in: libc::c_int,
+        _off_in: *mut libc::off64_t,
+        _fd_out: libc::c_int,
+        _off_out: *mut libc::off64_t,
+        _len: libc::size_t,
+        _flags: libc::c_uint
+    ) => fizzle_copy_file_range(_ctx) {
+        unimplemented!("copy_file_range()")
     }
 }
