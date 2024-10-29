@@ -81,7 +81,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
         std::thread::current().id(),
     );
 
-    let mut ctx = state::fizzle_state_singleton();
+    let mut ctx = state::fizzle_singleton();
 
     let mut state = ctx.acquire();
 

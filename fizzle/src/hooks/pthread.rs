@@ -23,7 +23,7 @@ unsafe extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void 
 
     // Before we do ANYTHING, we need to set this to avoid accidental preload hook recursion
     state::set_entered_handler(true);
-    let mut ctx = state::fizzle_state_singleton();
+    let mut ctx = state::fizzle_singleton();
 
     ctx.init_new_thread();
 

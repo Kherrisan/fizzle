@@ -398,7 +398,7 @@ hook_macros::hook! {
     }
 }
 
-hook_macros::hook!{
+hook_macros::hook! {
     unsafe fn getitimer(
         _which: libc::c_int,
         _curr_value: *mut libc::itimerval
@@ -407,7 +407,7 @@ hook_macros::hook!{
     }
 }
 
-hook_macros::hook!{
+hook_macros::hook! {
     unsafe fn sigsuspend(
         mask: *const libc::sigset_t
     ) -> libc::c_int => fizzle_sigsuspend(ctx) {
@@ -426,7 +426,7 @@ hook_macros::hook!{
     }
 }
 
-hook_macros::hook!{
+hook_macros::hook! {
     unsafe fn sigprocmask(
         how: libc::c_int,
         set: *const libc::sigset_t,

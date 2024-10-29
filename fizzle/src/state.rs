@@ -1,12 +1,13 @@
 use std::cell::{Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
+use std::io::Write;
 use std::mem::MaybeUninit;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::ops::{Deref, DerefMut};
 use std::os::unix::ffi::OsStrExt;
 use std::thread::ThreadId;
-use std::{array, env, mem, ptr, thread};
+use std::{array, env, mem, process, ptr, thread};
 
 use fizzle_common::io::{AddressFamily, SocketAddrUnix, TransportAddress, TransportProtocol, MAX_PATH_LEN};
 use fizzle_common::path::{FilePath, SemPath};
@@ -51,12 +52,14 @@ use crate::backend::{
     FileBackend, PendingBackend, ServerBackend, StandardFeedback, StdioBackend
 };
 
+// Could use `bumpalo` or `gc-arena` to perform allocations
+
 pub use private::FizzleSingleton;
 
 mod private {
     pub struct FizzleSingleton {
         /// Empty private field to ensure `FizzleSingleton` isn't constructed outside of
-        /// `fizzle_state_singleton()`.
+        /// `fizzle_singleton()`.
         _private: (),
     }
 
@@ -117,20 +120,23 @@ pub fn has_entered_handler() -> bool {
 /// it cannot inherently prevent mutable access to data by multiple threads. Thread creation hooks
 /// and scheduling routines need to ensure that any acquired `FizzGuard` instances are dropped prior
 /// to another thread acquiring the global state.
-pub unsafe fn fizzle_state_singleton() -> FizzleSingleton {
+pub unsafe fn fizzle_singleton() -> FizzleSingleton {
     FizzleSingleton::new()
 }
 
+// [pid XXXXX | thread XXXXX | info]
+
 impl FizzleSingleton {
     pub fn init() -> RefCell<FizzleState> {
-        env_logger::init();
+        env_logger::Builder::from_default_env()
+            .format(|buf, record|
+                writeln!(buf, "[PID({:8})|{:4?}|{}] {}", process::id(), thread::current().id(), record.level().as_str().to_uppercase(), record.args())
+            )
+            .init();
+        log::info!("Logger initialized");
 
-        // Ensures that child processes will be cleaned up if the parent is terminated
-        unsafe {
-            assert_eq!(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM), 0);
-        }
-
-        log::info!("First syscall hooked--initializing Fizzle state...");
+        // Clean up child processes if the parent is ever killed
+        unsafe { assert_eq!(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM), 0); }
 
         let ctx = RefCell::new(FizzleState::new());
         let mut state = ctx.borrow_mut();
@@ -145,7 +151,7 @@ impl FizzleSingleton {
 
         drop(state);
 
-        log::info!("Fizzle state initialization complete.");
+        log::info!("FizzleState::init() finished.");
 
         ctx
     }
@@ -165,7 +171,7 @@ impl FizzleSingleton {
             drop(state);
             thread::spawn(move || {
                 set_entered_handler(true);
-                let mut ctx = unsafe { fizzle_state_singleton() };
+                let mut ctx = unsafe { fizzle_singleton() };
                 let plugin_thread_id = thread::current().id();
                 // The thread that spawned the reaper will immediately wait on its thread lock, so
                 // it is safe to `acquire()` global state here.
@@ -297,7 +303,7 @@ impl FizzleSingleton {
     }
 
     /// Destroys the thread lock of the calling thread.
-    fn destroy_thread_lock(&mut self) {
+    pub(crate) fn destroy_thread_lock(&mut self) {
         let locks = THREAD_LOCKS.get_or_situate(Self::thread_locks_situate);
         let thread_idx = crate::handlers::thread::index_of_thread(&thread::current().id());
         *locks[thread_idx].borrow_mut() = None;
@@ -360,7 +366,7 @@ impl FizzleSingleton {
         }
 
         if let Some(worker_id) = next_worker {
-            state.global.waking_thread_id = Some(worker_id.thread_id);
+            state.global.waking_id = Some(worker_id.thread_id);
             let local_process_id = state.local.process_id;
             drop(state);
 
@@ -371,8 +377,8 @@ impl FizzleSingleton {
             }
 
             // Now it's this process's turn to execute
-            let Some(thread_id) = self.acquire().global.waking_thread_id.take() else {
-                panic!("internal fizzle error--no waking_thread_id assigned");
+            let Some(thread_id) = self.acquire().global.waking_id.take() else {
+                panic!("internal fizzle error--no waking_id assigned");
             };
 
             if thread::current().id() != thread_id {
@@ -590,7 +596,7 @@ impl FizzleSingleton {
             drop(state);
             let handle = std::thread::spawn(move || {
                 set_entered_handler(true);
-                let mut ctx = unsafe { fizzle_state_singleton() };
+                let mut ctx = unsafe { fizzle_singleton() };
                 // Reaper thread
                 // The thread that spawned the reaper will immediately wait on its thread lock, so
                 // it is safe to `acquire()` global state here.
@@ -659,7 +665,7 @@ impl FizzleSingleton {
             .wait();
     }
 
-    fn wake_process(&mut self, process_id: ProcessId) {
+    pub(crate) fn wake_process(&mut self, process_id: ProcessId) {
         self.acquire()
             .global
             .process_locks[usize::from(process_id)]
@@ -1075,6 +1081,13 @@ impl ProcessLocalState {
 
 #[derive(Debug)]
 pub struct InterprocessState {
+    /// The thread identifier to be executed by the waking process. This is `Some` if and only if
+    /// a thread is currently about to be scheduled.
+    pub waking_id: Option<ThreadId>,
+    /// The thread/process identifier to be reaped. This is `Some` if and only if a thread/process
+    /// is currently exiting.
+    pub exiting_id: Option<WorkerId>,
+
     pub plugin_worker: Option<WorkerId>,
     pub persistent_rounds: usize,
     pub next_process_id: ProcessId,
@@ -1082,8 +1095,6 @@ pub struct InterprocessState {
     pub next_stream_id: StreamId,
     /// The next ephemeral port to be assigned to a socket.
     pub next_ephemeral_port: u16,
-    /// The thread identifier to be executed by the waking process.
-    pub waking_thread_id: Option<ThreadId>,
     pub process_locks: [Option<Semaphore>; FIZZLE_MAX_PROCESSES],
     pub pids: FnvIndexMap<libc::pid_t, ProcessId, FIZZLE_MAX_PROCESSES>,
     pub transfer_fds: Option<Box<Descriptors>>,
@@ -1127,6 +1138,10 @@ impl InterprocessState {
     fn initialize(state: &mut MaybeUninit<InterprocessState>) -> &mut InterprocessState {
         unsafe {
             let state = state.as_mut_ptr();
+            *ptr::addr_of_mut!((*state).waking_id) = None;
+            *ptr::addr_of_mut!((*state).exiting_id) = None;
+
+
             *ptr::addr_of_mut!((*state).plugin_worker) = None;
             *ptr::addr_of_mut!((*state).shared_mem_initialized) = false;
             *ptr::addr_of_mut!((*state).persistent_rounds) = FIZZLE_AFL_LOOP; // TODO: make configurable
@@ -1134,7 +1149,6 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).next_stream_id) = StreamId::from(0);
             *ptr::addr_of_mut!((*state).next_ephemeral_port) = FIZZLE_EPHEMERAL_PORT_START;
             *ptr::addr_of_mut!((*state).startup_complete) = false;
-            *ptr::addr_of_mut!((*state).waking_thread_id) = None;
             *ptr::addr_of_mut!((*state).process_locks) = array::from_fn(|_| None);
             KeyedArena::initialize(ptr::addr_of_mut!((*state).process_signals));
             *ptr::addr_of_mut!((*state).transfer_fds) = None;

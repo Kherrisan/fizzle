@@ -1,5 +1,4 @@
 #![feature(c_variadic)]
-#![feature(new_uninit)]
 
 #![feature(string_remove_matches)]
 
@@ -13,6 +12,7 @@ mod handlers;
 mod hook_macros;
 mod once;
 mod plugins;
+mod scheduler;
 mod semaphore;
 mod state;
 mod streams;

@@ -1,5 +1,5 @@
 
-
+- Cross-platform idea--running with Wine?
 
 
 # Notes
@@ -34,7 +34,7 @@ We recommend using Nyx with Fizzle to fuzz multi-process applications.
 3. I want to fuzz a Go binary
 
 Go is unique among languages in that it implements system calls from scratch on Linux instead of linking to libc.
-This means that LD_PRELOAD will not interpose system calls for Go programs; this is a more fundamental limitation of using LD_PRELOAD.
+This means that `LD_PRELOAD` will not interpose system calls for Go programs; this is a more fundamental limitation of using LD_PRELOAD.
 Thankfully, there's a workaraound to this.
 
 Several operating systems (notably MacOS and Solaris) do not define a stable ABI for syscalls, but instead mandate that applications use the provided standard library.
