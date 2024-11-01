@@ -1,9 +1,8 @@
 use std::{mem, thread};
 
-use crate::handlers::polled::PolledInfo; 
-use crate::handlers::signal::{SigCallback, SignalSet};
+use crate::handlers::polled::PolledInfo;
+use crate::handlers::signal::{SigDisposition, SignalSet};
 use crate::hook_macros;
-
 
 // TODO: SIGKILL and SIGSTOP need to be handled specially
 
@@ -79,7 +78,7 @@ hook_macros::hook! {
         drop(state);
 
         signal_polled.lower_polled(&mut ctx);
-        
+
         // Return the selected signal
         *sig = signal_value;
         0
@@ -166,7 +165,7 @@ hook_macros::hook! {
         drop(state);
 
         signal_polled.lower_polled(&mut ctx);
-        
+
         // Return the selected signal
         if !info.is_null() {
             (*info).si_signo = signal_value;
@@ -265,7 +264,7 @@ hook_macros::hook! {
         drop(state);
 
         signal_polled.lower_polled(&mut ctx);
-        
+
         // Return the selected signal
         if !info.is_null() {
             (*info).si_signo = signal_value;
@@ -288,18 +287,18 @@ hook_macros::hook! {
         let mut state = ctx.acquire();
 
         let signals = state.local.signals.get_mut(&thread::current().id()).unwrap();
-        
+
         let prev_handler = match signals.handlers[(signum - 1) as usize] {
-            SigCallback::Default => libc::SIG_DFL,
-            SigCallback::Ignore => libc::SIG_IGN,
-            SigCallback::Handler(handler) => handler as usize,
-            SigCallback::Action(action) => action as usize,
+            SigDisposition::Default => libc::SIG_DFL,
+            SigDisposition::Ignore => libc::SIG_IGN,
+            SigDisposition::Handler(handler) => handler as usize,
+            SigDisposition::Action(action) => action as usize,
         };
 
         let new_handler = match handler {
-            libc::SIG_DFL => SigCallback::Default,
-            libc::SIG_IGN => SigCallback::Ignore,
-            h => SigCallback::Handler(mem::transmute(h)),
+            libc::SIG_DFL => SigDisposition::Default,
+            libc::SIG_IGN => SigDisposition::Ignore,
+            h => SigDisposition::Handler(mem::transmute(h)),
         };
 
         signals.handlers[(signum - 1) as usize] = new_handler;
@@ -341,13 +340,13 @@ hook_macros::hook! {
         let mut state = ctx.acquire();
 
         let signals = state.local.signals.get_mut(&thread::current().id()).unwrap();
-        
+
         if !oldact.is_null() {
             let (prev_action, prev_flags) = match signals.handlers[(signum - 1) as usize] {
-                SigCallback::Default => (libc::SIG_DFL, 0),
-                SigCallback::Ignore => (libc::SIG_IGN, 0),
-                SigCallback::Handler(handler) => (handler as usize, 0),
-                SigCallback::Action(action) => (action as usize, libc::SA_SIGINFO),
+                SigDisposition::Default => (libc::SIG_DFL, 0),
+                SigDisposition::Ignore => (libc::SIG_IGN, 0),
+                SigDisposition::Handler(handler) => (handler as usize, 0),
+                SigDisposition::Action(action) => (action as usize, libc::SA_SIGINFO),
             };
 
             let prev_action = libc::sigaction {
@@ -362,10 +361,10 @@ hook_macros::hook! {
 
         if !act.is_null() {
             let new_handler = match (*act).sa_sigaction {
-                libc::SIG_DFL => SigCallback::Default,
-                libc::SIG_IGN => SigCallback::Ignore,
-                a if (*act).sa_flags & libc::SA_SIGINFO > 0 => SigCallback::Action(mem::transmute(a)),
-                a => SigCallback::Handler(mem::transmute(a)),
+                libc::SIG_DFL => SigDisposition::Default,
+                libc::SIG_IGN => SigDisposition::Ignore,
+                a if (*act).sa_flags & libc::SA_SIGINFO > 0 => SigDisposition::Action(mem::transmute(a)),
+                a => SigDisposition::Handler(mem::transmute(a)),
             };
 
             signals.handlers[(signum - 1) as usize] = new_handler;
@@ -379,7 +378,7 @@ hook_macros::hook! {
     unsafe fn sigpending(
         set: *mut libc::sigset_t
     ) -> libc::c_int => fizzle_sigpending(ctx) {
-        
+
         let state = ctx.acquire();
         let process_id = state.local.process_id;
         *set = state.global.process_signals.get(&process_id).unwrap().raised.to_sigset();

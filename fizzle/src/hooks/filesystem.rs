@@ -2,7 +2,11 @@ use std::ffi::CStr;
 
 use fizzle_common::path::FilePath;
 
-use crate::{backend::FileBackend, handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource}, hook_macros};
+use crate::{
+    backend::FileBackend,
+    handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource},
+    hook_macros,
+};
 
 hook_macros::hook! {
     unsafe fn lseek(
@@ -797,8 +801,6 @@ hook_macros::hook! {
         unimplemented!("fdatasync()")
     }
 }
-
-
 
 hook_macros::hook! {
     unsafe fn readlink(

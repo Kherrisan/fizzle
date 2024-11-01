@@ -1,4 +1,4 @@
-use crate::arena::ArenaKey; 
+use crate::arena::ArenaKey;
 use crate::constants::FIZZLE_BUFFER_LENGTH;
 
 use fizzle_common::storage::Buffer;

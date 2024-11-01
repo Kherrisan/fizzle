@@ -1,10 +1,15 @@
 use std::cmp;
 
-use crate::{arena::{ArenaKey, Rc}, state::FizzleSingleton}; 
+use crate::{
+    arena::{ArenaKey, Rc},
+    state::FizzleSingleton,
+};
 
 pub use private::EventfdId;
 
-use super::{descriptor::DescriptorError, init_from_slice, polled::PolledId, FfiOutput, MsgHdr, MsgHdrOut};
+use super::{
+    descriptor::DescriptorError, init_from_slice, polled::PolledId, FfiOutput, MsgHdr, MsgHdrOut,
+};
 
 // This is to forbid access to the SocketId's inner `usize` field.
 mod private {
@@ -26,23 +31,29 @@ impl ArenaKey for EventfdId {
 }
 
 impl EventfdId {
-    pub fn write(&self, ctx: &mut FizzleSingleton, msg: &impl MsgHdr, nonblocking: bool) -> Result<usize, EventfdError> {
+    pub fn write(
+        &self,
+        ctx: &mut FizzleSingleton,
+        msg: &impl MsgHdr,
+        nonblocking: bool,
+    ) -> Result<usize, EventfdError> {
         let mut event_val_bytes = [0u8; 8];
         let mut event_val_idx = 0;
         for iovec in msg.vdata() {
             let read_amount = cmp::min(8 - event_val_idx, iovec.data().len());
-            event_val_bytes[event_val_idx..event_val_idx + read_amount].copy_from_slice(&iovec.data()[..read_amount]);
+            event_val_bytes[event_val_idx..event_val_idx + read_amount]
+                .copy_from_slice(&iovec.data()[..read_amount]);
             event_val_idx += read_amount;
         }
 
         if event_val_idx != 8 {
-            return Err(EventfdError::InsufficientData)
+            return Err(EventfdError::InsufficientData);
         }
 
         let increment = u64::from_ne_bytes(event_val_bytes); // TODO: is this correct byte order?
 
         if increment == u64::MAX {
-            return Err(EventfdError::InvalidWriteValue)
+            return Err(EventfdError::InvalidWriteValue);
         }
 
         let state = ctx.acquire();
@@ -55,7 +66,7 @@ impl EventfdId {
         drop(state);
 
         if nonblocking && current_counter.checked_add(increment + 1).is_none() {
-            return Err(EventfdError::WouldBlock)
+            return Err(EventfdError::WouldBlock);
         }
 
         // The following code is designed very specifically to handle polling for arbitrary
@@ -70,7 +81,7 @@ impl EventfdId {
         // The solution is as follows: check initially to see if the write will succeed.
         // Note that this DOES NOT use `polled_is_ready()`, but rather directly checks the
         // counter value added with the increment. If this would overflow the maximum value,
-        // lower `write_polled` and poll until it has been raised again. Then check again; 
+        // lower `write_polled` and poll until it has been raised again. Then check again;
         // continue this loop until succeeded.
         //
         // In the event that a large write blocks, smaller writes that would not overflow
@@ -78,7 +89,7 @@ impl EventfdId {
         // than `polled_is_ready()` (`write_polled` will be lowered while a large write is
         // blocked). Whenever a read is performed, `write_polled` will be raised, triggering
         // an event for every poller waiting to write to the eventfd. This ensures that a
-        // blocked writer will not remain blocked if the eventfd value drops low enough for 
+        // blocked writer will not remain blocked if the eventfd value drops low enough for
         // the read to succeed. If the performed read does not drop the value low enough, or
         // if another blocked write is carried out in between the read and the blocked write
         // check, the writer will simply loop again and lower/re-poll `write_polled` so that
@@ -104,7 +115,7 @@ impl EventfdId {
                     let state = ctx.acquire();
                     current_counter = state.global.event_fds.get(self).unwrap().counter;
                     drop(state);
-                },
+                }
             }
         };
 
@@ -118,7 +129,12 @@ impl EventfdId {
         Ok(8) // An eventfd always reads exactly 8 bytes from the buffer.
     }
 
-    pub fn read(&self, ctx: &mut FizzleSingleton, msg: &mut MsgHdrOut, nonblocking: bool) -> Result<usize, EventfdError> {
+    pub fn read(
+        &self,
+        ctx: &mut FizzleSingleton,
+        msg: &mut MsgHdrOut,
+        nonblocking: bool,
+    ) -> Result<usize, EventfdError> {
         let state = ctx.acquire();
 
         let eventfd = state.global.event_fds.get(self).unwrap();
@@ -129,10 +145,9 @@ impl EventfdId {
 
         drop(state);
 
-
         if old_counter == 0 {
             if nonblocking {
-                return Err(EventfdError::WouldBlock)
+                return Err(EventfdError::WouldBlock);
             } else {
                 ctx.poll_until_ready(read_polled.clone());
             }
@@ -151,12 +166,15 @@ impl EventfdId {
 
         for iovec in msg.vdata_mut() {
             let write_amount = cmp::min(8 - event_val_idx, iovec.data_mut().len());
-            init_from_slice(iovec.data_mut(), &event_val_bytes[event_val_idx..event_val_idx + write_amount]);
+            init_from_slice(
+                iovec.data_mut(),
+                &event_val_bytes[event_val_idx..event_val_idx + write_amount],
+            );
             event_val_idx += write_amount;
         }
 
         if event_val_idx != 8 {
-            return Err(EventfdError::InsufficientData)
+            return Err(EventfdError::InsufficientData);
         }
 
         if is_semaphore {
@@ -173,7 +191,6 @@ impl EventfdId {
         Ok(8) // An eventfd always writes exactly 8 bytes to the buffer.
     }
 }
-
 
 pub enum EventfdError {
     /// A socket-specific operation was attempted on the eventfd (such as `send()`).
@@ -204,7 +221,7 @@ impl FfiOutput for Result<usize, EventfdError> {
         match self {
             Ok(i) => {
                 Self::set_errno(0);
-                return *i as i32
+                return *i as i32;
             }
             Err(EventfdError::NotSocket) => Self::set_errno(libc::ENOTSOCK),
             Err(EventfdError::InsufficientData) => Self::set_errno(libc::EINVAL),
@@ -222,7 +239,6 @@ impl FfiOutput for Result<usize, EventfdError> {
             Err(EventfdError::InsufficientData) => "-1 (EINVAL)",
             Err(EventfdError::InvalidWriteValue) => "-1 (EINVAL)",
             Err(EventfdError::WouldBlock) => "-1 (EAGAIN)",
-
         }
     }
 }

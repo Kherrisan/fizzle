@@ -4,7 +4,7 @@ use std::mem;
 /// Indicates the shared memory key that child processes should access
 pub const FIZZLE_MEMORY_ENV: &str = "FIZZLE_MEMORY";
 /// Indicates that the user will be fuzzing a single-process application.
-/// 
+///
 /// Setting this may slightly speed up the execution rate of a program due to deferred forkserver initialization.
 pub const FIZZLE_SINGLEPROCESS_ENV: &str = "FIZZLE_SINGLEPROCESS";
 
@@ -30,7 +30,8 @@ pub const FIZZLE_MAX_REUSEPORT: usize = 16;
 pub const FIZZLE_MAX_PLUGINS: usize = 128;
 
 pub const FIZZLE_MAX_ANCILLARY: usize = 65536;
-pub const FIZZLE_MIN_CONNECTIONLESS: usize = 65536 + mem::size_of::<libc::sockaddr_storage>() + FIZZLE_MAX_ANCILLARY;
+pub const FIZZLE_MIN_CONNECTIONLESS: usize =
+    65536 + mem::size_of::<libc::sockaddr_storage>() + FIZZLE_MAX_ANCILLARY;
 
 pub const FIZZLE_MAX_PROCESSES: usize = 128;
 

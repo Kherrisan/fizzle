@@ -5,10 +5,8 @@
 use std::mem::MaybeUninit;
 use std::{mem, ptr, slice};
 
+use crate::backend::{ConnectionlessBackend, RegularConnectionless};
 use crate::constants::FIZZLE_BUFFER_LENGTH;
-use crate::backend::{
-    ConnectionlessBackend, RegularConnectionless
-};
 use crate::handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource};
 use crate::handlers::polled::PolledInfo;
 use crate::handlers::socket::{ConnectionlessSocket, SocketState, UnassociatedSocket};
@@ -53,7 +51,7 @@ hook_macros::hook! {
         };
 
         let fd = hook_macros::real!(socket)(domain, socktype, protocol);
-        
+
         if fd < 0 {
             crate::strace!("socket(domain={}, socktype={}, protocol={}) -> -1 ({})", family, socket_type, transport_protocol, crate::errno_str());
             return fd
@@ -912,6 +910,3 @@ hook_macros::hook! {
         }
     }
 }
-
-
-

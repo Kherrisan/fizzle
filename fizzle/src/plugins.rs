@@ -1,13 +1,12 @@
 use crate::arena::{KeyedArena, Rc};
 use crate::constants::FIZZLE_MAX_PLUGINS;
-use crate::handlers::plugin_module::PluginModuleId;
+use crate::handlers::plugin_module::PluginId;
 
-use fizzle_plugin::{Context, FizzlePluginObject, IoEndpointVariant};
+use fizzle_plugin::{Context, IoEndpointVariant, PluginObject};
 
 use crate::state::FizzleState;
 
-pub type PluginModules =
-    KeyedArena<PluginModuleId, Box<dyn FizzlePluginObject>, FIZZLE_MAX_PLUGINS>;
+pub type Plugins = KeyedArena<PluginId, Box<dyn PluginObject>, FIZZLE_MAX_PLUGINS>;
 
 /// Plugin information, populated based on the Fizzle configuration file.
 ///
@@ -26,11 +25,10 @@ pub type PluginModules =
 /// process exits then a crash has occurred. Fizzle has a special FIZZLE_NOEXIT option that can be
 /// set to keep the main process alive after a call to `exit()`
 
-pub struct PluginConfigEndpoint {
+pub struct PluginEndpoint {
     pub endpoint_variant: IoEndpointVariant,
     pub is_per_round: bool,
     pub emulation_type: IoEmulationType,
-    //    pub module_id: Option<PluginModuleId>,
     pub num_streams: usize,
 }
 
@@ -43,7 +41,7 @@ pub enum IoEmulationType {
     Feedback,
     /// Uses the plugin specified by `PluginId` to decide `read()`/`write()` behavior.
     #[allow(unused)]
-    Plugin(Rc<PluginModuleId>),
+    Plugin(Rc<PluginId>),
     #[allow(unused)]
     Sink,
     #[allow(unused)]
@@ -75,9 +73,9 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
             stream_id: plugin_info.stream,
         };
 
-        let plugin_module = state 
+        let plugin_module = state
             .local
-            .plugin_modules
+            .plugins
             .as_mut()
             .unwrap()
             .get_mut(&plugin_module_id)

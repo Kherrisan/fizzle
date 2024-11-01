@@ -3,8 +3,6 @@ use std::thread::ThreadId;
 
 // TODO: use a ThreadId type that is distinct from thread::current().id()?
 
-
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThreadTermination {
     Cancellation,

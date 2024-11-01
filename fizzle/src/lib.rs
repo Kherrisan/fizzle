@@ -1,5 +1,4 @@
 #![feature(c_variadic)]
-
 #![feature(string_remove_matches)]
 
 extern crate libc;
@@ -10,13 +9,13 @@ mod comptime;
 mod constants;
 mod handlers;
 mod hook_macros;
+pub mod hooks;
 mod once;
 mod plugins;
 mod scheduler;
 mod semaphore;
 mod state;
 mod streams;
-pub mod hooks;
 
 pub(crate) use hook_macros::hook;
 
@@ -59,7 +58,7 @@ pub fn report_strict_failure(explanation: &'static str) {
 }
 
 /// Converts the given errno value into string representation.
-/// 
+///
 /// This function acts like `strerrorname_np`, except without the race conditions or platform incompatibilities.
 fn errno_str() -> &'static str {
     let errno = unsafe { *libc::__errno_location() };
@@ -83,7 +82,10 @@ fn errno_str() -> &'static str {
         libc::ENOBUFS => "ENOBUFS",
         libc::ENOMEM => "ENOMEM",
         libc::EPROTONOSUPPORT => "EPROTONOSUPPORT",
-        _ => panic!("Fizzle internal error: add errno string for errno number {}", errno),
+        _ => panic!(
+            "Fizzle internal error: add errno string for errno number {}",
+            errno
+        ),
     }
 }
 

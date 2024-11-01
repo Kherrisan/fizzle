@@ -3,8 +3,8 @@ use std::ffi::CStr;
 // `SocketAddr` does not use heap allocations, so it's safe for this type.
 use std::fmt::Display;
 use std::mem::MaybeUninit;
-use std::{cmp, mem};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::{cmp, mem};
 
 use crate::{path::FilePath, storage::Buffer};
 
@@ -24,49 +24,88 @@ impl Display for SockAddr {
         match self {
             Self::Ipv4(v4_addr) => v4_addr.fmt(f),
             Self::Ipv6(v6_addr) => v6_addr.fmt(f),
-            Self::Unix(un_addr) => un_addr.fmt(f)
+            Self::Unix(un_addr) => un_addr.fmt(f),
         }
     }
 }
 
 impl SockAddr {
     pub fn decode(addr_bytes: &[u8]) -> Result<Self, SockAddrError> {
-        let sa_family = u16::from_be_bytes(addr_bytes.get(..2).ok_or(SockAddrError::InsufficientBytes)?.try_into().unwrap());
+        let sa_family = u16::from_be_bytes(
+            addr_bytes
+                .get(..2)
+                .ok_or(SockAddrError::InsufficientBytes)?
+                .try_into()
+                .unwrap(),
+        );
 
         match sa_family as i32 {
             libc::AF_INET => {
-                let sockaddr_in_bytes = addr_bytes.get(..mem::size_of::<libc::sockaddr_in>()).ok_or(SockAddrError::InsufficientBytes)?;
+                let sockaddr_in_bytes = addr_bytes
+                    .get(..mem::size_of::<libc::sockaddr_in>())
+                    .ok_or(SockAddrError::InsufficientBytes)?;
                 // SAFETY: sockaddr_in can be cast from bytes as it is repr(C)
-                let sockaddr_in: &libc::sockaddr_in = unsafe { sockaddr_in_bytes.align_to().1.first().ok_or(SockAddrError::BadAlignment)? };
+                let sockaddr_in: &libc::sockaddr_in = unsafe {
+                    sockaddr_in_bytes
+                        .align_to()
+                        .1
+                        .first()
+                        .ok_or(SockAddrError::BadAlignment)?
+                };
 
                 let addr_bits = sockaddr_in.sin_addr.s_addr;
                 let port = u16::from_be(sockaddr_in.sin_port);
 
-                Ok(SockAddr::Ipv4(SocketAddrV4::new(Ipv4Addr::from_bits(addr_bits), port)))
+                Ok(SockAddr::Ipv4(SocketAddrV4::new(
+                    Ipv4Addr::from_bits(addr_bits),
+                    port,
+                )))
             }
             libc::AF_INET6 => {
-                let sockaddr_in6_bytes = addr_bytes.get(..mem::size_of::<libc::sockaddr_in6>()).ok_or(SockAddrError::InsufficientBytes)?;
+                let sockaddr_in6_bytes = addr_bytes
+                    .get(..mem::size_of::<libc::sockaddr_in6>())
+                    .ok_or(SockAddrError::InsufficientBytes)?;
                 // SAFETY: sockaddr_in6 can be cast from bytes as it is repr(C)
-                let sockaddr_in6: &libc::sockaddr_in6 = unsafe { sockaddr_in6_bytes.align_to().1.first().ok_or(SockAddrError::BadAlignment)? };
+                let sockaddr_in6: &libc::sockaddr_in6 = unsafe {
+                    sockaddr_in6_bytes
+                        .align_to()
+                        .1
+                        .first()
+                        .ok_or(SockAddrError::BadAlignment)?
+                };
 
                 let addr = u128::from_be_bytes(sockaddr_in6.sin6_addr.s6_addr);
                 let port = u16::from_be(sockaddr_in6.sin6_port);
                 let flowinfo = sockaddr_in6.sin6_flowinfo;
                 let scope_id = sockaddr_in6.sin6_scope_id;
 
-                Ok(SockAddr::Ipv6(SocketAddrV6::new(Ipv6Addr::from_bits(addr), port, flowinfo, scope_id)))
+                Ok(SockAddr::Ipv6(SocketAddrV6::new(
+                    Ipv6Addr::from_bits(addr),
+                    port,
+                    flowinfo,
+                    scope_id,
+                )))
             }
             libc::AF_UNIX => {
                 let path_start = mem::offset_of!(libc::sockaddr_un, sun_path);
                 match addr_bytes.get(path_start) {
-                    Some(b'\0') => { // abstract address
-                        Ok(SockAddr::Unix(SocketAddrUnix::Abstract(Buffer::from_slice(&addr_bytes[path_start + 1..]))))
+                    Some(b'\0') => {
+                        // abstract address
+                        Ok(SockAddr::Unix(SocketAddrUnix::Abstract(
+                            Buffer::from_slice(&addr_bytes[path_start + 1..]),
+                        )))
                     }
-                    Some(_) => { // Named address
-                        let path = CStr::from_bytes_with_nul(&addr_bytes[path_start..]).map_err(|_| SockAddrError::MissingNullTerm)?;
-                        Ok(SockAddr::Unix(SocketAddrUnix::Pathname(FilePath::from_cstr(path).map_err(|_| SockAddrError::InvalidPathname)?)))
+                    Some(_) => {
+                        // Named address
+                        let path = CStr::from_bytes_with_nul(&addr_bytes[path_start..])
+                            .map_err(|_| SockAddrError::MissingNullTerm)?;
+                        Ok(SockAddr::Unix(SocketAddrUnix::Pathname(
+                            FilePath::from_cstr(path)
+                                .map_err(|_| SockAddrError::InvalidPathname)?,
+                        )))
                     }
-                    None if addr_bytes.len() == 2 => { // Unnamed address
+                    None if addr_bytes.len() == 2 => {
+                        // Unnamed address
                         Ok(SockAddr::Unix(SocketAddrUnix::Unnamed))
                     }
                     _ => Err(SockAddrError::InsufficientBytes),
@@ -89,15 +128,19 @@ impl SockAddr {
                 };
 
                 // SAFETY: u8 never should have alignment issues, so this should turn &sockaddr_in to &[u8]
-                let sockaddr_in_bytes: &[u8] = unsafe { slice::from_ref(&sockaddr_in).align_to().1 };
-                assert!(sockaddr_in_bytes.len() == mem::size_of_val(&sockaddr_in), "align_to() failed to convert sockaddr_in to bytes");
+                let sockaddr_in_bytes: &[u8] =
+                    unsafe { slice::from_ref(&sockaddr_in).align_to().1 };
+                assert!(
+                    sockaddr_in_bytes.len() == mem::size_of_val(&sockaddr_in),
+                    "align_to() failed to convert sockaddr_in to bytes"
+                );
 
                 for (dst, src) in addr_bytes.iter_mut().zip(sockaddr_in_bytes) {
                     dst.write(*src);
                 }
 
                 cmp::min(addr_bytes.len(), mem::size_of_val(&sockaddr_in))
-           }
+            }
             SockAddr::Ipv6(v6_addr) => {
                 let sockaddr_in6 = libc::sockaddr_in6 {
                     sin6_family: libc::AF_INET6 as u16,
@@ -110,8 +153,12 @@ impl SockAddr {
                 };
 
                 // SAFETY: u8 never should have alignment issues, so this should turn &sockaddr_in to &[u8]
-                let sockaddr_in6_bytes: &[u8] = unsafe { slice::from_ref(&sockaddr_in6).align_to().1 };
-                assert!(sockaddr_in6_bytes.len() == mem::size_of_val(&sockaddr_in6), "align_to() failed to convert sockaddr_in6 to bytes");
+                let sockaddr_in6_bytes: &[u8] =
+                    unsafe { slice::from_ref(&sockaddr_in6).align_to().1 };
+                assert!(
+                    sockaddr_in6_bytes.len() == mem::size_of_val(&sockaddr_in6),
+                    "align_to() failed to convert sockaddr_in6 to bytes"
+                );
 
                 for (dst, src) in addr_bytes.iter_mut().zip(sockaddr_in6_bytes) {
                     dst.write(*src);
@@ -127,15 +174,24 @@ impl SockAddr {
                     };
 
                     sockaddr_un.sun_path[0] = 0i8;
-                    for (dst, src) in sockaddr_un.sun_path[1..].iter_mut().zip(unix_abstract.data()) {
+                    for (dst, src) in sockaddr_un.sun_path[1..]
+                        .iter_mut()
+                        .zip(unix_abstract.data())
+                    {
                         *dst = *src as i8;
                     }
 
                     // SAFETY: u8 never should have alignment issues, so this should turn &sockaddr_in to &[u8]
-                    let sockaddr_un_bytes: &[u8] = unsafe { slice::from_ref(&sockaddr_un).align_to().1 };
-                    assert!(sockaddr_un_bytes.len() == mem::size_of_val(&sockaddr_un), "align_to() failed to convert sockaddr_un to bytes");
+                    let sockaddr_un_bytes: &[u8] =
+                        unsafe { slice::from_ref(&sockaddr_un).align_to().1 };
+                    assert!(
+                        sockaddr_un_bytes.len() == mem::size_of_val(&sockaddr_un),
+                        "align_to() failed to convert sockaddr_un to bytes"
+                    );
 
-                    let addrlen = mem::offset_of!(libc::sockaddr_un, sun_path) + 1 + unix_abstract.data().len();
+                    let addrlen = mem::offset_of!(libc::sockaddr_un, sun_path)
+                        + 1
+                        + unix_abstract.data().len();
 
                     for (dst, src) in addr_bytes.iter_mut().zip(&sockaddr_un_bytes[..addrlen]) {
                         dst.write(*src);
@@ -154,10 +210,15 @@ impl SockAddr {
                     }
 
                     // SAFETY: u8 never should have alignment issues, so this should turn &sockaddr_in to &[u8]
-                    let sockaddr_un_bytes: &[u8] = unsafe { slice::from_ref(&sockaddr_un).align_to().1 };
-                    assert!(sockaddr_un_bytes.len() == mem::size_of_val(&sockaddr_un), "align_to() failed to convert sockaddr_un to bytes");
+                    let sockaddr_un_bytes: &[u8] =
+                        unsafe { slice::from_ref(&sockaddr_un).align_to().1 };
+                    assert!(
+                        sockaddr_un_bytes.len() == mem::size_of_val(&sockaddr_un),
+                        "align_to() failed to convert sockaddr_un to bytes"
+                    );
 
-                    let addrlen = mem::offset_of!(libc::sockaddr_un, sun_path) + unix_path.data().len();
+                    let addrlen =
+                        mem::offset_of!(libc::sockaddr_un, sun_path) + unix_path.data().len();
 
                     for (dst, src) in addr_bytes.iter_mut().zip(&sockaddr_un_bytes[..addrlen]) {
                         dst.write(*src);
@@ -173,8 +234,8 @@ impl SockAddr {
                     }
 
                     cmp::min(addr_bytes.len(), mem::size_of_val(&sun_family))
-                },
-            }
+                }
+            },
         }
     }
 
@@ -191,11 +252,15 @@ impl SockAddr {
                 };
 
                 // SAFETY: u8 never should have alignment issues, so this should turn &sockaddr_in to &[u8]
-                let sockaddr_in_bytes: &[u8] = unsafe { slice::from_ref(&sockaddr_in).align_to().1 };
-                assert!(sockaddr_in_bytes.len() == mem::size_of_val(&sockaddr_in), "align_to() failed to convert sockaddr_in to bytes");
+                let sockaddr_in_bytes: &[u8] =
+                    unsafe { slice::from_ref(&sockaddr_in).align_to().1 };
+                assert!(
+                    sockaddr_in_bytes.len() == mem::size_of_val(&sockaddr_in),
+                    "align_to() failed to convert sockaddr_in to bytes"
+                );
 
                 v.extend(sockaddr_in_bytes);
-           }
+            }
             SockAddr::Ipv6(v6_addr) => {
                 let sockaddr_in6 = libc::sockaddr_in6 {
                     sin6_family: libc::AF_INET6 as u16,
@@ -208,8 +273,12 @@ impl SockAddr {
                 };
 
                 // SAFETY: u8 never should have alignment issues, so this should turn &sockaddr_in to &[u8]
-                let sockaddr_in6_bytes: &[u8] = unsafe { slice::from_ref(&sockaddr_in6).align_to().1 };
-                assert!(sockaddr_in6_bytes.len() == mem::size_of_val(&sockaddr_in6), "align_to() failed to convert sockaddr_in6 to bytes");
+                let sockaddr_in6_bytes: &[u8] =
+                    unsafe { slice::from_ref(&sockaddr_in6).align_to().1 };
+                assert!(
+                    sockaddr_in6_bytes.len() == mem::size_of_val(&sockaddr_in6),
+                    "align_to() failed to convert sockaddr_in6 to bytes"
+                );
 
                 v.extend(sockaddr_in6_bytes);
             }
@@ -221,15 +290,24 @@ impl SockAddr {
                     };
 
                     sockaddr_un.sun_path[0] = 0i8;
-                    for (dst, src) in sockaddr_un.sun_path[1..].iter_mut().zip(unix_abstract.data()) {
+                    for (dst, src) in sockaddr_un.sun_path[1..]
+                        .iter_mut()
+                        .zip(unix_abstract.data())
+                    {
                         *dst = *src as i8;
                     }
 
                     // SAFETY: u8 never should have alignment issues, so this should turn &sockaddr_in to &[u8]
-                    let sockaddr_un_bytes: &[u8] = unsafe { slice::from_ref(&sockaddr_un).align_to().1 };
-                    assert!(sockaddr_un_bytes.len() == mem::size_of_val(&sockaddr_un), "align_to() failed to convert sockaddr_un to bytes");
+                    let sockaddr_un_bytes: &[u8] =
+                        unsafe { slice::from_ref(&sockaddr_un).align_to().1 };
+                    assert!(
+                        sockaddr_un_bytes.len() == mem::size_of_val(&sockaddr_un),
+                        "align_to() failed to convert sockaddr_un to bytes"
+                    );
 
-                    let addrlen = mem::offset_of!(libc::sockaddr_un, sun_path) + 1 + unix_abstract.data().len();
+                    let addrlen = mem::offset_of!(libc::sockaddr_un, sun_path)
+                        + 1
+                        + unix_abstract.data().len();
 
                     v.extend(&sockaddr_un_bytes[..addrlen]);
                 }
@@ -244,10 +322,15 @@ impl SockAddr {
                     }
 
                     // SAFETY: u8 never should have alignment issues, so this should turn &sockaddr_in to &[u8]
-                    let sockaddr_un_bytes: &[u8] = unsafe { slice::from_ref(&sockaddr_un).align_to().1 };
-                    assert!(sockaddr_un_bytes.len() == mem::size_of_val(&sockaddr_un), "align_to() failed to convert sockaddr_un to bytes");
+                    let sockaddr_un_bytes: &[u8] =
+                        unsafe { slice::from_ref(&sockaddr_un).align_to().1 };
+                    assert!(
+                        sockaddr_un_bytes.len() == mem::size_of_val(&sockaddr_un),
+                        "align_to() failed to convert sockaddr_un to bytes"
+                    );
 
-                    let addrlen = mem::offset_of!(libc::sockaddr_un, sun_path) + unix_path.data().len();
+                    let addrlen =
+                        mem::offset_of!(libc::sockaddr_un, sun_path) + unix_path.data().len();
 
                     v.extend(&sockaddr_un_bytes[..addrlen]);
                 }
@@ -255,9 +338,9 @@ impl SockAddr {
                     let sun_family = libc::AF_UNIX as u16;
 
                     v.extend(sun_family.to_be_bytes());
-                },
-            }
-        }   
+                }
+            },
+        }
     }
 }
 
@@ -300,7 +383,7 @@ impl TransportAddress {
             protocol: TransportProtocol::Unix,
         }
     }
-    
+
     pub fn protocol(&self) -> TransportProtocol {
         self.protocol
     }
@@ -430,7 +513,9 @@ pub enum SocketAddrUnix {
 impl Display for SocketAddrUnix {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Pathname(path) => write!(f, "{:?}", CStr::from_bytes_with_nul(path.data()).unwrap()),
+            Self::Pathname(path) => {
+                write!(f, "{:?}", CStr::from_bytes_with_nul(path.data()).unwrap())
+            }
             Self::Abstract(abs) => write!(f, "[{:?}]", abs.data()),
             Self::Unnamed => write!(f, "unnamed"),
         }

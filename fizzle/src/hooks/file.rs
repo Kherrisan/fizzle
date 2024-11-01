@@ -137,7 +137,7 @@ hook_macros::hook! {
                 is_passthrough: false,
                 resource: FdResource::File(file_id),
             }).unwrap();
-            
+
             fd
 
         } else {
@@ -213,12 +213,12 @@ hook_macros::hook! {
 
         } else {
             let file_ptr = FilePtr::from(stream);
-            
+
             match file_ptr.close(&mut ctx) {
                 Ok(_) => 0,
                 Err(FileError::InvalidPtr) => {
                     log::warn!("FILE* {:?} for fclose() not in Fizzle state", stream);
-                    
+
                     if libc::fclose(stream) == 0 {
                         log::debug!("fclose(stream={:?}) -> 0", stream);
                         0
@@ -445,7 +445,6 @@ hook_macros::hook! {
         unimplemented!("puts()")
     }
 }
-
 
 #[allow(non_camel_case_types)]
 #[repr(C)]

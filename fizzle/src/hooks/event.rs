@@ -3,7 +3,6 @@ use crate::handlers::eventfd::EventfdInfo;
 use crate::handlers::polled::PolledInfo;
 use crate::hook_macros;
 
-
 hook_macros::hook! {
     unsafe fn eventfd(
         initval: libc::c_uint,

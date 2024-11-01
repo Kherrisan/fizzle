@@ -1,20 +1,20 @@
 use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::Command;
 use std::{env, fmt, fs};
-use std::collections::{HashMap, HashSet};
 
 use proc_macro2::TokenStream;
-use serde::{Deserialize, Deserializer};
 use serde::de;
+use serde::{Deserialize, Deserializer};
 
 const DEFAULT_CONFIG_PATH: &str = "./Fizzle.toml";
 const FIZZLE_CONFIG_ENV: &str = "FIZZLE_CONFIG";
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)] 
+#[serde(deny_unknown_fields)]
 pub struct FizzleConfiguration {
     pub io: HashMap<IoEndpoint, IoInputVariant>,
     #[serde(default)]
@@ -22,7 +22,7 @@ pub struct FizzleConfiguration {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)] 
+#[serde(deny_unknown_fields)]
 pub struct ProcessConfiguration {
     path: String,
     #[serde(default)]
@@ -32,7 +32,7 @@ pub struct ProcessConfiguration {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)] 
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "lowercase")]
 pub enum ProcessTiming {
     /// The desired process is spawned as soon as the Fizzle harness is instantiated.
@@ -48,7 +48,7 @@ impl Default for ProcessTiming {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)] 
+#[serde(deny_unknown_fields)]
 #[serde(untagged)]
 pub enum IoInputVariant {
     Basic(IoBasicMethod),
@@ -56,7 +56,7 @@ pub enum IoInputVariant {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)] 
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "lowercase")]
 pub enum IoBasicMethod {
     Fuzz,
@@ -67,17 +67,17 @@ pub enum IoBasicMethod {
 }
 
 #[derive(Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)] 
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "lowercase")]
 pub enum IoTiming {
     /// Initializes the plugin once and maintains state throughout different fuzzing rounds.
     Startup,
     /// Re-initializes the communication channel each time the program is run.
-    PerRound
+    PerRound,
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)] 
+#[serde(deny_unknown_fields)]
 pub struct IoPluginConfiguration {
     pub method: String, // TODO: this must be "plugin"
     pub when: IoTiming,
@@ -102,7 +102,8 @@ pub enum IoEndpoint {
 impl<'de> Deserialize<'de> for IoEndpoint {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: Deserializer<'de> {
+        D: Deserializer<'de>,
+    {
         deserializer.deserialize_str(IoEndpointVisitor)
     }
 }
@@ -121,15 +122,46 @@ impl<'de> de::Visitor<'de> for IoEndpointVisitor {
         E: de::Error,
     {
         match value.split_once(':') {
-            Some(("file", path)) => Ok(IoEndpoint::File(path.parse().map_err(|_| de::Error::custom(format!("invalid socket address \"{}\"", path)))?)),
-            Some(("tcp-client", addr)) => Ok(IoEndpoint::TcpClient(addr.parse().map_err(|_| de::Error::custom(format!("invalid socket address \"{}\"", addr)))?)),
-            Some(("tcp-server", addr)) => Ok(IoEndpoint::TcpServer(addr.parse().map_err(|_| de::Error::custom(format!("invalid socket address \"{}\"", addr)))?)),
-            Some(("udp-client", addr)) => Ok(IoEndpoint::UdpClient(addr.parse().map_err(|_| de::Error::custom(format!("invalid socket address \"{}\"", addr)))?)),
-            Some(("udp-server", addr)) => Ok(IoEndpoint::UdpServer(addr.parse().map_err(|_| de::Error::custom(format!("invalid socket address \"{}\"", addr)))?)),
-            Some(("sctp-client", addr)) => Ok(IoEndpoint::SctpClient(addr.parse().map_err(|_| de::Error::custom(format!("invalid socket address \"{}\"", addr)))?)),
-            Some(("sctp-server", addr)) => Ok(IoEndpoint::SctpServer(addr.parse().map_err(|_| de::Error::custom(format!("invalid socket address \"{}\"", addr)))?)),
+            Some(("file", path)) => {
+                Ok(IoEndpoint::File(path.parse().map_err(|_| {
+                    de::Error::custom(format!("invalid socket address \"{}\"", path))
+                })?))
+            }
+            Some(("tcp-client", addr)) => {
+                Ok(IoEndpoint::TcpClient(addr.parse().map_err(|_| {
+                    de::Error::custom(format!("invalid socket address \"{}\"", addr))
+                })?))
+            }
+            Some(("tcp-server", addr)) => {
+                Ok(IoEndpoint::TcpServer(addr.parse().map_err(|_| {
+                    de::Error::custom(format!("invalid socket address \"{}\"", addr))
+                })?))
+            }
+            Some(("udp-client", addr)) => {
+                Ok(IoEndpoint::UdpClient(addr.parse().map_err(|_| {
+                    de::Error::custom(format!("invalid socket address \"{}\"", addr))
+                })?))
+            }
+            Some(("udp-server", addr)) => {
+                Ok(IoEndpoint::UdpServer(addr.parse().map_err(|_| {
+                    de::Error::custom(format!("invalid socket address \"{}\"", addr))
+                })?))
+            }
+            Some(("sctp-client", addr)) => {
+                Ok(IoEndpoint::SctpClient(addr.parse().map_err(|_| {
+                    de::Error::custom(format!("invalid socket address \"{}\"", addr))
+                })?))
+            }
+            Some(("sctp-server", addr)) => {
+                Ok(IoEndpoint::SctpServer(addr.parse().map_err(|_| {
+                    de::Error::custom(format!("invalid socket address \"{}\"", addr))
+                })?))
+            }
             None if value == "stdio" => Ok(IoEndpoint::Stdio),
-            _ => Err(de::Error::custom(format!("invalid I/O endpoint \"{}\"", value))),
+            _ => Err(de::Error::custom(format!(
+                "invalid I/O endpoint \"{}\"",
+                value
+            ))),
         }
     }
 }
@@ -155,13 +187,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         #[allow(unused)]
         use fizzle_plugin::IoEndpointVariant;
         #[allow(unused)]
-        use fizzle_plugin::{FizzlePlugin, FizzlePluginObject};
+        use fizzle_plugin::{Plugin, PluginObject};
         #[allow(unused)]
-        use crate::handlers::plugin::PluginId;
+        use crate::handlers::plugin::PluginEndpointId;
         #[allow(unused)]
-        use crate::handlers::plugin_module::PluginModuleId;
+        use crate::handlers::plugin_module::PluginId;
         #[allow(unused)]
-        use crate::plugins::{IoEmulationType, PluginModules, PluginConfigEndpoint};
+        use crate::plugins::{IoEmulationType, Plugins, PluginEndpoint};
         #[allow(unused)]
         use std::path::PathBuf;
         #[allow(unused)]
@@ -171,7 +203,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         #includes
 
-        pub fn populate_plugins(endpoints: &mut Vec<PluginConfigEndpoint>, modules: &mut PluginModules) {
+        pub fn populate_plugins(endpoints: &mut Vec<PluginEndpoint>, modules: &mut Plugins) {
             #plugins_impl
         }
 
@@ -199,10 +231,10 @@ fn extract_includes(config: &FizzleConfiguration) -> TokenStream {
     }
 
     for module in includes {
-            let module = quote::format_ident!("{}", str::replace(&module, "-", "_"));
-            include_tokens.extend(quote::quote! {
-                use #module;
-            });
+        let module = quote::format_ident!("{}", str::replace(&module, "-", "_"));
+        include_tokens.extend(quote::quote! {
+            use #module;
+        });
     }
     include_tokens
 }
@@ -218,7 +250,7 @@ fn gen_processes(config: &FizzleConfiguration) -> (TokenStream, TokenStream) {
             ProcessTiming::OnStartup => &mut onstartup_process_tokens,
             ProcessTiming::OnReady => {
                 unimplemented!() // &mut onready_process_tokens
-            },
+            }
         };
 
         let path = &process_info.path;
@@ -242,7 +274,8 @@ fn gen_processes(config: &FizzleConfiguration) -> (TokenStream, TokenStream) {
 }
 
 fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
-    let mut modules: HashMap<(String, String), (usize, HashMap<IoEndpoint, toml::Table>)> = HashMap::new();
+    let mut modules: HashMap<(String, String), (usize, HashMap<IoEndpoint, toml::Table>)> =
+        HashMap::new();
     let mut next_module_id = 0usize;
 
     let mut populate_plugins_tokens = TokenStream::new();
@@ -280,13 +313,13 @@ fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
                 let module = &plugin_config.module;
                 let plugin = &plugin_config.plugin;
                 let mod_plug = (module.clone(), plugin.clone());
-                
+
                 let plugin_module_id = if let Some(config) = plugin_config.config.clone() {
                     match modules.entry(mod_plug) {
                         Entry::Occupied(mut o) => {
                             o.get_mut().1.insert(endpoint.clone(), config);
                             o.get().0
-                        },
+                        }
                         Entry::Vacant(v) => {
                             let mut m = HashMap::new();
                             let plugin_module_id = next_module_id;
@@ -294,7 +327,7 @@ fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
                             m.insert(endpoint.clone(), config);
                             v.insert((plugin_module_id, m));
                             plugin_module_id
-                        },
+                        }
                     }
                 } else {
                     match modules.entry(mod_plug) {
@@ -323,7 +356,7 @@ fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
         populate_plugins_tokens.extend(gen_io_endpoint_def(endpoint));
         populate_plugins_tokens.extend(io_variant);
         populate_plugins_tokens.extend(quote::quote! {
-            endpoints.push(PluginConfigEndpoint {
+            endpoints.push(PluginEndpoint {
                 endpoint_variant,
                 emulation_type,
                 is_per_round,
@@ -337,7 +370,7 @@ fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
     for ((module, plugin), (module_id, endpoint_configs)) in modules {
         comptime_output_tokens.extend(quote::quote! {
             #[allow(unused)]
-            let mut endpoint_toml_configs = HashMap::new();          
+            let mut endpoint_toml_configs = HashMap::new();
         });
 
         for (endpoint, table) in endpoint_configs {
@@ -452,6 +485,6 @@ fn gen_io_endpoint_def(endpoint: &IoEndpoint) -> TokenStream {
         }
         IoEndpoint::Stdio => quote::quote! {
             let endpoint_variant = IoEndpointVariant::Stdio;
-        }
+        },
     }
 }

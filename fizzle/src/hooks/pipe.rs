@@ -1,7 +1,7 @@
 use crate::handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource};
+use crate::handlers::pipe::{PipeInfo, PipeMode};
 use crate::handlers::polled::PolledInfo;
 use crate::hook_macros;
-use crate::handlers::pipe::{PipeInfo, PipeMode};
 
 use fizzle_common::storage::Buffer;
 

@@ -21,8 +21,4 @@ impl ArenaKey for FuzzEndpointId {
     type Value = FuzzEndpointInfo;
 }
 
-impl FuzzEndpointId {
-
-}
-
-
+impl FuzzEndpointId {}

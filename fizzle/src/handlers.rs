@@ -1,6 +1,5 @@
-
-use std::{cmp, mem, ptr, slice};
 use std::mem::MaybeUninit;
+use std::{cmp, mem, ptr, slice};
 
 use bitflags::bitflags;
 use fizzle_common::io::{SockAddr, SockAddrError};
@@ -11,6 +10,7 @@ pub mod buffer;
 pub mod condvar;
 pub mod descriptor;
 pub mod directory;
+pub mod entropy;
 pub mod epoll;
 pub mod eventfd;
 pub mod file;
@@ -26,8 +26,8 @@ pub mod process;
 pub mod rwlock;
 pub mod semaphore;
 pub mod signal;
-pub mod spinlock;
 pub mod socket;
+pub mod spinlock;
 pub mod thread;
 
 pub trait FfiOutput {
@@ -50,7 +50,10 @@ pub fn read_stream(msg: &mut MsgHdrOut, data: &[u8]) -> usize {
     let mut total_read = 0;
     for iovec in msg.vdata_mut() {
         let v_read = cmp::min(data.len() - total_read, iovec.data_mut().len());
-        init_from_slice(&mut iovec.data_mut()[..v_read], &data[total_read..total_read + v_read]);
+        init_from_slice(
+            &mut iovec.data_mut()[..v_read],
+            &data[total_read..total_read + v_read],
+        );
         total_read += v_read;
     }
 
@@ -73,7 +76,7 @@ pub fn write_stream(msg: &impl MsgHdr, data: &mut [u8]) -> usize {
 */
 
 /// The data of a datagram is written sequentially as follows:
-/// 
+///
 /// ancillary_len: u32
 /// ancillary: <ancillary_len> bytes
 /// data_len: u32
@@ -85,8 +88,9 @@ pub fn write_stream(msg: &impl MsgHdr, data: &mut [u8]) -> usize {
 pub fn read_datagram<const N: usize>(msghdr: &mut MsgHdrOut, buf: &mut Buffer<N>) -> Option<usize> {
     let buffer_data = buf.data();
 
-    let Some((ancillary_len_bytes, rem)) = buffer_data.split_at_checked(mem::size_of::<u32>()) else {
-        return None
+    let Some((ancillary_len_bytes, rem)) = buffer_data.split_at_checked(mem::size_of::<u32>())
+    else {
+        return None;
     };
 
     let ancillary_len = u32::from_be_bytes(ancillary_len_bytes.try_into().unwrap()) as usize;
@@ -102,7 +106,9 @@ pub fn read_datagram<const N: usize>(msghdr: &mut MsgHdrOut, buf: &mut Buffer<N>
     let sockaddr_len = rem[0] as usize;
     let rem = &rem[1..];
 
-    let sockaddr_start = rem.as_ptr().align_offset(mem::align_of::<libc::sockaddr_storage>());
+    let sockaddr_start = rem
+        .as_ptr()
+        .align_offset(mem::align_of::<libc::sockaddr_storage>());
     let sockaddr_bytes = &rem[sockaddr_start..sockaddr_start + sockaddr_len];
     let total_read = total_read + 1 + sockaddr_start + sockaddr_len;
 
@@ -134,7 +140,9 @@ pub fn read_datagram<const N: usize>(msghdr: &mut MsgHdrOut, buf: &mut Buffer<N>
 pub fn init_from_slice<T>(dst: &mut [MaybeUninit<T>], src: &[T]) {
     assert_eq!(src.len(), dst.len());
 
-    unsafe { ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr() as *mut T, src.len()); }
+    unsafe {
+        ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr() as *mut T, src.len());
+    }
 }
 
 pub fn write_datagram<const N: usize>(msghdr: &impl MsgHdr, buf: &mut Buffer<N>) -> Option<usize> {
@@ -165,7 +173,9 @@ pub fn write_datagram<const N: usize>(msghdr: &impl MsgHdr, buf: &mut Buffer<N>)
     rem[0].write(sockaddr_len as u8);
     let rem = &mut rem[1..];
 
-    let sockaddr_offset = rem.as_ptr().align_offset(mem::align_of::<libc::sockaddr_storage>());   
+    let sockaddr_offset = rem
+        .as_ptr()
+        .align_offset(mem::align_of::<libc::sockaddr_storage>());
     let sockaddr_bytes = &mut rem[sockaddr_offset..sockaddr_offset + sockaddr_len];
     init_from_slice(sockaddr_bytes, msghdr.addr_bytes());
     let total_written = total_written + 1 + sockaddr_offset + sockaddr_len;
@@ -266,12 +276,17 @@ impl<M: MsgHdr> AncillaryReader<'_, M> {
         let header = if self.curr_header.is_null() {
             unsafe { libc::CMSG_FIRSTHDR(ptr::addr_of!(*self.msghdr) as *const libc::msghdr) }
         } else {
-            unsafe { libc::CMSG_NXTHDR(ptr::addr_of!(*self.msghdr) as *const libc::msghdr, self.curr_header) }
+            unsafe {
+                libc::CMSG_NXTHDR(
+                    ptr::addr_of!(*self.msghdr) as *const libc::msghdr,
+                    self.curr_header,
+                )
+            }
         };
 
         if header.is_null() {
-            return None
-        } 
+            return None;
+        }
 
         self.curr_header = header;
 
@@ -279,7 +294,10 @@ impl<M: MsgHdr> AncillaryReader<'_, M> {
             Some(AncillaryData {
                 msg_level: (*header).cmsg_level,
                 msg_type: (*header).cmsg_type,
-                data: slice::from_raw_parts(libc::CMSG_DATA(header) as *const u8, (*header).cmsg_len),
+                data: slice::from_raw_parts(
+                    libc::CMSG_DATA(header) as *const u8,
+                    (*header).cmsg_len,
+                ),
             })
         }
     }
@@ -306,7 +324,12 @@ impl MsgHdrOut {
         if self.msg_name.is_null() {
             &mut []
         } else {
-            unsafe { slice::from_raw_parts_mut(self.msg_name as *mut MaybeUninit<u8>, self.msg_namelen as usize)}
+            unsafe {
+                slice::from_raw_parts_mut(
+                    self.msg_name as *mut MaybeUninit<u8>,
+                    self.msg_namelen as usize,
+                )
+            }
         }
     }
 
@@ -323,7 +346,12 @@ impl MsgHdrOut {
         if self.msg_control.is_null() {
             &mut []
         } else {
-            unsafe { slice::from_raw_parts_mut(self.msg_control as *mut MaybeUninit<u8>, self.msg_controllen) }
+            unsafe {
+                slice::from_raw_parts_mut(
+                    self.msg_control as *mut MaybeUninit<u8>,
+                    self.msg_controllen,
+                )
+            }
         }
     }
 
@@ -333,7 +361,6 @@ impl MsgHdrOut {
     }
 
     pub fn ancillary(&mut self) -> AncillaryWriter<'_> {
-
         AncillaryWriter {
             msghdr: self,
             curr_header: ptr::null(),
@@ -365,17 +392,22 @@ pub struct AncillaryWriter<'a> {
 impl AncillaryWriter<'_> {
     pub fn write(&mut self, ancillary: AncillaryData<'_>) -> Result<(), AncillaryError> {
         if self.msghdr.msg_control.is_null() {
-            return Err(AncillaryError::Truncated)
+            return Err(AncillaryError::Truncated);
         }
 
         let header = if self.curr_header.is_null() {
             unsafe { libc::CMSG_FIRSTHDR(ptr::addr_of_mut!(*self.msghdr) as *const libc::msghdr) }
         } else {
-            unsafe { libc::CMSG_NXTHDR(ptr::addr_of_mut!(*self.msghdr) as *const libc::msghdr, self.curr_header) }
+            unsafe {
+                libc::CMSG_NXTHDR(
+                    ptr::addr_of_mut!(*self.msghdr) as *const libc::msghdr,
+                    self.curr_header,
+                )
+            }
         };
 
         if header.is_null() {
-            return Err(AncillaryError::Truncated)
+            return Err(AncillaryError::Truncated);
         }
 
         unsafe {
@@ -383,8 +415,10 @@ impl AncillaryWriter<'_> {
             (*header).cmsg_type = ancillary.msg_type;
             (*header).cmsg_len = libc::CMSG_LEN(ancillary.data.len() as u32) as usize;
             let cmsg_data = libc::CMSG_DATA(header);
-            let remaining_len = self.msghdr.msg_controllen.saturating_sub(cmsg_data.offset_from(self.msghdr.msg_control as *const u8) as usize);
-            
+            let remaining_len = self.msghdr.msg_controllen.saturating_sub(
+                cmsg_data.offset_from(self.msghdr.msg_control as *const u8) as usize,
+            );
+
             let trunc_len = cmp::min(ancillary.data.len(), remaining_len);
 
             ptr::copy_nonoverlapping(ancillary.data.as_ptr(), cmsg_data, trunc_len);
@@ -403,7 +437,11 @@ impl Drop for AncillaryWriter<'_> {
     fn drop(&mut self) {
         if !self.curr_header.is_null() {
             unsafe {
-                let len = self.curr_header.byte_offset_from(ptr::addr_of!(*self.msghdr.msg_control)) as usize + libc::CMSG_SPACE((*self.curr_header).cmsg_len as u32) as usize;
+                let len = self
+                    .curr_header
+                    .byte_offset_from(ptr::addr_of!(*self.msghdr.msg_control))
+                    as usize
+                    + libc::CMSG_SPACE((*self.curr_header).cmsg_len as u32) as usize;
                 self.msghdr.msg_controllen = len;
             }
         }
@@ -414,6 +452,6 @@ impl Drop for AncillaryWriter<'_> {
 pub enum AncillaryError {
     /// The provided message exceeded the available ancillary space and was truncated.
     Truncated,
-//    /// The given data source did not have an ancillary message available within it.
-//    InsufficientData,
+    //    /// The given data source did not have an ancillary message available within it.
+    //    InsufficientData,
 }

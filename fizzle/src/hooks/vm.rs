@@ -10,4 +10,3 @@ hook_macros::hook! {
         unimplemented!("vmsplice()")
     }
 }
-

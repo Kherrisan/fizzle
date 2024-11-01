@@ -107,8 +107,7 @@ macro_rules! real {
 
 pub(crate) use real;
 
-
-pub fn real_syscall() -> extern "C" fn (libc::c_long, ...) -> libc::c_long {
+pub fn real_syscall() -> extern "C" fn(libc::c_long, ...) -> libc::c_long {
     use ::std::sync::Once;
 
     static mut REAL: *const u8 = 0 as *const u8;

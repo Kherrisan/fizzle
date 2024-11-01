@@ -27,9 +27,7 @@ unsafe extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void 
 
     ctx.init_new_thread();
 
-    let res = ctx.run_outside_shim(|| {
-        (wrapped_arg.wrapped_fn)(wrapped_arg.wrapped_arg)
-    });
+    let res = ctx.run_outside_shim(|| (wrapped_arg.wrapped_fn)(wrapped_arg.wrapped_arg));
 
     // Thread has exited...
 
@@ -200,7 +198,7 @@ hook_macros::hook! {
             state.local.pthread_keys.insert(*key, PThreadRoutine { function: destructor, arg: None });
             state.local.pthread_key_values.insert(*key, HashMap::with_hasher(Default::default()));
         }
-        
+
         ret
     }
 }
@@ -1392,4 +1390,3 @@ hook_macros::hook! {
         unimplemented!("setns()")
     }
 }
-

@@ -6,10 +6,13 @@ use std::mem::MaybeUninit;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::ops::{Deref, DerefMut};
 use std::os::unix::ffi::OsStrExt;
+use std::process::Command;
 use std::thread::ThreadId;
 use std::{array, env, mem, process, ptr, thread};
 
-use fizzle_common::io::{AddressFamily, SocketAddrUnix, TransportAddress, TransportProtocol, MAX_PATH_LEN};
+use fizzle_common::io::{
+    AddressFamily, SocketAddrUnix, TransportAddress, TransportProtocol, MAX_PATH_LEN,
+};
 use fizzle_common::path::{FilePath, SemPath};
 use fizzle_common::storage::Buffer;
 use fizzle_plugin::{IoEndpointVariant, StreamId};
@@ -18,8 +21,6 @@ use heapless::{Deque, FnvIndexMap, FnvIndexSet};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
-use crate::handlers::signal::{ProcessSignalInfo, ThreadSignalInfo};
-use crate::{comptime, state};
 use crate::arena::{KeyedArena, Rc};
 use crate::constants::*;
 use crate::handlers::barrier::{BarrierInfo, BarrierPtr};
@@ -34,25 +35,25 @@ use crate::handlers::fuzz_endpoint::{FuzzEndpointId, FuzzEndpointInfo};
 use crate::handlers::message_queue::{MessageQueueId, MessageQueueInfo};
 use crate::handlers::mutex::MutexPtr;
 use crate::handlers::pipe::{PipeId, PipeInfo};
-use crate::handlers::plugin::{PluginId, PluginInfo};
-use crate::handlers::plugin_module::PluginModuleId;
+use crate::handlers::plugin::{PluginEndpointId, PluginInfo};
+use crate::handlers::plugin_module::PluginId;
 use crate::handlers::polled::{PolledId, PolledInfo};
 use crate::handlers::poller::{PollerId, PollerInfo};
 use crate::handlers::process::ProcessId;
 use crate::handlers::rwlock::{RwLockInfo, RwLockPtr};
 use crate::handlers::semaphore::{SemaphoreId, SemaphoreInfo, SemaphorePtr};
-use crate::handlers::socket::{PendingInfo, PendingSocket, ServerSocket, SocketId, SocketState, TransportLocationInfo};
-use crate::handlers::spinlock::SpinlockPtr;
-use crate::handlers::thread::{PThreadRoutine, ThreadTermination};
-use crate::once::NcOnceCell;
-use crate::plugins::{IoEmulationType, PluginConfigEndpoint, PluginModules};
-use crate::semaphore::Semaphore;
-
-use crate::backend::{
-    FileBackend, PendingBackend, ServerBackend, StandardFeedback, StdioBackend
+use crate::handlers::signal::{ProcSigInfo, SignalHandlers, SignalSet, ThreadSigInfo};
+use crate::handlers::socket::{
+    PendingInfo, PendingSocket, ServerSocket, SocketId, SocketState, TransportLocationInfo,
 };
+use crate::handlers::spinlock::SpinlockPtr;
+use crate::handlers::thread::PThreadRoutine;
+use crate::once::SeqOnceCell;
+use crate::plugins::{IoEmulationType, PluginEndpoint, Plugins};
+use crate::semaphore::Semaphore;
+use crate::comptime;
 
-// Could use `bumpalo` or `gc-arena` to perform allocations
+use crate::backend::{FileBackend, PendingBackend, ServerBackend, StandardFeedback, StdioBackend};
 
 pub use private::FizzleSingleton;
 
@@ -65,27 +66,24 @@ mod private {
 
     impl FizzleSingleton {
         pub(super) fn new() -> Self {
-            let mut singleton = FizzleSingleton {
-                _private: (),
-            };
-
-            singleton.post_init();
-            singleton
+            FizzleSingleton { _private: () }
         }
     }
 }
 
 type Descriptors = KeyedArena<DescriptorId, DescriptorInfo, FIZZLE_MAX_FDS>;
 
-static FIZZLE_STATE: NcOnceCell<RefCell<FizzleState>> = NcOnceCell::new();
+static FIZZLE_STATE: SeqOnceCell<RefCell<FizzleState>> = SeqOnceCell::new();
 
-static THREAD_LOCKS: NcOnceCell<[RefCell<Option<Semaphore>>; FIZZLE_MAX_THREADS]> = NcOnceCell::new();
+static THREAD_LOCKS: SeqOnceCell<[RefCell<Option<Semaphore>>; FIZZLE_MAX_THREADS]> =
+    SeqOnceCell::new();
 
 // See `set_entered_handler` and `has_entered_handler`
 std::thread_local! {
     static ENTERED_HANDLER: RefCell<bool> = const { RefCell::new(false) };
 }
 
+// TODO: mask SIGCHLD, SIGPIPE responses and manually implement
 // TODO: add a signalfd that can handle SIGCHLD responses
 
 /// Marks the thread as currently executing within a fizzle handler.
@@ -109,13 +107,13 @@ pub fn has_entered_handler() -> bool {
 }
 
 /// Produces a new `FizzleSingleton` instance that can be used to acquire global state in a safe manner.
-/// 
+///
 /// WARNING: this function SHOULD NOT be used in any methods other than a) the hook macro, or b)
 /// those that create new threads, such as `pthread_create`. The `FizzleSingleton` is designed to
 /// ensure that the global `FIZZLE_STATE` variable is never mutably referenced more than once. A
 /// single instantiation of it is provided for each LD_PRELOAD hook; this instance is passed around
 /// and is meant to be the _sole_ means of accessing global state.
-/// 
+///
 /// WARNING 2: the `FizzleSingleton` prevents mutable aliasing within a single-threaded context, but
 /// it cannot inherently prevent mutable access to data by multiple threads. Thread creation hooks
 /// and scheduling routines need to ensure that any acquired `FizzGuard` instances are dropped prior
@@ -124,566 +122,107 @@ pub unsafe fn fizzle_singleton() -> FizzleSingleton {
     FizzleSingleton::new()
 }
 
-// [pid XXXXX | thread XXXXX | info]
-
 impl FizzleSingleton {
-    pub fn init() -> RefCell<FizzleState> {
+    /// Creates the FizzleState instance for the given process.
+    ///
+    /// This function is called at most once per process, and is one of the very first instatiations
+    /// Fizzle runs. As such, it contains methods that need to be called on startup (logging, handling
+    /// children, etc.) and must be done prior to any other initialization routines.
+    fn instantiate() -> RefCell<FizzleState> {
+        // Initialize logger to print PID and TID with each message
         env_logger::Builder::from_default_env()
-            .format(|buf, record|
-                writeln!(buf, "[PID({:8})|{:4?}|{}] {}", process::id(), thread::current().id(), record.level().as_str().to_uppercase(), record.args())
-            )
+            .format(|buf, record| {
+                writeln!(
+                    buf,
+                    "[PID({:8})|{:4?}|{}] {}",
+                    process::id(),
+                    thread::current().id(),
+                    record.level().as_str().to_uppercase(),
+                    record.args()
+                )
+            })
             .init();
         log::info!("Logger initialized");
 
-        // Clean up child processes if the parent is ever killed
-        unsafe { assert_eq!(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM), 0); }
-
-        let ctx = RefCell::new(FizzleState::new());
-        let mut state = ctx.borrow_mut();
-        let process_id = state.local.process_id;
-        let sem_opt = &mut state.global.process_locks[usize::from(process_id)];
-
-        // TODO: this seems to behave safely, but check with Miri
+        // Set signal mask to be inherited by all threads/processes of Fizzle
         unsafe {
-            let uninit_sem = (*(ptr::from_mut(sem_opt) as *mut Option<MaybeUninit<Semaphore>>)).insert(MaybeUninit::uninit());
-            Semaphore::initialize(uninit_sem, true, 0);
+            let new_set = (SignalSet::SIGPIPE | SignalSet::SIGCHLD).to_sigset();
+            let mut old_set = SignalSet::empty().to_sigset();
+            assert_eq!(
+                libc::pthread_sigmask(
+                    libc::SIG_SETMASK,
+                    ptr::addr_of!(new_set),
+                    ptr::addr_of_mut!(old_set)
+                ),
+                0
+            );
         }
 
-        drop(state);
+        // Clean up child processes if the parent is ever killed
+        unsafe {
+            assert_eq!(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM), 0);
+        }
 
-        log::info!("FizzleState::init() finished.");
+        // Allocate and instantiate the FizzleState
+        let ctx = RefCell::new(FizzleState::new());
 
+        log::info!("FizzleSingleton::instantiate() complete");
         ctx
     }
 
-    pub fn post_init(&mut self) {
-        let mut state = self.acquire(); // Runs init()
-        if state.local.post_init_done {
-            return
-        }
-        state.local.post_init_done = true;
-
-        log::trace!("running post-initialization.");
-
-        if state.local.process_id.is_main_process() {
-            // Spawn the plugin handler (MUST run in main process)
-            let thread_id = thread::current().id();
-            drop(state);
-            thread::spawn(move || {
-                set_entered_handler(true);
-                let mut ctx = unsafe { fizzle_singleton() };
-                let plugin_thread_id = thread::current().id();
-                // The thread that spawned the reaper will immediately wait on its thread lock, so
-                // it is safe to `acquire()` global state here.
-                let mut state = ctx.acquire();
-
-                let plugin_worker = WorkerId {
-                    process_id: state.local.process_id,
-                    thread_id: plugin_thread_id,
-                };
-
-                state.global.plugin_worker = Some(plugin_worker);
-
-                drop(state);
-
-                ctx.init_thread_lock(&plugin_thread_id);
-                // Notify thread that initialization has completed
-                ctx.thread_lock(&thread_id).as_ref().unwrap().post();
-
-                // Wait for plugin worker to be delegated execution
-                ctx.thread_lock(&plugin_thread_id).as_ref().unwrap().wait();
-                
-                loop {
-                    crate::handlers::plugin::handle_plugins(&mut ctx);
-                    ctx.yield_thread();
-                }
-            });
-
-            self.thread_lock(&thread::current().id()).as_ref().unwrap().wait();
-            // Plugin process initialization is complete
-            
-            // Now run any applicable processes
-            let mut processes = Vec::new();
-            comptime::populate_onstartup_processes(&mut processes);
-
-            for mut process in processes {
-                let mut state = self.acquire();
-
-                // This thread should still be able to execute afterwards
-                state.mark_thread_delayed_ready(thread::current().id());
-
-                let process_id = state.global.assign_process_id();
-                state.global.passthrough_process_id = process_id;
-
-                // TODO: upref all reference-counted global variables here
-                // For now we just don't free global variables so it's fine...
-
-                // TODO: put this in a method on its own
-                process.env("LD_PRELOAD", std::env::var("LD_PRELOAD").unwrap());
-                process.env(FIZZLE_MEMORY_ENV, std::env::var(FIZZLE_MEMORY_ENV).unwrap());
-                process.spawn().unwrap();
-
-                log::debug!("waiting on process_id {:?}", state.local.process_id);
-
-                state.global
-                    .process_locks[usize::from(state.local.process_id)]
-                    .as_ref()
-                    .unwrap()
-                    .wait();
-
-                drop(state);
-            }
-
-            let mut onready_processes = Vec::new();
-            comptime::populate_onready_processes(&mut onready_processes);
-            if onready_processes.is_empty() {
-                let mut state = self.acquire();
-                state.global.startup_complete = true;
-                drop(state);
-            }
-        }
-    }
-
     /// Acquires the global shared state for mutable access.
-    /// 
+    ///
     /// This access does not involve any atomic or locking operations.
     pub fn acquire(&mut self) -> RefMut<'_, FizzleState> {
-        FIZZLE_STATE.get_or_init(Self::init).borrow_mut()
-    }
-
-    pub fn run_outside_shim<F, R>(&mut self, f: F) -> R
-    where
-        F: FnOnce() -> R
-    {
-        debug_assert!(state::has_entered_handler());
-        state::set_entered_handler(false);
-        let ret = f();
-        state::set_entered_handler(true);
-        ret
-    }
-
-    pub fn thread_lock(&mut self, thread_id: &ThreadId) -> Ref<'_, Option<Semaphore>> {
-        let locks = THREAD_LOCKS.get_or_situate(Self::thread_locks_situate);
-
-        let thread_idx = crate::handlers::thread::index_of_thread(thread_id);
-        locks[thread_idx].borrow()
-    }
-
-    fn thread_locks_situate(uninit: &mut MaybeUninit<[RefCell<Option<Semaphore>>; FIZZLE_MAX_THREADS]>) -> &mut [RefCell<Option<Semaphore>>; FIZZLE_MAX_THREADS] {
-        let locks = uninit.write(array::from_fn(|_| RefCell::new(None)));
-
-        // Now initialize the current thread's lock.
-        let current_thread_idx = crate::handlers::thread::index_of_thread(&thread::current().id());
-        let mut sem_opt = locks[current_thread_idx].borrow_mut();
-        let sem_opt_deref = sem_opt.deref_mut();
-
-        // TODO: this seems to behave safely, but check with Miri
-        unsafe {
-            let uninit_sem = (*(ptr::from_mut(sem_opt_deref) as *mut Option<MaybeUninit<Semaphore>>)).insert(MaybeUninit::uninit());
-            Semaphore::initialize(uninit_sem, false, 0);
-        }
-        drop(sem_opt);
-
-        locks
+        FIZZLE_STATE.get_or_init(Self::instantiate).borrow_mut()
     }
 
     fn init_thread_lock(&mut self, thread_id: &ThreadId) {
-        let locks = THREAD_LOCKS.get_or_situate(Self::thread_locks_situate);
+        let locks = THREAD_LOCKS
+            .get_or_situate(|uninit| uninit.write(array::from_fn(|_| RefCell::new(None))));
         let thread_idx = crate::handlers::thread::index_of_thread(thread_id);
-
         let mut sem_opt = locks[thread_idx].borrow_mut();
         let sem_opt_deref = sem_opt.deref_mut();
 
         // TODO: this seems to behave safely, but check with Miri
         unsafe {
-            let uninit_sem = (*(ptr::from_mut(sem_opt_deref) as *mut Option<MaybeUninit<Semaphore>>)).insert(MaybeUninit::uninit());
+            let uninit_sem = (*(ptr::from_mut(sem_opt_deref)
+                as *mut Option<MaybeUninit<Semaphore>>))
+                .insert(MaybeUninit::uninit());
             Semaphore::initialize(uninit_sem, false, 0);
         }
         drop(sem_opt);
     }
 
     /// Destroys the thread lock of the calling thread.
-    pub(crate) fn destroy_thread_lock(&mut self) {
-        let locks = THREAD_LOCKS.get_or_situate(Self::thread_locks_situate);
+    pub fn destroy_thread_lock(&mut self) {
+        // Invariant: THREAD_LOCKS is instantiated via `init_thread_lock()` before this is called
+        let locks = THREAD_LOCKS.get().unwrap();
         let thread_idx = crate::handlers::thread::index_of_thread(&thread::current().id());
         *locks[thread_idx].borrow_mut() = None;
+    }
+
+    pub fn thread_lock(&mut self, thread_id: &ThreadId) -> Ref<'_, Option<Semaphore>> {
+        // Invariant: THREAD_LOCKS is instantiated via `init_thread_lock()` before this is called
+        let locks = THREAD_LOCKS.get().unwrap();
+
+        let thread_idx = crate::handlers::thread::index_of_thread(thread_id);
+        locks[thread_idx].borrow()
     }
 
     pub fn init_new_thread(&mut self) {
         let thread_id = thread::current().id();
         let mut state = self.acquire();
-        state.local
+        state
+            .local
             .pthreads
             .insert(unsafe { libc::pthread_self() }, thread_id);
-        state.local.signals.insert(thread_id, ThreadSignalInfo::default());
+        state
+            .local
+            .signals
+            .insert(thread_id, ThreadSigInfo::default());
         drop(state);
         self.init_thread_lock(&thread::current().id());
-    }
-
-    // TODO: yield_thread has become ugly, long and incomprehensible. Refactor.
-
-    /// Pauses execution of the current thread and delegates control flow to another thread/process.
-    /// Once all threads/processes have finished executing, this returns control flow to the primary
-    /// fuzzing process, which signals to the fuzzer that it is ready for the next input.
-    pub fn yield_thread(&mut self) {
-        let mut state = self.acquire();
-        let mut next_worker = None;
-        log::trace!("yield_thread internally called");
-
-        // pop PollerId values off `ready_pollers` one at a time
-        while let Some(item) = state.global.ready.pop_front() {
-            match item {
-                ReadyInfo::Worker(worker_id) => {
-                    log::trace!("Scheduling worker {:?} for execution", worker_id);
-                    // new_raised_events will be empty here
-                    next_worker = Some(worker_id);
-                    break;
-                }
-                ReadyInfo::Poller(poller_id) => {
-                    log::trace!(
-                        "Checking if poller {:?} is ready for execution...",
-                        poller_id
-                    );
-                    let global = &mut state.global;
-
-                    let poller_info = global.pollers.get_mut(&poller_id).unwrap();
-                    
-                    for polled_id in poller_info.raised_events.iter() {
-                        let polled_info = global.polled_events.get_mut(&polled_id).unwrap();
-                        if polled_info.event_raised {
-                            next_worker = Some(poller_info.worker_id);
-                            log::trace!(
-                                "Poller {:?} ready for execution, scheduling worker {:?}",
-                                poller_id,
-                                poller_info.worker_id
-                            );
-                            break;
-                        }
-                    }
-                    poller_info.raised_events.clear();
-                }
-            }
-        }
-
-        if let Some(worker_id) = next_worker {
-            state.global.waking_id = Some(worker_id.thread_id);
-            let local_process_id = state.local.process_id;
-            drop(state);
-
-            if worker_id.process_id != local_process_id {
-                // Invariant: no FizzGuards are being held here
-                self.wake_process(worker_id.process_id);
-                self.pause_current_process();
-            }
-
-            // Now it's this process's turn to execute
-            let Some(thread_id) = self.acquire().global.waking_id.take() else {
-                panic!("internal fizzle error--no waking_id assigned");
-            };
-
-            if thread::current().id() != thread_id {
-                log::trace!("Scheduling thread {:?} for execution", thread_id);
-                // Invariant: no FizzGuards are being held here
-                self.thread_lock(&thread_id).as_ref().unwrap().post();
-                self.pause_current_thread();
-            }
-
-        } else {
-            let plugin_worker = state.global.plugin_worker.unwrap();
-
-            // Schedule the plugin worker for execution
-            state.global.mark_worker_ready(plugin_worker);
-            drop(state);
-
-            // Yield to the plugin worker
-            self.yield_thread();
-        }
-    }
-
-    // TODO: refactor `fuzz_round_complete` as well
-
-    /// Notifies the fuzzing engine that the current round of fuzzing has finished.
-    /// Note that
-    pub fn fuzz_round_complete(&mut self) {
-        let mut state = self.acquire();
-        // Communicate that process is finished running
-
-        // A few notes:
-        // - deferred forkserver won't work for multi-process fuzzing, full stop.
-        // - default forkserver, PCR and Nyx-Net *will* work for multi-process fuzzing, but with caveats:
-        //   1. Default forkserver is deterministic but awfully slow (re-instantiates separate processes every time).
-        //   2. PCR is fast, but introduces potential instability if state is saved across consecutive connections.
-        //   3. Nyx-Net is deterministic and much faster than default forkserver, though harder to set up and has more system overhead.
-
-        // TODO: if using Nyx-Net, handle hypervisor preemption here
-
-        #[cfg(feature = "afl")]
-        if !state.global.shared_mem_initialized {
-            state.global.shared_mem_initialized = true;
-
-            #[cfg(feature = "pcr")]
-            unsafe {
-                crate::__afl_sharedmem_fuzzing = 1;
-            }
-
-            log::debug!("calling __afl_manual_init()");
-            unsafe {
-                crate::__afl_manual_init();
-            }
-            log::debug!("__afl_manual_init() finished");
-        }
-
-        // Wait for input from the fuzzing engine...
-        // For AFL++, fuzzing input comes from stdin
-        #[cfg(feature = "pcr")]
-        unsafe {
-            let rounds = if crate::__afl_connected == 0 {
-                1
-            } else {
-                state.global.persistent_rounds as libc::c_uint
-            };
-            if crate::__afl_persistent_loop(rounds) == 0 {
-                libc::_exit(0);
-            }
-
-            state.global.fuzz_input.clear();
-            let fuzz_buffer = state.global.fuzz_input.remaining_mut();
-
-            if crate::__afl_fuzz_ptr.is_null() {
-                let read_amount =
-                    libc::read(0, fuzz_buffer.as_mut_ptr() as *mut libc::c_void, 1048576);
-                *crate::__afl_fuzz_len = (read_amount & u32::MAX as isize) as u32;
-                if read_amount < 0 {
-                    panic!("could not read input from stdin")
-                }
-            } else {
-                let afl_buf = slice::from_raw_parts(crate::__afl_fuzz_ptr, *crate::__afl_fuzz_len as usize);
-                for (dst, src) in fuzz_buffer.iter_mut().zip(afl_buf.iter()) {
-                    dst.write(*src);
-                }
-            };
-
-            state.global
-                .fuzz_input
-                .did_write(*crate::__afl_fuzz_len as usize);
-        }
-
-        #[cfg(not(feature = "pcr"))]
-        unsafe {
-            let fuzz_buffer = state.global.fuzz_input.remaining_mut();
-            let read_amount = libc::read(0, fuzz_buffer.as_mut_ptr() as *mut libc::c_void, 1048576);
-            if read_amount <= 0 {
-                panic!("could not read input from stdin")
-            }
-
-            state.global.fuzz_input.did_write(read_amount as usize);
-        }
-
-        let mut polled_ready = heapless::Vec::<Rc<PolledId>, FIZZLE_MAX_FUZZ_ENDPOINTS>::new();
-        for endpoint_info in state.global.fuzz_endpoints.values_mut() {
-            endpoint_info.read_idx = 0;
-            polled_ready
-                .push(endpoint_info.read_polled.clone())
-                .unwrap();
-        }
-
-        log::debug!(
-            "{} fuzzing endpoints are marked as ready to fuzz",
-            polled_ready.len()
-        );
-
-        // Mark appropriate processes/threads as ready to receive input from `fuzz` endpoints
-        for polled_id in polled_ready {
-            state.raise_polled(&polled_id);
-        }
-
-        // TODO: inefficient
-        let fuzz_input = state.global.fuzz_input.clone();
-
-        let modules: Vec<_> = state.global.plugins.values().map(|plugin_info| plugin_info.module_id.clone()).collect();
-        for module in modules {
-            let plugin_module = state.local.plugin_modules.as_mut().unwrap().get_mut(&module).unwrap();
-            plugin_module.fuzz_round_start(fuzz_input.data());
-        }
-
-        let plugin_info_ids: Vec<_> = state.global.plugins.values().map(|plugin_info| (plugin_info.read_buf.clone(), plugin_info.write_buf.clone(), plugin_info.read_polled.clone(), plugin_info.write_polled.clone())).collect();
-
-        for (read_buf, write_buf, read_polled, write_polled) in plugin_info_ids {
-            state.global.buffers.get_mut(&read_buf).unwrap().clear();
-            state.global.buffers.get_mut(&write_buf).unwrap().clear();
-            state.lower_polled(&read_polled);
-            state.raise_polled(&write_polled);
-        }
-
-        // Now reload per-round fuzzing clients
-        let mut per_round_clients = heapless::Vec::new();
-        mem::swap(&mut per_round_clients, &mut state.global.per_round_clients);
-
-        log::info!("{} per-round clients to be initialized...", per_round_clients.len());
-
-        for client_info in per_round_clients {
-            let socket_id = state.global.add_pending_client(client_info.source_address, client_info.target_address, match client_info.backend {
-                PerRoundClientBackend::Fuzz(fuzz_endpoint_id) => PendingBackend::Fuzz(fuzz_endpoint_id),
-                PerRoundClientBackend::Plugin(plugin_id) => PendingBackend::Plugin(plugin_id),
-            });
-            log::debug!("added pending client {:?}", socket_id);
-            state.global.per_round_endpoints.insert(socket_id).unwrap();
-        }
-
-        drop(state);
-    }
-
-    pub fn terminate_thread(&mut self, term_method: ThreadTermination) -> ! {
-        let thread_id = thread::current().id();
-        log::info!("thread {:?} being terminated...", thread_id);
-
-        let mut state = self.acquire();
-        let mut cleanup_routines =state 
-            .local
-            .pthread_cleanup
-            .remove(&thread_id)
-            .unwrap_or_default();
-
-        let pthread_keys: Vec<u32> = state.local.pthread_keys.keys().copied().collect();
-        for key in pthread_keys {
-            if let Some(values) = state.local.pthread_key_values.get_mut(&key) {
-                if let Some(p) = values.remove(&thread_id) {
-                    let mut destructor = *state.local.pthread_keys.get(&key).unwrap();
-                    destructor.arg = Some(p);
-                    cleanup_routines.push_back(destructor);
-                }
-            }
-        }
-        drop(state);
-
-        self.run_outside_shim(|| {
-            for routine in cleanup_routines {
-                routine.call();
-            }
-        });
-
-        let mut state = self.acquire();
-
-        // Mark this thread as dead for future threads that may wait on it.
-        state.local.terminated_threads.insert(thread_id);
-
-        // Notify any threads awaiting this thread's death
-        if let Some(awaiting_threads) = state.local.awaiting_thread_death.remove(&thread_id) {
-            let process_id = state.local.process_id;
-            for thread_id in awaiting_threads {
-                state.global
-                    .ready
-                    .push_back(ReadyInfo::Worker(WorkerId {
-                        process_id,
-                        thread_id,
-                    }))
-                    .unwrap();
-            }
-        }
-
-        // Clean up local state of thread
-        state.local.pthread_cleanup.remove(&thread_id);
-        state.local.signals.remove(&thread_id);
-        state.local.pthreads.remove(&unsafe { libc::pthread_self() });
-
-        // Delegate execution to another thread via the thread reaper
-        if let Some(reaper_id) = state.local.reaper {
-            drop(state);
-            // Free this thread's semaphore
-            self.destroy_thread_lock();
-            self.thread_lock(&reaper_id).as_ref().unwrap().post()
-        } else {
-            drop(state);
-            let handle = std::thread::spawn(move || {
-                set_entered_handler(true);
-                let mut ctx = unsafe { fizzle_singleton() };
-                // Reaper thread
-                // The thread that spawned the reaper will immediately wait on its thread lock, so
-                // it is safe to `acquire()` global state here.
-                let reaper_id = thread::current().id();
-                let mut state = ctx.acquire();
-                state.local.reaper = Some(reaper_id);
-                drop(state);
-                ctx.init_thread_lock(&reaper_id);
-                // Notify thread that initialization has completed
-                ctx.thread_lock(&thread_id).as_ref().unwrap().post();
-                // Await for thread notification before running reaper loop
-                ctx.thread_lock(&reaper_id).as_ref().unwrap().wait();
-
-                loop {
-                    ctx.yield_thread();
-                    // Guaranteed to be listening on the thread-local lock rather than process lock,
-                    // as the thread being reaped has to be within the same process as the reaper.
-                    // Thus, when the thread being reaped `post()`s, this will return.
-                }
-            });
-
-            self.thread_lock(&thread_id).as_ref().unwrap().wait();
-            // Free this thread's semaphore
-            self.destroy_thread_lock();
-            self.thread_lock(&handle.thread().id()).as_ref().unwrap().post();
-        }
-
-        // =======================DANGER ZONE: CONCURRENCY===========================
-
-        // FIZZLE_STATE should not be accessed from this point onwards
-
-        // Now either cancel or signal the current thread to cause it to exit so that threads
-        // waiting on `join()` will properly reap threads (and avoid zombies)
-        match term_method {
-            ThreadTermination::Cancellation => unsafe {
-                libc::pthread_cancel(libc::pthread_self());
-                libc::sleep(1); // Acts as a backup cancellation point in case `pthread_cancel` didn't work
-                panic!("`pthread_cancel` failed to kill current thread");
-            },
-            ThreadTermination::Exit(retval) => unsafe { libc::pthread_exit(retval) },
-            ThreadTermination::SigTerm => unsafe {
-                libc::pthread_kill(libc::pthread_self(), libc::SIGTERM);
-                libc::sleep(1); // Acts as a backup cancellation point in case `pthread_kill` didn't work
-                panic!("`pthread_kill` failed to kill current thread");
-            },
-        }
-    }
-
-    pub fn pause_current_thread(&mut self) {
-        let current_thread = thread::current().id();
-        self.thread_lock(&current_thread).as_ref().unwrap().wait();
-
-        let mut state = self.acquire();
-        if state.local.cancelling_threads.remove(&current_thread) {
-            drop(state);
-            self.terminate_thread(ThreadTermination::Cancellation)
-        }
-    }
-
-    pub fn pause_current_process(&mut self) {
-        let state = self.acquire();
-        state.global
-            .process_locks[usize::from(state.local.process_id)]
-            .as_ref()
-            .unwrap()
-            .wait();
-    }
-
-    pub(crate) fn wake_process(&mut self, process_id: ProcessId) {
-        self.acquire()
-            .global
-            .process_locks[usize::from(process_id)]
-            .as_ref()
-            .unwrap()
-            .post();
-    }
-
-    // call this whenever waiting for a single poll event
-    pub fn poll_until_ready(&mut self, polled_id: Rc<PolledId>) {
-        let mut state = self.acquire();
-        if !state.polled_is_ready(&polled_id) {
-            let poller_id = state.new_poller();
-            state.register_poller(poller_id.clone(), polled_id);
-            drop(state);
-            poller_id.poll(self);
-            self.acquire().delete_poller(poller_id);
-        }
     }
 }
 
@@ -694,6 +233,7 @@ pub struct FizzleState {
 }
 
 impl FizzleState {
+    /// Allocates a new instance of Fizzle's in-process/shared state.
     fn new() -> Self {
         // NOTE: must go before `allocate_global_memory`, as this env variable gets set within it.
         let is_child_process = matches!(env::var(FIZZLE_MEMORY_ENV), Ok(_));
@@ -705,36 +245,17 @@ impl FizzleState {
         let global = if is_child_process {
             unsafe { global_uninit.assume_init_mut() }
         } else {
-            InterprocessState::initialize(global_uninit)
+            InterprocessState::situate(global_uninit)
         };
-
-        // Assign the ID to be used for this process
-        let process_id = if is_child_process {
-            global.passthrough_process_id
-        } else {
-            ProcessId::from(0)
-        };
-
-        // Set up the signal storage for this process
-        global.process_signals.allocate(ProcessSignalInfo::default()).unwrap();
 
         // Initialize process-local state
-        let transfer_fds = global.transfer_fds.take();
-        let mut local = ProcessLocalState::new(process_id, transfer_fds, is_child_process);
+        let local = ProcessLocalState::new();
 
-        if !is_child_process {
-            // Initialize plugins (but only in the parent process)
-            let mut endpoints = Vec::new();
-            comptime::populate_plugins(&mut endpoints, local.plugin_modules.as_mut().unwrap());
-            global.load_config_mappings(endpoints);
-        }
-
-        Self {
-            local,
-            global,
-        }
+        Self { local, global }
     }
 
+    /// Maps the memory to Fizzle's global shared state, allocating such memory if this is the
+    /// primary process.
     fn allocate_global_memory() -> &'static mut MaybeUninit<InterprocessState> {
         let size = mem::size_of::<InterprocessState>();
         let is_singleprocess =
@@ -752,14 +273,17 @@ impl FizzleState {
                 );
 
                 if location == libc::MAP_FAILED {
-                    panic!("failed to mmap global memory (errno {})", *libc::__errno_location())
+                    panic!(
+                        "failed to mmap global memory (errno {})",
+                        *libc::__errno_location()
+                    )
                 }
 
                 return &mut *(location as *mut MaybeUninit<InterprocessState>);
             }
         }
 
-        // Shared memory doesn't play well with the forkserver, so we need to make sure that 
+        // Shared memory doesn't play well with the forkserver, so we need to make sure that
         // processes are forked *before* any shared memory is created.
         #[cfg(feature = "afl")]
         unsafe {
@@ -769,10 +293,7 @@ impl FizzleState {
         let (key, flags) = match env::var(FIZZLE_MEMORY_ENV) {
             Ok(var) => {
                 log::debug!("attaching to already-created shared memory");
-                (
-                    var.parse().unwrap(),
-                    (libc::S_IRUSR | libc::S_IWUSR) as i32
-                )
+                (var.parse().unwrap(), (libc::S_IRUSR | libc::S_IWUSR) as i32)
             }
             Err(_) => unsafe {
                 let key = libc::getpid();
@@ -780,8 +301,7 @@ impl FizzleState {
                 log::debug!("allocating public shared memory object with key {}", key);
                 (
                     key,
-                    (libc::S_IRUSR | libc::S_IWUSR) as i32
-                    | libc::IPC_CREAT | libc::IPC_EXCL
+                    (libc::S_IRUSR | libc::S_IWUSR) as i32 | libc::IPC_CREAT | libc::IPC_EXCL,
                 )
             },
         };
@@ -803,43 +323,123 @@ impl FizzleState {
                 *libc::__errno_location()
             );
 
-            /*
-            let ret = libc::shmctl(shmid, libc::IPC_RMID, ptr::null_mut());
-            assert_eq!(
-                ret,
-                0,
-                "failed to make shared memory ephemeral (errno {})",
-                *libc::__errno_location()
-            );
-            */
-
             &mut *(location as *mut MaybeUninit<InterprocessState>)
         }
     }
 
-    /// Adds a thread from the current process to the `ready` queue.
-    pub fn mark_thread_ready(&mut self, thread_id: ThreadId) {
-        let process_id = self.local.process_id;
-        self.global
-            .ready
-            .push_back(ReadyInfo::Worker(WorkerId {
-                process_id,
-                thread_id,
-            }))
-            .unwrap();
+    /// Initializes any default values for global interprocess and/or local process state.
+    ///
+    /// This method should only be called once per created process within the `Scheduler`.
+    #[cold]
+    pub fn initialize_state(&mut self) {
+        assert!(!self.local.is_initialized);
+
+        if !self.global.is_initialized {
+            self.initialize_global();
+        }
+
+        self.initialize_local();
+
+        if self.local.process_id.is_main_process() {
+            // Additionally initialize plugin state
+            // NOTE: must be done _after_ global/local state is initialized.
+            self.local.main_state = Some(MainProcessState::new());
+        }
     }
 
-    pub fn mark_thread_delayed_ready(&mut self, thread_id: ThreadId) {
-        let process_id = self.local.process_id;
-        self.global
-            .delayed_ready
-            .push_back(ReadyInfo::Worker(WorkerId {
-                process_id,
-                thread_id,
-            }))
+    /// Initializes local process state.
+    ///
+    /// This method should only be called once per created process within the `Scheduler`.
+    fn initialize_local(&mut self) {
+        let (local, global) = self.split();
+
+        assert!(!local.is_initialized);
+        local.is_initialized = true;
+
+        // Assign the process ID to be used for this process
+        let process_id = global.assign_process_id();
+        local.process_id = process_id;
+
+        // Insert the current (main) pthread into `pthreads`
+        local.pthreads.insert(unsafe { libc::pthread_self() }, thread::current().id());
+
+        // Inherit signal handlers
+        if let Some(handlers) = global.inherited_handlers.take() {
+            global.signals.allocate_with_key(process_id, ProcSigInfo::inherit(handlers));
+        } else {
+            global.signals.allocate_with_key(process_id, ProcSigInfo::new());
+        }
+
+        // Inherit blocked sigmask
+        if let Some(sigmask) = global.inherited_sigmask.take() {
+            local.signals.insert(thread::current().id(), ThreadSigInfo::inherit(sigmask));
+        } else {
+            local.signals.insert(thread::current().id(), ThreadSigInfo::new());
+        }
+
+        // Inherit parent's file descriptors
+        if let Some(transfer_fds) = self.global.transfer_fds.take().map(Box::new) {
+            // Generally, moving `KeyedArena`s is unsafe because `Rc<>` references rely on arenas
+            // remaining in a fixed location in memory. However, `fds` never makes use of these
+            // references, so this is safe to do.
+            self.local.fds = transfer_fds;
+        } else {
+            // Initialize parent's file descriptors
+            self.local.fds.allocate_with_key(
+                DescriptorId::from_raw_fd(0),
+                DescriptorInfo::new(FdResource::Stdin),
+            )
             .unwrap();
+            self.local.fds.allocate_with_key(
+                DescriptorId::from_raw_fd(1),
+                DescriptorInfo::new(FdResource::Stdout),
+            )
+            .unwrap();
+            self.local.fds.allocate_with_key(
+                DescriptorId::from_raw_fd(2),
+                DescriptorInfo::new(FdResource::Stderr),
+            )
+            .unwrap();
+        }
+
+        // Initialize this process's global lock
+        let sem_opt = &mut self.global.process_locks[usize::from(process_id)];
+        // TODO: this seems to behave safely, but check with Miri
+        unsafe {
+            let uninit_sem = (*(ptr::from_mut(sem_opt) as *mut Option<MaybeUninit<Semaphore>>))
+                .insert(MaybeUninit::uninit());
+            Semaphore::initialize(uninit_sem, true, 0);
+        }
     }
 
+    /// Initializes global interprocess state.
+    ///
+    /// This method should only be called once in the lifetime of the Fizzle harness.
+    #[cold]
+    fn initialize_global(&mut self) {
+        assert!(!self.global.is_initialized);
+        self.global.is_initialized = true;
+
+        // Initialize plugins for the main process
+        let mut plugins: Box<MaybeUninit<Plugins>> = Box::new(MaybeUninit::uninit());
+        // This needs to remain fixed in a location, so we use a Box with in-place initialization
+        unsafe { Plugins::initialize(plugins.as_mut_ptr()) };
+        self.local.plugins = Some(unsafe { plugins.assume_init() });
+
+        // Initialize plugin endpoints
+        let mut endpoints = Vec::new();
+        comptime::populate_plugins(&mut endpoints, self.local.plugins.as_mut().unwrap());
+        self.global.load_config_mappings(endpoints);
+    }
+
+    /// Returns both local and global state in separate lifetimes that can be used simultaneously.
+    ///
+    /// This method is used specifically to handle a particular lifetime issue in the Scheduler.
+    pub fn split(&mut self) -> (&mut ProcessLocalState, &mut InterprocessState) {
+        (&mut self.local, self.global)
+    }
+
+    /// Indicates whether the given polled event is ready to be acted on.
     pub fn polled_is_ready(&mut self, polled_id: &Rc<PolledId>) -> bool {
         let polled = self.global.polled_events.get(polled_id).unwrap();
         polled.event_raised
@@ -855,10 +455,7 @@ impl FizzleState {
 
     // if buffer is empty, then call this
     pub fn lower_polled(&mut self, polled_id: &Rc<PolledId>) {
-        let polled = self.global
-            .polled_events
-            .get_mut(polled_id)
-            .unwrap();
+        let polled = self.global.polled_events.get_mut(polled_id).unwrap();
         debug_assert!(polled.event_raised);
         polled.event_raised = false;
     }
@@ -923,15 +520,17 @@ impl FizzleState {
         }
     }
 
+    // TODO: need to figure out where this fits...
     pub fn copy_exec_fds(&mut self) {
-        let mut fds = self.local.fds.clone();
-        let mut downref_keys  = Vec::new();
+        let fds = self.global.transfer_fds.insert(self.local.fds.as_ref().clone());
+        let mut downref_keys = Vec::new();
 
         for key in fds.keys() {
             if let Some(DescriptorInfo {
                 close_on_exec: true,
                 ..
-            }) = fds.get(&key) {
+            }) = fds.get(&key)
+            {
                 downref_keys.push(key);
             }
         }
@@ -939,20 +538,68 @@ impl FizzleState {
         for key in downref_keys {
             fds.downref(&key);
         }
+    }
+}
 
-        self.global.transfer_fds = Some(fds);
+/// State specific to the first (root) process instantiated by Fizzle.
+pub struct MainProcessState {
+    pub onstartup_commands: Vec<Command>,
+    pub onready_commands: Vec<Command>,
+    pub plugins: Box<Plugins>,
+}
+
+impl Debug for MainProcessState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MainProcessState")
+            .field("onstartup_commands", &self.onstartup_commands)
+            .field("awaiting_thread_death", &self.onready_commands)
+            .field("plugins", &"<opaque>")
+            .finish()
+    }
+}
+
+impl MainProcessState {
+    fn new() -> Self {
+        let mut onstartup_commands = Vec::new();
+        let mut onready_commands = Vec::new();
+
+        // Initialize immediate ("onstartup") commands
+        comptime::populate_onstartup_processes(&mut onstartup_commands);
+
+        // Initialize delayed ("onready") commands
+        comptime::populate_onready_processes(&mut onready_commands);
+
+        // Initialize plugins--these need to remain fixed in memory, so we use a Box with in-place initialization.
+        let mut plugins: Box<MaybeUninit<Plugins>> = Box::new_uninit();
+        unsafe {
+            Plugins::initialize(plugins.as_mut_ptr());
+            Self {
+                onstartup_commands,
+                onready_commands,
+                plugins: plugins.assume_init(),
+            }
+        }
     }
 }
 
 pub struct ProcessLocalState {
-    pub post_init_done: bool,
+    /// Indicates whether the given process-local state has completed initialization routines.
+    ///
+    /// When `ProcessLocalState` is first allocated and instantiated, this is set to `false`. Once
+    /// `FizzleState::initialize_local()` is called, this is set to `true`.
+    pub is_initialized: bool,
+    /// State associated with the main process (e.g. the first process instantiated with the Fizzle harness).
+    pub main_state: Option<MainProcessState>,
+    /// A thread that has received a cancellation request.
+    pub cancelling: Option<ThreadId>,
+
     pub process_id: ProcessId,
     /// Indicates that the thread being awoken should be immediately cancelled and delegate execution back to this thread.
     /// Plugin modules for handling I/O.
     ///
     /// This field is only `Some` in the parent process; all other processes must delegate control
     /// flow to it in order to handle plugin I/O.
-    pub plugin_modules: Option<Box<PluginModules>>,
+    pub plugins: Option<Box<Plugins>>,
     /// A supplamentary thread used to reap exiting threads.
     pub reaper: Option<ThreadId>,
     pub fds: Box<Descriptors>,
@@ -969,12 +616,15 @@ pub struct ProcessLocalState {
     pub pthreads: HashMap<libc::pthread_t, ThreadId, FxBuildHasher>,
     pub pthread_cleanup: HashMap<ThreadId, VecDeque<PThreadRoutine>, FxBuildHasher>,
     pub pthread_keys: HashMap<libc::pthread_key_t, PThreadRoutine, FxBuildHasher>,
-    pub pthread_key_values:
-        HashMap<libc::pthread_key_t, HashMap<ThreadId, *mut libc::c_void, FxBuildHasher>, FxBuildHasher>,
+    pub pthread_key_values: HashMap<
+        libc::pthread_key_t,
+        HashMap<ThreadId, *mut libc::c_void, FxBuildHasher>,
+        FxBuildHasher,
+    >,
     pub futex_waiters: HashMap<*const u32, VecDeque<(u32, ThreadId)>, FxBuildHasher>,
     pub terminated_threads: HashSet<ThreadId, FxBuildHasher>,
-    pub signals: HashMap<ThreadId, ThreadSignalInfo, FxBuildHasher>,
-    pub cancelling_threads: HashSet<ThreadId, FxBuildHasher>,
+
+    pub signals: HashMap<ThreadId, ThreadSigInfo, FxBuildHasher>,
     /// Indicates which thread(s) are awaiting the death of a specific thread (via pthread_join)
     pub awaiting_thread_death: HashMap<ThreadId, Vec<ThreadId>, FxBuildHasher>,
     /// The directory that the program is currently executing relative to.
@@ -984,7 +634,10 @@ pub struct ProcessLocalState {
 impl Debug for ProcessLocalState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FizzLocal")
+            .field("is_initialized", &self.is_initialized)
+            .field("main_state", &self.main_state)
             .field("process_id", &self.process_id)
+            .field("cancelling", &self.cancelling)
             .field("reaper", &self.reaper)
             .field("fds", &self.fds)
             .field("dirs", &self.dirs)
@@ -1001,7 +654,6 @@ impl Debug for ProcessLocalState {
             .field("pthread_keys", &self.pthread_keys)
             .field("pthread_key_values", &self.pthread_key_values)
             .field("terminated_threads", &self.terminated_threads)
-            .field("cancelling_threads", &self.cancelling_threads)
             .field("awaiting_thread_death", &self.awaiting_thread_death)
             .field("working_directory", &self.working_directory)
             .finish()
@@ -1009,85 +661,67 @@ impl Debug for ProcessLocalState {
 }
 
 impl ProcessLocalState {
-    fn new(
-        id: ProcessId,
-        transfer_fds: Option<Box<Descriptors>>,
-        is_child_process: bool,
-    ) -> Self {
-        let thread_id = thread::current().id();
-
+    fn new() -> Self {
         let working_directory =
             FilePath::from_raw_bytes(env::current_dir().unwrap().as_os_str().as_bytes()).unwrap();
 
-        let fds = match transfer_fds {
-            Some(fds) => fds,
-            None => {
-                let mut fds: Box<MaybeUninit<Descriptors>> = Box::new(MaybeUninit::uninit());
-                // This needs to remain fixed in a location, so we use a Box with in-place initialization
-                unsafe { KeyedArena::initialize(fds.as_mut_ptr()) };
-
-                let mut fds = unsafe { fds.assume_init() };
-                fds.allocate_with_key(DescriptorId::from_raw_fd(0), DescriptorInfo::new(FdResource::Stdin)).unwrap();
-                fds.allocate_with_key(DescriptorId::from_raw_fd(1), DescriptorInfo::new(FdResource::Stdout)).unwrap();
-                fds.allocate_with_key(DescriptorId::from_raw_fd(2), DescriptorInfo::new(FdResource::Stderr)).unwrap();
-                fds
-            }
-        };
-
-        // Insert the current (main) pthread into `pthreads`
-        let mut pthreads = HashMap::with_hasher(Default::default());
-        pthreads.insert(unsafe { libc::pthread_self() }, thread::current().id());
-
-        let plugin_modules = if is_child_process {
-            None
-        } else {
-            let mut modules: Box<MaybeUninit<PluginModules>> = Box::new(MaybeUninit::uninit());
-            // This needs to remain fixed in a location, so we use a Box with in-place initialization
-            unsafe { PluginModules::initialize(modules.as_mut_ptr()) };
-            Some(unsafe { modules.assume_init() })
-        };
-
-        let mut signals = HashMap::with_hasher(Default::default());
-        signals.insert(thread_id, ThreadSignalInfo::default()); // TODO: passthrough signal state from parent process...
-
         Self {
-            post_init_done: false,
-            process_id: id,
-            plugin_modules, 
+            is_initialized: false,
+            main_state: None,
+            cancelling: None,
+            process_id: ProcessId::main_process(),
+            plugins: None,
             reaper: None,
-            fds,
+            fds: Box::new(KeyedArena::new()),
             dirs: Default::default(),
-            barriers: HashMap::with_hasher(Default::default()),
-            condvars: HashMap::with_hasher(Default::default()),
-            file_objs: HashMap::with_hasher(Default::default()),
-            mutexes: HashMap::with_hasher(Default::default()),
-            named_semaphores: HashMap::with_hasher(Default::default()),
-            rwlocks: HashMap::with_hasher(Default::default()),
-            semaphores: HashMap::with_hasher(Default::default()),
-            spinlocks: HashMap::with_hasher(Default::default()),
-            pthreads,
-            pthread_cleanup: HashMap::with_hasher(Default::default()),
-            pthread_keys: HashMap::with_hasher(Default::default()),
-            pthread_key_values: HashMap::with_hasher(Default::default()),
-            signals,
-            futex_waiters: HashMap::with_hasher(Default::default()),
-            terminated_threads: HashSet::with_hasher(Default::default()),
-            cancelling_threads: HashSet::with_hasher(Default::default()),
+            barriers: HashMap::default(),
+            condvars: HashMap::default(),
+            file_objs: HashMap::default(),
+            mutexes: HashMap::default(),
+            named_semaphores: HashMap::default(),
+            rwlocks: HashMap::default(),
+            semaphores: HashMap::default(),
+            spinlocks: HashMap::default(),
+            pthreads: HashMap::default(),
+            pthread_cleanup: HashMap::default(),
+            pthread_keys: HashMap::default(),
+            pthread_key_values: HashMap::default(),
+            signals: HashMap::default(),
+            futex_waiters: HashMap::default(),
+            terminated_threads: HashSet::default(),
             working_directory,
-            awaiting_thread_death: HashMap::with_hasher(Default::default()),
+            awaiting_thread_death: HashMap::default(),
         }
     }
 }
 
 #[derive(Debug)]
 pub struct InterprocessState {
+    /// Indicates whether the state has been properly initialized (not just instantiated).
+    pub is_initialized: bool,
+
     /// The thread identifier to be executed by the waking process. This is `Some` if and only if
     /// a thread is currently about to be scheduled.
     pub waking_id: Option<ThreadId>,
     /// The thread/process identifier to be reaped. This is `Some` if and only if a thread/process
     /// is currently exiting.
     pub exiting_id: Option<WorkerId>,
+    /// The process ID to be passed through a call to one of the `exec*` family of functions.
+    /// 
+    /// The pid of a process changes when `fork()` is called, but not when `exec*` is.
+    pub passthrough_id: Option<ProcessId>, // TODO: implement
+    /// The signal handlers that have been inherited from a parent process.
+    pub inherited_handlers: Option<SignalHandlers>,
+    /// The mask of blocked signals that have been inherited from a parent thread.
+    pub inherited_sigmask: Option<SignalSet>, // TODO: implement `exec()` passthrough of IGN, but not handlers
 
+    /// The thread/process identifier to be signalled with the given signal value. This is `Some`
+    /// if and only if a thread is about to receive an outstanding signal.
+    pub signal: Option<(SignalDestination, i32)>,
+    /// Signal dispositions, handlers and blocked incoming signals for each process.
+    pub signals: KeyedArena<ProcessId, ProcSigInfo, FIZZLE_MAX_PROCESSES>,
+
+    // /// The list of subprocess that are meant to be spawned once all available work has been completed.
     pub plugin_worker: Option<WorkerId>,
     pub persistent_rounds: usize,
     pub next_process_id: ProcessId,
@@ -1096,29 +730,28 @@ pub struct InterprocessState {
     /// The next ephemeral port to be assigned to a socket.
     pub next_ephemeral_port: u16,
     pub process_locks: [Option<Semaphore>; FIZZLE_MAX_PROCESSES],
-    pub pids: FnvIndexMap<libc::pid_t, ProcessId, FIZZLE_MAX_PROCESSES>,
-    pub transfer_fds: Option<Box<Descriptors>>,
+    pub pids: FnvIndexMap<libc::pid_t, ProcessId, FIZZLE_MAX_PROCESSES>, // TODO: implement initialization and use of this
+    pub gids: FnvIndexMap<libc::gid_t, ProcessId, FIZZLE_MAX_PROCESSES>, // TODO: implement initialization and use of this
+    pub transfer_fds: Option<Descriptors>,
     pub shared_mem_initialized: bool,
-    pub passthrough_process_id: ProcessId,
     pub epolls: KeyedArena<EpollId, EpollInfo, FIZZLE_MAX_EPOLLS>,
     pub event_fds: KeyedArena<EventfdId, EventfdInfo, FIZZLE_MAX_EVENTFDS>,
     pub file_paths: FnvIndexMap<FilePath<MAX_PATH_LEN>, Rc<FileId>, FIZZLE_MAX_FILE_PATHS>,
     pub files: KeyedArena<FileId, FileBackend, FIZZLE_MAX_FILES>,
-    pub startup_complete: bool,
     pub sem_paths: FnvIndexMap<SemPath, Rc<SemaphoreId>, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub semaphores: KeyedArena<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub pipes: KeyedArena<PipeId, PipeInfo, FIZZLE_MAX_PIPES>,
     pub message_queues: KeyedArena<MessageQueueId, MessageQueueInfo, FIZZLE_MAX_MESSAGE_QUEUES>,
     // TODO: SO_REUSEPORT breaks this...
-    pub socket_locations: FnvIndexMap<TransportAddress, TransportLocationInfo, FIZZLE_MAX_SOCKADDRS>,
+    pub socket_locations:
+        FnvIndexMap<TransportAddress, TransportLocationInfo, FIZZLE_MAX_SOCKADDRS>,
     pub sockets: KeyedArena<SocketId, SocketState, FIZZLE_MAX_SOCKETS>,
     pub buffers: KeyedArena<BufferId, Buffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
     pub stdio: StdioBackend,
     // Polling infrastructure
-    pub plugins: KeyedArena<PluginId, PluginInfo, FIZZLE_MAX_PLUGIN_STREAMS>,
+    pub plugins: KeyedArena<PluginEndpointId, PluginInfo, FIZZLE_MAX_PLUGIN_STREAMS>,
     pub polled_events: KeyedArena<PolledId, PolledInfo, FIZZLE_MAX_POLLED_EVENTS>,
     pub pollers: KeyedArena<PollerId, PollerInfo, FIZZLE_MAX_POLLERS>,
-    pub process_signals: KeyedArena<ProcessId, ProcessSignalInfo, FIZZLE_MAX_PROCESSES>,
     /// Pollers/Workers that can be immediately scheduled.
     pub ready: Deque<ReadyInfo, FIZZLE_MAX_QUEUED_READY_POLLERS>,
     /// Pollers/Workers that should be scheduled once the system has reached a halted state.
@@ -1131,28 +764,36 @@ pub struct InterprocessState {
 }
 
 impl InterprocessState {
-    // TODO: initialize() is unsafe--whenever we change the fields in InterprocessState, it becomes
+    // TODO: situate() is unsafe--whenever we change the fields in InterprocessState, it becomes
     // unsound until we add the corresponding definition. We should really change it to a trait +
     // proc macro derive.
     /// Takes an uninitialized InterprocessState and initializes it in place.
-    fn initialize(state: &mut MaybeUninit<InterprocessState>) -> &mut InterprocessState {
+    fn situate(state: &mut MaybeUninit<InterprocessState>) -> &mut InterprocessState {
         unsafe {
             let state = state.as_mut_ptr();
+            *ptr::addr_of_mut!((*state).is_initialized) = false;
+
             *ptr::addr_of_mut!((*state).waking_id) = None;
             *ptr::addr_of_mut!((*state).exiting_id) = None;
+            *ptr::addr_of_mut!((*state).passthrough_id) = None;
+            *ptr::addr_of_mut!((*state).inherited_handlers) = None;
+            *ptr::addr_of_mut!((*state).inherited_sigmask) = None;
 
+            *ptr::addr_of_mut!((*state).signal) = None; 
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).signals));
 
             *ptr::addr_of_mut!((*state).plugin_worker) = None;
-            *ptr::addr_of_mut!((*state).shared_mem_initialized) = false;
             *ptr::addr_of_mut!((*state).persistent_rounds) = FIZZLE_AFL_LOOP; // TODO: make configurable
-            *ptr::addr_of_mut!((*state).next_process_id) = ProcessId::from(1);
+            *ptr::addr_of_mut!((*state).next_process_id) = ProcessId::from(0);
             *ptr::addr_of_mut!((*state).next_stream_id) = StreamId::from(0);
             *ptr::addr_of_mut!((*state).next_ephemeral_port) = FIZZLE_EPHEMERAL_PORT_START;
-            *ptr::addr_of_mut!((*state).startup_complete) = false;
             *ptr::addr_of_mut!((*state).process_locks) = array::from_fn(|_| None);
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).process_signals));
+
+            *ptr::addr_of_mut!((*state).pids) = FnvIndexMap::new();
+            *ptr::addr_of_mut!((*state).gids) = FnvIndexMap::new();
+
             *ptr::addr_of_mut!((*state).transfer_fds) = None;
-            *ptr::addr_of_mut!((*state).passthrough_process_id) = ProcessId::from(1);
+            *ptr::addr_of_mut!((*state).shared_mem_initialized) = false;
             KeyedArena::initialize(ptr::addr_of_mut!((*state).epolls));
             KeyedArena::initialize(ptr::addr_of_mut!((*state).event_fds));
             *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
@@ -1170,6 +811,7 @@ impl InterprocessState {
             KeyedArena::initialize(ptr::addr_of_mut!((*state).polled_events));
             KeyedArena::initialize(ptr::addr_of_mut!((*state).pollers));
             *ptr::addr_of_mut!((*state).ready) = Deque::new();
+            *ptr::addr_of_mut!((*state).delayed_ready) = Deque::new();
             *ptr::addr_of_mut!((*state).fuzz_input) = Buffer::new();
             *ptr::addr_of_mut!((*state).per_round_clients) = heapless::Vec::new();
             *ptr::addr_of_mut!((*state).per_round_endpoints) = FnvIndexSet::new();
@@ -1181,7 +823,7 @@ impl InterprocessState {
         }
     }
 
-    fn load_config_mappings(&mut self, endpoints: Vec<PluginConfigEndpoint>) {
+    fn load_config_mappings(&mut self, endpoints: Vec<PluginEndpoint>) {
         for endpoint in endpoints {
             for _ in 0..endpoint.num_streams {
                 let endpoint_variant = endpoint.endpoint_variant.clone();
@@ -1199,9 +841,12 @@ impl InterprocessState {
                                     .allocate(PolledInfo::new_raised())
                                     .unwrap(),
                             }),
-                            IoEmulationType::Plugin(module_id) => StdioBackend::Plugin(
-                                self.add_plugin(endpoint.endpoint_variant.clone(), module_id.clone()),
-                            ),
+                            IoEmulationType::Plugin(module_id) => {
+                                StdioBackend::Plugin(self.add_plugin(
+                                    endpoint.endpoint_variant.clone(),
+                                    module_id.clone(),
+                                ))
+                            }
                             IoEmulationType::Sink => StdioBackend::Sink,
                             IoEmulationType::NullSink => StdioBackend::NullSink,
                             IoEmulationType::Fuzz => {
@@ -1231,9 +876,10 @@ impl InterprocessState {
                                 }))
                                 .unwrap(),
                             IoEmulationType::Plugin(module_id) => {
-                                let backend = FileBackend::Plugin(
-                                    self.add_plugin(endpoint.endpoint_variant.clone(), module_id.clone()),
-                                );
+                                let backend = FileBackend::Plugin(self.add_plugin(
+                                    endpoint.endpoint_variant.clone(),
+                                    module_id.clone(),
+                                ));
                                 self.files.allocate(backend).unwrap()
                             }
                             IoEmulationType::Sink => {
@@ -1244,7 +890,10 @@ impl InterprocessState {
                             }
                             IoEmulationType::Fuzz => {
                                 let fuzz_endpoint_id = self.add_fuzz_endpoint();
-                                let file_id = self.files.allocate(FileBackend::Fuzz(fuzz_endpoint_id)).unwrap();
+                                let file_id = self
+                                    .files
+                                    .allocate(FileBackend::Fuzz(fuzz_endpoint_id))
+                                    .unwrap();
 
                                 file_id
                             }
@@ -1267,7 +916,10 @@ impl InterprocessState {
                             IoEmulationType::Passthrough => ServerBackend::Passthrough,
                         };
 
-                        self.add_server(TransportAddress::new_inet(addr, TransportProtocol::Tcp), backend)
+                        self.add_server(
+                            TransportAddress::new_inet(addr, TransportProtocol::Tcp),
+                            backend,
+                        )
                     }
                     IoEndpointVariant::TcpClient(addr) => {
                         let backend = match &endpoint.emulation_type {
@@ -1281,18 +933,26 @@ impl InterprocessState {
                             IoEmulationType::Passthrough => PendingBackend::Passthrough,
                         };
 
-                        let target_address = TransportAddress::new_inet(addr, TransportProtocol::Tcp);
-                        let source_address = self.ephemeral_address(target_address.family(), target_address.protocol());
+                        let target_address =
+                            TransportAddress::new_inet(addr, TransportProtocol::Tcp);
+                        let source_address = self
+                            .ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
-                            self.per_round_clients.push(PerRoundClientInfo {
-                                source_address,
-                                target_address,
-                                backend: match backend {
-                                    PendingBackend::Fuzz(fuzz_endpoint_id) => PerRoundClientBackend::Fuzz(fuzz_endpoint_id),
-                                    PendingBackend::Plugin(plugin_id) => PerRoundClientBackend::Plugin(plugin_id),
-                                    _ => unreachable!(),
-                                },
-                            }).unwrap();
+                            self.per_round_clients
+                                .push(PerRoundClientInfo {
+                                    source_address,
+                                    target_address,
+                                    backend: match backend {
+                                        PendingBackend::Fuzz(fuzz_endpoint_id) => {
+                                            PerRoundClientBackend::Fuzz(fuzz_endpoint_id)
+                                        }
+                                        PendingBackend::Plugin(plugin_id) => {
+                                            PerRoundClientBackend::Plugin(plugin_id)
+                                        }
+                                        _ => unreachable!(),
+                                    },
+                                })
+                                .unwrap();
                         } else {
                             self.add_pending_client(source_address, target_address, backend);
                         }
@@ -1309,7 +969,10 @@ impl InterprocessState {
                             IoEmulationType::Passthrough => ServerBackend::Passthrough,
                         };
 
-                        self.add_server(TransportAddress::new_inet(addr, TransportProtocol::Udp), backend)
+                        self.add_server(
+                            TransportAddress::new_inet(addr, TransportProtocol::Udp),
+                            backend,
+                        )
                     }
                     IoEndpointVariant::UdpClient(addr) => {
                         let backend = match &endpoint.emulation_type {
@@ -1323,18 +986,26 @@ impl InterprocessState {
                             IoEmulationType::Passthrough => PendingBackend::Passthrough,
                         };
 
-                        let target_address = TransportAddress::new_inet(addr, TransportProtocol::Udp);
-                        let source_address = self.ephemeral_address(target_address.family(), target_address.protocol());
+                        let target_address =
+                            TransportAddress::new_inet(addr, TransportProtocol::Udp);
+                        let source_address = self
+                            .ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
-                            self.per_round_clients.push(PerRoundClientInfo {
-                                source_address,
-                                target_address,
-                                backend: match backend {
-                                    PendingBackend::Fuzz(fuzz_endpoint_id) => PerRoundClientBackend::Fuzz(fuzz_endpoint_id),
-                                    PendingBackend::Plugin(plugin_id) => PerRoundClientBackend::Plugin(plugin_id),
-                                    _ => unreachable!(),
-                                },
-                            }).unwrap();
+                            self.per_round_clients
+                                .push(PerRoundClientInfo {
+                                    source_address,
+                                    target_address,
+                                    backend: match backend {
+                                        PendingBackend::Fuzz(fuzz_endpoint_id) => {
+                                            PerRoundClientBackend::Fuzz(fuzz_endpoint_id)
+                                        }
+                                        PendingBackend::Plugin(plugin_id) => {
+                                            PerRoundClientBackend::Plugin(plugin_id)
+                                        }
+                                        _ => unreachable!(),
+                                    },
+                                })
+                                .unwrap();
                         } else {
                             self.add_pending_client(source_address, target_address, backend);
                         }
@@ -1351,7 +1022,10 @@ impl InterprocessState {
                             IoEmulationType::Passthrough => ServerBackend::Passthrough,
                         };
 
-                        self.add_server(TransportAddress::new_inet(addr, TransportProtocol::Sctp), backend)
+                        self.add_server(
+                            TransportAddress::new_inet(addr, TransportProtocol::Sctp),
+                            backend,
+                        )
                     }
                     IoEndpointVariant::SctpClient(addr) => {
                         let backend = match &endpoint.emulation_type {
@@ -1365,18 +1039,26 @@ impl InterprocessState {
                             IoEmulationType::Passthrough => PendingBackend::Passthrough,
                         };
 
-                        let target_address = TransportAddress::new_inet(addr, TransportProtocol::Sctp);
-                        let source_address = self.ephemeral_address(target_address.family(), target_address.protocol());
+                        let target_address =
+                            TransportAddress::new_inet(addr, TransportProtocol::Sctp);
+                        let source_address = self
+                            .ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
-                            self.per_round_clients.push(PerRoundClientInfo {
-                                source_address,
-                                target_address,
-                                backend: match backend {
-                                    PendingBackend::Fuzz(fuzz_endpoint_id) => PerRoundClientBackend::Fuzz(fuzz_endpoint_id),
-                                    PendingBackend::Plugin(plugin_id) => PerRoundClientBackend::Plugin(plugin_id),
-                                    _ => unreachable!(),
-                                },
-                            }).unwrap();
+                            self.per_round_clients
+                                .push(PerRoundClientInfo {
+                                    source_address,
+                                    target_address,
+                                    backend: match backend {
+                                        PendingBackend::Fuzz(fuzz_endpoint_id) => {
+                                            PerRoundClientBackend::Fuzz(fuzz_endpoint_id)
+                                        }
+                                        PendingBackend::Plugin(plugin_id) => {
+                                            PerRoundClientBackend::Plugin(plugin_id)
+                                        }
+                                        _ => unreachable!(),
+                                    },
+                                })
+                                .unwrap();
                         } else {
                             self.add_pending_client(source_address, target_address, backend);
                         }
@@ -1417,9 +1099,14 @@ impl InterprocessState {
                         .push_back(ReadyInfo::Poller(poller.clone()))
                         .unwrap();
                 }
-                self.pollers.get_mut(&poller).unwrap().raised_events.insert(polled_id.clone()).unwrap();
+                self.pollers
+                    .get_mut(&poller)
+                    .unwrap()
+                    .raised_events
+                    .insert(polled_id.clone())
+                    .unwrap();
             }
-        } 
+        }
     }
 
     pub fn gen_random_array<const N: usize>(&mut self) -> [u8; N] {
@@ -1434,12 +1121,10 @@ impl InterprocessState {
     pub fn add_fuzz_endpoint(&mut self) -> Rc<FuzzEndpointId> {
         let read_polled = self.polled_events.allocate(PolledInfo::new()).unwrap();
         self.fuzz_endpoints
-            .allocate(
-                FuzzEndpointInfo {
-                    read_polled,
-                    read_idx: 0,
-                },
-            )
+            .allocate(FuzzEndpointInfo {
+                read_polled,
+                read_idx: 0,
+            })
             .unwrap()
     }
 
@@ -1510,15 +1195,21 @@ impl InterprocessState {
 
                 if let Some(socket_id) = location_info.bound_sockets.pop_front() {
                     log::debug!("found bound socket at location for pending connection");
-                    location_info.bound_sockets.push_back(socket_id.clone()).unwrap();
+                    location_info
+                        .bound_sockets
+                        .push_back(socket_id.clone())
+                        .unwrap();
                     match self.sockets.get(&socket_id).unwrap() {
                         SocketState::Server(server_info) => {
                             log::debug!("notifying server that pending connection exists...");
                             let connect_poll = server_info.ready_to_connect.clone();
-                            log::debug!("connect_poll: {:?}", self.polled_events.get(&connect_poll).unwrap());
+                            log::debug!(
+                                "connect_poll: {:?}",
+                                self.polled_events.get(&connect_poll).unwrap()
+                            );
                             self.raise_polled(&connect_poll);
-                        },
-                        _ => unreachable!()
+                        }
+                        _ => unreachable!(),
                     }
                 }
             }
@@ -1567,8 +1258,8 @@ impl InterprocessState {
     pub fn add_plugin(
         &mut self,
         endpoint: IoEndpointVariant,
-        module_id: Rc<PluginModuleId>,
-    ) -> Rc<PluginId> {
+        module_id: Rc<PluginId>,
+    ) -> Rc<PluginEndpointId> {
         let stream = self.next_stream_id;
         self.next_stream_id = StreamId::from(usize::from(stream) + 1);
         let read_buf = self.buffers.allocate(Buffer::new()).unwrap();
@@ -1592,16 +1283,26 @@ impl InterprocessState {
             .unwrap()
     }
 
-    pub fn ephemeral_address(&mut self, family: AddressFamily, protocol: TransportProtocol) -> TransportAddress {
+    pub fn ephemeral_address(
+        &mut self,
+        family: AddressFamily,
+        protocol: TransportProtocol,
+    ) -> TransportAddress {
         match family {
             AddressFamily::Ipv4 => {
                 let port = self.next_ephemeral_port;
                 if self.next_ephemeral_port >= FIZZLE_EPHEMERAL_PORT_END {
-                    self.next_ephemeral_port = FIZZLE_EPHEMERAL_PORT_START;
+                    // TODO: `panic`s like these won't actually crash the system if they're in subprocesses...
+                    // Use a panic handler to kill primary process?
+                    panic!("all ephemeral ports were exhausted");
+                    // self.next_ephemeral_port = FIZZLE_EPHEMERAL_PORT_START;
                 } else {
                     self.next_ephemeral_port += 1;
                 }
-                TransportAddress::new_inet(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port)), protocol)
+                TransportAddress::new_inet(
+                    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port)),
+                    protocol,
+                )
             }
             AddressFamily::Ipv6 => {
                 let port = self.next_ephemeral_port;
@@ -1610,9 +1311,17 @@ impl InterprocessState {
                 } else {
                     self.next_ephemeral_port += 1;
                 }
-                TransportAddress::new_inet(SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1), port, 0, 0)), protocol)
+                TransportAddress::new_inet(
+                    SocketAddr::V6(SocketAddrV6::new(
+                        Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1),
+                        port,
+                        0,
+                        0,
+                    )),
+                    protocol,
+                )
             }
-            AddressFamily::Unix => TransportAddress::new_unix(SocketAddrUnix::Unnamed)
+            AddressFamily::Unix => TransportAddress::new_unix(SocketAddrUnix::Unnamed),
         }
     }
 
@@ -1671,7 +1380,7 @@ pub struct PerRoundClientInfo {
 #[derive(Clone, Debug)]
 pub enum PerRoundClientBackend {
     Fuzz(Rc<FuzzEndpointId>),
-    Plugin(Rc<PluginId>),
+    Plugin(Rc<PluginEndpointId>),
 }
 
 // TODO: rename...
@@ -1679,4 +1388,10 @@ pub enum PerRoundClientBackend {
 pub enum ReadyInfo {
     Poller(Rc<PollerId>),
     Worker(WorkerId),
+}
+
+#[derive(Clone, Debug)]
+pub enum SignalDestination {
+    Process(ProcessId),
+    Thread(ThreadId),
 }

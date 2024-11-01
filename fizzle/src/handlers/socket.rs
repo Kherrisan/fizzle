@@ -1,10 +1,15 @@
-use std::{cmp, mem};
+use crate::arena::{ArenaKey, Rc};
+use crate::backend::{
+    ConnectedBackend, ConnectingBackend, ConnectionlessBackend, PendingBackend, RegularConnected,
+    ServerBackend, StandardFeedback,
+};
+use crate::constants::{
+    FIZZLE_EPHEMERAL_PORT_END, FIZZLE_MAX_REUSEPORT, FIZZLE_MIN_CONNECTIONLESS, FIZZLE_SOMAXCONN,
+};
+use crate::state::{FizzleSingleton, FizzleState};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::RawFd;
-use crate::arena::{ArenaKey, Rc};
-use crate::backend::{ConnectedBackend, ConnectingBackend, ConnectionlessBackend, PendingBackend, RegularConnected, ServerBackend, StandardFeedback};
-use crate::constants::{FIZZLE_EPHEMERAL_PORT_END, FIZZLE_MIN_CONNECTIONLESS, FIZZLE_MAX_REUSEPORT, FIZZLE_SOMAXCONN};
-use crate::state::{FizzleSingleton, FizzleState};
+use std::{cmp, mem};
 
 use fizzle_common::io::{AddressFamily, SockAddr, SocketType, TransportAddress, TransportProtocol};
 use fizzle_common::storage::Buffer;
@@ -131,7 +136,12 @@ impl Rc<SocketId> {
                 protocol: transport_addr.protocol,
             }),
             SockAddr::Ipv6(v6_addr) => Some(TransportAddress {
-                sockaddr: SockAddr::Ipv6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, v6_addr.port(), v6_addr.flowinfo(), v6_addr.scope_id())),
+                sockaddr: SockAddr::Ipv6(SocketAddrV6::new(
+                    Ipv6Addr::UNSPECIFIED,
+                    v6_addr.port(),
+                    v6_addr.flowinfo(),
+                    v6_addr.scope_id(),
+                )),
                 protocol: transport_addr.protocol,
             }),
             SockAddr::Unix(_) => None,
@@ -140,7 +150,7 @@ impl Rc<SocketId> {
 
     fn wildcard_is_bound(state: &mut FizzleState, address: &TransportAddress) -> bool {
         let Some(wildcard_addr) = Self::wildcard_addr(address) else {
-            return false
+            return false;
         };
 
         match state.global.socket_locations.get(&wildcard_addr) {
@@ -149,7 +159,11 @@ impl Rc<SocketId> {
         }
     }
 
-    pub fn bind(&self, ctx: &mut FizzleSingleton, mut sockaddr: SockAddr) -> Result<(), SocketError> {
+    pub fn bind(
+        &self,
+        ctx: &mut FizzleSingleton,
+        mut sockaddr: SockAddr,
+    ) -> Result<(), SocketError> {
         let mut state = ctx.acquire();
 
         // If port is 0, bind to an ephemerally-chosen port
@@ -185,16 +199,16 @@ impl Rc<SocketId> {
             }
             SocketState::Server(_) => {
                 log::error!("rebinding of listening socket unsupported by Fizzle");
-                return Err(SocketError::InvalidState)
+                return Err(SocketError::InvalidState);
             }
             SocketState::PendingConnection(_) => unreachable!(), // Pending connections don't have fd handles
             SocketState::Connecting(_) => {
                 log::error!("rebinding of connecting socket unsupported by Fizzle");
-                return Err(SocketError::InvalidState)
+                return Err(SocketError::InvalidState);
             }
             SocketState::Connected(_) => {
                 log::error!("rebinding of connected socket unsupported by Fizzle");
-                return Err(SocketError::InvalidState)
+                return Err(SocketError::InvalidState);
             }
         };
 
@@ -203,7 +217,10 @@ impl Rc<SocketId> {
         match state.global.socket_locations.entry(new_addr) {
             Entry::Occupied(mut o) => {
                 let location_info = o.get_mut();
-                if !wildcard_is_bound && (location_info.bound_sockets.is_empty() || (reuse_port && location_info.reuse_port)) {
+                if !wildcard_is_bound
+                    && (location_info.bound_sockets.is_empty()
+                        || (reuse_port && location_info.reuse_port))
+                {
                     location_info.bound_sockets.push_back(self.clone()).unwrap();
                     location_info.reuse_port = reuse_port
                 } else {
@@ -215,7 +232,7 @@ impl Rc<SocketId> {
                         _ => unreachable!(),
                     }
 
-                    return Err(SocketError::AddressInUse)
+                    return Err(SocketError::AddressInUse);
                 }
             }
             Entry::Vacant(v) => {
@@ -226,7 +243,8 @@ impl Rc<SocketId> {
                     reuse_port,
                     bound_sockets,
                     pending: None,
-                }).unwrap();
+                })
+                .unwrap();
             }
         }
 
@@ -244,11 +262,11 @@ impl Rc<SocketId> {
                             let bound_sockets = &mut o.get_mut().bound_sockets;
                             let socket_id = bound_sockets.pop_front().unwrap();
                             if &socket_id == self {
-                                return Ok(()) // bound socket has been removed
+                                return Ok(()); // bound socket has been removed
                             }
                             bound_sockets.push_back(socket_id).unwrap();
                         }
-                        
+
                         unreachable!()
                     }
                 }
@@ -261,9 +279,12 @@ impl Rc<SocketId> {
     pub fn listen(&self, ctx: &mut FizzleSingleton) -> Result<(), SocketError> {
         let mut state = ctx.acquire();
 
-        let SocketState::Unassociated(socket_info) = state.global.sockets.get_mut(self).unwrap() else {
-            log::error!("calling listen() on a connected or listening socket unsupported by Fizzle");
-            return Err(SocketError::InvalidState)
+        let SocketState::Unassociated(socket_info) = state.global.sockets.get_mut(self).unwrap()
+        else {
+            log::error!(
+                "calling listen() on a connected or listening socket unsupported by Fizzle"
+            );
+            return Err(SocketError::InvalidState);
         };
 
         let reuse_port = socket_info.reuse_port;
@@ -277,7 +298,11 @@ impl Rc<SocketId> {
                 let protocol = socket_info.protocol;
 
                 let mut addr = state.global.ephemeral_address(family, protocol);
-                while state.global.socket_locations.contains_key(&addr) || Self::wildcard_addr(&addr).map(|a| state.global.socket_locations.contains_key(&a)) == Some(true) {
+                while state.global.socket_locations.contains_key(&addr)
+                    || Self::wildcard_addr(&addr)
+                        .map(|a| state.global.socket_locations.contains_key(&a))
+                        == Some(true)
+                {
                     addr = state.global.ephemeral_address(family, protocol);
                     // BUG: infinite loop if literally every ephemeral port is bound (which is impossible given current const limits)
                 }
@@ -285,20 +310,38 @@ impl Rc<SocketId> {
                 let mut bound_sockets = heapless::Deque::new();
                 bound_sockets.push_back(self.clone()).unwrap();
 
-                state.global.socket_locations.insert(addr.clone(), TransportLocationInfo {
-                    bound_sockets,
-                    pending: None,
-                    reuse_port,
-                }).unwrap();
+                state
+                    .global
+                    .socket_locations
+                    .insert(
+                        addr.clone(),
+                        TransportLocationInfo {
+                            bound_sockets,
+                            pending: None,
+                            reuse_port,
+                        },
+                    )
+                    .unwrap();
 
                 addr
             }
         };
 
         // Allocate server context and set up polling
-        let ready_to_connect = state.global.polled_events.allocate(PolledInfo::new()).unwrap();
+        let ready_to_connect = state
+            .global
+            .polled_events
+            .allocate(PolledInfo::new())
+            .unwrap();
 
-        if state.global.socket_locations.get_mut(&local_addr).unwrap().pending.is_some() {
+        if state
+            .global
+            .socket_locations
+            .get_mut(&local_addr)
+            .unwrap()
+            .pending
+            .is_some()
+        {
             state.raise_polled(&ready_to_connect);
         }
 
@@ -312,7 +355,12 @@ impl Rc<SocketId> {
         Ok(())
     }
 
-    pub fn connect(&self, ctx: &mut FizzleSingleton, rem_addr: SockAddr, nonblocking: bool) -> Result<(), SocketError> {
+    pub fn connect(
+        &self,
+        ctx: &mut FizzleSingleton,
+        rem_addr: SockAddr,
+        nonblocking: bool,
+    ) -> Result<(), SocketError> {
         let mut state = ctx.acquire();
 
         match state.global.sockets.get(self).unwrap() {
@@ -331,21 +379,34 @@ impl Rc<SocketId> {
 
                 let server_socket_id: Rc<SocketId>;
 
-                if let Some(socket_id) = state.global.socket_locations.get(&transport_addr).and_then(|l| l.bound_sockets.front()) {
+                if let Some(socket_id) = state
+                    .global
+                    .socket_locations
+                    .get(&transport_addr)
+                    .and_then(|l| l.bound_sockets.front())
+                {
                     // The exact address is bound
                     server_socket_id = socket_id.clone();
-                } else if let Some(socket_id) = Self::wildcard_addr(&transport_addr).and_then(|t| state.global.socket_locations.get(&t)).and_then(|l| l.bound_sockets.front()) {
+                } else if let Some(socket_id) = Self::wildcard_addr(&transport_addr)
+                    .and_then(|t| state.global.socket_locations.get(&t))
+                    .and_then(|l| l.bound_sockets.front())
+                {
                     // The wildcard address is bound
                     server_socket_id = socket_id.clone();
                 } else {
                     // No socket is bound to the given address...
-                    log::warn!("connect() on address {} failed--no server listening", &transport_addr);
-                    return Err(SocketError::AddressNotListening)
+                    log::warn!(
+                        "connect() on address {} failed--no server listening",
+                        &transport_addr
+                    );
+                    return Err(SocketError::AddressNotListening);
                 }
 
-                let SocketState::Server(server_info) = state.global.sockets.get_mut(&server_socket_id).unwrap() else {
+                let SocketState::Server(server_info) =
+                    state.global.sockets.get_mut(&server_socket_id).unwrap()
+                else {
                     log::error!("inconsistent Fizzle state--socket bound to connect() address {} not in listening state", &transport_addr);
-                    return Err(SocketError::AddressNotListening)
+                    return Err(SocketError::AddressNotListening);
                 };
 
                 let server_backend = server_info.backend.clone();
@@ -355,26 +416,31 @@ impl Rc<SocketId> {
                     ServerBackend::Passthrough => unreachable!(),
                     ServerBackend::Peered(()) => {
                         let Ok(_) = connecting.push_back(self.clone()) else {
-                            return Err(SocketError::ConnectionQueueFull)
+                            return Err(SocketError::ConnectionQueueFull);
                         };
 
                         let server_poll = server_info.ready_to_connect.clone();
                         state.raise_polled(&server_poll);
 
-                        let client_poll = state.global.polled_events.allocate(PolledInfo::new()).unwrap();
-                        *state.global.sockets.get_mut(self).unwrap() = SocketState::Connecting(ConnectingSocket {
-                            backend: ConnectingBackend::Peered(()),
-                            connect_polled: client_poll.clone(),
-                            local_addr,
-                        });
+                        let client_poll = state
+                            .global
+                            .polled_events
+                            .allocate(PolledInfo::new())
+                            .unwrap();
+                        *state.global.sockets.get_mut(self).unwrap() =
+                            SocketState::Connecting(ConnectingSocket {
+                                backend: ConnectingBackend::Peered(()),
+                                connect_polled: client_poll.clone(),
+                                local_addr,
+                            });
 
                         // The server side sets this backend to conected, so we don't need to here.
                         if nonblocking {
-                            return Err(SocketError::ConnectInProgress)
+                            return Err(SocketError::ConnectInProgress);
                         } else {
                             drop(state);
                             ctx.poll_until_ready(client_poll);
-                            return Ok(())
+                            return Ok(());
                         }
                     }
                     ServerBackend::Plugin(plugin_id) => {
@@ -384,49 +450,67 @@ impl Rc<SocketId> {
                         let module_id = plugin_info.module_id.clone();
                         let connect_plugin_id = state.global.add_plugin(endpoint, module_id);
                         ConnectedBackend::Plugin(connect_plugin_id)
-                    },
+                    }
                     ServerBackend::Sink => ConnectedBackend::Sink,
-                    ServerBackend::Fuzz(_) => ConnectedBackend::Fuzz(state.global.add_fuzz_endpoint()),
+                    ServerBackend::Fuzz(_) => {
+                        ConnectedBackend::Fuzz(state.global.add_fuzz_endpoint())
+                    }
                     ServerBackend::NullSink => ConnectedBackend::NullSink,
                     ServerBackend::Feedback(()) => ConnectedBackend::Feedback(StandardFeedback {
-                            buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
-                            read_polled: state.global.polled_events.allocate(PolledInfo::new()).unwrap(),
-                            write_polled: state.global.polled_events.allocate(PolledInfo::new_raised()).unwrap(),
-                    })
+                        buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
+                        read_polled: state
+                            .global
+                            .polled_events
+                            .allocate(PolledInfo::new())
+                            .unwrap(),
+                        write_polled: state
+                            .global
+                            .polled_events
+                            .allocate(PolledInfo::new_raised())
+                            .unwrap(),
+                    }),
                 };
 
-                *state.global.sockets.get_mut(self).unwrap() = SocketState::Connected(ConnectedSocket {
-                    backend: connected_backend,
-                    local_addr,
-                    rem_addr: transport_addr,
-                    peer_closed: false,
-                });
+                *state.global.sockets.get_mut(self).unwrap() =
+                    SocketState::Connected(ConnectedSocket {
+                        backend: connected_backend,
+                        local_addr,
+                        rem_addr: transport_addr,
+                        peer_closed: false,
+                    });
 
                 Ok(())
-            },
+            }
             SocketState::Server(_) => {
                 log::error!("connect() called on listening socket--unsupported by Fizzle");
                 Err(SocketError::InvalidState)
-            },
+            }
             SocketState::PendingConnection(_) => unreachable!(),
-            SocketState::Connecting(_) => if nonblocking {
-                Err(SocketError::ConnectAlreadyStarted)
-            } else {
-                drop(state);
-                ctx.yield_thread();
-                Ok(())
+            SocketState::Connecting(_) => {
+                if nonblocking {
+                    Err(SocketError::ConnectAlreadyStarted)
+                } else {
+                    drop(state);
+                    ctx.yield_thread();
+                    Ok(())
+                }
             }
             SocketState::Connected(_) => Err(SocketError::ConnectAlreadyCompleted),
             SocketState::Connectionless(_) => unreachable!(),
         }
     }
 
-    pub fn accept(&self, ctx: &mut FizzleSingleton, nonblocking: bool, close_on_exec: bool) -> Result<(RawFd, SockAddr), SocketError> {
+    pub fn accept(
+        &self,
+        ctx: &mut FizzleSingleton,
+        nonblocking: bool,
+        close_on_exec: bool,
+    ) -> Result<(RawFd, SockAddr), SocketError> {
         let mut state = ctx.acquire();
 
         let SocketState::Server(server_info) = state.global.sockets.get_mut(self).unwrap() else {
             log::error!("accept() called on non-listening socket");
-            return Err(SocketError::InvalidState)
+            return Err(SocketError::InvalidState);
         };
 
         let has_connecting = !server_info.connecting.is_empty();
@@ -441,7 +525,9 @@ impl Rc<SocketId> {
 
         let bound_info = state.global.socket_locations.get(&server_address).unwrap();
         if let Some(PendingInfo { client, poll }) = bound_info.pending.clone() {
-            let SocketState::PendingConnection(pending_info) = state.global.sockets.get_mut(&client).unwrap() else {
+            let SocketState::PendingConnection(pending_info) =
+                state.global.sockets.get_mut(&client).unwrap()
+            else {
                 unreachable!()
             };
 
@@ -451,9 +537,24 @@ impl Rc<SocketId> {
 
             // Update the linked list of pending clients
             match pending_info.next_pending.clone() {
-                Some(pending_id) => state.global.socket_locations.get_mut(&server_address).unwrap().pending.as_mut().unwrap().client = pending_id,
+                Some(pending_id) => {
+                    state
+                        .global
+                        .socket_locations
+                        .get_mut(&server_address)
+                        .unwrap()
+                        .pending
+                        .as_mut()
+                        .unwrap()
+                        .client = pending_id
+                }
                 None => {
-                    state.global.socket_locations.get_mut(&server_address).unwrap().pending = None;
+                    state
+                        .global
+                        .socket_locations
+                        .get_mut(&server_address)
+                        .unwrap()
+                        .pending = None;
 
                     if !has_connecting {
                         state.lower_polled(&ready_to_connect);
@@ -463,18 +564,21 @@ impl Rc<SocketId> {
 
             state.raise_polled(&poll);
             drop(state);
-
         } else {
-            let SocketState::Server(server_info) = state.global.sockets.get_mut(self).unwrap() else {
+            let SocketState::Server(server_info) = state.global.sockets.get_mut(self).unwrap()
+            else {
                 unreachable!()
             };
 
             if let Some(connecting_id) = server_info.connecting.pop_front() {
-                if server_info.connecting.len() == 1 { // TODO: why isn't this is_empty()???
+                if server_info.connecting.len() == 1 {
+                    // TODO: why isn't this is_empty()???
                     state.lower_polled(&ready_to_connect);
                 }
 
-                let SocketState::Connecting(connecting_info) = state.global.sockets.get(&connecting_id).unwrap() else {
+                let SocketState::Connecting(connecting_info) =
+                    state.global.sockets.get(&connecting_id).unwrap()
+                else {
                     unreachable!()
                 };
 
@@ -485,23 +589,24 @@ impl Rc<SocketId> {
                 let connect_polled = connecting_info.connect_polled.clone();
                 state.raise_polled(&connect_polled);
                 drop(state);
-
             } else if nonblocking {
-                return Err(SocketError::AcceptPending)
-
+                return Err(SocketError::AcceptPending);
             } else {
                 drop(state);
                 ctx.poll_until_ready(ready_to_connect.clone());
                 let mut state = ctx.acquire();
 
                 // Now there's a connected socket ready
-                let SocketState::Server(server_info) = state.global.sockets.get_mut(self).unwrap() else {
+                let SocketState::Server(server_info) = state.global.sockets.get_mut(self).unwrap()
+                else {
                     unreachable!()
                 };
                 let connecting_cnt = server_info.connecting.len();
 
                 let connecting_id = server_info.connecting.pop_front().unwrap();
-                let SocketState::Connecting(connecting_info) = state.global.sockets.get(&connecting_id).unwrap() else {
+                let SocketState::Connecting(connecting_info) =
+                    state.global.sockets.get(&connecting_id).unwrap()
+                else {
                     unreachable!()
                 };
 
@@ -509,7 +614,8 @@ impl Rc<SocketId> {
                 client_id = connecting_id;
                 client_backend = connecting_info.backend.clone();
 
-                if connecting_cnt == 1 { // TODO: shouldn't this be is_empty()???
+                if connecting_cnt == 1 {
+                    // TODO: shouldn't this be is_empty()???
                     state.lower_polled(&ready_to_connect);
                 }
                 drop(state);
@@ -523,13 +629,29 @@ impl Rc<SocketId> {
             ConnectingBackend::Peered(()) => ConnectedBackend::Peered(RegularConnected {
                 peer: Some(client_id.clone()),
                 recv_buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
-                read_polled: state.global.polled_events.allocate(PolledInfo::new()).unwrap(),
-                write_polled: state.global.polled_events.allocate(PolledInfo::new_raised()).unwrap(),
+                read_polled: state
+                    .global
+                    .polled_events
+                    .allocate(PolledInfo::new())
+                    .unwrap(),
+                write_polled: state
+                    .global
+                    .polled_events
+                    .allocate(PolledInfo::new_raised())
+                    .unwrap(),
             }),
             ConnectingBackend::Feedback(()) => ConnectedBackend::Feedback(StandardFeedback {
                 buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
-                read_polled: state.global.polled_events.allocate(PolledInfo::new()).unwrap(),
-                write_polled: state.global.polled_events.allocate(PolledInfo::new_raised()).unwrap(),
+                read_polled: state
+                    .global
+                    .polled_events
+                    .allocate(PolledInfo::new())
+                    .unwrap(),
+                write_polled: state
+                    .global
+                    .polled_events
+                    .allocate(PolledInfo::new_raised())
+                    .unwrap(),
             }),
             ConnectingBackend::Plugin(plugin_id) => {
                 let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
@@ -537,7 +659,7 @@ impl Rc<SocketId> {
                 let module_id = plugin_info.module_id.clone();
                 let connect_plugin_id = state.global.add_plugin(endpoint, module_id);
                 ConnectedBackend::Plugin(connect_plugin_id)
-            },
+            }
             ConnectingBackend::Sink => ConnectedBackend::Sink,
             ConnectingBackend::NullSink => ConnectedBackend::NullSink,
             ConnectingBackend::Fuzz(endpoint) => ConnectedBackend::Fuzz(endpoint),
@@ -550,8 +672,16 @@ impl Rc<SocketId> {
                 ServerBackend::Peered(_) => ConnectedBackend::Peered(RegularConnected {
                     peer: Some(client_id.clone()),
                     recv_buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
-                    read_polled: state.global.polled_events.allocate(PolledInfo::new()).unwrap(),
-                    write_polled: state.global.polled_events.allocate(PolledInfo::new_raised()).unwrap(),
+                    read_polled: state
+                        .global
+                        .polled_events
+                        .allocate(PolledInfo::new())
+                        .unwrap(),
+                    write_polled: state
+                        .global
+                        .polled_events
+                        .allocate(PolledInfo::new_raised())
+                        .unwrap(),
                 }),
                 _ => unreachable!(),
             };
@@ -564,14 +694,16 @@ impl Rc<SocketId> {
                     peer_closed: false,
                 });
 
-            state.global
+            state
+                .global
                 .sockets
                 .allocate(SocketState::Connected(ConnectedSocket {
                     local_addr: server_address,
                     rem_addr: client_address,
                     backend: accept_backend,
                     peer_closed: false,
-                })).unwrap()
+                }))
+                .unwrap()
         } else {
             // The connecting socket was emulated in some way (`fuzz`, `sink` or the like).
             // Convert the connecting socket into the accepted socket--we don't need two peered sockets.
@@ -590,15 +722,19 @@ impl Rc<SocketId> {
 
         let new_fd = crate::alias_fd_create();
         // The two sockets are now joined--add a file descriptor to the accepted socket
-        state.local.fds.allocate_with_key(
-            DescriptorId::from_raw_fd(new_fd),
-            DescriptorInfo {
-                close_on_exec,
-                is_passthrough: false,
-                nonblocking,
-                resource: FdResource::Socket(socket_id),
-            },
-        ).unwrap();
+        state
+            .local
+            .fds
+            .allocate_with_key(
+                DescriptorId::from_raw_fd(new_fd),
+                DescriptorInfo {
+                    close_on_exec,
+                    is_passthrough: false,
+                    nonblocking,
+                    resource: FdResource::Socket(socket_id),
+                },
+            )
+            .unwrap();
 
         Ok((new_fd, client_addr))
     }
@@ -608,7 +744,9 @@ impl Rc<SocketId> {
 
         match state.global.sockets.get(self).unwrap() {
             SocketState::Connectionless(conn) => Ok(conn.local_addr.addr().clone()),
-            SocketState::Unassociated(conn) => Ok(conn.local_addr.clone().map(|a| a.addr().clone()).unwrap()),
+            SocketState::Unassociated(conn) => {
+                Ok(conn.local_addr.clone().map(|a| a.addr().clone()).unwrap())
+            }
             SocketState::Server(conn) => Ok(conn.local_addr.addr().clone()),
             SocketState::PendingConnection(_) => unreachable!(),
             SocketState::Connecting(conn) => Ok(conn.local_addr.addr().clone()),
@@ -616,7 +754,12 @@ impl Rc<SocketId> {
         }
     }
 
-    pub fn read(&self, ctx: &mut FizzleSingleton, msg: &mut MsgHdrOut, nonblocking: bool) -> Result<usize, SocketError> {
+    pub fn read(
+        &self,
+        ctx: &mut FizzleSingleton,
+        msg: &mut MsgHdrOut,
+        nonblocking: bool,
+    ) -> Result<usize, SocketError> {
         let mut state = ctx.acquire();
 
         match state.global.sockets.get(self).unwrap() {
@@ -639,7 +782,7 @@ impl Rc<SocketId> {
                     }
                     ConnectionlessBackend::Plugin(plugin_id) => {
                         let plugin_info = state.global.plugins.get(plugin_id).unwrap();
-                        
+
                         read_polled = None;
                         write_polled = plugin_info.write_polled.clone();
                         buffer_id = plugin_info.write_buf.clone();
@@ -698,7 +841,7 @@ impl Rc<SocketId> {
                         return Ok(total_read)
                     },
                     */
-                    _ => unreachable!()
+                    _ => unreachable!(),
                 }
 
                 if let Some(read_polled) = read_polled.as_ref() {
@@ -707,7 +850,7 @@ impl Rc<SocketId> {
 
                     if !polled_is_ready {
                         if nonblocking {
-                            return Err(SocketError::WouldBlock)
+                            return Err(SocketError::WouldBlock);
                         } else {
                             ctx.poll_until_ready(write_polled.clone());
                         }
@@ -735,7 +878,7 @@ impl Rc<SocketId> {
                 }
 
                 Ok(total_read)
-            },
+            }
             SocketState::Connected(conn) => {
                 let read_polled: Rc<PolledId>;
                 let write_polled: Rc<PolledId>;
@@ -757,10 +900,10 @@ impl Rc<SocketId> {
 
                         if !polled_is_ready {
                             if peer_closed {
-                                return Ok(0)
+                                return Ok(0);
                             }
                             if nonblocking {
-                                return Err(SocketError::WouldBlock)
+                                return Err(SocketError::WouldBlock);
                             } else {
                                 ctx.poll_until_ready(write_polled.clone());
                             }
@@ -773,7 +916,7 @@ impl Rc<SocketId> {
                             ..
                         })) = state.global.sockets.get(self)
                         else {
-                            return Ok(0) // The connection was shut down while we were polling on it
+                            return Ok(0); // The connection was shut down while we were polling on it
                         };
 
                         drop(state);
@@ -788,10 +931,10 @@ impl Rc<SocketId> {
 
                         if !polled_is_ready {
                             if peer_closed {
-                                return Ok(0)
+                                return Ok(0);
                             }
                             if nonblocking {
-                                return Err(SocketError::WouldBlock)
+                                return Err(SocketError::WouldBlock);
                             } else {
                                 ctx.poll_until_ready(write_polled.clone());
                             }
@@ -805,14 +948,14 @@ impl Rc<SocketId> {
                             ..
                         })) = state.global.sockets.get(self)
                         else {
-                            return Ok(0)
+                            return Ok(0);
                         };
 
                         drop(state);
                     }
                     ConnectedBackend::Plugin(plugin_id) => {
                         let plugin_info = state.global.plugins.get(plugin_id).unwrap();
-                        
+
                         read_polled = plugin_info.read_polled.clone();
                         write_polled = plugin_info.write_polled.clone();
                         buffer_id = plugin_info.write_buf.clone();
@@ -822,10 +965,10 @@ impl Rc<SocketId> {
 
                         if !polled_is_ready {
                             if peer_closed {
-                                return Ok(0)
+                                return Ok(0);
                             }
                             if nonblocking {
-                                return Err(SocketError::WouldBlock)
+                                return Err(SocketError::WouldBlock);
                             } else {
                                 ctx.poll_until_ready(write_polled.clone());
                             }
@@ -839,7 +982,7 @@ impl Rc<SocketId> {
                             ..
                         })) = state.global.sockets.get(self)
                         else {
-                            return Ok(0)
+                            return Ok(0);
                         };
 
                         drop(state);
@@ -854,22 +997,30 @@ impl Rc<SocketId> {
                             total_read += iovec.data_mut().len();
                         }
 
-                        return Ok(total_read)
+                        return Ok(total_read);
                     }
                     ConnectedBackend::Fuzz(fuzz_endpoint_id) => {
                         let fuzz_endpoint_id = fuzz_endpoint_id.clone();
-                        let FuzzEndpointInfo { mut read_idx, read_polled } = state.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().clone();
+                        let FuzzEndpointInfo {
+                            mut read_idx,
+                            read_polled,
+                        } = state
+                            .global
+                            .fuzz_endpoints
+                            .get(&fuzz_endpoint_id)
+                            .unwrap()
+                            .clone();
 
                         let polled_is_ready = state.polled_is_ready(&read_polled);
                         drop(state);
 
                         if !polled_is_ready {
                             if peer_closed {
-                                return Ok(0)
+                                return Ok(0);
                             }
 
                             if nonblocking {
-                                return Err(SocketError::WouldBlock)
+                                return Err(SocketError::WouldBlock);
                             } else {
                                 ctx.poll_until_ready(read_polled.clone());
                             }
@@ -883,16 +1034,23 @@ impl Rc<SocketId> {
                         let mut total_read = 0;
                         for iovec in msg.vdata_mut() {
                             if buf[read_idx..].is_empty() {
-                                break
+                                break;
                             }
 
                             let data_len = cmp::min(buf.len(), iovec.data_mut().len());
-                            init_from_slice(&mut iovec.data_mut()[..data_len], &buf[read_idx..read_idx + data_len]);
+                            init_from_slice(
+                                &mut iovec.data_mut()[..data_len],
+                                &buf[read_idx..read_idx + data_len],
+                            );
                             read_idx += data_len;
                             total_read += data_len;
                         }
 
-                        let fuzz_endpoint = state.global.fuzz_endpoints.get_mut(&fuzz_endpoint_id).unwrap();
+                        let fuzz_endpoint = state
+                            .global
+                            .fuzz_endpoints
+                            .get_mut(&fuzz_endpoint_id)
+                            .unwrap();
                         fuzz_endpoint.read_idx = read_idx;
                         if fuzz_endpoint.read_idx == buflen {
                             state.lower_polled(&read_polled);
@@ -902,7 +1060,7 @@ impl Rc<SocketId> {
                         let addrlen = rem_sockaddr.encode(msg.addr_bytes()) as u32;
                         msg.set_addrlen(addrlen);
 
-                        return Ok(total_read)
+                        return Ok(total_read);
                     }
                 }
 
@@ -919,12 +1077,17 @@ impl Rc<SocketId> {
                 state.raise_polled(&write_polled);
 
                 Ok(total_read)
-            },
-            _ => Err(SocketError::InvalidState)
+            }
+            _ => Err(SocketError::InvalidState),
         }
     }
 
-    pub fn write(&self, ctx: &mut FizzleSingleton, msg: &impl MsgHdr, nonblocking: bool) -> Result<usize, SocketError> {
+    pub fn write(
+        &self,
+        ctx: &mut FizzleSingleton,
+        msg: &impl MsgHdr,
+        nonblocking: bool,
+    ) -> Result<usize, SocketError> {
         let mut state = ctx.acquire();
 
         match state.global.sockets.get(self).unwrap() {
@@ -943,18 +1106,26 @@ impl Rc<SocketId> {
 
                         let socket_id: Rc<SocketId>;
 
-                        if let Some(rem_socket_id) = state.global.socket_locations.get_mut(&dst_addr).and_then(|i| i.bound_sockets.front().cloned()) {
+                        if let Some(rem_socket_id) = state
+                            .global
+                            .socket_locations
+                            .get_mut(&dst_addr)
+                            .and_then(|i| i.bound_sockets.front().cloned())
+                        {
                             socket_id = rem_socket_id;
-
-                        } else if let Some(rem_socket_id) = Self::wildcard_addr(&dst_addr).and_then(|a| state.global.socket_locations.get_mut(&a)).and_then(|i| i.bound_sockets.front().cloned()) {
+                        } else if let Some(rem_socket_id) = Self::wildcard_addr(&dst_addr)
+                            .and_then(|a| state.global.socket_locations.get_mut(&a))
+                            .and_then(|i| i.bound_sockets.front().cloned())
+                        {
                             socket_id = rem_socket_id;
-
                         } else {
                             log::error!("packet send to location {} that had no listening ports--packet silently dropped", dst_addr);
-                            return Ok(msg.vdata().iter().map(|v| v.data().len()).sum())
+                            return Ok(msg.vdata().iter().map(|v| v.data().len()).sum());
                         }
 
-                        let SocketState::Connectionless(conn) = state.global.sockets.get(&socket_id).unwrap() else {
+                        let SocketState::Connectionless(conn) =
+                            state.global.sockets.get(&socket_id).unwrap()
+                        else {
                             unreachable!()
                         };
 
@@ -973,12 +1144,16 @@ impl Rc<SocketId> {
                     }
                     ConnectionlessBackend::Plugin(plugin_id) => {
                         let plugin_info = state.global.plugins.get(plugin_id).unwrap();
-                        
+
                         read_polled = None;
                         write_polled = plugin_info.write_polled.clone();
                         buffer_id = plugin_info.write_buf.clone();
                     }
-                    ConnectionlessBackend::Sink | ConnectionlessBackend::NullSink | ConnectionlessBackend::Fuzz(_) => return Ok(msg.vdata().iter().map(|v| v.data().len()).sum()),
+                    ConnectionlessBackend::Sink
+                    | ConnectionlessBackend::NullSink
+                    | ConnectionlessBackend::Fuzz(_) => {
+                        return Ok(msg.vdata().iter().map(|v| v.data().len()).sum())
+                    }
                 }
 
                 let polled_is_ready = state.polled_is_ready(&write_polled);
@@ -986,7 +1161,7 @@ impl Rc<SocketId> {
 
                 if !polled_is_ready {
                     if nonblocking {
-                        return Err(SocketError::WouldBlock)
+                        return Err(SocketError::WouldBlock);
                     } else {
                         ctx.poll_until_ready(write_polled.clone());
                     }
@@ -998,7 +1173,6 @@ impl Rc<SocketId> {
                 let total_written = super::write_datagram(msg, write_buffer).unwrap();
 
                 let available = write_buffer.write_available();
-
 
                 if available < FIZZLE_MIN_CONNECTIONLESS {
                     state.lower_polled(&write_polled);
@@ -1012,7 +1186,7 @@ impl Rc<SocketId> {
             }
             SocketState::Connected(conn) => {
                 if conn.peer_closed {
-                    return Ok(0)
+                    return Ok(0);
                 }
 
                 let read_polled: Option<Rc<PolledId>>;
@@ -1043,7 +1217,7 @@ impl Rc<SocketId> {
 
                         if !polled_is_ready {
                             if nonblocking {
-                                return Err(SocketError::WouldBlock)
+                                return Err(SocketError::WouldBlock);
                             } else {
                                 ctx.poll_until_ready(write_polled.clone());
                             }
@@ -1053,11 +1227,12 @@ impl Rc<SocketId> {
 
                         let Some(SocketState::Connected(ConnectedSocket {
                             peer_closed: false,
-                            backend: ConnectedBackend::Peered(RegularConnected { peer: Some(_), .. }),
+                            backend:
+                                ConnectedBackend::Peered(RegularConnected { peer: Some(_), .. }),
                             ..
                         })) = state.global.sockets.get(self)
                         else {
-                            return Ok(0) // The connection was shut down while we were polling on it
+                            return Ok(0); // The connection was shut down while we were polling on it
                         };
 
                         drop(state);
@@ -1072,7 +1247,7 @@ impl Rc<SocketId> {
 
                         if !polled_is_ready {
                             if nonblocking {
-                                return Err(SocketError::WouldBlock)
+                                return Err(SocketError::WouldBlock);
                             } else {
                                 ctx.poll_until_ready(write_polled.clone());
                             }
@@ -1086,25 +1261,24 @@ impl Rc<SocketId> {
                             ..
                         })) = state.global.sockets.get(self)
                         else {
-                            return Ok(0)
+                            return Ok(0);
                         };
 
                         drop(state);
                     }
                     ConnectedBackend::Plugin(plugin_id) => {
                         let plugin_info = state.global.plugins.get(plugin_id).unwrap();
-                        
+
                         read_polled = None;
                         write_polled = plugin_info.write_polled.clone();
                         buffer_id = plugin_info.write_buf.clone();
-
 
                         let polled_is_ready = state.polled_is_ready(&write_polled);
                         drop(state);
 
                         if !polled_is_ready {
                             if nonblocking {
-                                return Err(SocketError::WouldBlock)
+                                return Err(SocketError::WouldBlock);
                             } else {
                                 ctx.poll_until_ready(write_polled.clone());
                             }
@@ -1118,12 +1292,16 @@ impl Rc<SocketId> {
                             ..
                         })) = state.global.sockets.get(self)
                         else {
-                            return Ok(0)
+                            return Ok(0);
                         };
 
                         drop(state);
                     }
-                    ConnectedBackend::Sink | ConnectedBackend::NullSink | ConnectedBackend::Fuzz(_) => return Ok(msg.vdata().iter().map(|v| v.data().len()).sum()),
+                    ConnectedBackend::Sink
+                    | ConnectedBackend::NullSink
+                    | ConnectedBackend::Fuzz(_) => {
+                        return Ok(msg.vdata().iter().map(|v| v.data().len()).sum())
+                    }
                 }
 
                 let mut state = ctx.acquire();
@@ -1132,7 +1310,7 @@ impl Rc<SocketId> {
                 let mut total_written = 0;
                 for iovec in msg.vdata() {
                     if write_buffer.is_full() {
-                        break
+                        break;
                     }
                     total_written += write_buffer.write(iovec.data());
                 }
@@ -1146,13 +1324,11 @@ impl Rc<SocketId> {
                 }
 
                 Ok(total_written)
-            },
-            _ => Err(SocketError::InvalidState)
+            }
+            _ => Err(SocketError::InvalidState),
         }
     }
 }
-
-
 
 #[derive(Clone, Copy, Debug)]
 pub enum SocketError {
@@ -1205,7 +1381,7 @@ impl FfiOutput for Result<usize, SocketError> {
         match self {
             Ok(val) => {
                 Self::set_errno(0);
-                return *val as libc::c_int
+                return *val as libc::c_int;
             }
             Err(SocketError::InvalidState) => Self::set_errno(libc::EINVAL),
             Err(SocketError::InvalidAddress) => Self::set_errno(libc::EINVAL),
@@ -1231,7 +1407,9 @@ impl FfiOutput for Result<usize, SocketError> {
             Err(SocketError::InvalidAddress) => "-1 (EINVAL)",
             Err(SocketError::NotConnected) => "-1 (ENOTCONN)",
             Err(SocketError::AddressInUse) => "-1 (EADDRINUSE)",
-            Err(SocketError::AddressNotListening | SocketError::ConnectionQueueFull) => "-1 (ECONNREFUSED)",
+            Err(SocketError::AddressNotListening | SocketError::ConnectionQueueFull) => {
+                "-1 (ECONNREFUSED)"
+            }
             Err(SocketError::ConnectInProgress) => "-1 (EINPROGRESS)",
             Err(SocketError::ConnectAlreadyStarted) => "-1 (EALREADY)",
             Err(SocketError::ConnectAlreadyCompleted) => "-1 (EISCONN)",

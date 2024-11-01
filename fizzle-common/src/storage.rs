@@ -1,7 +1,7 @@
-use std::{cmp, slice};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::mem::MaybeUninit;
+use std::{cmp, slice};
 
 unsafe fn slice_init(slice: &[MaybeUninit<u8>]) -> &[u8] {
     slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len())
@@ -146,10 +146,13 @@ impl<const N: usize> Buffer<N> {
     pub fn read(&mut self, buf: &mut [u8]) -> usize {
         let amount = cmp::min(self.data_end - self.data_start, buf.len());
 
-        for (dst, src) in buf.iter_mut().zip(&self.data[self.data_start..self.data_end]) {
+        for (dst, src) in buf
+            .iter_mut()
+            .zip(&self.data[self.data_start..self.data_end])
+        {
             *dst = unsafe { src.assume_init() };
         }
-        
+
         if amount == self.data_end - self.data_start {
             self.data_start = 0;
             self.data_end = 0;
@@ -162,10 +165,13 @@ impl<const N: usize> Buffer<N> {
     pub fn read_uninit(&mut self, buf: &mut [MaybeUninit<u8>]) -> usize {
         let amount = cmp::min(self.data_end - self.data_start, buf.len());
 
-        for (dst, src) in buf.iter_mut().zip(&self.data[self.data_start..self.data_end]) {
+        for (dst, src) in buf
+            .iter_mut()
+            .zip(&self.data[self.data_start..self.data_end])
+        {
             dst.write(unsafe { src.assume_init() });
         }
-        
+
         if amount == self.data_end - self.data_start {
             self.data_start = 0;
             self.data_end = 0;

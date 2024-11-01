@@ -122,5 +122,3 @@ hook_macros::hook! {
         unimplemented!("fremovexattr()")
     }
 }
-
-

@@ -59,7 +59,9 @@ impl PolledId {
             let pollers = polled.pollers.clone();
             for poller in pollers {
                 if !state.global.pollers.get(&poller).unwrap().in_raised_queue() {
-                    state.global.ready
+                    state
+                        .global
+                        .ready
                         .push_back(ReadyInfo::Poller(poller))
                         .unwrap();
                 }
@@ -69,12 +71,8 @@ impl PolledId {
 
     pub fn lower_polled(&self, ctx: &mut FizzleSingleton) {
         let mut state = ctx.acquire();
-         let polled = state.global
-            .polled_events
-            .get_mut(self)
-            .unwrap();
+        let polled = state.global.polled_events.get_mut(self).unwrap();
         debug_assert!(polled.event_raised);
-        polled.event_raised = false;       
+        polled.event_raised = false;
     }
-
 }

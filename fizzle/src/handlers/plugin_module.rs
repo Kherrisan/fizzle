@@ -1,21 +1,18 @@
-use crate::arena::ArenaKey; 
+use crate::arena::ArenaKey;
 
-use fizzle_plugin::FizzlePluginObject;
+use fizzle_plugin::PluginObject;
 
-pub use private::PluginModuleId;
+pub use private::PluginId;
 
 // This is to forbid access to the SocketId's inner `usize` field.
 mod private {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     #[repr(transparent)]
-    pub struct PluginModuleId(usize);
+    pub struct PluginId(usize);
 }
 
-
-impl ArenaKey for PluginModuleId {
-    type Value = Box<dyn FizzlePluginObject>;
+impl ArenaKey for PluginId {
+    type Value = Box<dyn PluginObject>;
 }
 
-impl PluginModuleId {
-
-}
+impl PluginId {}

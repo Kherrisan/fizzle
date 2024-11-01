@@ -49,7 +49,12 @@ impl ArenaKey for PipeId {
 }
 
 impl PipeId {
-    pub fn read(&self, ctx: &mut FizzleSingleton, msg: &mut MsgHdrOut, nonblocking: bool) -> Result<usize, PipeError> {
+    pub fn read(
+        &self,
+        ctx: &mut FizzleSingleton,
+        msg: &mut MsgHdrOut,
+        nonblocking: bool,
+    ) -> Result<usize, PipeError> {
         let mut state = ctx.acquire();
 
         let pipe_info = state.global.pipes.get(self).unwrap();
@@ -65,9 +70,9 @@ impl PipeId {
 
         if !polled_is_ready {
             if peer_is_closed {
-                return Ok(0)
+                return Ok(0);
             } else if nonblocking {
-                return Err(PipeError::WouldBlock)
+                return Err(PipeError::WouldBlock);
             } else {
                 ctx.poll_until_ready(write_polled.clone());
             }
@@ -76,7 +81,7 @@ impl PipeId {
         let mut state = ctx.acquire();
 
         if state.global.pipes.get(self).unwrap().peer.is_none() {
-            return Ok(0)
+            return Ok(0);
         }
 
         let buf = state.global.buffers.get_mut(&buffer_id).unwrap();
@@ -91,14 +96,14 @@ impl PipeId {
                 buf.did_read(total_read);
 
                 total_read
-            },
+            }
             PipeMode::Streamed => {
                 let packet = buf.data();
                 let total_read = super::read_stream(msg, packet);
                 buf.did_read(total_read);
 
                 total_read
-            },
+            }
         };
 
         if buf.is_empty() {
@@ -109,11 +114,16 @@ impl PipeId {
         Ok(total_read)
     }
 
-    pub fn write(&self, ctx: &mut FizzleSingleton, msg: &impl MsgHdr, nonblocking: bool) -> Result<usize, PipeError> {
+    pub fn write(
+        &self,
+        ctx: &mut FizzleSingleton,
+        msg: &impl MsgHdr,
+        nonblocking: bool,
+    ) -> Result<usize, PipeError> {
         let mut state = ctx.acquire();
 
         let Some(peer_id) = state.global.pipes.get(self).unwrap().peer.clone() else {
-            return Err(PipeError::PipeClosed)
+            return Err(PipeError::PipeClosed);
         };
 
         let peer_info = state.global.pipes.get(&peer_id).unwrap();
@@ -127,7 +137,7 @@ impl PipeId {
         drop(state);
         if !polled_is_ready {
             if nonblocking {
-                return Err(PipeError::WouldBlock)
+                return Err(PipeError::WouldBlock);
             } else {
                 ctx.poll_until_ready(write_polled.clone());
             }
@@ -137,7 +147,7 @@ impl PipeId {
 
         // We need to verify that this connection has not shut down before writing to the same buffer_id
         if state.global.pipes.get(self).unwrap().peer.is_none() {
-            return Err(PipeError::PipeClosed)
+            return Err(PipeError::PipeClosed);
         };
 
         let buf = state.global.buffers.get_mut(&buffer_id).unwrap();
@@ -153,9 +163,9 @@ impl PipeId {
                     let cap = cmp::min(PIPE_BUF - total_written, iovec.data().len());
                     total_written += buf.write(&iovec.data()[..cap]);
                 }
-                
+
                 total_written
-            },
+            }
             PipeMode::Streamed => {
                 let mut total_written = 0;
                 for iovec in msg.vdata() {
@@ -163,7 +173,7 @@ impl PipeId {
                 }
 
                 total_written
-            },
+            }
         };
 
         let buf_is_full = match pipe_mode {
@@ -199,4 +209,3 @@ impl From<PipeError> for DescriptorError {
         }
     }
 }
-

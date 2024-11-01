@@ -1,15 +1,18 @@
 use std::{cell::UnsafeCell, mem::MaybeUninit};
 
-/// Non-concurrent OnceCell.
-/// 
-/// 
-pub struct NcOnceCell<T> {
+/// A `OnceCell` that guarantees safety if and only if all threads within the process run
+/// sequentially rather than in parallel.
+///
+///
+pub struct SeqOnceCell<T> {
     inner: UnsafeCell<Option<T>>,
 }
 
-impl<T> NcOnceCell<T> {
-    pub const fn new() -> NcOnceCell<T> {
-        NcOnceCell { inner: UnsafeCell::new(None) }
+impl<T> SeqOnceCell<T> {
+    pub const fn new() -> SeqOnceCell<T> {
+        SeqOnceCell {
+            inner: UnsafeCell::new(None),
+        }
     }
 
     pub fn get(&self) -> Option<&T> {
@@ -30,8 +33,8 @@ impl<T> NcOnceCell<T> {
     }
 
     pub fn get_or_situate<F>(&self, f: F) -> &T
-    where 
-        F: FnOnce(&mut MaybeUninit<T>) -> &mut T
+    where
+        F: FnOnce(&mut MaybeUninit<T>) -> &mut T,
     {
         match self.get() {
             Some(val) => val,
@@ -46,4 +49,4 @@ impl<T> NcOnceCell<T> {
     }
 }
 
-unsafe impl<T> Sync for NcOnceCell<T> {}
+unsafe impl<T> Sync for SeqOnceCell<T> {}

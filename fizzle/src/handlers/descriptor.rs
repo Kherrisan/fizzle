@@ -1,8 +1,5 @@
 use std::cmp;
 
-use crate::arena::{ArenaKey, Rc};
-use crate::backend::StdioBackend;
-use crate::state::FizzleSingleton; 
 use super::directory::DirectoryId;
 use super::epoll::EpollId;
 use super::eventfd::EventfdId;
@@ -12,6 +9,9 @@ use super::message_queue::MessageQueueId;
 use super::pipe::PipeId;
 use super::socket::SocketId;
 use super::{init_from_slice, FfiOutput, MsgFlags, MsgHdr, MsgHdrOut};
+use crate::arena::{ArenaKey, Rc};
+use crate::backend::StdioBackend;
+use crate::state::FizzleSingleton;
 
 pub use private::DescriptorId;
 
@@ -82,11 +82,15 @@ impl ArenaKey for DescriptorId {
 }
 
 impl DescriptorId {
-    pub fn write(&self, ctx: &mut FizzleSingleton, msg: &impl MsgHdr) -> Result<usize, DescriptorError> {
+    pub fn write(
+        &self,
+        ctx: &mut FizzleSingleton,
+        msg: &impl MsgHdr,
+    ) -> Result<usize, DescriptorError> {
         let state = ctx.acquire();
 
         let Some(fd_info) = state.local.fds.get(self) else {
-            return Err(DescriptorError::BadFd)
+            return Err(DescriptorError::BadFd);
         };
 
         let nonblocking = fd_info.nonblocking || msg.flags().contains(MsgFlags::DONTWAIT);
@@ -96,12 +100,16 @@ impl DescriptorId {
         match resource {
             FdResource::Directory(_) => unimplemented!(),
             FdResource::Epoll(_) => unimplemented!(),
-            FdResource::EventFd(eventfd_id) => eventfd_id.write(ctx, msg, nonblocking).map_err(|e| e.into()),
+            FdResource::EventFd(eventfd_id) => eventfd_id
+                .write(ctx, msg, nonblocking)
+                .map_err(|e| e.into()),
             FdResource::File(file_id) => file_id.write(ctx, msg).map_err(|e| e.into()),
             FdResource::MessageQueue(_) => todo!(),
             FdResource::Pipe(pipe_id) => pipe_id.write(ctx, msg, nonblocking).map_err(|e| e.into()),
-            FdResource::Socket(socket_id) => socket_id.write(ctx, msg, nonblocking).map_err(|e| e.into()),
-            FdResource::Stdin | FdResource::Stdout  => {
+            FdResource::Socket(socket_id) => {
+                socket_id.write(ctx, msg, nonblocking).map_err(|e| e.into())
+            }
+            FdResource::Stdin | FdResource::Stdout => {
                 let state = ctx.acquire();
                 // Writing to `stdin` is equivalent to writing to `stdout` in most scenarios
 
@@ -114,12 +122,17 @@ impl DescriptorId {
                         let write_polled = feedback.write_polled.clone();
                         let read_polled = feedback.read_polled.clone();
 
-                        let event_raised = state.global.polled_events.get(&write_polled).unwrap().event_raised;
+                        let event_raised = state
+                            .global
+                            .polled_events
+                            .get(&write_polled)
+                            .unwrap()
+                            .event_raised;
                         drop(state);
 
                         if !event_raised {
                             if nonblocking {
-                                return Err(DescriptorError::WouldBlock)
+                                return Err(DescriptorError::WouldBlock);
                             } else {
                                 ctx.poll_until_ready(write_polled.clone());
                             }
@@ -131,7 +144,7 @@ impl DescriptorId {
                         let mut total_written = 0;
                         for iovec in msg.vdata() {
                             if buf.is_full() {
-                                break
+                                break;
                             }
                             total_written += buf.write(iovec.data());
                         }
@@ -142,18 +155,23 @@ impl DescriptorId {
                         state.raise_polled(&read_polled);
 
                         Ok(total_written)
-                    },
+                    }
                     StdioBackend::Plugin(plugin_id) => {
                         let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
                         let buffer_id = plugin_info.write_buf.clone();
                         let write_polled = plugin_info.write_polled.clone();
 
-                        let event_raised = state.global.polled_events.get(&write_polled).unwrap().event_raised;
+                        let event_raised = state
+                            .global
+                            .polled_events
+                            .get(&write_polled)
+                            .unwrap()
+                            .event_raised;
                         drop(state);
 
                         if !event_raised {
                             if nonblocking {
-                                return Err(DescriptorError::WouldBlock)
+                                return Err(DescriptorError::WouldBlock);
                             } else {
                                 ctx.poll_until_ready(write_polled.clone());
                             }
@@ -165,21 +183,27 @@ impl DescriptorId {
                         let mut total_written = 0;
                         for iovec in msg.vdata() {
                             if buf.is_full() {
-                                break
+                                break;
                             }
                             total_written += buf.write(iovec.data());
                         }
 
                         Ok(total_written)
-                    },
+                    }
                     StdioBackend::Sink => Ok(total_len),
                     StdioBackend::NullSink => Ok(total_len),
                     StdioBackend::Fuzz(_) => Ok(total_len),
                 }
             }
             FdResource::Stderr => {
-                let res = unsafe { libc::writev(2, msg.vdata().as_ptr() as *const libc::iovec, msg.vdata().len() as i32) };
-                match res  {
+                let res = unsafe {
+                    libc::writev(
+                        2,
+                        msg.vdata().as_ptr() as *const libc::iovec,
+                        msg.vdata().len() as i32,
+                    )
+                };
+                match res {
                     0.. => Ok(res as usize),
                     _ => Err(DescriptorError::Passthrough),
                 }
@@ -187,11 +211,15 @@ impl DescriptorId {
         }
     }
 
-    pub fn read(&self, ctx: &mut FizzleSingleton, msg: &mut MsgHdrOut) -> Result<usize, DescriptorError> {
+    pub fn read(
+        &self,
+        ctx: &mut FizzleSingleton,
+        msg: &mut MsgHdrOut,
+    ) -> Result<usize, DescriptorError> {
         let state = ctx.acquire();
 
         let Some(fd_info) = state.local.fds.get(self) else {
-            return Err(DescriptorError::BadFd)
+            return Err(DescriptorError::BadFd);
         };
 
         let nonblocking = fd_info.nonblocking || msg.flags_mut().contains(MsgFlags::DONTWAIT);
@@ -201,11 +229,15 @@ impl DescriptorId {
         match resource {
             FdResource::Directory(_) => unimplemented!(),
             FdResource::Epoll(_) => unimplemented!(),
-            FdResource::EventFd(eventfd_id) => eventfd_id.read(ctx, msg, nonblocking).map_err(|e| e.into()),
+            FdResource::EventFd(eventfd_id) => {
+                eventfd_id.read(ctx, msg, nonblocking).map_err(|e| e.into())
+            }
             FdResource::File(file_id) => file_id.read(ctx, msg).map_err(|e| e.into()),
             FdResource::MessageQueue(_) => todo!(),
             FdResource::Pipe(pipe_id) => pipe_id.read(ctx, msg, nonblocking).map_err(|e| e.into()),
-            FdResource::Socket(socket_id) => socket_id.read(ctx, msg, nonblocking).map_err(|e| e.into()),
+            FdResource::Socket(socket_id) => {
+                socket_id.read(ctx, msg, nonblocking).map_err(|e| e.into())
+            }
             FdResource::Stdin | FdResource::Stdout | FdResource::Stderr => {
                 let mut state = ctx.acquire();
 
@@ -215,13 +247,18 @@ impl DescriptorId {
                         let buffer_id = feedback.buf.clone();
                         let read_polled = feedback.read_polled.clone();
                         let write_polled = feedback.write_polled.clone();
-                        let event_raised = state.global.polled_events.get(&read_polled).unwrap().event_raised;
-                        
+                        let event_raised = state
+                            .global
+                            .polled_events
+                            .get(&read_polled)
+                            .unwrap()
+                            .event_raised;
+
                         drop(state);
 
                         if !event_raised {
                             if nonblocking {
-                                return Err(DescriptorError::WouldBlock)
+                                return Err(DescriptorError::WouldBlock);
                             } else {
                                 ctx.poll_until_ready(read_polled.clone());
                             }
@@ -234,11 +271,14 @@ impl DescriptorId {
 
                         for iovec in msg.vdata_mut() {
                             if buf.is_empty() {
-                                break
+                                break;
                             }
 
                             let data_len = cmp::min(buf.len(), iovec.data_mut().len());
-                            init_from_slice(&mut iovec.data_mut()[..data_len], &buf.data()[..data_len]);
+                            init_from_slice(
+                                &mut iovec.data_mut()[..data_len],
+                                &buf.data()[..data_len],
+                            );
                             buf.did_read(data_len);
                             total_read += data_len;
                         }
@@ -254,13 +294,18 @@ impl DescriptorId {
                         let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
                         let buffer_id = plugin_info.write_buf.clone();
                         let read_polled = plugin_info.read_polled.clone();
-                        let event_raised = state.global.polled_events.get(&read_polled).unwrap().event_raised;
-                        
+                        let event_raised = state
+                            .global
+                            .polled_events
+                            .get(&read_polled)
+                            .unwrap()
+                            .event_raised;
+
                         drop(state);
 
                         if !event_raised {
                             if nonblocking {
-                                return Err(DescriptorError::WouldBlock)
+                                return Err(DescriptorError::WouldBlock);
                             } else {
                                 ctx.poll_until_ready(read_polled.clone());
                             }
@@ -273,11 +318,14 @@ impl DescriptorId {
 
                         for iovec in msg.vdata_mut() {
                             if buf.is_empty() {
-                                break
+                                break;
                             }
 
                             let data_len = cmp::min(buf.len(), iovec.data_mut().len());
-                            init_from_slice(&mut iovec.data_mut()[..data_len], &buf.data()[..data_len]);
+                            init_from_slice(
+                                &mut iovec.data_mut()[..data_len],
+                                &buf.data()[..data_len],
+                            );
                             buf.did_read(data_len);
                             total_read += data_len;
                         }
@@ -299,19 +347,26 @@ impl DescriptorId {
                         }
 
                         Ok(total_read)
-                    },
+                    }
                     StdioBackend::Fuzz(fuzz_endpoint_id) => {
                         let fuzz_endpoint_id = fuzz_endpoint_id.clone();
-                        let FuzzEndpointInfo { mut read_idx, read_polled } = state.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().clone();
+                        let FuzzEndpointInfo {
+                            mut read_idx,
+                            read_polled,
+                        } = state
+                            .global
+                            .fuzz_endpoints
+                            .get(&fuzz_endpoint_id)
+                            .unwrap()
+                            .clone();
 
                         let polled_is_ready = state.polled_is_ready(&read_polled);
                         drop(state);
 
                         if !polled_is_ready {
                             if nonblocking {
-                                return Err(DescriptorError::WouldBlock)
+                                return Err(DescriptorError::WouldBlock);
                             } else {
-
                                 ctx.poll_until_ready(read_polled.clone());
                             }
                         }
@@ -324,16 +379,23 @@ impl DescriptorId {
                         let mut total_read = 0;
                         for iovec in msg.vdata_mut() {
                             if buf[read_idx..].is_empty() {
-                                break
+                                break;
                             }
 
                             let data_len = cmp::min(buf.len(), iovec.data_mut().len());
-                            init_from_slice(&mut iovec.data_mut()[..data_len], &buf[read_idx..read_idx + data_len]);
+                            init_from_slice(
+                                &mut iovec.data_mut()[..data_len],
+                                &buf[read_idx..read_idx + data_len],
+                            );
                             read_idx += data_len;
                             total_read += data_len;
                         }
 
-                        let fuzz_endpoint = state.global.fuzz_endpoints.get_mut(&fuzz_endpoint_id).unwrap();
+                        let fuzz_endpoint = state
+                            .global
+                            .fuzz_endpoints
+                            .get_mut(&fuzz_endpoint_id)
+                            .unwrap();
                         fuzz_endpoint.read_idx = read_idx;
                         if fuzz_endpoint.read_idx == buflen {
                             state.lower_polled(&read_polled);
@@ -380,7 +442,7 @@ impl FfiOutput for Result<usize, DescriptorError> {
         match self {
             Ok(i) => {
                 Self::set_errno(0);
-                return *i as libc::ssize_t
+                return *i as libc::ssize_t;
             }
             Err(DescriptorError::WouldBlock) => Self::set_errno(libc::EAGAIN),
             Err(DescriptorError::BadFd) => Self::set_errno(libc::EBADFD),

@@ -58,7 +58,7 @@ when = "onstartup"
 method = "plugin" # The means of passing I/O on the device
 when = "perround"
 module = "fizzle-plugin-fuzz-s1ap" # The name of the cargo crate to source the plugin from
-plugin = "S1apFuzzClient" # The name of the `FizzlePlugin` implementation to be used
+plugin = "S1apFuzzClient" # The name of the `Plugin` implementation to be used
 streams = 1 # Establishes 5 client connections with the given server.
 
 #"file:./myconfig" = "feedback" # Output whatever is given as input
@@ -70,7 +70,7 @@ streams = 1 # Establishes 5 client connections with the given server.
 #[io."sctp-server:127.0.0.1:38412"]
 #method = "plugin" # The means of passing I/O on the device
 #module = "fizzle-ngap" # The name of the cargo crate to source the plugin from
-#plugin = "NgapServer" # The name of the `FizzlePlugin` implementation to be used
+#plugin = "NgapServer" # The name of the `Plugin` implementation to be used
 
 
 
@@ -79,7 +79,7 @@ streams = 1 # Establishes 5 client connections with the given server.
 #[io."tcp-client:127.0.0.1:8080"]
 #method = "plugin" # The means of passing I/O on the device
 #module = "fizzle-http" # The name of the cargo crate to source the plugin from
-#plugin = "HttpClient" # The name of the `FizzlePlugin` implementation to be used
+#plugin = "HttpClient" # The name of the `Plugin` implementation to be used
 #streams = 1 # Establishes 5 client connections with the given server.
 
 #[io."tcp-client:127.0.0.1:8080".config]

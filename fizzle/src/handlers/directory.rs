@@ -1,4 +1,4 @@
-use crate::arena::ArenaKey; 
+use crate::arena::ArenaKey;
 
 use fizzle_common::io::MAX_PATH_LEN;
 use fizzle_common::path::FilePath;
@@ -12,11 +12,8 @@ mod private {
     pub struct DirectoryId(usize);
 }
 
-
 impl ArenaKey for DirectoryId {
     type Value = FilePath<MAX_PATH_LEN>;
 }
 
-impl DirectoryId {
-
-}
+impl DirectoryId {}

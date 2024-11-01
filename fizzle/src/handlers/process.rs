@@ -5,7 +5,7 @@ use crate::arena::ArenaKey;
 use crate::semaphore::Semaphore;
 use crate::state::FizzleSingleton;
 
-use super::signal::ProcessSignalInfo;
+use super::signal::ProcSigInfo;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ProcessId(usize);
@@ -23,21 +23,15 @@ impl From<usize> for ProcessId {
 }
 
 impl ArenaKey for ProcessId {
-    type Value = ProcessSignalInfo;
+    type Value = ProcSigInfo;
 }
 
 impl ProcessId {
-    pub fn is_main_process(&self) -> bool {
-        self.0 == 0
+    pub fn main_process() -> Self {
+        Self(0)
     }
 
-    pub fn init_process_lock(&self, ctx: &mut FizzleSingleton) {
-        let sem_opt = &mut ctx.acquire().global.process_locks[usize::from(*self)];
-
-        // TODO: this seems to behave safely, but check with Miri
-        unsafe {
-            let uninit_sem = (*(ptr::from_mut(sem_opt) as *mut Option<MaybeUninit<Semaphore>>)).insert(MaybeUninit::uninit());
-            Semaphore::initialize(uninit_sem, false, 0);
-        }
+    pub fn is_main_process(&self) -> bool {
+        self.0 == 0
     }
 }

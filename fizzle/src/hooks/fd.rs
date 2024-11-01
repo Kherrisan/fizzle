@@ -26,7 +26,7 @@ hook_macros::hook! {
                 Some(DescriptorInfo { resource: FdResource::File(_), .. }) => crate::alias_fd_destroy(fd),
                 Some(DescriptorInfo { resource: FdResource::Socket(socket_id), .. }) => {
                     assert_eq!(hook_macros::real!(close)(fd), 0, "close() returned nonzero despite valid socket context");
-                
+
                     let socket_id = socket_id.clone();
                     let mut ref_count = state.global.sockets.ref_count(&socket_id);
                     match state.global.sockets.get(&socket_id).unwrap() {
@@ -37,7 +37,7 @@ hook_macros::hook! {
                         SocketState::Unassociated(sock_info) => {
                             if ref_count <= 3 {
                                 if let Some(addr) = sock_info.local_addr.clone() {
-                                    state.global.socket_locations.remove(&addr).unwrap();                                   
+                                    state.global.socket_locations.remove(&addr).unwrap();
                                 }
                             }
                         }
@@ -83,7 +83,7 @@ hook_macros::hook! {
                 Some(DescriptorInfo { resource: FdResource::Pipe(pipe_id), .. }) => {
                     crate::alias_fd_destroy(fd);
                     if let Some(peer_id) = state.global.pipes.get(&pipe_id).unwrap().peer.clone() {
-                        state.global.pipes.get_mut(&peer_id).unwrap().peer = None;                       
+                        state.global.pipes.get_mut(&peer_id).unwrap().peer = None;
                     }
                 }
                 // TODO: mark stdin as closed after this...

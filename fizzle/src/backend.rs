@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use crate::arena::Rc;
 use crate::handlers::buffer::BufferId;
 use crate::handlers::fuzz_endpoint::FuzzEndpointId;
-use crate::handlers::plugin::PluginId;
+use crate::handlers::plugin::PluginEndpointId;
 use crate::handlers::polled::PolledId;
 use crate::handlers::socket::SocketId;
 
@@ -22,8 +22,8 @@ pub enum IoBackend<R: Clone + Debug, F: Clone + Debug> {
     Peered(R),
     /// `read()`s will return whatever was written by prior `write()`s--acts as a virtual FIFO queue.
     Feedback(F),
-    /// Uses the plugin specified by `PluginId` to decide `read()`/`write()` behavior.
-    Plugin(Rc<PluginId>),
+    /// Uses the plugin specified by `PluginEndpointId` to decide `read()`/`write()` behavior.
+    Plugin(Rc<PluginEndpointId>),
     Sink,
     NullSink,
     /// Indicates that fuzzing input should be passed directly through the I/O Endpoint.

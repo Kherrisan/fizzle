@@ -1,9 +1,8 @@
 use std::{
-    collections::{hash_map::Entry, VecDeque},
-    mem, thread,
+    collections::{hash_map::Entry, VecDeque}, mem, slice, thread
 };
 
-use crate::{hook_macros, state};
+use crate::{handlers::entropy::EntropyEvent, hook_macros, scheduler::Scheduler, state};
 
 //libc::syscall(1,2,3,4);
 
@@ -35,22 +34,6 @@ fn format_futex_op(futex_op: libc::c_int) -> &'static str {
     }
 }
 
-/*
-
-
-    let res = {
-        $hook_fn ( $($v,)* $va_args )
-    };
-
-    log::trace!(
-        "Function {} returned {:?}", // TODO: add process info in the future
-        stringify!($real_fn),
-        res
-    );
-    crate::state::set_entered_handler(false);
-    res
-*/
-
 #[no_mangle]
 pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc::c_long {
     if crate::state::has_entered_handler() {
@@ -59,41 +42,51 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                 let dirfd: libc::c_int = va_args.arg();
                 let pathname: *const libc::c_char = va_args.arg();
                 let flags: libc::c_int = va_args.arg();
-                let mask:  libc::c_uint = va_args.arg();
+                let mask: libc::c_uint = va_args.arg();
                 let statxbuf: *mut libc::statx = va_args.arg();
-                
+
                 hook_macros::real_syscall()(number, dirfd, pathname, flags, mask, statxbuf)
             }
             _ => {
-                log::debug!(
-                    "syscall({}, ...)",
-                    number
-                );
+                log::debug!("syscall({}, ...)", number);
 
                 panic!("recursive calls to `syscall` not allowed")
             }
-        }
+        };
     }
     crate::state::set_entered_handler(true);
-
-    log::trace!(
-        "Thread {:?} invoked function syscall",
-        std::thread::current().id(),
-    );
-
+    
+    // SAFETY: only one FizzleSingleton is ever owned at a time
     let mut ctx = state::fizzle_singleton();
-
     let mut state = ctx.acquire();
 
     let res = 'body: {
         match number {
-            libc::SYS_gettid => hook_macros::real_syscall()(number),
+            libc::SYS_gettid => {
+                crate::strace!("syscall(SYS_gettid) -> ...");
+                let res = hook_macros::real_syscall()(number);
+                crate::strace!("syscall(SYS_gettid) -> {}", res);
+                res
+            },
             libc::SYS_getrandom => {
                 let buf: *mut libc::c_void = va_args.arg();
                 let buflen: libc::size_t = va_args.arg();
                 let flags: libc::c_uint = va_args.arg();
                 drop(state);
-                crate::hooks::entropy::fizzle_getrandom(buf, buflen, flags) as i64
+
+                crate::strace!("syscall(SYS_getrandom, {:?}, {}, {}) -> ...", buf, buflen, flags);
+
+                let buf = slice::from_raw_parts_mut(buf as *mut u8, buflen as usize);
+                match Scheduler::handle_event(EntropyEvent::new(buf)) {
+                    Ok(len) => {
+                        crate::strace!("syscall(SYS_getrandom, {:?}, {}, {}) -> {:.8?}", buf, buflen, flags, &buf[..len]);
+                        len as i64                          
+                    }
+                    Err(()) => {
+                        crate::strace!("syscall(SYS_getrandom, {:?}, {}, {}) -> -1", buf, buflen, flags);
+                        -1
+                    }
+                }
             }
             libc::SYS_futex => {
                 let uaddr: *mut u32 = va_args.arg();
@@ -111,8 +104,6 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                     futex_op,
                     val
                 );
-
-
 
                 if !futex_private_flag {
                     log::warn!("SYS_futex syscall used non-private futex--fizzle does not currently support process-shared futex operations, so this may cause bugs if used in a multiprocess context");

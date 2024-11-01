@@ -1,13 +1,11 @@
-use crate::arena::{ArenaKey, Rc}; 
-use crate::constants::FIZZLE_MAX_EPOLL_FDS;
 use super::descriptor::DescriptorId;
 use super::polled::PolledId;
+use crate::arena::{ArenaKey, Rc};
+use crate::constants::FIZZLE_MAX_EPOLL_FDS;
 
 use heapless::FnvIndexMap;
 
 pub use private::EpollId;
-
-
 
 // This is to forbid access to the SocketId's inner `usize` field.
 mod private {
@@ -50,6 +48,4 @@ impl ArenaKey for EpollId {
     type Value = EpollInfo;
 }
 
-impl EpollId {
-
-}
+impl EpollId {}

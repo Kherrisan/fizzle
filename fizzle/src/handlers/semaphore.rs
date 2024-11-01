@@ -1,4 +1,4 @@
-use crate::arena::ArenaKey; 
+use crate::arena::ArenaKey;
 use crate::constants::FIZZLE_MAX_WAITING_SEMAPHORES;
 use crate::state::WorkerId;
 
@@ -10,7 +10,6 @@ mod private {
     #[repr(transparent)]
     pub struct SemaphoreId(usize);
 }
-
 
 impl ArenaKey for SemaphoreId {
     type Value = SemaphoreInfo;
@@ -39,7 +38,4 @@ impl SemaphorePtr {
     }
 }
 
-impl SemaphoreId {
-
-}
-
+impl SemaphoreId {}

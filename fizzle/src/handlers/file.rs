@@ -3,8 +3,8 @@ use std::fmt::Display;
 use std::os::fd::RawFd;
 
 use crate::arena::{ArenaKey, Rc};
-use crate::constants::FIZZLE_FOPEN_BUFSIZE;
 use crate::backend::FileBackend;
+use crate::constants::FIZZLE_FOPEN_BUFSIZE;
 use crate::state::FizzleSingleton;
 
 use fizzle_common::storage::Buffer;
@@ -36,7 +36,12 @@ impl Rc<FileId> {
                 let read_polled = feedback.read_polled.clone();
                 let write_polled = feedback.write_polled.clone();
 
-                let event_raised = state.global.polled_events.get(&read_polled).unwrap().event_raised;
+                let event_raised = state
+                    .global
+                    .polled_events
+                    .get(&read_polled)
+                    .unwrap()
+                    .event_raised;
                 drop(state);
 
                 if !event_raised {
@@ -50,7 +55,7 @@ impl Rc<FileId> {
                 let mut total_read = 0;
                 for iovec in msg.vdata_mut() {
                     if buf.is_empty() {
-                        break
+                        break;
                     }
                     total_read += buf.read_uninit(iovec.data_mut());
                 }
@@ -61,14 +66,19 @@ impl Rc<FileId> {
                 state.raise_polled(&write_polled);
 
                 Ok(total_read)
-            },
+            }
             FileBackend::Plugin(plugin_id) => {
                 let plugin_id = plugin_id.clone();
                 let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
                 let buffer_id = plugin_info.read_buf.clone();
                 let read_polled = plugin_info.read_polled.clone();
 
-                let event_raised = state.global.polled_events.get(&read_polled).unwrap().event_raised;
+                let event_raised = state
+                    .global
+                    .polled_events
+                    .get(&read_polled)
+                    .unwrap()
+                    .event_raised;
                 drop(state);
 
                 if !event_raised {
@@ -82,7 +92,7 @@ impl Rc<FileId> {
                 let mut total_read = 0;
                 for iovec in msg.vdata_mut() {
                     if buf.is_empty() {
-                        break
+                        break;
                     }
                     total_read += buf.read_uninit(iovec.data_mut());
                 }
@@ -92,7 +102,7 @@ impl Rc<FileId> {
                 }
 
                 Ok(total_read)
-            },
+            }
             FileBackend::Sink => Ok(0),
             FileBackend::NullSink => {
                 let mut total_read = 0;
@@ -102,12 +112,20 @@ impl Rc<FileId> {
                     }
                     total_read += iovec.data_mut().len();
                 }
-                
+
                 Ok(total_read)
-            },
+            }
             FileBackend::Fuzz(fuzz_endpoint_id) => {
                 let fuzz_endpoint_id = fuzz_endpoint_id.clone();
-                let FuzzEndpointInfo { mut read_idx, read_polled } = state.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().clone();
+                let FuzzEndpointInfo {
+                    mut read_idx,
+                    read_polled,
+                } = state
+                    .global
+                    .fuzz_endpoints
+                    .get(&fuzz_endpoint_id)
+                    .unwrap()
+                    .clone();
 
                 let polled_is_ready = state.polled_is_ready(&read_polled);
                 drop(state);
@@ -124,26 +142,33 @@ impl Rc<FileId> {
                 let mut total_read = 0;
                 for iovec in msg.vdata_mut() {
                     if buf[read_idx..].is_empty() {
-                        break
+                        break;
                     }
 
                     let data_len = cmp::min(buf.len(), iovec.data_mut().len());
-                    init_from_slice(&mut iovec.data_mut()[..data_len], &buf[read_idx..read_idx + data_len]);
+                    init_from_slice(
+                        &mut iovec.data_mut()[..data_len],
+                        &buf[read_idx..read_idx + data_len],
+                    );
                     read_idx += data_len;
                     total_read += data_len;
                 }
 
-                let fuzz_endpoint = state.global.fuzz_endpoints.get_mut(&fuzz_endpoint_id).unwrap();
+                let fuzz_endpoint = state
+                    .global
+                    .fuzz_endpoints
+                    .get_mut(&fuzz_endpoint_id)
+                    .unwrap();
                 fuzz_endpoint.read_idx = read_idx;
                 if fuzz_endpoint.read_idx == buflen {
                     state.lower_polled(&read_polled);
                 }
 
                 Ok(total_read)
-            },
+            }
         }
     }
-    
+
     pub fn write(&self, ctx: &mut FizzleSingleton, msg: &impl MsgHdr) -> Result<usize, FileError> {
         let total_len = msg.vdata().iter().map(|v| v.data().len()).sum();
 
@@ -156,7 +181,12 @@ impl Rc<FileId> {
                 let write_polled = feedback.write_polled.clone();
                 let read_polled = feedback.read_polled.clone();
 
-                let event_raised = state.global.polled_events.get(&write_polled).unwrap().event_raised;
+                let event_raised = state
+                    .global
+                    .polled_events
+                    .get(&write_polled)
+                    .unwrap()
+                    .event_raised;
                 drop(state);
 
                 if !event_raised {
@@ -169,7 +199,7 @@ impl Rc<FileId> {
                 let mut total_written = 0;
                 for iovec in msg.vdata() {
                     if buf.is_full() {
-                        break
+                        break;
                     }
                     total_written += buf.write(iovec.data());
                 }
@@ -187,7 +217,12 @@ impl Rc<FileId> {
                 let buffer_id = plugin_info.write_buf.clone();
                 let write_polled = plugin_info.write_polled.clone();
 
-                let event_raised = state.global.polled_events.get(&write_polled).unwrap().event_raised;
+                let event_raised = state
+                    .global
+                    .polled_events
+                    .get(&write_polled)
+                    .unwrap()
+                    .event_raised;
                 drop(state);
 
                 if !event_raised {
@@ -200,13 +235,13 @@ impl Rc<FileId> {
                 let mut total_written = 0;
                 for iovec in msg.vdata() {
                     if buf.is_full() {
-                        break
+                        break;
                     }
                     total_written += buf.write(iovec.data());
                 }
 
-                return Ok(total_written)
-            },
+                return Ok(total_written);
+            }
             FileBackend::Sink => Ok(total_len),
             FileBackend::NullSink => Ok(total_len),
             FileBackend::Fuzz(_) => Ok(total_len),
@@ -225,7 +260,7 @@ impl FilePtr {
         let state = ctx.acquire();
 
         let Some(file_obj) = state.local.file_objs.get(self) else {
-            return Err(FileError::InvalidPtr)
+            return Err(FileError::InvalidPtr);
         };
 
         let _descriptor_id = DescriptorId::from_raw_fd(file_obj.fd);
@@ -243,7 +278,6 @@ impl FilePtr {
             None => Err(FileError::InvalidPtr),
         }
     }
-    
 }
 
 #[derive(Debug)]
@@ -268,13 +302,11 @@ impl From<FileError> for DescriptorError {
 
 impl Display for FileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(
-        match self {
-                Self::InvalidPtr => "InvalidPtr",
-                Self::BadFile => "BadFile",
-                Self::NotSocket => "NotSocket",
-            }
-        )
+        f.write_str(match self {
+            Self::InvalidPtr => "InvalidPtr",
+            Self::BadFile => "BadFile",
+            Self::NotSocket => "NotSocket",
+        })
     }
 }
 
@@ -308,4 +340,3 @@ impl FileObject {
 impl ArenaKey for FileId {
     type Value = FileBackend;
 }
-

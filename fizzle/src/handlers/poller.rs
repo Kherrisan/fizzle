@@ -20,7 +20,7 @@ pub struct PollerInfo {
     pub worker_id: WorkerId,
     pub polled_events: heapless::Vec<Rc<PolledId>, FIZZLE_MAX_PER_POLLER_QUEUED_EVENTS>,
     /// Polled events that have been raised for the Poller prior to it being evaluated.
-    /// 
+    ///
     /// A poller will have raised events if and only if it is in the ready_queue; this invariant is
     /// reflected in the `in_raised_queue()` method defined below.
     pub raised_events: heapless::FnvIndexSet<Rc<PolledId>, FIZZLE_MAX_PER_POLLER_QUEUED_EVENTS>,

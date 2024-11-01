@@ -1,8 +1,8 @@
+use std::cmp;
 use std::collections::HashMap;
 use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::cmp;
 
 // TODO: can we pass through configuration options for specific streams? How would we go about
 // doing that?? The problem is that a plugin can be defined in multiple I/O endpoints, so the
@@ -78,8 +78,8 @@ pub enum IoEndpointVariant {
     SctpClient(SocketAddr),
 }
 
-/// An error that a plugin may return during calls to [`read()`](FizzlePluginObject::read) or
-/// [`write()`](FizzlePluginObject::write).
+/// An error that a plugin may return during calls to [`read()`](PluginObject::read) or
+/// [`write()`](PluginObject::write).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PluginError {
@@ -96,33 +96,33 @@ pub enum PluginError {
 ///
 /// Plugins can model pseudorandom configuration files, mimic network service dependencies,
 /// or even add structure- and protocol-awareness to otherwise arbitrary fuzzing inputs.
-pub trait FizzlePlugin: FizzlePluginObject {
+pub trait Plugin: PluginObject {
     /// Constructs an instance of this plugin, configured with `config`.
     fn new(config: HashMap<IoEndpointVariant, toml::Table>) -> Self;
 }
 
 /// Helper function to safely write data to the uninitialized buffer passed in
-/// [`write()`](FizzlePluginObject::write).
+/// [`write()`](PluginObject::write).
 pub fn write_to_uninit(data: &[u8], buf: &mut [MaybeUninit<u8>]) -> usize {
     let amount = cmp::min(data.len(), buf.len());
 
     for (dst, src) in buf.iter_mut().zip(data) {
         dst.write(*src);
     }
-    
+
     amount
 }
 
-/// The object-safe subset of methods that must be implemented for a [`FizzlePlugin`].
+/// The object-safe subset of methods that must be implemented for a [`Plugin`].
 ///
 /// Each method includes a [`Context`] that indicates what protocol and stream the method is being
 /// called for. An application being tested may open an I/O device multiple times, or a plugin may
 /// be applied to multiple I/O endpoints within configuration, so the plugin must be able to
 /// differentiate between different `stream_id` values within the context. The `protocol_id` field
 /// of the context is meant for plugins that implement multiple protocols (e.g., to share state
-/// between protocols), so it can be safely ignored for plugins that only have one [`FizzlePlugin`]
+/// between protocols), so it can be safely ignored for plugins that only have one [`Plugin`]
 /// implementation.
-pub trait FizzlePluginObject {
+pub trait PluginObject {
     /// Indicates the beginning of a new fuzzing round and loads a source of entropy (e.g., fuzzing
     /// input) that the plugin may base its behavior on.
     ///

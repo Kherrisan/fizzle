@@ -16,8 +16,4 @@ impl ArenaKey for MessageQueueId {
     type Value = MessageQueueInfo;
 }
 
-impl MessageQueueId {
-
-}
-
-
+impl MessageQueueId {}

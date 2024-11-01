@@ -1,5 +1,5 @@
-use std::{mem, ptr, thread};
 use std::mem::MaybeUninit;
+use std::{array, mem, ptr, thread};
 
 use bitflags::bitflags;
 
@@ -7,9 +7,11 @@ use crate::arena::Rc;
 use crate::handlers::polled::PolledId;
 use crate::state::FizzleSingleton;
 
+pub type SignalHandlers = [SigDisposition; 32];
+
 bitflags! {
-    #[derive(Clone, Copy, Debug, Default)]
-    pub struct SignalSet: u64 {
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct SignalSet: u32 {
         const SIGHUP = 1 << 0;
         const SIGINT = 1 << 1;
         const SIGQUIT = 1 << 2;
@@ -52,17 +54,17 @@ bitflags! {
 impl SignalSet {
     /// Returns the value of the lowest-numbered signal present in the set.
     pub fn from_signum(signum: libc::c_int) -> Self {
-        Self::from_bits((1 << (signum - 1)) as u64).unwrap()
+        Self::from_bits((1 << (signum - 1)) as u32).unwrap()
     }
 
     pub fn from_sigset(set: libc::sigset_t) -> Self {
-        let mut raw_set = 0u64;
-        for i in 0u64..=31u64 {
+        let mut raw_set = 0u32;
+        for i in 0u32..=31u32 {
             if unsafe { libc::sigismember(ptr::addr_of!(set), (i + 1) as i32) } != 0 {
                 raw_set |= 1 << i;
             }
         }
-        
+
         Self::from_bits(raw_set).unwrap()
     }
 
@@ -89,22 +91,26 @@ impl SignalSet {
         (self.bits().count_zeros() + 1) as libc::c_int
     }
 
-    pub fn wait(&self, ctx: &mut FizzleSingleton, timeout: Option<libc::timespec>) -> Option<libc::siginfo_t> {
-        todo!()
-    }
-
-    pub fn set_signal_handler(&self, ctx: &mut FizzleSingleton, signal: libc::c_int, handler: libc::sigaction) {
+    pub fn set_signal_handler(
+        &self,
+        ctx: &mut FizzleSingleton,
+        signal: libc::c_int,
+        handler: libc::sigaction,
+    ) {
         let mut state = ctx.acquire();
         let thread_id = thread::current().id();
 
         let new_handler = match handler.sa_sigaction {
-            libc::SIG_DFL => SigCallback::Default,
-            libc::SIG_IGN => SigCallback::Ignore,
-            a if handler.sa_flags & libc::SA_SIGINFO > 0 => SigCallback::Action(unsafe { mem::transmute(a) }),
-            a => SigCallback::Handler(unsafe { mem::transmute(a) }),
+            libc::SIG_DFL => SigDisposition::Default,
+            libc::SIG_IGN => SigDisposition::Ignore,
+            a if handler.sa_flags & libc::SA_SIGINFO > 0 => {
+                SigDisposition::Action(unsafe { mem::transmute(a) })
+            }
+            a => SigDisposition::Handler(unsafe { mem::transmute(a) }),
         };
 
-        state.local.signals.get_mut(&thread_id).unwrap().handlers[signal as usize - 1] = new_handler;
+        state.local.signals.get_mut(&thread_id).unwrap().handlers[signal as usize - 1] =
+            new_handler;
         todo!()
     }
 
@@ -113,52 +119,80 @@ impl SignalSet {
     }
 }
 
-#[derive(Clone, Debug)]
-pub enum SigCallback {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SigDisposition {
+    #[default]
     Default,
     Ignore,
     Handler(SigHandler),
     Action(SigAction),
 }
 
-impl Default for SigCallback {
-    fn default() -> Self {
-        Self::Default
-    }
-}
+
 
 pub type SigHandler = unsafe extern "C" fn(libc::c_int);
 pub type SigAction = unsafe extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void);
 
 #[derive(Clone, Debug, Default)]
-pub struct ThreadSignalInfo {
-    pub mask: SignalSet,
-    pub handlers: [SigCallback; 32],
+pub struct ThreadSigInfo {
+    /// Signals that have been specifically raised for the thread via `pthread_kill` but that cannot
+    /// be immediately handled as they are blocked.
+    pub raised: SignalSet,
+    /// Signals that have been masked for the given thread.
+    ///
+    /// Note that when `SigCallback::Ignore` is set, any blocked signals will be discarded.
+    pub blocked: SignalSet,
+    /// Used when a `signalfd` is registered. This is an Option so that we don't pre-allocate a bunch
+    /// of `PolledInfo` instances if we don't need them.
+    ///
+    /// signalfd's operate on the thread in which the fd is *read* (or polled)--not necessarily the
+    /// thread in which the fd is created. These are often the same, but don't have to be.
+    pub polled: Option<Rc<PolledId>>,
 }
 
-impl ThreadSignalInfo {
-    pub fn new() -> Self {
-        // We need to block SIGPIPE as it can naturally occur during I/O
-        let new_set = SignalSet::SIGPIPE.to_sigset();
-        let mut old_set = SignalSet::empty().to_sigset();
-
-        unsafe {
-            assert_eq!(libc::pthread_sigmask(libc::SIG_SETMASK, ptr::addr_of!(new_set), ptr::addr_of_mut!(old_set)), 0);
-        }
-
+impl ThreadSigInfo {
+    /// Inherits the set of blocked signals from another thread.
+    pub fn inherit(sigmask: SignalSet) -> Self {
         Self {
-            mask: SignalSet::from_sigset(old_set),
-            handlers: Default::default(),
+            raised: SignalSet::empty(), // Raised signals are not inherited
+            blocked: sigmask, // Blocked signals are inherited
+            polled: None,
+        }
+    }
+
+    pub fn new() -> Self {
+        Self {
+            raised: SignalSet::empty(), // TODO: check all these
+            blocked: SignalSet::empty(),
+            polled: None,
         }
     }
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct ProcessSignalInfo {
-    // According to `pthreads(7)`,, POSIX.1 specifies that threads of a process should all share
-    // signal disposition.
+pub struct ProcSigInfo {
+    /// Signals that have been raised for the process via `kill` (or some other natural event) but
+    /// that cannot be immediately handled as they are blocked.
     pub raised: SignalSet,
-    // This is an Option so that we don't pre-allocate a bunch of `PolledInfo` instances if we
-    // don't need them.
-    pub polled: [Option<Rc<PolledId>>; 32],
+    /// The handler to be run when the signal is received.
+    /// 
+    // According to `pthreads(7)`, POSIX.1 specifies that threads of a process should all share
+    // signal disposition; this disposition is indicated by the `SigCallback` enum.
+    pub handlers: SignalHandlers,
+}
+
+impl ProcSigInfo {
+    pub fn inherit(handlers: SignalHandlers) -> Self {
+        Self {
+            raised: SignalSet::empty(),
+            handlers,
+        }
+    }
+
+    pub fn new() -> Self {
+        Self {
+            raised: SignalSet::empty(),
+            handlers: array::from_fn(|_| SigDisposition::Default),
+        }
+    }
 }

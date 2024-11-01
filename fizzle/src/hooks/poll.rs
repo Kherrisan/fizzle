@@ -20,7 +20,8 @@ pub fn fd_to_pollin(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
     match &fd_info.resource {
         FdResource::Epoll(_) => panic!("polling an epoll descriptor not supported"),
         FdResource::EventFd(eventfd_id) => PolledStatus::Pollable(
-            state.global
+            state
+                .global
                 .event_fds
                 .get(&eventfd_id)
                 .unwrap()
@@ -28,32 +29,41 @@ pub fn fd_to_pollin(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
                 .clone(),
         ),
         FdResource::Directory(_) => PolledStatus::NotPollable,
-        FdResource::File(file_id) => {
-            match state.global.files.get(&file_id).unwrap() {
-                FileBackend::Passthrough => PolledStatus::ImmediatelyPollable,
-                FileBackend::Peered(_) => unreachable!(),
-                FileBackend::Feedback(feedback) => {
-                    PolledStatus::Pollable(feedback.read_polled.clone())
-                }
-                FileBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                    state.global
-                        .plugins
-                        .get(plugin_id)
-                        .unwrap()
-                        .read_polled
-                        .clone(),
-                ),
-                FileBackend::Sink => PolledStatus::NotPollable,
-                FileBackend::NullSink => PolledStatus::ImmediatelyPollable,
-                FileBackend::Fuzz(fuzz_endpoint_id) => PolledStatus::Pollable(
-                    state.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().read_polled.clone()
-                ),
-            }
-        }
+        FdResource::File(file_id) => match state.global.files.get(&file_id).unwrap() {
+            FileBackend::Passthrough => PolledStatus::ImmediatelyPollable,
+            FileBackend::Peered(_) => unreachable!(),
+            FileBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.read_polled.clone()),
+            FileBackend::Plugin(plugin_id) => PolledStatus::Pollable(
+                state
+                    .global
+                    .plugins
+                    .get(plugin_id)
+                    .unwrap()
+                    .read_polled
+                    .clone(),
+            ),
+            FileBackend::Sink => PolledStatus::NotPollable,
+            FileBackend::NullSink => PolledStatus::ImmediatelyPollable,
+            FileBackend::Fuzz(fuzz_endpoint_id) => PolledStatus::Pollable(
+                state
+                    .global
+                    .fuzz_endpoints
+                    .get(&fuzz_endpoint_id)
+                    .unwrap()
+                    .read_polled
+                    .clone(),
+            ),
+        },
         FdResource::MessageQueue(_) => todo!(),
-        FdResource::Pipe(pipe_id) => {
-            PolledStatus::Pollable(state.global.pipes.get(&pipe_id).unwrap().read_polled.clone())
-        }
+        FdResource::Pipe(pipe_id) => PolledStatus::Pollable(
+            state
+                .global
+                .pipes
+                .get(&pipe_id)
+                .unwrap()
+                .read_polled
+                .clone(),
+        ),
         FdResource::Stdin => match &state.global.stdio {
             StdioBackend::Passthrough => PolledStatus::ImmediatelyPollable,
             StdioBackend::Peered(_) => unreachable!(),
@@ -61,7 +71,8 @@ pub fn fd_to_pollin(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
                 PolledStatus::Pollable(feedback.read_polled.clone())
             }
             StdioBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                state.global
+                state
+                    .global
                     .plugins
                     .get(&plugin_id)
                     .unwrap()
@@ -71,7 +82,13 @@ pub fn fd_to_pollin(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
             StdioBackend::Sink => PolledStatus::NotPollable,
             StdioBackend::NullSink => PolledStatus::ImmediatelyPollable,
             StdioBackend::Fuzz(fuzz_endpoint_id) => PolledStatus::Pollable(
-                state.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().read_polled.clone()
+                state
+                    .global
+                    .fuzz_endpoints
+                    .get(&fuzz_endpoint_id)
+                    .unwrap()
+                    .read_polled
+                    .clone(),
             ),
         },
         FdResource::Stdout => PolledStatus::NotPollable,
@@ -86,7 +103,8 @@ pub fn fd_to_pollin(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
                     PolledStatus::Pollable(feedback.read_polled.clone())
                 }
                 ConnectionlessBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                    state.global
+                    state
+                        .global
                         .plugins
                         .get(&plugin_id)
                         .unwrap()
@@ -96,7 +114,13 @@ pub fn fd_to_pollin(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
                 ConnectionlessBackend::Sink => PolledStatus::NotPollable,
                 ConnectionlessBackend::NullSink => PolledStatus::ImmediatelyPollable,
                 ConnectionlessBackend::Fuzz(fuzz_endpoint_id) => PolledStatus::Pollable(
-                    state.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().read_polled.clone()
+                    state
+                        .global
+                        .fuzz_endpoints
+                        .get(&fuzz_endpoint_id)
+                        .unwrap()
+                        .read_polled
+                        .clone(),
                 ),
             },
             SocketState::Unassociated(_) => PolledStatus::NotPollable,
@@ -112,7 +136,8 @@ pub fn fd_to_pollin(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
                     PolledStatus::Pollable(feedback.read_polled.clone())
                 }
                 ConnectedBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                    state.global
+                    state
+                        .global
                         .plugins
                         .get(&plugin_id)
                         .unwrap()
@@ -122,7 +147,13 @@ pub fn fd_to_pollin(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
                 ConnectedBackend::Sink => PolledStatus::NotPollable,
                 ConnectedBackend::NullSink => PolledStatus::ImmediatelyPollable,
                 ConnectedBackend::Fuzz(fuzz_endpoint_id) => PolledStatus::Pollable(
-                    state.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().read_polled.clone()
+                    state
+                        .global
+                        .fuzz_endpoints
+                        .get(&fuzz_endpoint_id)
+                        .unwrap()
+                        .read_polled
+                        .clone(),
                 ),
             },
         },
@@ -137,7 +168,8 @@ pub fn fd_to_pollout(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
     match &fd_info.resource {
         FdResource::Epoll(_) => panic!("polling an epoll descriptor not supported"),
         FdResource::EventFd(eventfd_id) => PolledStatus::Pollable(
-            state.global
+            state
+                .global
                 .event_fds
                 .get(&eventfd_id)
                 .unwrap()
@@ -145,29 +177,36 @@ pub fn fd_to_pollout(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
                 .clone(),
         ),
         FdResource::Directory(_) => PolledStatus::NotPollable,
-        FdResource::File(file_id) => {
-            match state.global.files.get(&file_id).unwrap() {
-                FileBackend::Passthrough | FileBackend::Peered(_) => unreachable!(),
-                FileBackend::Feedback(feedback) => {
-                    PolledStatus::Pollable(feedback.write_polled.clone())
-                }
-                FileBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                    state.global
-                        .plugins
-                        .get(&plugin_id)
-                        .unwrap()
-                        .write_polled
-                        .clone(),
-                ),
-                FileBackend::Sink => PolledStatus::ImmediatelyPollable,
-                FileBackend::NullSink => PolledStatus::ImmediatelyPollable,
-                FileBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
+        FdResource::File(file_id) => match state.global.files.get(&file_id).unwrap() {
+            FileBackend::Passthrough | FileBackend::Peered(_) => unreachable!(),
+            FileBackend::Feedback(feedback) => {
+                PolledStatus::Pollable(feedback.write_polled.clone())
             }
-        }
+            FileBackend::Plugin(plugin_id) => PolledStatus::Pollable(
+                state
+                    .global
+                    .plugins
+                    .get(&plugin_id)
+                    .unwrap()
+                    .write_polled
+                    .clone(),
+            ),
+            FileBackend::Sink => PolledStatus::ImmediatelyPollable,
+            FileBackend::NullSink => PolledStatus::ImmediatelyPollable,
+            FileBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
+        },
         FdResource::MessageQueue(_) => todo!(),
         FdResource::Pipe(pipe_id) => {
             if let Some(peer_id) = &state.global.pipes.get(&pipe_id).unwrap().peer {
-                PolledStatus::Pollable(state.global.pipes.get(&peer_id).unwrap().write_polled.clone())
+                PolledStatus::Pollable(
+                    state
+                        .global
+                        .pipes
+                        .get(&peer_id)
+                        .unwrap()
+                        .write_polled
+                        .clone(),
+                )
             } else {
                 PolledStatus::ImmediatelyPollable
             }
@@ -180,7 +219,8 @@ pub fn fd_to_pollout(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
                 PolledStatus::Pollable(feedback.write_polled.clone())
             }
             StdioBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                state.global
+                state
+                    .global
                     .plugins
                     .get(&plugin_id)
                     .unwrap()
@@ -200,7 +240,8 @@ pub fn fd_to_pollout(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
                     PolledStatus::Pollable(feedback.write_polled.clone())
                 }
                 ConnectionlessBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                    state.global
+                    state
+                        .global
                         .plugins
                         .get(&plugin_id)
                         .unwrap()
@@ -221,7 +262,8 @@ pub fn fd_to_pollout(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
                 ConnectedBackend::Passthrough => unreachable!(),
                 ConnectedBackend::Peered(peered) => {
                     if let Some(peer_id) = &peered.peer {
-                        let SocketState::Connected(conn) = state.global.sockets.get(peer_id).unwrap()
+                        let SocketState::Connected(conn) =
+                            state.global.sockets.get(peer_id).unwrap()
                         else {
                             panic!()
                         };
@@ -240,7 +282,8 @@ pub fn fd_to_pollout(ctx: &mut FizzleSingleton, fd: RawFd) -> PolledStatus {
                     PolledStatus::Pollable(feedback.write_polled.clone())
                 }
                 ConnectedBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                    state.global
+                    state
+                        .global
                         .plugins
                         .get(&plugin_id)
                         .unwrap()
@@ -290,7 +333,7 @@ hook_macros::hook! {
         sigmask: *const libc::sigset_t
     ) -> libc::c_int => fizzle_pselect(ctx) {
         let state = ctx.acquire();
-        
+
         if !sigmask.is_null() {
             log::error!("sigmask unsupported for `pselect`");
         }
@@ -302,7 +345,7 @@ hook_macros::hook! {
 
         let mut read_pollers = HashMap::with_hasher(FxBuildHasher::default());
         let mut write_pollers = HashMap::with_hasher(FxBuildHasher::default());
-        
+
         drop(state);
 
         for fd in 0..nfds {
@@ -336,11 +379,11 @@ hook_macros::hook! {
                     }
                 }
             }
-            
+
             if !writefds.is_null() && libc::FD_ISSET(fd, writefds) {
                 match fd_to_pollout(&mut ctx, fd){
                     PolledStatus::Pollable(polled_id) => {
-                        let mut state = ctx.acquire(); 
+                        let mut state = ctx.acquire();
                         if !state.polled_is_ready(&polled_id) {
                             log::trace!("select(): fd {} was set for reading (Pollable | NotReady)", fd);
                             libc::FD_CLR(fd, writefds);
@@ -369,7 +412,7 @@ hook_macros::hook! {
         }
 
         let mut state = ctx.acquire();
-        
+
         if total_ready > 0 || (!timeout.is_null() && (*timeout).tv_sec == 0 && (*timeout).tv_nsec == 0) {
             return total_ready
         }
@@ -388,14 +431,14 @@ hook_macros::hook! {
         let mut state = ctx.acquire();
 
         state.delete_poller(poller_id);
-        
+
         for (polled_id, fd) in read_pollers {
             if state.polled_is_ready(&polled_id) {
                 libc::FD_SET(fd, readfds);
                 total_ready += 1;
             }
         }
-        
+
         for (polled_id, fd) in write_pollers {
             if state.polled_is_ready(&polled_id) {
                 libc::FD_SET(fd, writefds);
