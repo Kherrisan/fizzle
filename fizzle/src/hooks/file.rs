@@ -130,7 +130,7 @@ hook_macros::hook! {
 
         let fd = if let Some(file_id) = state.global.file_paths.get(&path) {
             let file_id = file_id.clone();
-            let fd = crate::alias_fd_create();
+            let fd = crate::create_descriptor();
             state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
                 close_on_exec: false,
                 nonblocking: false,

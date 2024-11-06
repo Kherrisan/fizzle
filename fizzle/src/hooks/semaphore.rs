@@ -1,15 +1,12 @@
-use heapless::Deque;
-
-use crate::handlers::semaphore::SemaphoreInfo;
-use crate::handlers::semaphore::SemaphorePtr;
+use crate::errno::Errno;
+use crate::handlers::file::AccessMode;
+use crate::handlers::semaphore::*;
 use crate::hook_macros;
-use crate::state::WorkerId;
-
-use fizzle_common::path::SemPath;
+use crate::scheduler::Scheduler;
 
 use std::ffi::CStr;
 use std::ptr;
-use std::thread;
+use std::time::Duration;
 
 hook_macros::hook! {
     unsafe fn sem_init(
@@ -17,26 +14,17 @@ hook_macros::hook! {
         pshared: libc::c_int,
         value: libc::c_uint
     ) -> libc::c_int => fizzle_sem_init(ctx) {
-        let mut state = ctx.acquire();
-
-        // TODO: what about semaphores shared via memory across processes?
-
-        if pshared != 0 {
-            panic!("shared anonymous semaphores unsupported by fizzle")
-        }
-
+        let pshared_bool = pshared != 0;
         let semaphore_id = SemaphorePtr::from(sem);
 
-        if state.local.semaphores.insert(semaphore_id, SemaphoreInfo {
-            refs: 1, // Unused except for named semaphores
-            unlinked: false, // Unused except for named semaphores
-            value: value as usize,
-            waiting: Deque::new(),
-        }).is_some() {
-            log::warn!("`sem_init` called twice on one semaphore");
+        crate::strace!("sem_init(sem={:?}, pshared={}, value={}) -> ...", sem, pshared, value);
+        match Scheduler::handle_event(&mut ctx, SemInitEvent::new(semaphore_id, pshared_bool, value)) {
+            Ok(()) => {
+                crate::strace!("sem_init(sem={:?}, pshared={}, value={}) -> 0", sem, pshared, value);
+                0
+            }
+            Err(()) => unreachable!(),
         }
-
-        0
     }
 }
 
@@ -44,54 +32,35 @@ hook_macros::hook! {
     unsafe fn sem_open(
         name: *const libc::c_char,
         oflag: libc::c_int,
-        _mode: libc::mode_t,
+        mode: libc::mode_t,
         value: libc::c_uint
     ) -> *mut libc::sem_t => fizzle_sem_open(ctx) {
-        let mut state = ctx.acquire();
 
         let name = CStr::from_ptr(name);
-        let Ok(sem_path) = SemPath::from_cstr(name) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return ptr::null_mut()
+
+        let Some(flags) = SemOpenFlags::from_bits(oflag) else {
+            panic!("Unxepected oflags in sem_open()")
         };
 
-        if (oflag & libc::O_CREAT) != 0 {
-            if (oflag & libc::O_EXCL) != 0 && state.global.sem_paths.contains_key(&sem_path) {
-                *libc::__errno_location() = libc::EEXIST;
-                return ptr::null_mut()
+        let create = if flags.contains(SemOpenFlags::CREATE) {
+            let mode = AccessMode::from_bits(mode).unwrap();
+            crate::strace!("sem_open(name={:?}, oflag={}, mode={}, value={}) -> ...", name, flags, mode, value);
+            Some((mode, value))
+        } else {
+            crate::strace!("sem_open(name={:?}, oflag={}) -> ...", name, flags);
+            None
+        };
+
+        match Scheduler::handle_event(&mut ctx, SemOpenEvent::new(name, flags.contains(SemOpenFlags::EXCLUSIVE), create)) {
+            Ok(ret) => {
+                crate::strace!("sem_open(name={:?}, oflag={}, ...) -> {:?}", name, oflag, ret);
+                ret.to_mut_ptr()
             }
-
-            // TODO: we ignore `mode` file permissions here
-
-            let sem = crate::unique_mem_create() as *mut libc::sem_t;
-            let semaphore_ptr = SemaphorePtr::from(sem);
-
-            let sem_id = state.global.semaphores.allocate(SemaphoreInfo {
-                refs: 1,
-                unlinked: false,
-                value: value as usize,
-                waiting: Deque::new(),
-            }).unwrap();
-
-            state.local.named_semaphores.insert(semaphore_ptr, sem_id);
-
-            semaphore_ptr.to_mut_ptr()
-
-        } else { // Open existing semaphore
-            if let Some(sem_id) = state.global.sem_paths.get(&sem_path).cloned() {
-                let sem = crate::unique_mem_create() as *mut libc::sem_t;
-                let semaphore_ptr = SemaphorePtr::from(sem);
-
-                state.local.named_semaphores.insert(semaphore_ptr, sem_id.clone()).unwrap();
-
-                let sem_ctx = state.global.semaphores.get_mut(&sem_id).unwrap();
-                sem_ctx.refs += 1;
-
-                sem
-            } else {
-                *libc::__errno_location() = libc::ENOENT; // TODO: check validity
+            Err(e) => {
+                crate::strace!("sem_open(name={:?}, oflag={}, ...) -> NULL ({})", name, oflag, e);
+                e.set_errno();
                 ptr::null_mut()
-            }
+            },
         }
     }
 }
@@ -100,28 +69,21 @@ hook_macros::hook! {
     unsafe fn sem_destroy(
         sem: *mut libc::sem_t
     ) -> libc::c_int => fizzle_sem_destroy(ctx) {
-        let mut state = ctx.acquire();
-
         let sem_ptr = SemaphorePtr::from(sem);
 
-        if state.local.named_semaphores.contains_key(&sem_ptr) {
-            log::warn!("`sem_destroy` called on named pointer");
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
+        crate::strace!("sem_destroy(sem={:?}) -> ...", sem);
+
+        match Scheduler::handle_event(&mut ctx, SemDestroyEvent::new(sem_ptr)) {
+            Ok(()) => {
+                crate::strace!("sem_destroy(sem={:?}) -> 0", sem);
+                0
+            }
+            Err(e) => {
+                crate::strace!("sem_destroy(sem={:?}) -> -1 ({})", sem, e);
+                e.set_errno();
+                -1
+            },
         }
-
-        let Some(semaphore) = state.local.semaphores.remove(&sem_ptr) else {
-            log::warn!("`sem_destroy` called on uninitialized semaphore");
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
-        crate::unique_mem_destroy(sem as *mut libc::c_void);
-
-        if !semaphore.waiting.is_empty() {
-            panic!("[UB] `sem_destroy` called on semaphore while threads were still waiting on it")
-        }
-
-        0
     }
 }
 
@@ -129,60 +91,43 @@ hook_macros::hook! {
     unsafe fn sem_close(
         sem: *mut libc::sem_t
     ) -> libc::c_int => fizzle_sem_close(ctx) {
-        let mut state = ctx.acquire();
-
         let sem_ptr = SemaphorePtr::from(sem);
 
-        let Some(sem_id) = state.local.named_semaphores.remove(&sem_ptr) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1;
-        };
+        crate::strace!("sem_close(sem={:?}) -> ...", sem);
 
-        crate::unique_mem_destroy(sem as *mut libc::c_void); // TODO: make sure this is called everywhere
-        let Some(sem_ctx) = state.global.semaphores.get_mut(&sem_id) else {
-            panic!("inconsistent fizzle state--named semaphore without global context in `sem_close`");
-        };
-
-        sem_ctx.refs -= 1;
-        if sem_ctx.refs == 0 && sem_ctx.unlinked {
-            state.global.semaphores.downref(&sem_id);
+        match Scheduler::handle_event(&mut ctx, SemCloseEvent::new(sem_ptr)) {
+            Ok(()) => {
+                crate::strace!("sem_close(sem={:?}) -> 0", sem);
+                0
+            }
+            Err(e) => {
+                crate::strace!("sem_close(sem={:?}) -> -1 ({})", sem, e);
+                e.set_errno();
+                -1
+            },
         }
-
-        0
     }
 }
 
 hook_macros::hook! {
     unsafe fn sem_unlink(
-        sem: *const libc::c_char
+        path: *const libc::c_char
     ) -> libc::c_int => fizzle_sem_unlink(ctx) {
-        let mut state = ctx.acquire();
+        let name = CStr::from_ptr(path);
 
-        let name = CStr::from_ptr(sem);
-        let Ok(sem_path) = SemPath::from_cstr(name) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
+        crate::strace!("sem_unlink(path={:?}) -> ...", name);
 
-        let Some(sem_id) = state.global.sem_paths.remove(&sem_path) else {
-            log::debug!("`sem_unlink` called on nonexistent named semaphore");
-            *libc::__errno_location() = libc::ENOENT;
-            return -1
-        };
-
-        let Some(sem_info) = state.global.semaphores.get_mut(&sem_id) else {
-            panic!("inconsistent fizzle state--named semaphore without global context in `sem_unlink`")
-        };
-
-        sem_info.unlinked = true;
-        if sem_info.refs == 0 {
-            assert!(sem_info.waiting.is_empty(), "inconsistent fizzle state--global sem waiting queue not empty when refs are zero");
-            // sem_id dropped => semaphore destroyed
-        } else {
-            state.global.semaphores.upref(&sem_id);
+        match Scheduler::handle_event(&mut ctx, SemUnlinkEvent::new(name)) {
+            Ok(()) => {
+                crate::strace!("sem_unlink(path={:?}) -> 0", name);
+                0
+            }
+            Err(e) => {
+                crate::strace!("sem_unlink(path={:?}) -> -1 ({})", name, e);
+                e.set_errno();
+                -1
+            },
         }
-
-        0
     }
 }
 
@@ -190,32 +135,21 @@ hook_macros::hook! {
     unsafe fn sem_post(
         sem: *mut libc::sem_t
     ) -> libc::c_int => fizzle_sem_post(ctx) {
-        let mut state = ctx.acquire();
+        let sem_ptr = SemaphorePtr::from(sem);
 
-        let semaphore_ptr = SemaphorePtr::from(sem);
-        if let Some(sem_info) = state.local.semaphores.get_mut(&semaphore_ptr) {
-            match sem_info.waiting.pop_front() {
-                Some(worker_id) => state.mark_thread_ready(worker_id.thread_id),
-                None => sem_info.value += 1,
+        crate::strace!("sem_post(sem={:?}) -> ...", sem);
+
+        match Scheduler::handle_event(&mut ctx, SemCloseEvent::new(sem_ptr)) {
+            Ok(()) => {
+                crate::strace!("sem_post(sem={:?}) -> 0", sem);
+                0
             }
-
-        } else if let Some(semaphore_id) = state.local.named_semaphores.get(&semaphore_ptr).cloned() {
-            let Some(sem_info) = state.global.semaphores.get_mut(&semaphore_id) else {
-                panic!("inconsistent fizzle state--named semaphore without global context in `sem_unlink`");
-            };
-
-            match sem_info.waiting.pop_front() {
-                Some(worker_id) => state.global.mark_worker_ready(worker_id),
-                None => sem_info.value += 1,
-            }
-
-        } else {
-            log::debug!("`sem_post` passed in invalid semaphore pointer");
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
+            Err(e) => {
+                crate::strace!("sem_post(sem={:?}) -> -1 ({})", sem, e);
+                e.set_errno();
+                -1
+            },
         }
-
-        0
     }
 }
 
@@ -223,30 +157,22 @@ hook_macros::hook! {
     unsafe fn sem_wait(
         sem: *mut libc::sem_t
     ) -> libc::c_int => fizzle_sem_wait(ctx) {
-        let mut state = ctx.acquire();
 
         let semaphore_id = SemaphorePtr::from(sem);
-        let process_id = state.local.process_id;
 
-        let Some(semaphore) = state.local.semaphores.get_mut(&semaphore_id) else {
-            log::debug!("`sem_wait` called on uninitialized semaphore");
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
+        crate::strace!("sem_wait(sem={:?}) -> ...", semaphore_id);
 
-        match semaphore.value.checked_sub(1) {
-            Some(value) => semaphore.value = value,
-            None => {
-                semaphore.waiting.push_back(WorkerId {
-                    process_id,
-                    thread_id: thread::current().id()
-                }).unwrap();
-                drop(state);
-                ctx.yield_thread();
-            }
+        match Scheduler::handle_event(&mut ctx, SemWaitEvent::new(semaphore_id, SemWaitDuration::Indefinite)) {
+            Ok(()) => {
+                crate::strace!("sem_wait(sem={:?}) -> 0", semaphore_id);
+                0
+            },
+            Err(e) => {
+                crate::strace!("sem_wait(sem={:?}) -> -1 ({})", semaphore_id, e);
+                e.set_errno();
+                -1
+            },
         }
-
-        0
     }
 }
 
@@ -254,56 +180,51 @@ hook_macros::hook! {
     unsafe fn sem_trywait(
         sem: *mut libc::sem_t
     ) -> libc::c_int => fizzle_sem_trywait(ctx) {
-        let mut state = ctx.acquire();
-
         let semaphore_id = SemaphorePtr::from(sem);
 
-        let Some(semaphore) = state.local.semaphores.get_mut(&semaphore_id) else {
-            log::debug!("`sem_trywait` called on uninitialized semaphore");
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
-
-        match semaphore.value.checked_sub(1) {
-            Some(value) => semaphore.value = value,
-            None => {
-                *libc::__errno_location() = libc::EAGAIN;
-                return -1
+        match Scheduler::handle_event(&mut ctx, SemWaitEvent::new(semaphore_id, SemWaitDuration::Immediate)) {
+            Ok(()) => {
+                crate::strace!("sem_trywait(sem={:?}) -> 0", semaphore_id);
+                0
+            },
+            Err(e) => {
+                crate::strace!("sem_trywait(sem={:?}) -> -1 ({})", semaphore_id, e);
+                e.set_errno();
+                -1
             },
         }
-
-        0
     }
 }
 
 hook_macros::hook! {
     unsafe fn sem_timedwait(
         sem: *mut libc::sem_t,
-        _abs_timeout: *const libc::timespec
+        abs_timeout: *const libc::timespec
     ) -> libc::c_int => fizzle_sem_timedwait(ctx) {
-        let mut state = ctx.acquire();
-
         let semaphore_id = SemaphorePtr::from(sem);
-        let process_id = state.local.process_id;
 
-        let Some(semaphore) = state.local.semaphores.get_mut(&semaphore_id) else {
-            log::debug!("`sem_timedwait` called on uninitialized semaphore");
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
-
-        match semaphore.value.checked_sub(1) {
-            Some(value) => semaphore.value = value,
-            None => {
-                semaphore.waiting.push_back(WorkerId {
-                    process_id,
-                    thread_id: thread::current().id()
-                }).unwrap();
-                drop(state);
-                ctx.yield_thread();
+        unsafe {
+            if abs_timeout.is_null() || (*abs_timeout).tv_sec < 0 || (*abs_timeout).tv_nsec < 0 {
+                crate::strace!("sem_timedwait(sem={:?}) -> -1 (EINVAL)", semaphore_id);
+                Errno::EINVAL.set_errno();
+                return -1
             }
         }
 
-        0
+        let timeout = unsafe {
+            Duration::from_secs((*abs_timeout).tv_sec as u64) + Duration::from_nanos((*abs_timeout).tv_nsec as u64)
+        };
+
+        match Scheduler::handle_event(&mut ctx, SemWaitEvent::new(semaphore_id, SemWaitDuration::Timed(timeout))) {
+            Ok(()) => {
+                crate::strace!("sem_timedwait(sem={:?}) -> 0", semaphore_id);
+                0
+            },
+            Err(e) => {
+                crate::strace!("sem_timedwait(sem={:?}) -> -1 ({})", semaphore_id, e);
+                e.set_errno();
+                -1
+            },
+        }
     }
 }

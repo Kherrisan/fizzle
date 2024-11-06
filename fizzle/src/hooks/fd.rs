@@ -1,107 +1,111 @@
 //! Hooks for general functions that can be applied to any file descriptor.
 //!
 
-use std::mem;
-
-use crate::backend::ConnectedBackend;
-use crate::handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource};
-use crate::handlers::socket::SocketState;
+use crate::handlers::descriptor::{DescriptorCloseEvent, DescriptorDuplicateEvent, DescriptorId, DescriptorInfo};
 use crate::hook_macros;
+use crate::scheduler::Scheduler;
 
 hook_macros::hook! {
     unsafe fn close(
         fd: libc::c_int
     ) -> libc::c_int => fizzle_close(ctx) {
-        let mut state = ctx.acquire();
-
         let descriptor_id = DescriptorId::from_raw_fd(fd);
-        let ref_count = state.local.fds.ref_count(&descriptor_id);
 
-        if ref_count == 1 {
-            log::debug!("close({}) -> 0 (last fd closed for resource)", fd);
-            match state.local.fds.get(&descriptor_id) {
-                Some(DescriptorInfo { resource: FdResource::Epoll(_), .. }) => crate::alias_fd_destroy(fd),
-                Some(DescriptorInfo { resource: FdResource::EventFd(_), .. }) => crate::alias_fd_destroy(fd),
-                Some(DescriptorInfo { resource: FdResource::Directory(_), .. }) => crate::alias_fd_destroy(fd),
-                Some(DescriptorInfo { resource: FdResource::File(_), .. }) => crate::alias_fd_destroy(fd),
-                Some(DescriptorInfo { resource: FdResource::Socket(socket_id), .. }) => {
-                    assert_eq!(hook_macros::real!(close)(fd), 0, "close() returned nonzero despite valid socket context");
-
-                    let socket_id = socket_id.clone();
-                    let mut ref_count = state.global.sockets.ref_count(&socket_id);
-                    match state.global.sockets.get(&socket_id).unwrap() {
-                        SocketState::Connectionless(sock_info) => if ref_count <= 3 { // 2 refs we're currently holding + 1 ref in socket_locations
-                            let addr = sock_info.local_addr.clone();
-                            state.global.socket_locations.remove(&addr).unwrap();
-                        }
-                        SocketState::Unassociated(sock_info) => {
-                            if ref_count <= 3 {
-                                if let Some(addr) = sock_info.local_addr.clone() {
-                                    state.global.socket_locations.remove(&addr).unwrap();
-                                }
-                            }
-                        }
-                        SocketState::Server(server_info) => {
-                            if ref_count <= 3 {
-                                // TODO: need to handle `connecting` sockets here so that they get rejected correctly
-                                let addr = server_info.local_addr.clone();
-                                state.global.socket_locations.remove(&addr).unwrap();
-                            }
-                        }
-                        SocketState::Connecting(connecting_info) => {
-                            if ref_count <= 3 {
-                                let addr = connecting_info.local_addr.clone();
-                                state.global.socket_locations.remove(&addr).unwrap();
-                            }
-                        }
-                        SocketState::Connected(connection_info) => {
-                            // TODO: local address never bound?? Need to move address location...
-                            if let ConnectedBackend::Peered(peer_info) = &connection_info.backend {
-                                let peer_id = peer_info.peer.clone().unwrap();
-                                let SocketState::Connected(peer_info) = state.global.sockets.get_mut(&peer_id).unwrap() else {
-                                    unreachable!()
-                                };
-
-                                if let ConnectedBackend::Peered(p) = &mut peer_info.backend {
-                                    p.peer = None;
-                                    ref_count -= 1;
-                                };
-
-                                if ref_count <= 3 {
-                                    peer_info.peer_closed = true;
-                                    let addr = peer_info.rem_addr.clone();
-
-                                    // TODO: what about accept()ed sockets?
-                                    state.global.socket_locations.remove(&addr).unwrap();
-                                }
-                            }
-                        }
-                        SocketState::PendingConnection(_) => unreachable!(),
-                    }
-                },
-                Some(DescriptorInfo { resource: FdResource::MessageQueue(_), .. }) => crate::alias_fd_destroy(fd),
-                Some(DescriptorInfo { resource: FdResource::Pipe(pipe_id), .. }) => {
-                    crate::alias_fd_destroy(fd);
-                    if let Some(peer_id) = state.global.pipes.get(&pipe_id).unwrap().peer.clone() {
-                        state.global.pipes.get_mut(&peer_id).unwrap().peer = None;
-                    }
-                }
-                // TODO: mark stdin as closed after this...
-                Some(DescriptorInfo { resource: FdResource::Stdin, .. }) => (), // We keep stdin for fuzzing input...
-                Some(DescriptorInfo { resource: FdResource::Stdout, .. }) => (),
-                Some(DescriptorInfo { resource: FdResource::Stderr, .. }) => (), // ... and stderr for reporting Fizzle errors.
-                None => unreachable!(),
-            }
-        } else if ref_count == 0 {
-            *libc::__errno_location() = libc::EBADFD;
-            return -1
+        crate::strace!("close(fd={}) -> ...", fd);
+        match Scheduler::handle_event(&mut ctx, DescriptorCloseEvent::new(descriptor_id)) {
+            Ok(()) => {
+                crate::strace!("close(fd={}) -> 0", fd);
+                0
+            },
+            Err(e) => {
+                crate::strace!("close(fd={}) -> -1 ({})", fd, e);
+                e.set_errno();
+                -1
+            },
         }
-
-        assert_eq!(state.local.fds.downref(&descriptor_id), ref_count - 1);
-
-        0
     }
 }
+
+hook_macros::hook! {
+    unsafe fn dup(
+        oldfd: libc::c_int
+    ) -> libc::c_int => fizzle_dup(ctx) {
+        let descriptor_id = DescriptorId::from_raw_fd(oldfd);
+
+        crate::strace!("dup(oldfd={}) -> ...", oldfd);
+        match Scheduler::handle_event(&mut ctx, DescriptorDuplicateEvent::new(descriptor_id, None, false)) {
+            Ok(newfd) => {
+                crate::strace!("dup(oldfd={}) -> {}", oldfd, newfd);
+                newfd
+            },
+            Err(e) => {
+                crate::strace!("dup(oldfd={}) -> -1 ({})", oldfd, e);
+                e.set_errno();
+                -1
+            },
+        }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn dup2(
+        oldfd: libc::c_int,
+        newfd: libc::c_int
+    ) -> libc::c_int => fizzle_dup2(ctx) {
+        if oldfd == newfd {
+            return newfd
+        }
+
+        let old_descriptor = DescriptorId::from_raw_fd(oldfd);
+        let new_descriptor = DescriptorId::from_raw_fd(newfd);
+
+        crate::strace!("dup2(oldfd={}, newfd={}) -> ...", oldfd, newfd);
+        match Scheduler::handle_event(&mut ctx, DescriptorDuplicateEvent::new(old_descriptor, Some(new_descriptor), false)) {
+            Ok(ret) => {
+                crate::strace!("dup2(oldfd={}, newfd={}) -> {}", oldfd, newfd, ret);
+                ret
+            },
+            Err(e) => {
+                crate::strace!("dup2(oldfd={}, newfd={}) -> -1 ({})", oldfd, newfd, e);
+                e.set_errno();
+                -1
+            },
+        }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn dup3(
+        oldfd: libc::c_int,
+        newfd: libc::c_int,
+        flags: libc::c_int
+    ) -> libc::c_int => fizzle_dup3(ctx) {
+        let close_on_exec = flags & libc::O_CLOEXEC > 0;
+
+        let old_descriptor = DescriptorId::from_raw_fd(oldfd);
+        let new_descriptor = DescriptorId::from_raw_fd(newfd);
+        let flags_fmt = if close_on_exec {
+            format!("O_CLOEXEC ({})", flags)
+        } else {
+            format!("{}", flags)
+        };
+
+        crate::strace!("dup3(oldfd={}, newfd={}, flags={}) -> ...", oldfd, newfd, flags_fmt);
+        match Scheduler::handle_event(&mut ctx, DescriptorDuplicateEvent::new(old_descriptor, Some(new_descriptor), close_on_exec)) {
+            Ok(ret) => {
+                crate::strace!("dup3(oldfd={}, newfd={}, flags={}) -> {}", oldfd, newfd, flags_fmt, ret);
+                ret
+            },
+            Err(e) => {
+                crate::strace!("dup3(oldfd={}, newfd={}, flags={}) -> -1 ({})", oldfd, newfd, flags_fmt, e);
+                e.set_errno();
+                -1
+            },
+        }
+    }
+}
+
+// TODO: refactor below functions to run within Scheduler
 
 // GNU libc unconditionally pulls a void* from va_args, so we should (hypothetically?) be okay doing this.
 hook_macros::hook! {
@@ -145,7 +149,7 @@ hook_macros::hook! {
                         let nonblocking = fd_info.nonblocking;
                         let resource = fd_info.resource.clone();
 
-                        let dupfd = crate::alias_fd_create();
+                        let dupfd = crate::create_descriptor();
                         state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(dupfd), DescriptorInfo {
                             close_on_exec: cmd == libc::F_DUPFD_CLOEXEC,
                             nonblocking,
@@ -213,105 +217,5 @@ hook_macros::hook! {
         log::info!("ioctl({}, {}, {})", fd, request, arg as usize);
 
         panic!("`ioctl` unimplemented")
-    }
-}
-
-hook_macros::hook! {
-    unsafe fn dup(
-        oldfd: libc::c_int
-    ) -> libc::c_int => fizzle_dup(ctx) {
-        let mut state = ctx.acquire();
-
-        match state.local.fds.get_mut(&DescriptorId::from_raw_fd(oldfd)) {
-            Some(fd_info) => {
-                let new_fd_info = fd_info.clone();
-                let new_fd = crate::alias_fd_create();
-                state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(new_fd), new_fd_info).unwrap();
-                new_fd
-            }
-            None => {
-                log::warn!("dup() called on unrecognized file descriptor {}", oldfd);
-                *libc::__errno_location() = libc::EBADF;
-                -1
-            }
-        }
-    }
-}
-
-hook_macros::hook! {
-    unsafe fn dup2(
-        oldfd: libc::c_int,
-        newfd: libc::c_int
-    ) -> libc::c_int => fizzle_dup2(ctx) {
-        if oldfd == newfd {
-            return newfd
-        }
-
-        let mut state = ctx.acquire();
-
-        match state.local.fds.get_mut(&DescriptorId::from_raw_fd(oldfd)) {
-            Some(fd_info) => {
-                let mut new_fd_info = fd_info.clone();
-
-                match state.local.fds.get_mut(&DescriptorId::from_raw_fd(newfd)) {
-                    Some(old_info) => {
-                        mem::swap(old_info, &mut new_fd_info);
-                        drop(new_fd_info);
-                    }
-                    None => {
-                        libc::dup2(oldfd, newfd);
-                        state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(newfd), new_fd_info).unwrap();
-                    }
-                }
-
-                newfd
-            }
-            None => {
-                log::warn!("dup() called on unrecognized file descriptor {}", oldfd);
-                *libc::__errno_location() = libc::EBADF;
-                -1
-            }
-        }
-    }
-}
-
-hook_macros::hook! {
-    unsafe fn dup3(
-        oldfd: libc::c_int,
-        newfd: libc::c_int,
-        _flags: libc::c_int
-    ) -> libc::c_int => fizzle_dup3(ctx) {
-
-        // TODO: handle flags; handle lack of flags in other dups
-
-        if oldfd == newfd {
-            return newfd
-        }
-
-        let mut state = ctx.acquire();
-
-        match state.local.fds.get_mut(&DescriptorId::from_raw_fd(oldfd)) {
-            Some(fd_info) => {
-                let mut new_fd_info = fd_info.clone();
-
-                match state.local.fds.get_mut(&DescriptorId::from_raw_fd(newfd)) {
-                    Some(old_info) => {
-                        mem::swap(old_info, &mut new_fd_info);
-                        drop(new_fd_info);
-                    }
-                    None => {
-                        libc::dup2(oldfd, newfd);
-                        state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(newfd), new_fd_info).unwrap();
-                    }
-                }
-
-                newfd
-            }
-            None => {
-                log::warn!("dup() called on unrecognized file descriptor {}", oldfd);
-                *libc::__errno_location() = libc::EBADF;
-                -1
-            }
-        }
     }
 }

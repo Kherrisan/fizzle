@@ -1,6 +1,6 @@
 pub mod dir;
 pub mod entropy;
-pub mod event;
+pub mod eventfd;
 pub mod fd;
 pub mod file;
 pub mod filesystem;

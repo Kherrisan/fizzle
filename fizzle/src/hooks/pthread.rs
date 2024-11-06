@@ -7,23 +7,16 @@ use crate::handlers::condvar::CondVarPtr;
 use crate::handlers::mutex::MutexPtr;
 use crate::handlers::rwlock::{RwLockInfo, RwLockPtr, RwLockState};
 use crate::handlers::spinlock::SpinlockPtr;
-use crate::handlers::thread::{PThreadDestructor, PThreadRoutine, ThreadTermination};
+use crate::handlers::thread::{PTDestructor, PThreadRoutine, ThreadTermination};
 use crate::{hook_macros, state};
 
-pub type PTFunction = unsafe extern "C" fn(*mut libc::c_void) -> *mut libc::c_void;
-
-#[repr(C)]
-struct PTWrapperArgs {
-    wrapped_fn: PTFunction,
-    wrapped_arg: *mut libc::c_void,
-}
-
 unsafe extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void {
-    let wrapped_arg = (arg as *mut PTWrapperArgs).as_mut().unwrap();
-
     // Before we do ANYTHING, we need to set this to avoid accidental preload hook recursion
     state::set_entered_handler(true);
+    // SAFETY: only one ctx at the time (so that it in turn enforces only one `state` alias at a time...)
     let mut ctx = state::fizzle_singleton();
+
+    let wrapped_arg = (arg as *mut PTCreateWrapper).as_mut().unwrap();
 
     ctx.init_new_thread();
 
@@ -45,7 +38,8 @@ hook_macros::hook! {
 
         // TODO: if attr contains sigmask, make sure to set
 
-        let mut wrapped_arg = PTWrapperArgs {
+        // SAFETY: this *must* outlive the initial execution of `pt_wrapper_fn()`
+        let mut wrapped_arg = PTCreateWrapper {
             wrapped_fn: start_routine,
             wrapped_arg: arg,
         };
@@ -156,7 +150,7 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn pthread_cleanup_push(
-        routine: PThreadDestructor,
+        routine: PTDestructor,
         arg: *mut libc::c_void
     ) => fizzle_pthread_cleanup_push(ctx) {
         let mut state = ctx.acquire();
@@ -190,7 +184,7 @@ unsafe extern "C" fn fizzle_do_nothing(_: *mut libc::c_void) {}
 hook_macros::hook! {
     unsafe fn pthread_key_create(
         key: *mut libc::pthread_key_t,
-        destructor: PThreadDestructor
+        destructor: PTDestructor
     ) -> libc::c_int => fizzle_pthread_key_create(ctx) {
         let mut state = ctx.acquire();
         let ret = hook_macros::real!(pthread_key_create)(key, fizzle_do_nothing);

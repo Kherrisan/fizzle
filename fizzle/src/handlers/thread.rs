@@ -1,7 +1,18 @@
 use std::hash::{Hash, Hasher};
 use std::thread::ThreadId;
 
-// TODO: use a ThreadId type that is distinct from thread::current().id()?
+use crate::scheduler::{Event, Outcome, TerminationMethod};
+use crate::state::FizzleState;
+
+pub type PTFunction = unsafe extern "C" fn(*mut libc::c_void) -> *mut libc::c_void;
+pub type PTDestructor = unsafe extern "C" fn(*mut libc::c_void);
+
+#[derive(Clone)]
+#[repr(C)]
+pub struct PTCreateWrapper {
+    wrapped_fn: PTFunction,
+    wrapped_arg: *mut libc::c_void,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThreadTermination {
@@ -11,11 +22,9 @@ pub enum ThreadTermination {
     SigTerm, // TODO: implement
 }
 
-pub type PThreadDestructor = unsafe extern "C" fn(*mut libc::c_void);
-
 #[derive(Clone, Copy, Debug)]
 pub struct PThreadRoutine {
-    pub function: PThreadDestructor,
+    pub function: PTDestructor,
     pub arg: Option<*mut libc::c_void>,
 }
 
@@ -76,4 +85,58 @@ pub fn index_of_thread(thread: &ThreadId) -> usize {
     let mut hasher = ThreadHasher::new();
     thread.hash(&mut hasher);
     hasher.finish() as usize
+}
+
+pub enum ThreadCreateState {
+    Start,
+    Finish,
+}
+
+pub struct ThreadCreateEvent {
+    wrapper: PTCreateWrapper,
+    state: ThreadCreateState,
+}
+
+impl ThreadCreateEvent {
+    pub fn new(wrapper: PTCreateWrapper) -> Self {
+        Self { wrapper, state: ThreadCreateState::Start }
+    }
+}
+
+impl Event for ThreadCreateEvent {
+    type Success = ();
+    type Error = ();
+
+    fn run(
+        &mut self,
+        _state: &mut FizzleState,
+    ) -> Outcome<Self::Success, Self::Error> {
+        match self.state {
+            ThreadCreateState::Start => Outcome::CreateThread(self.wrapper.clone()),
+            ThreadCreateState::Finish => Outcome::Success(()),
+        }
+        
+    }
+}
+
+pub struct ThreadExitEvent {
+    retval: *mut libc::c_void,
+}
+
+impl ThreadExitEvent {
+    pub fn new(retval: *mut libc::c_void) -> Self {
+        Self { retval }
+    }
+}
+
+impl Event for ThreadExitEvent {
+    type Success = ();
+    type Error = ();
+
+    fn run(
+        &mut self,
+        _state: &mut FizzleState,
+    ) -> Outcome<Self::Success, Self::Error> {
+        Outcome::TerminateThread(TerminationMethod::ThreadExit(self.retval))
+    }
 }

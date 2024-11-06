@@ -80,7 +80,7 @@ hook_macros::hook! {
                 Err(file_id) => file_id,
             };
 
-            let fd = crate::alias_fd_create();
+            let fd = crate::create_descriptor();
 
             state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
                 close_on_exec,
@@ -105,7 +105,7 @@ hook_macros::hook! {
             fd
 
         } else if let Some(file_id) = state.global.file_paths.get(&path).cloned() {
-            let fd = crate::alias_fd_create();
+            let fd = crate::create_descriptor();
             state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
                 close_on_exec,
                 nonblocking: false,
@@ -162,7 +162,7 @@ hook_macros::hook! {
             Err(file_id) => file_id, // Existing file
         };
 
-        let fd = crate::alias_fd_create();
+        let fd = crate::create_descriptor();
 
         state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
             close_on_exec: false,
@@ -234,7 +234,7 @@ hook_macros::hook! {
                 Err(file_id) => file_id,
             };
 
-            let fd = crate::alias_fd_create();
+            let fd = crate::create_descriptor();
 
             state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
                 close_on_exec,
@@ -259,7 +259,7 @@ hook_macros::hook! {
             fd
 
         } else if let Some(file_id) = state.global.file_paths.get(&path).cloned() {
-            let fd = crate::alias_fd_create();
+            let fd = crate::create_descriptor();
             state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
                 close_on_exec,
                 nonblocking: false,
@@ -761,8 +761,8 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn fstatvfs(
-        fd: libc::c_int,
-        buf: *mut libc::statvfs
+        _fd: libc::c_int,
+        _buf: *mut libc::statvfs
     ) => fizzle_fstatvfs(_ctx) {
         unimplemented!("fstatvfs()")
     }
@@ -770,8 +770,8 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn truncate(
-        path: *const libc::c_char,
-        length: libc::off_t
+        _path: *const libc::c_char,
+        _length: libc::off_t
     ) => fizzle_truncate(_ctx) {
         unimplemented!("truncate()")
     }
@@ -779,8 +779,8 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn ftruncate(
-        fd: libc::c_int,
-        length: libc::off_t
+        _fd: libc::c_int,
+        _length: libc::off_t
     ) => fizzle_ftruncate(_ctx) {
         unimplemented!("ftruncate()")
     }
@@ -788,7 +788,7 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn fsync(
-        fd: libc::c_int
+        _fd: libc::c_int
     ) => fizzle_fsync(_ctx) {
         unimplemented!("fsync()")
     }
@@ -796,7 +796,7 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn fdatasync(
-        fd: libc::c_int
+        _fd: libc::c_int
     ) => fizzle_fdatasync(_ctx) {
         unimplemented!("fdatasync()")
     }

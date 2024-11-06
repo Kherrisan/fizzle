@@ -4,11 +4,11 @@ use crate::storage::Buffer;
 
 /// The path for a named semaphore.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct SemPath {
+pub struct SemaphorePath {
     buf: Buffer<252>,
 }
 
-impl SemPath {
+impl SemaphorePath {
     pub fn from_cstr(path: &CStr) -> Result<Self, PathError> {
         Self::from_raw_bytes(path.to_bytes_with_nul())
     }

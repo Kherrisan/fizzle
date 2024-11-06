@@ -2,18 +2,19 @@ use std::cmp;
 use std::fmt::Display;
 use std::os::fd::RawFd;
 
+use bitflags::bitflags;
+use fizzle_common::storage::Buffer;
+
 use crate::arena::{ArenaKey, Rc};
 use crate::backend::FileBackend;
 use crate::constants::FIZZLE_FOPEN_BUFSIZE;
 use crate::state::FizzleSingleton;
 
-use fizzle_common::storage::Buffer;
-
-pub use private::FileId;
-
 use super::descriptor::{DescriptorError, DescriptorId};
 use super::fuzz_endpoint::FuzzEndpointInfo;
 use super::{init_from_slice, MsgHdr, MsgHdrOut};
+
+pub use private::FileId;
 
 // This is to forbid access to the SocketId's inner `usize` field.
 mod private {
@@ -277,6 +278,33 @@ impl FilePtr {
             Some(file_info) => Ok(file_info),
             None => Err(FileError::InvalidPtr),
         }
+    }
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct AccessMode: libc::mode_t {
+        const SUID_BIT = libc::S_ISUID;
+        const SGID_BIT = libc::S_ISGID;
+        const STICKY_BIT = libc::S_ISVTX;
+
+        const USER_READ = libc::S_IRUSR;
+        const USER_WRITE = libc::S_IWUSR;
+        const USER_EXEC = libc::S_IXUSR;
+
+        const GROUP_READ = libc::S_IRGRP;
+        const GROUP_WRITE = libc::S_IWGRP;
+        const GROUP_EXEC = libc::S_IXGRP;
+
+        const OTHER_READ = libc::S_IROTH;
+        const OTHER_WRITE = libc::S_IWOTH;
+        const OTHER_EXEC = libc::S_IXOTH;
+    }
+}
+
+impl Display for AccessMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{}{}{}{}", (self.bits() >> 9) & 7, (self.bits() >> 6) & 7, (self.bits() >> 3) & 7, self.bits() & 7))
     }
 }
 

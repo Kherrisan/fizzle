@@ -7,6 +7,7 @@ mod arena;
 mod backend;
 mod comptime;
 mod constants;
+mod errno;
 mod handlers;
 mod hook_macros;
 pub mod hooks;
@@ -119,7 +120,7 @@ unsafe fn unique_mem_destroy(mem_location: *mut libc::c_void) {
     }
 }
 
-fn alias_fd_create() -> RawFd {
+fn create_descriptor() -> RawFd {
     let fd = unsafe { libc::memfd_create(c"FIZZLE_ALIAS_FD".as_ptr(), 0) };
     if fd < 0 {
         panic!("fizzle internal file descriptor alias creation (`memfd_create`) failed");
@@ -127,7 +128,7 @@ fn alias_fd_create() -> RawFd {
     fd
 }
 
-fn alias_fd_destroy(fd: RawFd) {
+fn destroy_descriptor(fd: RawFd) {
     unsafe {
         libc::close(fd);
     }

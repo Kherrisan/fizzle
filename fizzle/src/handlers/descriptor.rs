@@ -1,4 +1,5 @@
 use std::cmp;
+use std::os::fd::RawFd;
 
 use super::directory::DirectoryId;
 use super::epoll::EpollId;
@@ -7,12 +8,15 @@ use super::file::FileId;
 use super::fuzz_endpoint::FuzzEndpointInfo;
 use super::message_queue::MessageQueueId;
 use super::pipe::PipeId;
-use super::socket::SocketId;
+use super::socket::{LocalAddress, SocketId, SocketState};
 use super::{init_from_slice, FfiOutput, MsgFlags, MsgHdr, MsgHdrOut};
 use crate::arena::{ArenaKey, Rc};
-use crate::backend::StdioBackend;
-use crate::state::FizzleSingleton;
+use crate::backend::{ConnectedBackend, StdioBackend};
+use crate::errno::Errno;
+use crate::scheduler::{Event, Outcome};
+use crate::state::{FizzleSingleton, FizzleState};
 
+use fizzle_common::io::TransportAddress;
 pub use private::DescriptorId;
 
 // This is to forbid access to the SocketId's inner `usize` field.
@@ -27,6 +31,10 @@ mod private {
         pub fn from_raw_fd(fd: RawFd) -> Self {
             DescriptorId(fd as usize)
         }
+
+        pub fn as_raw_fd(&self) -> RawFd {
+            self.0 as RawFd
+        }
     }
 }
 
@@ -36,6 +44,7 @@ pub struct DescriptorInfo {
     pub close_on_exec: bool,
     /// Whether the descriptor is configured to block on input or not.
     pub nonblocking: bool,
+    /// Whether the file descriptor represents a real file descriptor or an emulated one.
     pub is_passthrough: bool,
     /// The resource the file descriptor points to.
     pub resource: FdResource,
@@ -476,5 +485,137 @@ impl FfiOutput for Result<usize, DescriptorError> {
             Err(DescriptorError::PipeClosed) => "-1 (EPIPE)",
             Err(DescriptorError::Passthrough) => "-1 (passthrough error)",
         }
+    }
+}
+
+pub struct DescriptorCloseEvent {
+    fd: DescriptorId,
+}
+
+impl DescriptorCloseEvent {
+    #[inline]
+    pub fn new(fd: DescriptorId) -> Self {
+        Self { fd }
+    }
+}
+
+impl Event for DescriptorCloseEvent {
+    type Success = ();
+    type Error = Errno;
+
+    fn run(
+        &mut self,
+        state: &mut FizzleState,
+    ) -> Outcome<Self::Success, Self::Error> {
+
+        let Some(fd_info) = state.local.fds.get(&self.fd) else {
+            return Outcome::Error(Errno::EBADFD)
+        };
+
+        if let FdResource::Socket(socket_id) = fd_info.resource.clone() {
+            // Decrement the number of fd references to the socket
+            let socket_info = state.global.sockets.get_mut(&socket_id).unwrap();
+            socket_info.fd_count.checked_sub(1).unwrap();
+
+            // Is this the last file descriptor referencing the socket?
+            if socket_info.fd_count == 0 {
+                // Remove the socket's address from the global space
+                if let LocalAddress::Assigned(sockaddr) = socket_info.local_addr.clone() {
+                    let protocol = socket_info.protocol;
+                    state.global.socket_locations.remove(&TransportAddress {
+                        sockaddr,
+                        protocol,
+                    }).unwrap();
+                }
+
+                // Certain socket states contain cyclic references with other sockets.
+                // We need to manually remove these to
+                if let SocketState::Connected(connected) = &mut socket_info.state {
+                    if !connected.peer_closed {
+                        connected.peer_closed = true;
+                        if let ConnectedBackend::Peered(peer_info) = &mut connected.backend {
+                            // TODO: do we take the peer's socket ID here so that we can set peer_closed = true on it?
+                            // TODO: do we raise the poll of the peer here?
+                            peer_info.peer = None;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Destroy the underlying file descriptor in use.
+        match &fd_info.resource {
+            FdResource::Stdin | FdResource::Stdout | FdResource::Stderr => (),
+            _ => crate::destroy_descriptor(self.fd.as_raw_fd()),
+        };
+
+        // fds never have more than one reference at a time, so this will always destroy a fd.
+        state.local.fds.downref(&self.fd);
+
+        Outcome::Success(())
+    }
+}
+
+pub struct DescriptorDuplicateEvent {
+    old_fd: DescriptorId,
+    new_fd: Option<DescriptorId>,
+    close_on_exec: bool,
+}
+
+impl DescriptorDuplicateEvent {
+    #[inline]
+    pub fn new(old_fd: DescriptorId, new_fd: Option<DescriptorId>, close_on_exec: bool) -> Self {
+        Self { old_fd, new_fd, close_on_exec }
+    }
+}
+
+impl Event for DescriptorDuplicateEvent {
+    type Success = RawFd;
+    type Error = Errno;
+
+    fn run(
+        &mut self,
+        state: &mut FizzleState,
+    ) -> Outcome<Self::Success, Self::Error> {
+
+        // Copy over associated data from the old fd
+        let Some(mut new_fd_info) = state.local.fds.get_mut(&self.old_fd).cloned() else {
+            return Outcome::Error(Errno::EBADFD)
+        };
+
+
+        // Create a new, unique file descriptor
+        let new_fd = match self.new_fd {
+            Some(fd) => fd,
+            None => DescriptorId::from_raw_fd(crate::create_descriptor()),
+        };
+
+        if self.old_fd == new_fd {
+            return Outcome::Error(Errno::EINVAL) // Behavior for dup3 (dup2 is different)
+        }
+
+        // Update the close-on-exec flag
+        new_fd_info.close_on_exec = self.close_on_exec;
+
+        // Upref the file descriptor count where applicable
+        if let FdResource::Socket(socket_id) = new_fd_info.resource.clone() {
+            state.global.sockets.get_mut(&socket_id).unwrap().fd_count += 1;
+        }
+
+        // Close `newfd` if it points to an occupied descriptor
+        if state.local.fds.is_occupied(&new_fd) {
+            // TODO: this is dangerous(ish), as the behavior of the run event loop may change.
+            // Figure out how to call events within events more ergonomically while not exposing
+            // `ctx`
+            match DescriptorCloseEvent::new(new_fd).run(state) {
+                Outcome::Success(()) => (),
+                Outcome::Error(_) => unreachable!("internal state inconsistency"),
+                _ => unreachable!(),
+            }
+        }
+
+        state.local.fds.allocate_with_key(new_fd, new_fd_info).unwrap();
+
+        Outcome::Success(new_fd.as_raw_fd())
     }
 }

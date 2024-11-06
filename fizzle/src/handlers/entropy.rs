@@ -4,20 +4,18 @@ use rand::Fill;
 use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
 
-pub struct EntropyEvent<'a> {
+pub struct GetEntropyEvent<'a> {
     buf: &'a mut [u8],
 }
 
-impl<'a> EntropyEvent<'a> {
+impl<'a> GetEntropyEvent<'a> {
     pub fn new(buf: &'a mut [u8]) -> Self {
         Self { buf }
     }
 }
 
-impl Event for EntropyEvent<'_> {
+impl Event for GetEntropyEvent<'_> {
     type Success = usize;
-
-    /// A raw OS errno value.
     type Error = ();
 
     fn run(

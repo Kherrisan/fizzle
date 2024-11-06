@@ -421,9 +421,9 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn readv(
-        fd: libc::c_int,
-        iov: *const libc::iovec,
-        iovcnt: libc::c_int
+        _fd: libc::c_int,
+        _iov: *const libc::iovec,
+        _iovcnt: libc::c_int
     ) -> libc::ssize_t => fizzle_readv(_ctx) {
         unimplemented!("readv()")
     }

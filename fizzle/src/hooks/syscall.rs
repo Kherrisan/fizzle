@@ -1,10 +1,9 @@
-use std::{
-    collections::{hash_map::Entry, VecDeque}, mem, slice, thread
-};
+use std::{mem, slice};
 
-use crate::{handlers::entropy::EntropyEvent, hook_macros, scheduler::Scheduler, state};
-
-//libc::syscall(1,2,3,4);
+use crate::{hook_macros, state};
+use crate::handlers::entropy::*;
+use crate::handlers::futex::*;
+use crate::scheduler::Scheduler;
 
 const FUTEX_OP_SHIFT_SET: i32 = libc::FUTEX_OP_OPARG_SHIFT | libc::FUTEX_OP_SET;
 const FUTEX_OP_SHIFT_ADD: i32 = libc::FUTEX_OP_OPARG_SHIFT | libc::FUTEX_OP_ADD;
@@ -12,26 +11,40 @@ const FUTEX_OP_SHIFT_OR: i32 = libc::FUTEX_OP_OPARG_SHIFT | libc::FUTEX_OP_OR;
 const FUTEX_OP_SHIFT_NAND: i32 = libc::FUTEX_OP_OPARG_SHIFT | libc::FUTEX_OP_ANDN;
 const FUTEX_OP_SHIFT_XOR: i32 = libc::FUTEX_OP_OPARG_SHIFT | libc::FUTEX_OP_XOR;
 
-fn format_futex_op(futex_op: libc::c_int) -> &'static str {
-    if futex_op == libc::FUTEX_WAIT {
-        "FUTEX_WAIT"
-    } else if futex_op == libc::FUTEX_WAKE {
-        "FUTEX_WAKE"
-    } else if futex_op == libc::FUTEX_FD {
-        "FUTEX_FD"
-    } else if futex_op == libc::FUTEX_REQUEUE {
-        "FUTEX_REQUEUE"
-    } else if futex_op == libc::FUTEX_CMP_REQUEUE {
-        "FUTEX_CMP_REQUEUE"
-    } else if futex_op == libc::FUTEX_WAKE_OP {
-        "FUTEX_WAKE_OP"
-    } else if futex_op == libc::FUTEX_WAIT_BITSET {
-        "FUTEX_WAIT_BITSET"
-    } else if futex_op == libc::FUTEX_WAKE_BITSET {
-        "FUTEX_WAKE_BITSET"
-    } else {
-        "UNIMPLEMENTED OP"
+// TODO: add flags
+fn futex_op_fmt(futex_op: libc::c_int) -> String {
+    let futex_private_flag = (futex_op & libc::FUTEX_PRIVATE_FLAG) != 0;
+    let futex_clock_realtime = (futex_op & libc::FUTEX_CLOCK_REALTIME) != 0;
+    let futex_op = futex_op & !(libc::FUTEX_PRIVATE_FLAG | libc::FUTEX_CLOCK_REALTIME);
+
+    let futex_opname = match futex_op {
+        libc::FUTEX_WAIT => "FUTEX_WAIT",
+        libc::FUTEX_WAKE => "FUTEX_WAKE",
+        libc::FUTEX_REQUEUE => "FUTEX_REQUEUE",
+        libc::FUTEX_CMP_REQUEUE => "FUTEX_CMP_REQUEUE",
+        libc::FUTEX_WAKE_OP => "FUTEX_WAKE_OP",
+        libc::FUTEX_WAIT_BITSET => "FUTEX_WAIT_BITSET",
+        libc::FUTEX_WAKE_BITSET => "FUTEX_WAKE_BITSET",
+        libc::FUTEX_FD => "FUTEX_FD",
+        libc::FUTEX_LOCK_PI => "FUTEX_LOCK_PI",
+        libc::FUTEX_LOCK_PI2 => "FUTEX_LOCK_PI2",
+        libc::FUTEX_TRYLOCK_PI => "FUTEX_TRYLOCK_PI",
+        libc::FUTEX_UNLOCK_PI => "FUTEX_UNLOCK_PI",
+        libc::FUTEX_WAIT_REQUEUE_PI => "FUTEX_WAIT_REQUEUE_PI",
+        libc::FUTEX_CMP_REQUEUE_PI => "FUTEX_CMP_REQUEUE_PI",
+        _ => "<UNKNOWN_FUTEX_OP>",
+    };
+
+    let mut s = futex_opname.to_string();
+    if futex_private_flag {
+        s += "|FUTEX_PRIV";
     }
+
+    if futex_clock_realtime {
+        s += "|FUTEX_CLK_RT";
+    }
+
+    s
 }
 
 #[no_mangle]
@@ -58,367 +71,219 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
     
     // SAFETY: only one FizzleSingleton is ever owned at a time
     let mut ctx = state::fizzle_singleton();
-    let mut state = ctx.acquire();
 
-    let res = 'body: {
-        match number {
-            libc::SYS_gettid => {
-                crate::strace!("syscall(SYS_gettid) -> ...");
-                let res = hook_macros::real_syscall()(number);
-                crate::strace!("syscall(SYS_gettid) -> {}", res);
-                res
-            },
-            libc::SYS_getrandom => {
-                let buf: *mut libc::c_void = va_args.arg();
-                let buflen: libc::size_t = va_args.arg();
-                let flags: libc::c_uint = va_args.arg();
-                drop(state);
+    let res = match number {
+        libc::SYS_gettid => {
+            crate::strace!("syscall(SYS_gettid) -> ...");
+            let res = hook_macros::real_syscall()(number);
+            crate::strace!("syscall(SYS_gettid) -> {}", res);
+            res
+        },
+        libc::SYS_getrandom => {
+            let buf: *mut libc::c_void = va_args.arg();
+            let buflen: libc::size_t = va_args.arg();
+            let flags: libc::c_uint = va_args.arg();
 
-                crate::strace!("syscall(SYS_getrandom, {:?}, {}, {}) -> ...", buf, buflen, flags);
+            crate::strace!("syscall(SYS_getrandom, buf={:?}, buflen={}, flags={}) -> ...", buf, buflen, flags);
 
-                let buf = slice::from_raw_parts_mut(buf as *mut u8, buflen as usize);
-                match Scheduler::handle_event(EntropyEvent::new(buf)) {
-                    Ok(len) => {
-                        crate::strace!("syscall(SYS_getrandom, {:?}, {}, {}) -> {:.8?}", buf, buflen, flags, &buf[..len]);
-                        len as i64                          
-                    }
-                    Err(()) => {
-                        crate::strace!("syscall(SYS_getrandom, {:?}, {}, {}) -> -1", buf, buflen, flags);
-                        -1
-                    }
+            let s = slice::from_raw_parts_mut(buf as *mut u8, buflen as usize);
+            match Scheduler::handle_event(&mut ctx, GetEntropyEvent::new(s)) {
+                Ok(len) => {
+                    crate::strace!("syscall(SYS_getrandom, buf={:?}, buflen={}, flags={}) -> {:.16?}", buf, buflen, flags, &s[..len]);
+                    len as i64                          
                 }
+                Err(()) => unreachable!(),
             }
-            libc::SYS_futex => {
-                let uaddr: *mut u32 = va_args.arg();
-                let futex_op: libc::c_int = va_args.arg();
-                let val: u32 = va_args.arg();
-
-                let futex_private_flag = (futex_op & libc::FUTEX_PRIVATE_FLAG) != 0;
-                let _futex_clock_realtime = (futex_op & libc::FUTEX_CLOCK_REALTIME) != 0;
-                let futex_op = futex_op & !(libc::FUTEX_PRIVATE_FLAG | libc::FUTEX_CLOCK_REALTIME);
-
-                log::debug!(
-                    "syscall(SYS_futex, {:?}, {} ({}), {}, ...)",
-                    uaddr,
-                    format_futex_op(futex_op),
-                    futex_op,
-                    val
-                );
-
-                if !futex_private_flag {
-                    log::warn!("SYS_futex syscall used non-private futex--fizzle does not currently support process-shared futex operations, so this may cause bugs if used in a multiprocess context");
-                }
-
-                // When no futex_op is specified, we assume FUTEX_WAIT (based on gRPC behavior):
-                // https://github.com/abseil/abseil-cpp/blob/33dca3ef75533ba0cc9b099b17409bb354344497/absl/synchronization/internal/futex.h#L128
-                match futex_op & !(libc::FUTEX_PRIVATE_FLAG | libc::FUTEX_CLOCK_REALTIME) {
-                    libc::FUTEX_WAIT => {
-                        let timeout: *const libc::timespec = va_args.arg(); // We ignore timeout
-
-                        if *uaddr != val {
-                            *libc::__errno_location() = libc::EAGAIN;
-                            break 'body -1;
-                        }
-
-                        match state.local.futex_waiters.entry(uaddr as *const u32) {
-                            Entry::Occupied(mut o) => o.get_mut().push_back((
-                                libc::FUTEX_BITSET_MATCH_ANY as u32,
-                                thread::current().id(),
-                            )),
-                            Entry::Vacant(v) => {
-                                let mut deque = VecDeque::new();
-                                deque.push_back((
-                                    libc::FUTEX_BITSET_MATCH_ANY as u32,
-                                    thread::current().id(),
-                                ));
-                                v.insert(deque);
-                            }
-                        };
-
-                        if !timeout.is_null() && (*timeout).tv_sec == 0 && (*timeout).tv_nsec == 0 {
-                            *libc::__errno_location() = libc::ETIMEDOUT;
-                            break 'body -1;
-                        }
-
-                        drop(state);
-                        ctx.yield_thread();
-
-                        0
-                    }
-                    libc::FUTEX_WAKE => {
-                        let Some(queue) = state.local.futex_waiters.get_mut(&(uaddr as *const u32))
-                        else {
-                            break 'body 0;
-                        };
-
-                        let mut awoken_threads = Vec::new();
-                        for _ in 0..val {
-                            match queue.pop_front() {
-                                Some(thread) => awoken_threads.push(thread),
-                                None => break,
-                            }
-                        }
-
-                        let ret = awoken_threads.len() as libc::c_long;
-
-                        for (_, thread) in awoken_threads {
-                            state.mark_thread_ready(thread);
-                        }
-
-                        ret
-                    }
-                    libc::FUTEX_FD => panic!("FUTEX_FD unimplemented for SYS_futex"),
-                    libc::FUTEX_REQUEUE => {
-                        let _timeout: *const libc::timespec = va_args.arg();
-                        let uaddr2: *mut u32 = va_args.arg();
-
-                        let Some(mut queue) =
-                            state.local.futex_waiters.remove(&(uaddr as *const u32))
-                        else {
-                            break 'body 0;
-                        };
-
-                        let mut awoken_threads = Vec::new();
-                        for _ in 0..val {
-                            match queue.pop_front() {
-                                Some(thread) => awoken_threads.push(thread),
-                                None => break,
-                            }
-                        }
-
-                        let ret = (awoken_threads.len() + queue.len()) as libc::c_long;
-
-                        match state.local.futex_waiters.entry(uaddr2 as *const u32) {
-                            Entry::Occupied(mut o) => o.get_mut().extend(queue),
-                            Entry::Vacant(v) => {
-                                v.insert(queue);
-                            }
-                        }
-
-                        ret
-                    }
-                    libc::FUTEX_CMP_REQUEUE => {
-                        let _timeout: *const libc::timespec = va_args.arg();
-                        let uaddr2: *mut u32 = va_args.arg();
-                        let val3: u32 = va_args.arg();
-
-                        if *uaddr != val3 {
-                            *libc::__errno_location() = libc::EAGAIN;
-                            break 'body -1;
-                        }
-
-                        let Some(mut queue) =
-                            state.local.futex_waiters.remove(&(uaddr as *const u32))
-                        else {
-                            return 0;
-                        };
-
-                        let mut awoken_threads = Vec::new();
-                        for _ in 0..val {
-                            match queue.pop_front() {
-                                Some(thread) => awoken_threads.push(thread),
-                                None => break,
-                            }
-                        }
-
-                        let ret = (awoken_threads.len() + queue.len()) as libc::c_long;
-
-                        match state.local.futex_waiters.entry(uaddr2 as *const u32) {
-                            Entry::Occupied(mut o) => o.get_mut().extend(queue),
-                            Entry::Vacant(v) => {
-                                v.insert(queue);
-                            }
-                        }
-
-                        ret
-                    }
-                    libc::FUTEX_WAKE_OP => {
-                        let timeout: *const libc::timespec = va_args.arg();
-                        let uaddr2: *mut u32 = va_args.arg();
-                        let val3: u32 = va_args.arg();
-
-                        // Convert timeout to val2
-                        let val2 = u32::from_le_bytes(
-                            (*(timeout as *const [u8; mem::size_of::<libc::timespec>()]))
-                                [mem::size_of::<libc::timespec>() - 4..]
-                                .try_into()
-                                .unwrap(),
-                        );
-
-                        let oldval = *uaddr2;
-
-                        let op = val3 >> 28;
-                        let oparg = (val3 >> 12) & 0b1111_1111_1111;
-
-                        match op as i32 {
-                            libc::FUTEX_OP_SET => *uaddr2 = oparg,
-                            libc::FUTEX_OP_ADD => *uaddr2 += oparg,
-                            libc::FUTEX_OP_OR => *uaddr2 |= oparg,
-                            libc::FUTEX_OP_ANDN => *uaddr2 &= !oparg,
-                            libc::FUTEX_OP_XOR => *uaddr ^= oparg,
-                            FUTEX_OP_SHIFT_SET => *uaddr2 = 1 << oparg,
-                            FUTEX_OP_SHIFT_ADD => *uaddr2 += 1 << oparg,
-                            FUTEX_OP_SHIFT_OR => *uaddr2 |= 1 << oparg,
-                            FUTEX_OP_SHIFT_NAND => *uaddr2 &= !(1 << oparg),
-                            FUTEX_OP_SHIFT_XOR => *uaddr ^= 1 << oparg,
-                            5..=7 | 13..=15 => {
-                                log::warn!("futex syscall had unrecognized op in FUTEX_WAKE_OP");
-                                *libc::__errno_location() = libc::EINVAL;
-                                break 'body -1;
-                            }
-                            _ => unreachable!(),
-                        }
-
-                        let woken_1 = if let Some(queue) =
-                            state.local.futex_waiters.get_mut(&(uaddr as *const u32))
-                        {
-                            let mut awoken_threads = Vec::new();
-                            for _ in 0..val {
-                                match queue.pop_front() {
-                                    Some(thread) => awoken_threads.push(thread),
-                                    None => break,
-                                }
-                            }
-
-                            let ret = awoken_threads.len() as libc::c_long;
-
-                            for (_, thread) in awoken_threads {
-                                state.mark_thread_ready(thread);
-                            }
-
-                            ret
-                        } else {
-                            0
-                        };
-
-                        let cmp = (val3 >> 24) & 0b1111;
-                        let cmparg = val3 & 0b1111_1111_1111;
-
-                        let should_wake = match cmp as i32 {
-                            libc::FUTEX_OP_CMP_EQ => oldval == cmparg,
-                            libc::FUTEX_OP_CMP_NE => oldval != cmparg,
-                            libc::FUTEX_OP_CMP_LT => oldval < cmparg,
-                            libc::FUTEX_OP_CMP_LE => oldval <= cmparg,
-                            libc::FUTEX_OP_CMP_GT => oldval > cmparg,
-                            libc::FUTEX_OP_CMP_GE => oldval >= cmparg,
-                            _ => {
-                                log::warn!("futex syscall had unrecognized cmp in FUTEX_WAKE_OP");
-                                panic!("FUTEX_WAKE_OP failed")
-                            }
-                        };
-
-                        if should_wake {
-                            let woken_2 = if let Some(queue) =
-                                state.local.futex_waiters.get_mut(&(uaddr2 as *const u32))
-                            {
-                                let mut awoken_threads = Vec::new();
-                                for _ in 0..val2 {
-                                    match queue.pop_front() {
-                                        Some(thread) => awoken_threads.push(thread),
-                                        None => break,
-                                    }
-                                }
-
-                                let ret = awoken_threads.len() as libc::c_long;
-
-                                for (_, thread) in awoken_threads {
-                                    state.mark_thread_ready(thread);
-                                }
-
-                                ret
-                            } else {
-                                0
-                            };
-
-                            woken_1 + woken_2
-                        } else {
-                            woken_1
-                        }
-                    }
-                    libc::FUTEX_WAIT_BITSET => {
-                        let timeout: *const libc::timespec = va_args.arg();
-                        let _uaddr2: *mut u32 = va_args.arg();
-                        let val3: u32 = va_args.arg();
-
-                        if *uaddr != val {
-                            *libc::__errno_location() = libc::EAGAIN;
-                            break 'body -1;
-                        }
-
-                        match state.local.futex_waiters.entry(uaddr as *const u32) {
-                            Entry::Occupied(mut o) => {
-                                o.get_mut().push_back((val3, thread::current().id()))
-                            }
-                            Entry::Vacant(v) => {
-                                let mut deque = VecDeque::new();
-                                deque.push_back((val3, thread::current().id()));
-                                v.insert(deque);
-                            }
-                        };
-
-                        if !timeout.is_null() && (*timeout).tv_sec == 0 && (*timeout).tv_nsec == 0 {
-                            *libc::__errno_location() = libc::ETIMEDOUT;
-                            break 'body -1;
-                        }
-
-                        drop(state);
-                        ctx.yield_thread();
-
-                        0
-                    }
-
-                    libc::FUTEX_WAKE_BITSET => {
-                        let _timeout: *const libc::timespec = va_args.arg();
-                        let _uaddr2: *mut u32 = va_args.arg();
-                        let val3: u32 = va_args.arg();
-
-                        let Some(queue) = state.local.futex_waiters.get_mut(&(uaddr as *const u32))
-                        else {
-                            break 'body 0;
-                        };
-
-                        let mut awoken_threads = Vec::new();
-
-                        for _ in 0..queue.len() {
-                            match queue.pop_front() {
-                                Some((bitmap, thread)) if (bitmap & val3) != 0 => {
-                                    awoken_threads.push(thread)
-                                }
-                                Some(entry) => queue.push_back(entry),
-                                None => break,
-                            }
-                        }
-
-                        let ret = awoken_threads.len() as libc::c_long;
-
-                        if queue.is_empty() {
-                            state.local.futex_waiters.remove(&(uaddr as *const u32));
-                        }
-
-                        for thread in awoken_threads {
-                            state.mark_thread_ready(thread);
-                        }
-
-                        ret
-                    }
-                    libc::FUTEX_LOCK_PI => unimplemented!(),
-                    libc::FUTEX_LOCK_PI2 => unimplemented!(),
-                    libc::FUTEX_TRYLOCK_PI => unimplemented!(),
-                    libc::FUTEX_UNLOCK_PI => unimplemented!(),
-                    libc::FUTEX_WAIT_REQUEUE_PI => unimplemented!(),
-                    libc::FUTEX_CMP_REQUEUE_PI => unimplemented!(),
-                    _ => panic!("SYS_futex syscall with unrecognized `futex_op` argument"),
-                }
-            }
-            _ => panic!("syscall({}, ...) unsupported by Fizzle", number),
         }
+        libc::SYS_futex => {
+            let uaddr: *mut u32 = va_args.arg();
+            let futex_op: libc::c_int = va_args.arg();
+            let val: u32 = va_args.arg();
+
+            let futex_private_flag = (futex_op & libc::FUTEX_PRIVATE_FLAG) != 0;
+            let _futex_clock_realtime = (futex_op & libc::FUTEX_CLOCK_REALTIME) != 0;
+            let futex_op = futex_op & !(libc::FUTEX_PRIVATE_FLAG | libc::FUTEX_CLOCK_REALTIME);
+
+            if !futex_private_flag {
+                log::warn!("SYS_futex syscall used non-private futex--fizzle does not currently support process-shared futex operations, so this may cause bugs if used in a multiprocess context");
+            }
+
+            match futex_op {
+                libc::FUTEX_WAIT => {
+                    let timeout_ptr: *const libc::timespec = va_args.arg();
+                    let timeout = if timeout_ptr.is_null() {
+                        None
+                    } else {
+                        Some(*timeout_ptr)
+                    };
+
+                    let timeout_fmt = match timeout {
+                        None => "<null>".to_string(),
+                        Some(t) => format!("{}.{:09}", t.tv_sec, t.tv_nsec),
+                    };
+
+                    crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={}) -> ...", uaddr, futex_op_fmt(futex_op), val, timeout_fmt);
+
+                    match Scheduler::handle_event(&mut ctx, FutexWaitEvent::new(&mut *uaddr, val, timeout)) {
+                        Ok(()) => {
+                            crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={}) -> {}", uaddr, futex_op_fmt(futex_op), val, timeout_fmt, 0);
+                            0
+                        },
+                        Err(e) => {
+                            let ret = e.out();
+                            crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={}) -> {} ({})", uaddr, futex_op_fmt(futex_op), val, timeout_fmt, ret, e.errno());
+                            ret
+                        },
+                    }
+                }
+                libc::FUTEX_WAKE => {
+                    crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}) -> ...", uaddr, futex_op_fmt(futex_op), val);
+
+                    match Scheduler::handle_event(&mut ctx, FutexWakeEvent::new(&mut *uaddr, val)) {
+                        Ok(ret) => {
+                            crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}) -> {}", uaddr, futex_op_fmt(futex_op), val, ret);
+                            ret as i64
+                        },
+                        Err(_) => unreachable!(),
+                    }
+                }
+                libc::FUTEX_REQUEUE => {
+                    let timeout_ptr: *const libc::timespec = va_args.arg();
+                    let uaddr2: *mut u32 = va_args.arg();
+                    let timeout = if timeout_ptr.is_null() {
+                        None
+                    } else {
+                        Some(*timeout_ptr)
+                    };
+
+                    let timeout_fmt = match timeout {
+                        None => "<null>".to_string(),
+                        Some(t) => format!("{}.{:09}", t.tv_sec, t.tv_nsec),
+                    };
+
+                    crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={}, uaddr2={:?}) -> ...", uaddr, futex_op_fmt(futex_op), val, timeout_fmt, uaddr2);
+
+                    match Scheduler::handle_event(&mut ctx, FutexRequeueEvent::new(&mut *uaddr, val, timeout, &mut *uaddr2)) {
+                        Ok(ret) => {
+                            crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={}, uaddr2={:?}) -> {}", uaddr, futex_op_fmt(futex_op), val, timeout_fmt, uaddr2, ret);
+                            ret as i64
+                        },
+                        Err(_) => unreachable!(),
+                    }
+
+                }
+                libc::FUTEX_CMP_REQUEUE => {
+                    let timeout_ptr: *const libc::timespec = va_args.arg();
+                    let uaddr2: *mut u32 = va_args.arg();
+                    let val3: u32 = va_args.arg();
+
+                    let timeout = if timeout_ptr.is_null() {
+                        None
+                    } else {
+                        Some(*timeout_ptr)
+                    };
+
+                    let timeout_fmt = match timeout {
+                        None => "<null>".to_string(),
+                        Some(t) => format!("{}.{:09}", t.tv_sec, t.tv_nsec),
+                    };
+
+                    crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={}, uaddr2={:?}, val3={}) -> ...", uaddr, futex_op_fmt(futex_op), val, timeout_fmt, uaddr2, val3);
+
+                    match Scheduler::handle_event(&mut ctx, FutexRequeueEvent::new(&mut *uaddr, val, timeout, &mut *uaddr2)) {
+                        Ok(ret) => {
+                            crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={}, uaddr2={:?}, val3={}) -> {}", uaddr, futex_op_fmt(futex_op), val, timeout_fmt, uaddr2, val3, ret);
+                            ret as i64
+                        },
+                        Err(_) => unreachable!(),
+                    }
+                }
+                libc::FUTEX_WAKE_OP => {
+                    let timeout_ptr: *const libc::timespec = va_args.arg();
+                    let uaddr2: *mut u32 = va_args.arg();
+                    let val3: u32 = va_args.arg();
+
+                    // Convert timeout to val2
+                    let val2 = u32::from_le_bytes(
+                        (*(timeout_ptr as *const [u8; mem::size_of::<libc::timespec>()]))
+                            [mem::size_of::<libc::timespec>() - 4..]
+                            .try_into()
+                            .unwrap(),
+                    );
+
+                    crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, val2={}, uaddr2={:?}, val3={}) -> ...", uaddr, futex_op_fmt(futex_op), val, val2, uaddr2, val3);
+
+                    match Scheduler::handle_event(&mut ctx, FutexWakeOpEvent::new(&mut *uaddr, val, val2, &mut *uaddr2, val3)) {
+                        Ok(ret) => {
+                            crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, val2={}, uaddr2={:?}, val3={}) -> {}", uaddr, futex_op_fmt(futex_op), val, val2, uaddr2, val3, ret);
+                            ret as i64
+                        },
+                        Err(e) => {
+                            let ret = e.out();
+                            crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, val2={}, uaddr2={:?}, val3={}) -> {} ({}", uaddr, futex_op_fmt(futex_op), val, val2, uaddr2, val3, ret, e.errno());
+                            ret
+                        },
+                    }
+                }
+                libc::FUTEX_WAIT_BITSET => {
+                    let timeout_ptr: *const libc::timespec = va_args.arg();
+                    let uaddr2: *mut u32 = va_args.arg();
+                    let val3: u32 = va_args.arg();
+
+                    let timeout = if timeout_ptr.is_null() {
+                        None
+                    } else {
+                        Some(*timeout_ptr)
+                    };
+
+                    let timeout_fmt = match timeout {
+                        None => "<null>".to_string(),
+                        Some(t) => format!("{}.{:09}", t.tv_sec, t.tv_nsec),
+                    };
+
+                    crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={}, uaddr2={:?}, val3={}) -> ...", uaddr, futex_op_fmt(futex_op), val, timeout_fmt, uaddr2, val3);
+
+                    match Scheduler::handle_event(&mut ctx, FutexWaitEvent::new(&mut *uaddr, val, timeout)) {
+                        Ok(()) => {
+                            crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={}, uaddr2:{:?}, val3={}) -> {}", uaddr, futex_op_fmt(futex_op), val, timeout_fmt, uaddr2, val3, 0);
+                            0
+                        },
+                        Err(e) => {
+                            let ret = e.out();
+                            crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={}, uaddr2={:?}, val3={}) -> {} ({})", uaddr, futex_op_fmt(futex_op), val, timeout_fmt, uaddr2, val3, ret, e.errno());
+                            ret
+                        },
+                    }
+                }
+
+                libc::FUTEX_WAKE_BITSET => {
+                    let _timeout: *const libc::timespec = va_args.arg();
+                    let _uaddr2: *mut u32 = va_args.arg();
+                    let val3: u32 = va_args.arg();
+
+                    crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, val3={}) -> ...", uaddr, futex_op_fmt(futex_op), val, val3);
+
+                    match Scheduler::handle_event(&mut ctx, FutexWakeBitsetEvent::new(&mut *uaddr, val, val3)) {
+                        Ok(ret) => {
+                            crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, val3={}) -> {}", uaddr, futex_op_fmt(futex_op), val, val3, ret);
+                            ret as i64
+                        },
+                        Err(_) => unreachable!(),
+                    }
+                }
+                libc::FUTEX_FD => unimplemented!("FUTEX_FD"),
+                libc::FUTEX_LOCK_PI => unimplemented!("FUTEX_LOCK_PI"),
+                libc::FUTEX_LOCK_PI2 => unimplemented!("FUTEX_LOCK_PI2"),
+                libc::FUTEX_TRYLOCK_PI => unimplemented!("FUTEX_TRYLOCK_PI"),
+                libc::FUTEX_UNLOCK_PI => unimplemented!("FUTEX_UNLOCK_PI"),
+                libc::FUTEX_WAIT_REQUEUE_PI => unimplemented!("FUTEX_WAIT_REQUEUE_PI"),
+                libc::FUTEX_CMP_REQUEUE_PI => unimplemented!("FUTEX_CMP_REQUEUE_PI"),
+                _ => panic!("SYS_futex syscall with unrecognized `futex_op` argument"),
+            }
+        }
+        _ => panic!("syscall({}, ...) unsupported by Fizzle", number),
     };
 
-    log::trace!(
-        "Function syscall returned {:?}", // TODO: add process info in the future
-        res
-    );
     crate::state::set_entered_handler(false);
-
     res
 }

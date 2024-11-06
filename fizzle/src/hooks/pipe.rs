@@ -28,8 +28,8 @@ hook_macros::hook! {
             PipeMode::Streamed
         };
 
-        let fd1 = crate::alias_fd_create();
-        let fd2 = crate::alias_fd_create();
+        let fd1 = crate::create_descriptor();
+        let fd2 = crate::create_descriptor();
 
         let first_pipe = PipeInfo {
             mode,

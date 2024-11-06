@@ -192,6 +192,15 @@ impl<K: ArenaKey<Value = V>, V: Sized, const N: usize> KeyedArena<K, V, N> {
         item.ref_cnt as usize
     }
 
+    /// Indicates whether the arena area for the given key is occupied.
+    pub fn is_occupied(&mut self, key: &K) -> bool {
+        let idx: usize = (*key).to_usize();
+        assert!(idx < self.inner.len());
+
+        let item = self.inner[idx].get_mut();
+        item.ref_cnt > 0
+    }
+
     /// Retrieves the next available key from the value index.
     ///
     /// This algorithm has an average temporal complexity of O(N/K), where N is the number of

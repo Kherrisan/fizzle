@@ -599,7 +599,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_epoll_create1(ctx) {
         let mut state = ctx.acquire();
 
-        let fd = crate::alias_fd_create();
+        let fd = crate::create_descriptor();
         let epoll_id = state.global.epolls.allocate(EpollInfo { interests: Default::default() }).unwrap();
         state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
             close_on_exec: (flags & libc::EPOLL_CLOEXEC) != 0,

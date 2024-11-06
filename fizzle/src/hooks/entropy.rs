@@ -1,19 +1,24 @@
-use core::slice;
-use std::mem::MaybeUninit;
+use std::{mem, slice};
 
+use crate::handlers::entropy::GetEntropyEvent;
 use crate::hook_macros;
+use crate::scheduler::Scheduler;
 
 hook_macros::hook! {
     unsafe fn getrandom(
         buf: *mut libc::c_void,
         buflen: libc::size_t,
-        _flags: libc::c_uint
+        flags: libc::c_uint
     ) -> libc::ssize_t => fizzle_getrandom(ctx) {
-
-        let output = slice::from_raw_parts_mut(buf as *mut MaybeUninit<u8>, buflen);
-        ctx.acquire().global.gen_random_bytes(output);
-
-        buflen as libc::ssize_t
+        crate::strace!("getrandom(buf={:?}, buflen={}, flags={}) -> ...", buf, buflen, flags);
+        let s = slice::from_raw_parts_mut(buf as *mut u8, buflen);
+        match Scheduler::handle_event(&mut ctx, GetEntropyEvent::new(s)) {
+            Ok(len) => {
+                crate::strace!("getrandom(buf={:?}, buflen={}, flags={}) -> {:.16?}", buf, buflen, flags, &s[..len]);
+                len as isize
+            },
+            Err(_) => unreachable!(),
+        }
     }
 }
 
@@ -27,31 +32,67 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn rand() -> libc::c_int => fizzle_rand(ctx) {
-        let mut state = ctx.acquire();
-        libc::c_int::from_ne_bytes(state.global.gen_random_array())
+        const INT_SIZE: usize = mem::size_of::<libc::c_int>();
+        let mut int_array = [0u8; INT_SIZE];
+
+        crate::strace!("rand() -> ...");
+        match Scheduler::handle_event(&mut ctx, GetEntropyEvent::new(int_array.as_mut_slice())) {
+            Ok(INT_SIZE) => {
+                let out = libc::c_int::from_ne_bytes(int_array);
+                crate::strace!("rand() -> {}", out);
+                out
+            },
+            _ => unreachable!(),
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn arc4random() -> u32 => fizzle_arc4random(ctx) {
-        let mut state = ctx.acquire();
-        u32::from_ne_bytes(state.global.gen_random_array())
+        const U32_SIZE: usize = mem::size_of::<u32>();
+        let mut int_array = [0u8; U32_SIZE];
+
+        crate::strace!("arc4random() -> ...");
+        match Scheduler::handle_event(&mut ctx, GetEntropyEvent::new(int_array.as_mut_slice())) {
+            Ok(U32_SIZE) => {
+                let out = u32::from_ne_bytes(int_array);
+                crate::strace!("arc4random() -> {}", out);
+                out
+            },
+            _ => unreachable!(),
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn arc4random_uniform(upper_bound: u32) -> u32 => fizzle_arc4random_uniform(ctx) {
-        match upper_bound {
-            0 => 0,
-            _ => u32::from_ne_bytes(ctx.acquire().global.gen_random_array()) % upper_bound,
+        const U32_SIZE: usize = mem::size_of::<u32>();
+        let mut int_array = [0u8; U32_SIZE];
+
+        crate::strace!("arc4random_uniform(ub={}) -> ...", upper_bound);
+        match Scheduler::handle_event(&mut ctx, GetEntropyEvent::new(int_array.as_mut_slice())) {
+            Ok(U32_SIZE) => {
+                // TODO: this is not quite uniformly distributed...
+                let out = u32::from_ne_bytes(int_array) % upper_bound;
+                crate::strace!("arc4random_uniform(ub={}) -> {}", upper_bound, out);
+                out
+            },
+            _ => unreachable!(),
         }
     }
 }
 
 hook_macros::hook! {
     unsafe fn arc4random_buf(buf: *mut libc::c_void, n: libc::size_t) => fizzle_arc4random_buf(ctx) {
-        let output = slice::from_raw_parts_mut(buf as *mut MaybeUninit<u8>, n);
-        ctx.acquire().global.gen_random_bytes(output);
+        crate::strace!("arc4random_buf(buf={:?}, n={}) -> ...", buf, n);
+        let s = slice::from_raw_parts_mut(buf as *mut u8, n);
+        match Scheduler::handle_event(&mut ctx, GetEntropyEvent::new(s)) {
+            Ok(len) if len < n => unreachable!(),
+            Ok(_) => {
+                crate::strace!("arc4random_buf(buf={:.16?}, n={})", s, n);
+            },
+            Err(_) => unreachable!(),
+        }
     }
 }
 
@@ -69,8 +110,18 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn random() -> libc::c_uint => fizzle_random(ctx) {
-        let mut state = ctx.acquire();
-        libc::c_uint::from_ne_bytes(state.global.gen_random_array())
+        const UINT_SIZE: usize = mem::size_of::<libc::c_uint>();
+        let mut int_array = [0u8; UINT_SIZE];
+
+        crate::strace!("random() -> ...");
+        match Scheduler::handle_event(&mut ctx, GetEntropyEvent::new(int_array.as_mut_slice())) {
+            Ok(UINT_SIZE) => {
+                let out = libc::c_uint::from_ne_bytes(int_array);
+                crate::strace!("random() -> {}", out);
+                out
+            },
+            _ => unreachable!(),
+        }
     }
 }
 
@@ -81,43 +132,56 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
-    unsafe fn drand48() -> libc::c_double => fizzle_drand48(ctx) {
-        let mut state = ctx.acquire();
-        libc::c_double::from_ne_bytes(state.global.gen_random_array())
+    unsafe fn srand48(_seedval: libc::c_long) => fizzle_srand48(_ctx) {
+        // Do nothing
     }
 }
 
 hook_macros::hook! {
-    unsafe fn erand48(_xsubi: *mut libc::c_ushort) -> libc::c_double => fizzle_erand48(ctx) {
-        let mut state = ctx.acquire();
-        libc::c_double::from_ne_bytes(state.global.gen_random_array())
+    unsafe fn seed48(_seed16v: *mut libc::c_ushort) -> *mut libc::c_ushort => fizzle_srand48(_ctx) {
+        unimplemented!("seed48()")
     }
 }
 
 hook_macros::hook! {
-    unsafe fn lrand48() -> libc::c_long => fizzle_lrand48(ctx) {
-        let mut state = ctx.acquire();
-        libc::c_long::from_ne_bytes(state.global.gen_random_array())
+    unsafe fn lcong48(_param: *mut libc::c_ushort) => fizzle_srand48(_ctx) {
+        unimplemented!("lcong48()")
     }
 }
 
 hook_macros::hook! {
-    unsafe fn nrand48(_xsubi: *mut libc::c_ushort) -> libc::c_long => fizzle_nrand48(ctx) {
-        let mut state = ctx.acquire();
-        libc::c_long::from_ne_bytes(state.global.gen_random_array())
+    unsafe fn drand48() -> libc::c_double => fizzle_drand48(_ctx) {
+        // Needs to return uniform sample from 0.0 to 1.0 double precision
+        unimplemented!("drand48")
     }
 }
 
 hook_macros::hook! {
-    unsafe fn mrand48() -> libc::c_long => fizzle_mrand48(ctx) {
-        let mut state = ctx.acquire();
-        libc::c_long::from_ne_bytes(state.global.gen_random_array())
+    unsafe fn erand48(_xsubi: *mut libc::c_ushort) -> libc::c_double => fizzle_erand48(_ctx) {
+        unimplemented!("erand48")
     }
 }
 
 hook_macros::hook! {
-    unsafe fn jrand48(_xsubi: *mut libc::c_ushort) -> libc::c_long => fizzle_jrand48(ctx) {
-        let mut state = ctx.acquire();
-        libc::c_long::from_ne_bytes(state.global.gen_random_array())
+    unsafe fn lrand48() -> libc::c_long => fizzle_lrand48(_ctx) {
+        unimplemented!("lrand48")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn nrand48(_xsubi: *mut libc::c_ushort) -> libc::c_long => fizzle_nrand48(_ctx) {
+        unimplemented!("nrand48")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn mrand48() -> libc::c_long => fizzle_mrand48(_ctx) {
+        unimplemented!("mrand48")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn jrand48(_xsubi: *mut libc::c_ushort) -> libc::c_long => fizzle_jrand48(_ctx) {
+        unimplemented!("jrand48")
     }
 }

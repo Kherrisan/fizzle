@@ -1,22 +1,21 @@
-use std::thread;
+use std::time::Duration;
 
 use crate::hook_macros;
+use crate::handlers::sleep::SleepEvent;
+use crate::scheduler::Scheduler;
 
 hook_macros::hook! {
     unsafe fn sleep(
         seconds: libc::c_uint
     ) -> libc::c_uint => fizzle_sleep(ctx) {
-        // TODO: how do we handle timeouts in the general case?
-
-        if seconds <= 1 {
-            let mut state = ctx.acquire();
-            state.mark_thread_ready(thread::current().id()); // TODO: mark delayed ready??
-            drop(state);
+        crate::strace!("sleep(seconds={}) -> ...", seconds);
+        match Scheduler::handle_event(&mut ctx, SleepEvent::new(Duration::from_secs(seconds as u64))) {
+            Ok(()) => {
+                crate::strace!("sleep(seconds={}) -> 0", seconds);
+                0
+            },
+            Err(()) => unreachable!(),
         }
-
-        ctx.yield_thread();
-
-        0
     }
 }
 
@@ -24,17 +23,14 @@ hook_macros::hook! {
     unsafe fn usleep(
         usec: libc::useconds_t
     ) -> libc::c_int => fizzle_usleep(ctx) {
-        // TODO: how do we handle timeouts in the general case?
-
-        if usec <= 1_000_000 {
-            let mut state = ctx.acquire();
-            state.mark_thread_ready(thread::current().id()); // TODO: mark delayed ready??
-            drop(state);
+        crate::strace!("usleep(usec={}) -> ...", usec);
+        match Scheduler::handle_event(&mut ctx, SleepEvent::new(Duration::from_micros(usec as u64))) {
+            Ok(()) => {
+                crate::strace!("usleep(usec={}) -> 0", usec);
+                0
+            },
+            Err(()) => unreachable!(),
         }
-
-        ctx.yield_thread();
-
-        0
     }
 }
 
@@ -43,21 +39,22 @@ hook_macros::hook! {
         req: *const libc::timespec,
         rem: *mut libc::timespec
     ) -> libc::c_int => fizzle_nanosleep(ctx) {
-        log::info!("nanosleep({}.{})", (*req).tv_sec, (*req).tv_nsec);
 
-        if (*req).tv_sec == 1 && (*req).tv_nsec == 0 || (*req).tv_nsec <= 1_000_000_000 {
-            let mut state = ctx.acquire();
-            state.mark_thread_ready(thread::current().id()); // TODO: mark delayed ready??
-            drop(state);
+        let sec = (*req).tv_sec;
+        let nsec = (*req).tv_nsec;
+        let duration = Duration::from_secs(sec as u64) + Duration::from_nanos(nsec as u64);
+
+        crate::strace!("nanosleep(req={}.{}, rem={:?}) -> ...", sec, nsec, rem);
+
+        match Scheduler::handle_event(&mut ctx, SleepEvent::new(duration)) {
+            Ok(()) => {
+                if !rem.is_null() {
+                    *rem = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+                }
+                crate::strace!("nanosleep(req={}.{}, rem={:?}) -> 0", sec, nsec, rem);
+                0
+            },
+            Err(()) => unreachable!(),
         }
-
-        ctx.yield_thread();
-
-        if !rem.is_null() {
-            (*rem).tv_sec = 0;
-            (*rem).tv_nsec = 0;
-        }
-
-        0
     }
 }

@@ -42,6 +42,52 @@ pub struct PendingInfo {
     pub poll: Rc<PolledId>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LocalAddress {
+    Ephemeral(AddressFamily),
+    Assigned(SockAddr),
+}
+
+#[derive(Debug)]
+pub struct SocketInfo {
+    /// The number of file descriptors currently referencing the socket.
+    pub fd_count: usize,
+    pub socktype: SocketType,
+    pub protocol: TransportProtocol,
+    // NOTE: assigning ephemeral address at socket creation will exhaust available ephemeral
+    // addresses rather quickly given our current scheme. If this becomes an issue, consider
+    // revising this bit of code.
+    /// The local address the socket is bound to.
+    /// 
+    /// By default, this is an ephemeral address assigned at socket creation.
+    pub local_addr: LocalAddress,
+    pub state: SocketState,
+}
+
+impl SocketInfo {
+    pub fn new_unassociated(family: AddressFamily, socktype: SocketType, protocol: TransportProtocol) -> Self {
+        Self {
+            fd_count: 1,
+            socktype,
+            protocol,
+            local_addr: LocalAddress::Ephemeral(family),
+            state: SocketState::Unassociated(UnassociatedSocket {
+                reuse_port: false,
+            }),
+        }
+    }
+
+    pub fn local_transport(&self) -> Option<TransportAddress> {
+        match self.local_addr.clone() {
+            LocalAddress::Assigned(sockaddr) => Some(TransportAddress {
+                sockaddr,
+                protocol: self.protocol,
+            }),
+            LocalAddress::Ephemeral(_) => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum SocketState {
     Connectionless(ConnectionlessSocket),
@@ -50,42 +96,23 @@ pub enum SocketState {
     PendingConnection(PendingSocket),
     Connecting(ConnectingSocket),
     Connected(ConnectedSocket),
-    //    Error state?
 }
 
 #[derive(Debug)]
 pub struct ConnectionlessSocket {
     pub reuse_port: bool,
     pub backend: ConnectionlessBackend,
-    pub local_addr: TransportAddress,
     pub rem_addr: Option<TransportAddress>,
 }
 
 #[derive(Debug)]
 pub struct UnassociatedSocket {
-    pub family: AddressFamily,
-    pub socktype: SocketType,
-    pub protocol: TransportProtocol,
-    pub local_addr: Option<TransportAddress>,
     pub reuse_port: bool,
-}
-
-impl UnassociatedSocket {
-    pub fn new(family: AddressFamily, socktype: SocketType, protocol: TransportProtocol) -> Self {
-        Self {
-            family,
-            socktype,
-            protocol,
-            local_addr: None,
-            reuse_port: false,
-        }
-    }
 }
 
 #[derive(Debug)]
 pub struct ServerSocket {
     pub backend: ServerBackend,
-    pub local_addr: TransportAddress,
     pub connecting: heapless::Deque<Rc<SocketId>, FIZZLE_SOMAXCONN>,
     pub ready_to_connect: Rc<PolledId>,
 }
@@ -94,7 +121,6 @@ pub struct ServerSocket {
 pub struct PendingSocket {
     pub backend: PendingBackend,
     pub next_pending: Option<Rc<SocketId>>,
-    pub local_addr: TransportAddress,
     pub rem_addr: TransportAddress,
 }
 
@@ -102,26 +128,24 @@ pub struct PendingSocket {
 pub struct ConnectingSocket {
     pub backend: ConnectingBackend,
     pub connect_polled: Rc<PolledId>,
-    pub local_addr: TransportAddress,
 }
 
 #[derive(Debug)]
 pub struct ConnectedSocket {
     pub backend: ConnectedBackend,
-    pub local_addr: TransportAddress,
     pub rem_addr: TransportAddress,
     pub peer_closed: bool,
 }
 
 impl ArenaKey for SocketId {
-    type Value = SocketState;
+    type Value = SocketInfo;
 }
 
 impl Rc<SocketId> {
     pub fn next_ephemeral_port(state: &mut FizzleState) -> u16 {
         let port = state.global.next_ephemeral_port;
         if state.global.next_ephemeral_port >= FIZZLE_EPHEMERAL_PORT_END {
-            state.global.next_ephemeral_port = FIZZLE_EPHEMERAL_PORT_END;
+            panic!("ephemeral ports exhausted")
         } else {
             state.global.next_ephemeral_port += 1;
         }
@@ -720,7 +744,7 @@ impl Rc<SocketId> {
 
         // TODO: bind client address here
 
-        let new_fd = crate::alias_fd_create();
+        let new_fd = crate::create_descriptor();
         // The two sockets are now joined--add a file descriptor to the accepted socket
         state
             .local

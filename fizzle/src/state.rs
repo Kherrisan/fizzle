@@ -11,9 +11,9 @@ use std::thread::ThreadId;
 use std::{array, env, mem, process, ptr, thread};
 
 use fizzle_common::io::{
-    AddressFamily, SocketAddrUnix, TransportAddress, TransportProtocol, MAX_PATH_LEN,
+    AddressFamily, SocketAddrUnix, SocketType, TransportAddress, TransportProtocol, MAX_PATH_LEN
 };
-use fizzle_common::path::{FilePath, SemPath};
+use fizzle_common::path::{FilePath, SemaphorePath};
 use fizzle_common::storage::Buffer;
 use fizzle_plugin::{IoEndpointVariant, StreamId};
 use fxhash::FxBuildHasher;
@@ -31,6 +31,7 @@ use crate::handlers::directory::DirectoryId;
 use crate::handlers::epoll::{EpollId, EpollInfo};
 use crate::handlers::eventfd::{EventfdId, EventfdInfo};
 use crate::handlers::file::{FileId, FileObject, FilePtr};
+use crate::handlers::futex::FutexPtr;
 use crate::handlers::fuzz_endpoint::{FuzzEndpointId, FuzzEndpointInfo};
 use crate::handlers::message_queue::{MessageQueueId, MessageQueueInfo};
 use crate::handlers::mutex::MutexPtr;
@@ -44,7 +45,7 @@ use crate::handlers::rwlock::{RwLockInfo, RwLockPtr};
 use crate::handlers::semaphore::{SemaphoreId, SemaphoreInfo, SemaphorePtr};
 use crate::handlers::signal::{ProcSigInfo, SignalHandlers, SignalSet, ThreadSigInfo};
 use crate::handlers::socket::{
-    PendingInfo, PendingSocket, ServerSocket, SocketId, SocketState, TransportLocationInfo,
+    LocalAddress, PendingInfo, PendingSocket, ServerSocket, SocketId, SocketInfo, SocketState, TransportLocationInfo
 };
 use crate::handlers::spinlock::SpinlockPtr;
 use crate::handlers::thread::PThreadRoutine;
@@ -539,6 +540,30 @@ impl FizzleState {
             fds.downref(&key);
         }
     }
+
+    /// Adds a thread from the current process to the back of the `ready` queue.
+    pub fn mark_thread_ready(&mut self, thread_id: ThreadId) {
+        let process_id = self.local.process_id;
+        self.global
+            .ready
+            .push_back(ReadyInfo::Worker(WorkerId {
+                process_id,
+                thread_id,
+            }))
+            .unwrap();
+    }
+
+    /// Adds a thread from the current process to the `delayed_ready` queue.
+    pub fn mark_thread_delayed_ready(&mut self, thread_id: ThreadId) {
+        let process_id = self.local.process_id;
+        self.global
+            .delayed_ready
+            .push_back(ReadyInfo::Worker(WorkerId {
+                process_id,
+                thread_id,
+            }))
+            .unwrap();
+    }
 }
 
 /// State specific to the first (root) process instantiated by Fizzle.
@@ -621,7 +646,7 @@ pub struct ProcessLocalState {
         HashMap<ThreadId, *mut libc::c_void, FxBuildHasher>,
         FxBuildHasher,
     >,
-    pub futex_waiters: HashMap<*const u32, VecDeque<(u32, ThreadId)>, FxBuildHasher>,
+    pub futex_waiters: HashMap<FutexPtr, VecDeque<(u32, ThreadId)>, FxBuildHasher>,
     pub terminated_threads: HashSet<ThreadId, FxBuildHasher>,
 
     pub signals: HashMap<ThreadId, ThreadSigInfo, FxBuildHasher>,
@@ -653,6 +678,7 @@ impl Debug for ProcessLocalState {
             .field("pthread_cleanup", &self.pthread_cleanup)
             .field("pthread_keys", &self.pthread_keys)
             .field("pthread_key_values", &self.pthread_key_values)
+            .field("futex_waiters", &self.futex_waiters)
             .field("terminated_threads", &self.terminated_threads)
             .field("awaiting_thread_death", &self.awaiting_thread_death)
             .field("working_directory", &self.working_directory)
@@ -738,14 +764,14 @@ pub struct InterprocessState {
     pub event_fds: KeyedArena<EventfdId, EventfdInfo, FIZZLE_MAX_EVENTFDS>,
     pub file_paths: FnvIndexMap<FilePath<MAX_PATH_LEN>, Rc<FileId>, FIZZLE_MAX_FILE_PATHS>,
     pub files: KeyedArena<FileId, FileBackend, FIZZLE_MAX_FILES>,
-    pub sem_paths: FnvIndexMap<SemPath, Rc<SemaphoreId>, FIZZLE_MAX_NAMED_SEMAPHORES>,
+    pub sem_paths: FnvIndexMap<SemaphorePath, Rc<SemaphoreId>, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub semaphores: KeyedArena<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub pipes: KeyedArena<PipeId, PipeInfo, FIZZLE_MAX_PIPES>,
     pub message_queues: KeyedArena<MessageQueueId, MessageQueueInfo, FIZZLE_MAX_MESSAGE_QUEUES>,
     // TODO: SO_REUSEPORT breaks this...
     pub socket_locations:
         FnvIndexMap<TransportAddress, TransportLocationInfo, FIZZLE_MAX_SOCKADDRS>,
-    pub sockets: KeyedArena<SocketId, SocketState, FIZZLE_MAX_SOCKETS>,
+    pub sockets: KeyedArena<SocketId, SocketInfo, FIZZLE_MAX_SOCKETS>,
     pub buffers: KeyedArena<BufferId, Buffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
     pub stdio: StdioBackend,
     // Polling infrastructure
@@ -1136,12 +1162,17 @@ impl InterprocessState {
     ) -> Rc<SocketId> {
         let client_socket_id = self
             .sockets
-            .allocate(SocketState::PendingConnection(PendingSocket {
-                local_addr: src_addr,
-                rem_addr: rem_addr.clone(),
-                backend,
-                next_pending: None,
-            }))
+            .allocate(SocketInfo {
+                fd_count: 0,
+                state: SocketState::PendingConnection(PendingSocket {
+                    rem_addr: rem_addr.clone(),
+                    backend,
+                    next_pending: None,
+                }),
+                socktype: SocketType::Datagram,
+                protocol: src_addr.protocol(),
+                local_addr: LocalAddress::Assigned(src_addr.addr().clone()),
+            })
             .unwrap();
 
         // Add the client to the pending client chain, if applicable
@@ -1166,10 +1197,13 @@ impl InterprocessState {
                 match &location_info.pending {
                     Some(PendingInfo { client, .. }) => {
                         let mut last_client = client.clone();
-                        while let Some(SocketState::PendingConnection(PendingSocket {
-                            next_pending: Some(id),
+                        while let Some(SocketInfo {
+                            state: SocketState::PendingConnection(PendingSocket {
+                                next_pending: Some(id),
+                                ..
+                            }),
                             ..
-                        })) = self.sockets.get(&last_client)
+                        }) = self.sockets.get(&last_client)
                         {
                             last_client = id.clone();
                         }
@@ -1177,7 +1211,7 @@ impl InterprocessState {
                         let SocketState::PendingConnection(PendingSocket {
                             next_pending: next_awaiting,
                             ..
-                        }) = &mut self.sockets.get_mut(client).unwrap()
+                        }) = &mut self.sockets.get_mut(client).unwrap().state
                         else {
                             panic!("unexpected internal fizzle state--chain of awaiting clients had invalid socket variant")
                         };
@@ -1199,7 +1233,7 @@ impl InterprocessState {
                         .bound_sockets
                         .push_back(socket_id.clone())
                         .unwrap();
-                    match self.sockets.get(&socket_id).unwrap() {
+                    match &self.sockets.get(&socket_id).unwrap().state {
                         SocketState::Server(server_info) => {
                             log::debug!("notifying server that pending connection exists...");
                             let connect_poll = server_info.ready_to_connect.clone();
@@ -1224,12 +1258,17 @@ impl InterprocessState {
 
         let socket_id = self
             .sockets
-            .allocate(SocketState::Server(ServerSocket {
-                backend,
-                local_addr: transport_addr.clone(),
-                connecting: Deque::new(),
-                ready_to_connect: connect_polled_id,
-            }))
+            .allocate(SocketInfo {
+                fd_count: 0,
+                state: SocketState::Server(ServerSocket {
+                    backend,
+                    connecting: Deque::new(),
+                    ready_to_connect: connect_polled_id,
+                }),
+                socktype: SocketType::Datagram, // TODO: this (and above) aren't necessarily true
+                protocol: transport_addr.protocol(),
+                local_addr: LocalAddress::Assigned(transport_addr.addr().clone()),
+            })
             .unwrap();
 
         match self.socket_locations.get_mut(&transport_addr) {
