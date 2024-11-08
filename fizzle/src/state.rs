@@ -34,7 +34,7 @@ use crate::handlers::file::{FileId, FileObject, FilePtr};
 use crate::handlers::futex::FutexPtr;
 use crate::handlers::fuzz_endpoint::{FuzzEndpointId, FuzzEndpointInfo};
 use crate::handlers::message_queue::{MessageQueueId, MessageQueueInfo};
-use crate::handlers::mutex::MutexPtr;
+use crate::handlers::mutex::{MutexInfo, MutexPtr};
 use crate::handlers::pipe::{PipeId, PipeInfo};
 use crate::handlers::plugin::{PluginEndpointId, PluginInfo};
 use crate::handlers::plugin_module::PluginId;
@@ -48,7 +48,7 @@ use crate::handlers::socket::{
     LocalAddress, PendingInfo, PendingSocket, ServerSocket, SocketId, SocketInfo, SocketState, TransportLocationInfo
 };
 use crate::handlers::spinlock::SpinlockPtr;
-use crate::handlers::thread::PThreadRoutine;
+use crate::handlers::thread::{PThreadRoutine, ThreadInfo};
 use crate::once::SeqOnceCell;
 use crate::plugins::{IoEmulationType, PluginEndpoint, Plugins};
 use crate::semaphore::Semaphore;
@@ -211,17 +211,17 @@ impl FizzleSingleton {
         locks[thread_idx].borrow()
     }
 
-    pub fn init_new_thread(&mut self) {
+    pub fn init_new_thread(&mut self, sigmask: Option<SignalSet>, detached: bool) {
         let thread_id = thread::current().id();
         let mut state = self.acquire();
         state
             .local
             .pthreads
-            .insert(unsafe { libc::pthread_self() }, thread_id);
+            .insert(unsafe { libc::pthread_self() }, ThreadInfo::new(thread_id, detached, false));
         state
             .local
             .signals
-            .insert(thread_id, ThreadSigInfo::default());
+            .insert(thread_id, ThreadSigInfo::new(sigmask));
         drop(state);
         self.init_thread_lock(&thread::current().id());
     }
@@ -362,7 +362,7 @@ impl FizzleState {
         local.process_id = process_id;
 
         // Insert the current (main) pthread into `pthreads`
-        local.pthreads.insert(unsafe { libc::pthread_self() }, thread::current().id());
+        local.pthreads.insert(unsafe { libc::pthread_self() }, ThreadInfo::new(thread::current().id(), false, true));
 
         // Inherit signal handlers
         if let Some(handlers) = global.inherited_handlers.take() {
@@ -375,7 +375,7 @@ impl FizzleState {
         if let Some(sigmask) = global.inherited_sigmask.take() {
             local.signals.insert(thread::current().id(), ThreadSigInfo::inherit(sigmask));
         } else {
-            local.signals.insert(thread::current().id(), ThreadSigInfo::new());
+            local.signals.insert(thread::current().id(), ThreadSigInfo::new(None));
         }
 
         // Inherit parent's file descriptors
@@ -564,6 +564,18 @@ impl FizzleState {
             }))
             .unwrap();
     }
+
+    /// Adds a thread from the current process to the front of the `delayed_ready` queue.
+    pub fn mark_thread_immediately_ready(&mut self, thread_id: ThreadId) {
+        let process_id = self.local.process_id;
+        self.global
+            .delayed_ready
+            .push_front(ReadyInfo::Worker(WorkerId {
+                process_id,
+                thread_id,
+            }))
+            .unwrap();
+    }
 }
 
 /// State specific to the first (root) process instantiated by Fizzle.
@@ -634,11 +646,11 @@ pub struct ProcessLocalState {
     pub named_semaphores: HashMap<SemaphorePtr, Rc<SemaphoreId>>,
     /// Files specifically designated as being emulated.
     pub file_objs: HashMap<FilePtr, FileObject, FxBuildHasher>,
-    pub mutexes: HashMap<MutexPtr, VecDeque<ThreadId>, FxBuildHasher>,
+    pub mutexes: HashMap<MutexPtr, MutexInfo, FxBuildHasher>,
     pub rwlocks: HashMap<RwLockPtr, RwLockInfo, FxBuildHasher>,
     pub semaphores: HashMap<SemaphorePtr, SemaphoreInfo>,
     pub spinlocks: HashMap<SpinlockPtr, VecDeque<ThreadId>, FxBuildHasher>,
-    pub pthreads: HashMap<libc::pthread_t, ThreadId, FxBuildHasher>,
+    pub pthreads: HashMap<libc::pthread_t, ThreadInfo, FxBuildHasher>,
     pub pthread_cleanup: HashMap<ThreadId, VecDeque<PThreadRoutine>, FxBuildHasher>,
     pub pthread_keys: HashMap<libc::pthread_key_t, PThreadRoutine, FxBuildHasher>,
     pub pthread_key_values: HashMap<

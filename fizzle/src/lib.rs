@@ -22,6 +22,7 @@ pub(crate) use hook_macros::hook;
 
 use std::os::fd::RawFd;
 use std::ptr;
+use std::time::Duration;
 
 extern "C" {
     #[cfg(feature = "afl")]
@@ -51,6 +52,16 @@ extern "C" {
 
     #[allow(unused)]
     static mut stderr: *mut libc::FILE;
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum WaitDuration {
+    /// Returns immediately if the event is not ready
+    Immediate,
+    /// Waits for the given amount of time, returning ETIMEDOUT if the event isn't ready.
+    Timed(Duration),
+    /// Waits indefinitely until the semaphore can be acquired.
+    Indefinite,
 }
 
 pub fn report_strict_failure(explanation: &'static str) {

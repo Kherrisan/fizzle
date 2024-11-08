@@ -8,32 +8,14 @@ use heapless::FnvIndexSet;
 use crate::arena::Rc;
 use crate::backend::{ConnectedBackend, PendingBackend};
 use crate::constants::{FIZZLE_MAX_FUZZ_ENDPOINTS, FIZZLE_MEMORY_ENV};
-use crate::errno::Errno;
+use crate::handlers::mutex::MutexStatus;
 use crate::handlers::polled::PolledId;
 use crate::handlers::process::ProcessId;
 use crate::handlers::signal::{SigDisposition, SignalSet};
 use crate::handlers::socket::SocketState;
-use crate::handlers::thread::{PTCreateWrapper, ThreadExitEvent};
 use crate::plugins;
 use crate::state::{self, PerRoundClientBackend, PerRoundClientInfo, SignalDestination};
 use crate::state::{FizzleSingleton, FizzleState, ReadyInfo, WorkerId};
-
-extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void {
-    // Before we do ANYTHING, we need to set this to avoid accidental preload hook recursion
-    state::set_entered_handler(true);
-    // SAFETY: only one ctx at the time (so that it in turn enforces only one `state` alias at a time...)
-    let mut ctx = state::fizzle_singleton();
-
-    let wrapped_arg = (arg as *mut PTCreateWrapper).as_mut().unwrap();
-
-    ctx.init_new_thread();
-
-    let res = ctx.run_outside_shim(|| (wrapped_arg.wrapped_fn)(wrapped_arg.wrapped_arg));
-
-    // Thread has exited...
-    let _ = Scheduler::handle_event(&mut ctx, ThreadExitEvent::new(res));
-    unreachable!()
-}
 
 // Input parameters are contained within the event
 pub trait Event {
@@ -58,8 +40,8 @@ pub enum Outcome<S, E> {
     Yield(Option<Duration>),
     /// The event should move on to its next action immediately.
     Continue,
-    /// Creates a new thread using the given wrapped function and argument
-    CreateThread(PTCreateWrapper),
+    /// Yields the current thread without executing the next ready worker.
+    Pause(DelegationSource),
     /// Terminates the given thread's execution.
     TerminateThread(TerminationMethod),
 }
@@ -127,17 +109,10 @@ impl Scheduler {
                         // Long enough to consider as a permanent timer--just leave
                     }
                 }
-                Outcome::CreateThread(wrapper) => {
-
-                    state.mark_thread_ready(thread::current().id());
+                Outcome::Pause(src) => {
+                    // SAFETY: `state` is never used prior to being dropped, so noalias isn't violated
                     drop(state);
-
-                    delegation_source = DelegationSource::Thread;
-                    if let Err(e) = Scheduler::create_thread(ctx, wrapper) {
-                        // TODO: How do we get this Errno value out?
-                    }
-                    Scheduler::yield_worker(ctx, DelegationAction::PauseCurrentWorker);
-                    drop(wrapper);
+                    Scheduler::yield_worker(ctx, DelegationAction::PauseCurrentWorker(src));
                 }
                 Outcome::TerminateThread(method) => {
                     drop(state);
@@ -173,7 +148,7 @@ impl Scheduler {
             // 1. Perform a delegation action
             match delegation_state {
                 // The current worker is creating a new thread
-                DelegationState::PauseCurrentWorker => (),
+                DelegationState::PauseCurrentWorker(src) => delegation_source = src,
                 // The current worker is done being yielded
                 DelegationState::RunCurrentWorker => return,
                 // The current worker is delegating execution to whatever is available
@@ -621,7 +596,7 @@ impl Scheduler {
 
     fn send_cancellation(ctx: &mut FizzleSingleton, target: libc::pthread_t) {
         let mut state = ctx.acquire();
-        let thread_id = *state.local.pthreads.get(&target).unwrap();
+        let thread_id = state.local.pthreads.get(&target).unwrap().id;
         assert!(state.local.cancelling.replace(thread_id).is_none());
 
         // Continue this worker once the cancellation is complete
@@ -820,37 +795,6 @@ impl Scheduler {
     }
 
     /// Terminates the current thread, cleaning up its resources along the way.
-    fn create_thread(ctx: &mut FizzleSingleton, pthread: *mut libc::pthread_t, attrs: *const libc::pthread_attr_t, wrapper: &mut PTCreateWrapper) -> Result<(), Errno> {
-        // TODO: attr may have a pthread sigmask... (pthread_attr_getsigmask_np)
-
-        #[cfg(feature = "afl")]
-        if !state.global.shared_mem_initialized {
-            state.global.shared_mem_initialized = true;
-
-            #[cfg(feature = "pcr")]
-            unsafe { crate::__afl_sharedmem_fuzzing = 1; }
-
-            log::debug!("calling __afl_manual_init()");
-            unsafe { crate::__afl_manual_init(); }
-            log::debug!("__afl_manual_init finished");
-        }
-
-        // Let the scheduler know we have more to execute
-        let mut state = ctx.acquire();
-        state.mark_thread_ready(thread::current().id());
-        drop(state);
-
-
-        let pt_wrapper_arg = ptr::from_mut(wrapper).cast::<libc::c_void>();
-        unsafe {
-            match libc::pthread_create(pthread, attrs, pt_wrapper_fn, pt_wrapper_arg) {
-                0.. => Ok(()),
-                ..=-1 => Err(Errno::get_errno()),
-            }
-        }
-    }
-
-    /// Terminates the current thread, cleaning up its resources along the way.
     fn terminate_thread(ctx: &mut FizzleSingleton, method: TerminationMethod) -> ! {
         log::info!("Thread being terminated...");
 
@@ -910,13 +854,27 @@ impl Scheduler {
         // Clean up local state of thread
         state.local.pthread_cleanup.remove(&thread_id);
         state.local.signals.remove(&thread_id);
-        state
+        let thread_info = state
             .local
             .pthreads
-            .remove(&unsafe { libc::pthread_self() });
+            .remove(&unsafe { libc::pthread_self() }).unwrap();
+
+        
+        for mutex in thread_info.held_mutexes {
+            let mutex_info = state.local.mutexes.get_mut(&mutex).unwrap();
+            // Mark the thread as poisoned
+            mutex_info.status = MutexStatus::Poisoned;
+            // Remove this thread from the queue
+            assert!(mutex_info.queued_threads.pop_front().is_some());
+            // If there are any other threads listening, mark the next one as ready to receive
+            // the (poisoned) mutex
+            if let Some(other_thread) = mutex_info.queued_threads.front().cloned() {
+                state.mark_thread_ready(other_thread);
+            }
+        }
 
         // Delegate execution to...
-        if let Some(thread_id) = state.local.pthreads.values().next().cloned() {
+        if let Some(thread_id) = state.local.pthreads.values().next().map(|t| t.id) {
             // ...another running thread in this process
             drop(state);
             Scheduler::wake_thread(ctx, &thread_id);
@@ -993,7 +951,7 @@ impl Scheduler {
     ///
     /// Any system library calls performed by code within this closure will be hooked and handled
     /// as if it were being run by the program.
-    fn run_outside_hook<F, R>(_ctx: &mut FizzleSingleton, f: F) -> R
+    pub fn run_outside_hook<F, R>(_ctx: &mut FizzleSingleton, f: F) -> R
     where
         F: FnOnce() -> R,
     {
@@ -1011,14 +969,14 @@ impl Scheduler {
 }
 
 pub enum DelegationAction {
-    PauseCurrentWorker,
+    PauseCurrentWorker(DelegationSource),
     RunNextWorker,
     RunThread(ThreadId),
     RunProcess(ProcessId),
 }
 
 pub enum DelegationState {
-    PauseCurrentWorker,
+    PauseCurrentWorker(DelegationSource),
     RunNextWorker,
     NoMoreWorkers,
     RunCurrentWorker,
@@ -1034,7 +992,7 @@ impl<'a> From<DelegationAction> for DelegationState {
     #[inline]
     fn from(value: DelegationAction) -> Self {
         match value {
-            DelegationAction::PauseCurrentWorker => Self::PauseCurrentWorker,
+            DelegationAction::PauseCurrentWorker(src) => Self::PauseCurrentWorker(src),
             DelegationAction::RunNextWorker => Self::RunNextWorker,
             DelegationAction::RunThread(t) => Self::RunThread(t),
             DelegationAction::RunProcess(p) => Self::RunProcess(p),

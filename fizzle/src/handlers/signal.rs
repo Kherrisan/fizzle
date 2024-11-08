@@ -133,7 +133,7 @@ pub enum SigDisposition {
 pub type SigHandler = unsafe extern "C" fn(libc::c_int);
 pub type SigAction = unsafe extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void);
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ThreadSigInfo {
     /// Signals that have been specifically raised for the thread via `pthread_kill` but that cannot
     /// be immediately handled as they are blocked.
@@ -160,10 +160,15 @@ impl ThreadSigInfo {
         }
     }
 
-    pub fn new() -> Self {
+    pub fn new(sigmask: Option<SignalSet>) -> Self {
+        let blocked = match sigmask {
+            Some(s) => s,
+            None => SignalSet::empty(),
+        };
+
         Self {
             raised: SignalSet::empty(), // TODO: check all these
-            blocked: SignalSet::empty(),
+            blocked,
             polled: None,
         }
     }

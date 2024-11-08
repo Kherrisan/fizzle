@@ -55,7 +55,6 @@ hook_macros::hook! {
                 state.local.pthread_keys.clear();
                 state.local.pthread_key_values.clear();
                 state.local.terminated_threads.clear();
-                state.local.cancelling_threads.clear();
                 state.local.awaiting_thread_death.clear();
 
                 // Assign a new process ID

@@ -162,7 +162,7 @@ hook_macros::hook! {
 
         crate::strace!("sem_wait(sem={:?}) -> ...", semaphore_id);
 
-        match Scheduler::handle_event(&mut ctx, SemWaitEvent::new(semaphore_id, SemWaitDuration::Indefinite)) {
+        match Scheduler::handle_event(&mut ctx, SemWaitEvent::new(semaphore_id, WaitDuration::Indefinite)) {
             Ok(()) => {
                 crate::strace!("sem_wait(sem={:?}) -> 0", semaphore_id);
                 0
@@ -182,7 +182,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_sem_trywait(ctx) {
         let semaphore_id = SemaphorePtr::from(sem);
 
-        match Scheduler::handle_event(&mut ctx, SemWaitEvent::new(semaphore_id, SemWaitDuration::Immediate)) {
+        match Scheduler::handle_event(&mut ctx, SemWaitEvent::new(semaphore_id, WaitDuration::Immediate)) {
             Ok(()) => {
                 crate::strace!("sem_trywait(sem={:?}) -> 0", semaphore_id);
                 0
@@ -215,7 +215,7 @@ hook_macros::hook! {
             Duration::from_secs((*abs_timeout).tv_sec as u64) + Duration::from_nanos((*abs_timeout).tv_nsec as u64)
         };
 
-        match Scheduler::handle_event(&mut ctx, SemWaitEvent::new(semaphore_id, SemWaitDuration::Timed(timeout))) {
+        match Scheduler::handle_event(&mut ctx, SemWaitEvent::new(semaphore_id, WaitDuration::Timed(timeout))) {
             Ok(()) => {
                 crate::strace!("sem_timedwait(sem={:?}) -> 0", semaphore_id);
                 0

@@ -1,7 +1,6 @@
 use std::collections::VecDeque;
 use std::ffi::CStr;
 use std::fmt::Display;
-use std::time::Duration;
 
 use bitflags::bitflags;
 use fizzle_common::path::SemaphorePath;
@@ -11,6 +10,7 @@ use crate::constants::FIZZLE_MAX_WAITING_SEMAPHORES;
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::{FizzleState, WorkerId};
+use crate::WaitDuration;
 
 use heapless::Deque;
 pub use private::SemaphoreId;
@@ -46,8 +46,8 @@ impl From<*mut libc::sem_t> for SemaphorePtr {
 }
 
 impl SemaphorePtr {
-    pub fn to_mut_ptr(self) -> *mut libc::sem_t {
-        self.0 as *mut libc::sem_t
+    pub unsafe fn to_mut_ptr(self) -> *mut libc::sem_t {
+        self.0 as *mut libc::sem_t // TODO: breaks provenance guarantees
     }
 }
 
@@ -360,24 +360,14 @@ pub enum SemWaitState {
     Finish,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum SemWaitDuration {
-    /// Returns EAGAIN if no semaphore was ready to be waited on.
-    Immediate,
-    /// Waits for the given amount of time, returning ETIMEDOUT if no semaphore was ready.
-    Timed(Duration),
-    /// Waits indefinitely until the semaphore can be acquired.
-    Indefinite,
-}
-
 pub struct SemWaitEvent {
     sem: SemaphorePtr,
-    duration: SemWaitDuration,
+    duration: WaitDuration,
     state: SemWaitState,
 }
 
 impl SemWaitEvent {
-    pub fn new(sem: SemaphorePtr, duration: SemWaitDuration) -> Self {
+    pub fn new(sem: SemaphorePtr, duration: WaitDuration) -> Self {
         Self { sem, duration, state: SemWaitState::Start }
     }
 }
@@ -405,13 +395,13 @@ impl Event for SemWaitEvent {
                         Outcome::Success(())
                     },
                     None => match self.duration {
-                        SemWaitDuration::Immediate => Outcome::Error(Errno::EAGAIN),
-                        SemWaitDuration::Timed(t) => {
+                        WaitDuration::Immediate => Outcome::Error(Errno::EAGAIN),
+                        WaitDuration::Timed(t) => {
                             semaphore.waiting.push_back(current_worker_id);
                             self.state = SemWaitState::Finish;
                             Outcome::Yield(Some(t))
                         }
-                        SemWaitDuration::Indefinite => {
+                        WaitDuration::Indefinite => {
                             semaphore.waiting.push_back(current_worker_id);
                             self.state = SemWaitState::Finish;
                             Outcome::Yield(None)
@@ -444,7 +434,7 @@ impl Event for SemWaitEvent {
                 if worker_present {
                     // The worker was still waiting--this must have been a timeout wakeup
 
-                    let SemWaitDuration::Timed(t) = self.duration else {
+                    let WaitDuration::Timed(t) = self.duration else {
                         panic!("internal Fizzle error: semaphore awakened despite worker still being in queue");
                     };
 

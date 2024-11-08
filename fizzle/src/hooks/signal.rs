@@ -23,13 +23,13 @@ hook_macros::hook! {
         let process_id = state.local.process_id;
         let poller = state.new_poller();
 
-        let signals = state.global.process_signals.get_mut(&process_id).unwrap();
+        let signals = state.global.signals.get_mut(&process_id).unwrap();
         let ready = signal_set.intersection(signals.raised);
 
         for flag in signal_set.iter() {
             let signal_value = flag.lowest_signal_value();
 
-            let signals = state.global.process_signals.get_mut(&process_id).unwrap();
+            let signals = state.global.signals.get_mut(&process_id).unwrap();
 
             let polled = match signals.polled[signal_value as usize].clone() {
                 None if ready.contains(flag) => {
@@ -40,7 +40,7 @@ hook_macros::hook! {
                 }
                 None => {
                     let polled = state.global.polled_events.allocate(PolledInfo::default()).unwrap();
-                    let signals = state.global.process_signals.get_mut(&process_id).unwrap();
+                    let signals = state.global.signals.get_mut(&process_id).unwrap();
                     signals.polled[signal_value as usize].replace(polled.clone());
                     polled
                 }
@@ -49,7 +49,7 @@ hook_macros::hook! {
 
             if ready.contains(flag) && state.global.polled_events.get(&polled).unwrap().pollers.is_empty() {
                 // No other pollers were waiting on the signal--immediately return
-                let signals = state.global.process_signals.get_mut(&process_id).unwrap();
+                let signals = state.global.signals.get_mut(&process_id).unwrap();
                 signals.raised = signals.raised.difference(flag);
                 *sig = signal_value;
                 return 0
@@ -66,7 +66,7 @@ hook_macros::hook! {
         let mut state = ctx.acquire();
         state.delete_poller(poller);
 
-        let signals = state.global.process_signals.get_mut(&process_id).unwrap();
+        let signals = state.global.signals.get_mut(&process_id).unwrap();
         let ready = signal_set.intersection(signals.raised);
         let first = ready.iter().next().unwrap(); // Polling returned, so there *must* be one ready
 
@@ -102,13 +102,13 @@ hook_macros::hook! {
         let process_id = state.local.process_id;
         let poller = state.new_poller();
 
-        let signals = state.global.process_signals.get_mut(&process_id).unwrap();
+        let signals = state.global.signals.get_mut(&process_id).unwrap();
         let ready = signal_set.intersection(signals.raised);
 
         for flag in signal_set.iter() {
             let signal_value = flag.lowest_signal_value();
 
-            let signals = state.global.process_signals.get_mut(&process_id).unwrap();
+            let signals = state.global.signals.get_mut(&process_id).unwrap();
 
             let polled = match signals.polled[signal_value as usize].clone() {
                 None if ready.contains(flag) => {
@@ -123,7 +123,7 @@ hook_macros::hook! {
                 }
                 None => {
                     let polled = state.global.polled_events.allocate(PolledInfo::default()).unwrap();
-                    let signals = state.global.process_signals.get_mut(&process_id).unwrap();
+                    let signals = state.global.signals.get_mut(&process_id).unwrap();
                     signals.polled[signal_value as usize].replace(polled.clone());
                     polled
                 }
@@ -132,7 +132,7 @@ hook_macros::hook! {
 
             if ready.contains(flag) && state.global.polled_events.get(&polled).unwrap().pollers.is_empty() {
                 // No other pollers were waiting on the signal--immediately return
-                let signals = state.global.process_signals.get_mut(&process_id).unwrap();
+                let signals = state.global.signals.get_mut(&process_id).unwrap();
                 signals.raised = signals.raised.difference(flag);
 
                 if !info.is_null() {
@@ -153,7 +153,7 @@ hook_macros::hook! {
         let mut state = ctx.acquire();
         state.delete_poller(poller);
 
-        let signals = state.global.process_signals.get_mut(&process_id).unwrap();
+        let signals = state.global.signals.get_mut(&process_id).unwrap();
         let ready = signal_set.intersection(signals.raised);
         let first = ready.iter().next().unwrap(); // Polling returned, so there *must* be one ready
 
@@ -194,13 +194,13 @@ hook_macros::hook! {
         let process_id = state.local.process_id;
         let poller_id = state.new_poller();
 
-        let signals = state.global.process_signals.get_mut(&process_id).unwrap();
+        let signals = state.global.signals.get_mut(&process_id).unwrap();
         let ready = signal_set.intersection(signals.raised);
 
         for flag in signal_set.iter() {
             let signal_value = flag.lowest_signal_value();
 
-            let signals = state.global.process_signals.get_mut(&process_id).unwrap();
+            let signals = state.global.signals.get_mut(&process_id).unwrap();
 
             let polled = match signals.polled[signal_value as usize].clone() {
                 None if ready.contains(flag) => {
@@ -215,7 +215,7 @@ hook_macros::hook! {
                 }
                 None => {
                     let polled = state.global.polled_events.allocate(PolledInfo::default()).unwrap();
-                    let signals = state.global.process_signals.get_mut(&process_id).unwrap();
+                    let signals = state.global.signals.get_mut(&process_id).unwrap();
                     signals.polled[signal_value as usize].replace(polled.clone());
                     polled
                 }
@@ -224,7 +224,7 @@ hook_macros::hook! {
 
             if ready.contains(flag) && state.global.polled_events.get(&polled).unwrap().pollers.is_empty() {
                 // No other pollers were waiting on the signal--immediately return
-                let signals = state.global.process_signals.get_mut(&process_id).unwrap();
+                let signals = state.global.signals.get_mut(&process_id).unwrap();
                 signals.raised = signals.raised.difference(flag);
 
                 if !info.is_null() {
@@ -252,7 +252,7 @@ hook_macros::hook! {
         let mut state = ctx.acquire();
         state.delete_poller(poller_id);
 
-        let signals = state.global.process_signals.get_mut(&process_id).unwrap();
+        let signals = state.global.signals.get_mut(&process_id).unwrap();
         let ready = signal_set.intersection(signals.raised);
         let first = ready.iter().next().unwrap(); // Polling returned, so there *must* be one ready
 
@@ -381,7 +381,7 @@ hook_macros::hook! {
 
         let state = ctx.acquire();
         let process_id = state.local.process_id;
-        *set = state.global.process_signals.get(&process_id).unwrap().raised.to_sigset();
+        *set = state.global.signals.get(&process_id).unwrap().raised.to_sigset();
 
         0
     }

@@ -1,30 +1,33 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::ptr;
 use std::thread::{self, ThreadId};
+use std::time::Duration;
 
+use crate::errno::Errno;
 use crate::handlers::barrier::{BarrierInfo, BarrierPtr};
 use crate::handlers::condvar::CondVarPtr;
-use crate::handlers::mutex::MutexPtr;
-use crate::handlers::rwlock::{RwLockInfo, RwLockPtr, RwLockState};
-use crate::handlers::spinlock::SpinlockPtr;
-use crate::handlers::thread::{PTDestructor, PThreadRoutine, ThreadTermination};
-use crate::{hook_macros, state};
+use crate::handlers::mutex::*;
+use crate::handlers::condvar::*;
+use crate::handlers::rwlock::*;
+use crate::handlers::spinlock::*;
+use crate::handlers::thread::*;
+use crate::scheduler::Scheduler;
+use crate::{hook_macros, WaitDuration};
 
-unsafe extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void {
-    // Before we do ANYTHING, we need to set this to avoid accidental preload hook recursion
-    state::set_entered_handler(true);
-    // SAFETY: only one ctx at the time (so that it in turn enforces only one `state` alias at a time...)
-    let mut ctx = state::fizzle_singleton();
+// TODO: add these to libc
+const PTHREAD_CANCEL_ENABLE: libc::c_int = 0;
+const PTHREAD_CANCEL_DISABLE: libc::c_int = 1;
+const PTHREAD_CANCEL_DEFERRED: libc::c_int = 0;
+const PTHREAD_CANCEL_ASYNCHRONOUS: libc::c_int = 1;
+const PTHREAD_MUTEX_FAST_NP: libc::c_int = 0;
+const PTHREAD_MUTEX_RECURSIVE_NP: libc::c_int = 1;
+const PTHREAD_MUTEX_ERRORCHECK_NP: libc::c_int = 2;
 
-    let wrapped_arg = (arg as *mut PTCreateWrapper).as_mut().unwrap();
-
-    ctx.init_new_thread();
-
-    let res = ctx.run_outside_shim(|| (wrapped_arg.wrapped_fn)(wrapped_arg.wrapped_arg));
-
-    // Thread has exited...
-
-    ctx.terminate_thread(ThreadTermination::Exit(res))
+extern "C" {
+    pub fn pthread_mutexattr_gettype(
+        attr: *const libc::pthread_mutexattr_t,
+        kind: *mut libc::c_int,
+    ) -> libc::c_int;
 }
 
 hook_macros::hook! {
@@ -34,40 +37,19 @@ hook_macros::hook! {
         start_routine: PTFunction,
         arg: *mut libc::c_void
     ) -> libc::c_int => fizzle_pthread_create(ctx) {
-        let mut state = ctx.acquire();
+        crate::strace!("pthread_create(thread={:?}, attr={:?}, start_routine={:?}, arg={:?}) -> ...", thread, attr, start_routine, arg);
 
-        // TODO: if attr contains sigmask, make sure to set
-
-        // SAFETY: this *must* outlive the initial execution of `pt_wrapper_fn()`
-        let mut wrapped_arg = PTCreateWrapper {
-            wrapped_fn: start_routine,
-            wrapped_arg: arg,
-        };
-
-        // TODO: attr may have a pthread sigmask... (pthread_attr_getsigmask_np)
-
-        #[cfg(feature = "afl")]
-        if !state.global.shared_mem_initialized {
-            state.global.shared_mem_initialized = true;
-
-            #[cfg(feature = "pcr")]
-            unsafe { crate::__afl_sharedmem_fuzzing = 1; }
-
-            log::debug!("calling __afl_manual_init()");
-            unsafe { crate::__afl_manual_init(); }
-            log::debug!("__afl_manual_init finished");
+        match Scheduler::handle_event(&mut ctx, ThreadCreateEvent::new(thread, attr, start_routine, arg)) {
+            Ok(()) => {
+                crate::strace!("pthread_create(thread={:?}, attr={:?}, start_routine={:?}, arg={:?}) -> 0", thread, attr, start_routine, arg);
+                0
+            },
+            Err(e) => {
+                crate::strace!("pthread_create(thread={:?}, attr={:?}, start_routine={:?}, arg={:?}) -> -1 ({})", thread, attr, start_routine, arg, e);
+                e.set_errno();
+                -1
+            },
         }
-
-        // Let the scheduler know we have more to execute
-        state.mark_thread_ready(thread::current().id());
-        drop(state);
-
-        let res = hook_macros::real!(pthread_create)(thread, attr, pt_wrapper_fn, ptr::addr_of_mut!(wrapped_arg) as *mut libc::c_void);
-
-        // The newly-created thread executes now, so this thread pauses
-        ctx.pause_current_thread();
-
-        res
     }
 }
 
@@ -75,7 +57,10 @@ hook_macros::hook! {
     unsafe fn pthread_exit(
         retval: *mut libc::c_void
     ) => fizzle_pthread_exit(ctx) {
-        ctx.terminate_thread(ThreadTermination::Exit(retval))
+        crate::strace!("pthread_exit(retval={:?}) -> !", retval);
+
+        let _ = Scheduler::handle_event(&mut ctx, ThreadExitEvent::new(retval));
+        unreachable!()
     }
 }
 
@@ -88,25 +73,20 @@ hook_macros::hook! {
     unsafe fn pthread_join(
         thread: libc::pthread_t,
         retval: *mut *mut libc::c_void
-    ) => fizzle_pthread_join(ctx) {
-        let mut state = ctx.acquire();
+    ) -> libc::c_int => fizzle_pthread_join(ctx) {
+        crate::strace!("pthread_join(thread={:?}, retval={:?}) -> ...", thread, retval);
 
-        let target_id = state.local.pthreads.remove(&thread).unwrap();
-        if !state.local.terminated_threads.contains(&target_id) {
-            // Target thread has not yet terminated--add it to list of threads awaiting death of target
-            match state.local.awaiting_thread_death.entry(target_id) {
-                std::collections::hash_map::Entry::Occupied(mut o) => o.get_mut().push(thread::current().id()),
-                std::collections::hash_map::Entry::Vacant(v) => {
-                    v.insert(vec![ thread::current().id() ]);
-                }
-            }
-
-            drop(state);
-            ctx.yield_thread();
+        match Scheduler::handle_event(&mut ctx, ThreadJoinEvent::new(thread, retval)) {
+            Ok(()) => {
+                crate::strace!("pthread_join(thread={:?}, retval={:?}) -> 0", thread, retval);
+                0
+            },
+            Err(e) => {
+                crate::strace!("pthread_join(thread={:?}, retval={:?}) -> -1 ({})", thread, retval, e);
+                e.set_errno();
+                -1
+            },
         }
-        // Waiting thread has now terminated--join properly
-
-        hook_macros::real!(pthread_join)(thread, retval);
     }
 }
 
@@ -121,30 +101,19 @@ hook_macros::hook! {
     unsafe fn pthread_cancel(
         thread: libc::pthread_t
     ) -> libc::c_int => fizzle_pthread_cancel(ctx) {
-        let mut state = ctx.acquire();
-        // TODO: Right now we assume PTHREAD_CANCEL_ENABLE is the cancel state.
+        crate::strace!("pthread_cancel(thread={:?}) -> ...", thread);
 
-        if thread == libc::pthread_self() {
-            drop(state);
-            ctx.terminate_thread(ThreadTermination::Cancellation)
+        match Scheduler::handle_event(&mut ctx, ThreadCancelEvent::new(thread)) {
+            Ok(()) => {
+                crate::strace!("pthread_cancel(thread={:?}) -> 0", thread);
+                0
+            },
+            Err(e) => {
+                crate::strace!("pthread_join(thread={:?}) -> -1 ({})", thread, e);
+                e.set_errno();
+                -1
+            },
         }
-
-        let Some(&thread_id) = state.local.pthreads.get(&thread) else {
-            log::warn!("pthread_cancel failed with ESRCH");
-            *libc::__errno_location() = libc::ESRCH;
-            return -1
-        };
-
-        state.local.cancelling_threads.insert(thread_id);
-
-        state.mark_thread_ready(thread::current().id());
-        drop(state);
-        // Invariant: the cancelled thread will be waiting on its per-thread lock rather than the
-        // process lock, as our thread is currently executing (i.e. the process is active).
-        ctx.thread_lock(&thread_id).as_ref().unwrap().post();
-        ctx.pause_current_thread();
-
-        0
     }
 }
 
@@ -153,11 +122,12 @@ hook_macros::hook! {
         routine: PTDestructor,
         arg: *mut libc::c_void
     ) => fizzle_pthread_cleanup_push(ctx) {
-        let mut state = ctx.acquire();
-        state.local.pthread_cleanup.get_mut(&thread::current().id()).unwrap().push_back(PThreadRoutine {
-            function: routine,
-            arg: Some(arg),
-        });
+        crate::strace!("pthread_cleanup_push(routine={:?}, arg={:?}) -> ...", routine, arg);
+
+        match Scheduler::handle_event(&mut ctx, ThreadCleanupPushEvent::new(routine, arg)) {
+            Ok(()) => crate::strace!("pthread_cleanup_push(routine={:?}, arg={:?}) -> 0", routine, arg),
+            Err(()) => unreachable!(),
+        }
     }
 }
 
@@ -165,35 +135,43 @@ hook_macros::hook! {
     unsafe fn pthread_cleanup_pop(
         execute: libc::c_int
     ) => fizzle_pthread_cleanup_pop(ctx) {
-        let mut state = ctx.acquire();
-        if let Some(routine) = state.local.pthread_cleanup.get_mut(&thread::current().id()).unwrap().pop_front() {
-            if execute != 0 {
-                drop(state);
+        crate::strace!("pthread_cleanup_pop(execute={}) -> ...", execute);
 
-                ctx.run_outside_shim(|| {
+        match Scheduler::handle_event(&mut ctx, ThreadCleanupPopEvent::new(execute != 0)) {
+            Ok(Some(routine)) => {
+                // TODO: it would be nice to have this within `scheduler.rs`...
+                Scheduler::run_outside_hook(&mut ctx, || {
                     routine.call();
                 });
-            }
+            },
+            Ok(None) => (),
+            Err(()) => unreachable!(),
         }
+
+        crate::strace!("pthread_cleanup_pop(execute={}) -> 0", execute);
     }
 }
 
-#[no_mangle]
-unsafe extern "C" fn fizzle_do_nothing(_: *mut libc::c_void) {}
+
 
 hook_macros::hook! {
     unsafe fn pthread_key_create(
         key: *mut libc::pthread_key_t,
         destructor: PTDestructor
     ) -> libc::c_int => fizzle_pthread_key_create(ctx) {
-        let mut state = ctx.acquire();
-        let ret = hook_macros::real!(pthread_key_create)(key, fizzle_do_nothing);
-        if ret == 0 {
-            state.local.pthread_keys.insert(*key, PThreadRoutine { function: destructor, arg: None });
-            state.local.pthread_key_values.insert(*key, HashMap::with_hasher(Default::default()));
-        }
+        crate::strace!("pthread_key_create(key={:?}, destructor={:?}) -> ...", key, destructor);
 
-        ret
+        match Scheduler::handle_event(&mut ctx, ThreadKeyCreateEvent::new(key, destructor)) {
+            Ok(()) => {
+                crate::strace!("pthread_key_create(key={:?}, destructor={:?}) -> 0", key, destructor);
+                0
+            },
+            Err(e) => {
+                crate::strace!("pthread_key_create(key={:?}, destructor={:?}) -> -1 ({})", key, destructor, e);
+                e.set_errno();
+                -1
+            },
+        }
     }
 }
 
@@ -201,14 +179,19 @@ hook_macros::hook! {
     unsafe fn pthread_key_delete(
         key: libc::pthread_key_t
     ) -> libc::c_int => fizzle_pthread_key_delete(ctx) {
-        let mut state = ctx.acquire();
-        let ret = hook_macros::real!(pthread_key_delete)(key);
-        if ret == 0 {
-            state.local.pthread_keys.remove(&key);
-            state.local.pthread_key_values.remove(&key);
-        }
+        crate::strace!("pthread_key_delete(key={:?}) -> ...", key);
 
-        ret
+        match Scheduler::handle_event(&mut ctx, ThreadKeyDeleteEvent::new(key)) {
+            Ok(()) => {
+                crate::strace!("pthread_key_create(key={:?}) -> 0", key);
+                0
+            },
+            Err(e) => {
+                crate::strace!("pthread_key_create(key={:?}) -> -1 ({})", key, e);
+                e.set_errno();
+                -1
+            },
+        }
     }
 }
 
@@ -269,24 +252,59 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn pthread_detach(
-        _thread: libc::pthread_t
-    ) -> libc::c_int => fizzle_pthread_detach(_ctx) {
+        thread: libc::pthread_t
+    ) -> libc::c_int => fizzle_pthread_detach(ctx) {
+        crate::strace!("pthread_detach(thread={:?}) -> ...", thread);
 
-        log::warn!("pthread_detach not fully supported");
-        0
+        match Scheduler::handle_event(&mut ctx, ThreadDetachEvent::new(thread)) {
+            Ok(()) => {
+                crate::strace!("pthread_detach(thread={:?}) -> 0", thread);
+                0
+            },
+            Err(e) => {
+                crate::strace!("pthread_detach(thread={:?}) -> -1 ({})", thread, e);
+                e.set_errno();
+                -1
+            },
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_yield(
     ) -> libc::c_int => fizzle_pthread_yield(ctx) {
-        let mut state = ctx.acquire();
+        crate::strace!("pthread_yield() -> ...");
 
-        state.mark_thread_ready(thread::current().id());
-        drop(state);
-        ctx.yield_thread();
+        match Scheduler::handle_event(&mut ctx, ThreadYieldEvent::new()) {
+            Ok(()) => {
+                crate::strace!("pthread_yield() -> 0");
+                0
+            },
+            Err(e) => {
+                crate::strace!("pthread_yield() -> -1 ({})", e);
+                e.set_errno();
+                -1
+            },
+        }
+    }
+}
 
-        0
+hook_macros::hook! {
+    unsafe fn sched_yield(
+    ) -> libc::c_int => fizzle_sched_yield(ctx) {
+        crate::strace!("sched_yield() -> ...");
+
+        match Scheduler::handle_event(&mut ctx, ThreadYieldEvent::new()) {
+            Ok(()) => {
+                crate::strace!("sched_yield() -> 0");
+                0
+            },
+            Err(e) => {
+                crate::strace!("sched_yield() -> -1 ({})", e);
+                e.set_errno();
+                -1
+            },
+        }
     }
 }
 
@@ -294,11 +312,45 @@ hook_macros::hook! {
     unsafe fn pthread_setcancelstate(
         state: libc::c_int,
         old_state: *mut libc::c_int
-    ) -> libc::c_int => fizzle_pthread_setcancelstate(_ctx) {
+    ) -> libc::c_int => fizzle_pthread_setcancelstate(ctx) {
+        fn cancellable_fmt(cancellable: bool) -> &'static str {
+            match cancellable {
+                true => "PTHREAD_CANCEL_ENABLE",
+                false => "PTHREAD_CANCEL_DISABLE",
+            }
+        }
 
-        crate::report_strict_failure("`pthread_setcancelstate` unimplemented");
+        let cancellable = match state {
+            PTHREAD_CANCEL_ENABLE => true,
+            PTHREAD_CANCEL_DISABLE => false,
+            _ => {
+                crate::strace!("pthread_setcancelstate(state={}, old_state={:?}) -> -1 (EINVAL)", state, old_state);
+                Errno::EINVAL.set_errno();
+                return -1
+            }
+        };
 
-        hook_macros::real!(pthread_setcancelstate)(state, old_state)
+        crate::strace!("pthread_setcancelstate(state={}, old_state={:?}) -> ...", cancellable_fmt(cancellable), old_state);
+
+        match Scheduler::handle_event(&mut ctx, ThreadCancellableEvent::new(cancellable)) {
+            Ok(old_cancellable) => {
+                if !old_state.is_null() {
+                    unsafe {
+                        *old_state = match old_cancellable {
+                            false => PTHREAD_CANCEL_DISABLE,
+                            true => PTHREAD_CANCEL_ENABLE,
+                        }
+                    }
+
+                    crate::strace!("pthread_setcancelstate(state={}, old_state={:?} ({})) -> 0", cancellable_fmt(cancellable), old_state, cancellable_fmt(old_cancellable));
+                } else {
+                    crate::strace!("pthread_setcancelstate(state={}, old_state=NULL) -> 0", cancellable_fmt(cancellable));
+                }
+
+                0
+            },
+            Err(_) => unreachable!(),
+        }
     }
 }
 
@@ -306,40 +358,88 @@ hook_macros::hook! {
     unsafe fn pthread_setcanceltype(
         cancel_type: libc::c_int,
         old_type: *mut libc::c_int
-    ) -> libc::c_int => fizzle_pthread_setcanceltype(_ctx) {
+    ) -> libc::c_int => fizzle_pthread_setcanceltype(ctx) {
+        let cancel_type = match cancel_type {
+            PTHREAD_CANCEL_DEFERRED => ThreadCancelType::Deferred,
+            PTHREAD_CANCEL_ASYNCHRONOUS => ThreadCancelType::Asynchronous,
+            _ => {
+                crate::strace!("pthread_setcanceltype(cancel_type={}, old_type={:?}) -> -1 (EINVAL)", cancel_type, old_type);
+                Errno::EINVAL.set_errno();
+                return -1
+            }
+        };
 
-        crate::report_strict_failure("`pthread_setcanceltype` unimplemented");
+        crate::strace!("pthread_setcanceltype(cancel_type={}, old_type={:?}) -> ...", cancel_type, old_type);
 
-        hook_macros::real!(pthread_setcancelstate)(cancel_type, old_type)
+        match Scheduler::handle_event(&mut ctx, ThreadCancelTypeEvent::new(cancel_type)) {
+            Ok(old_cancel_type) => {
+                if !old_type.is_null() {
+                    unsafe {
+                        *old_type = match old_cancel_type {
+                            ThreadCancelType::Deferred => PTHREAD_CANCEL_DEFERRED,
+                            ThreadCancelType::Asynchronous => PTHREAD_CANCEL_ASYNCHRONOUS,
+                        }
+                    }
+
+                    crate::strace!("pthread_setcanceltype(cancel_type={}, old_type={:?} ({})) -> 0", cancel_type, old_type, old_cancel_type);
+                } else {
+                    crate::strace!("pthread_setcanceltype(cancel_type={}, old_type=NULL) -> 0", cancel_type);
+                }
+
+                0
+            },
+            Err(_) => unreachable!(),
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_testcancel(
-    ) -> libc::c_int => fizzle_pthread_testcancel(_ctx) {
-
-        crate::report_strict_failure("`pthread_testcancel` unimplemented");
-
-        hook_macros::real!(pthread_testcancel)()
+    ) -> libc::c_int => fizzle_pthread_testcancel(ctx) {
+        crate::strace!("pthread_testcancel() -> ...");
+        
+        match Scheduler::handle_event(&mut ctx, ThreadTestCancelEvent) {
+            Ok(()) => {
+                crate::strace!("pthread_testcancel() -> 0");
+                0
+            },
+            Err(()) => unreachable!(),
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_spin_init(
         lock: *mut libc::pthread_spinlock_t,
-        _shared: libc::c_int
+        shared: libc::c_int
     ) -> libc::c_int => fizzle_pthread_spin_init(ctx) {
-        let mut state = ctx.acquire();
-
-        // TODO: what about mutexes shared across processes?
-
-        let spinlock = SpinlockPtr::from(lock);
-
-        if state.local.spinlocks.insert(spinlock, VecDeque::new()).is_some() {
-            panic!("[UB] `pthread_spin_init` called twice on one spinlock");
+        fn shared_fmt(shared: bool) -> &'static str {
+            match shared {
+                true => "PTHREAD_PROCESS_SHARED",
+                false => "PTHREAD_PROCESS_PRIVATE",
+            }
         }
 
-        0
+        let spinlock = SpinlockPtr::from(lock);
+        let shared = match shared {
+            libc::PTHREAD_PROCESS_PRIVATE => false,
+            libc::PTHREAD_PROCESS_SHARED => true,
+            _ => {
+                crate::strace!("pthread_spin_init(lock={:?}, shared={}) -> -1 (EINVAL)", lock, shared);
+                Errno::EINVAL.set_errno();
+                return -1
+            }
+        };
+
+        crate::strace!("pthread_spin_init(lock={:?}, shared={}) -> ...", lock, shared_fmt(shared));
+
+        match Scheduler::handle_event(&mut ctx, ThreadSpinInitEvent::new(spinlock, shared)) {
+            Ok(()) => {
+                crate::strace!("pthread_spin_init(lock={:?}, shared={}) -> 0", spinlock, shared_fmt(shared));
+                0
+            },
+            Err(()) => unreachable!(),
+        }
     }
 }
 
@@ -347,19 +447,16 @@ hook_macros::hook! {
     unsafe fn pthread_spin_destroy(
         lock: *mut libc::pthread_spinlock_t
     ) -> libc::c_int => fizzle_pthread_spin_destroy(ctx) {
-        let mut state = ctx.acquire();
-
         let spinlock = SpinlockPtr::from(lock);
 
-        let Some(spinlock_queue) = state.local.spinlocks.remove(&spinlock) else {
-            panic!("[UB] `pthread_spin_destroy` called on uninitialized spinlock");
-        };
-
-        if !spinlock_queue.is_empty() {
-            panic!("[UB] `pthread_spin_destroy` called on locked spinlock") // Undefined behavior
+        crate::strace!("pthread_spin_destroy(lock={:?}) -> ...", spinlock);
+        match Scheduler::handle_event(&mut ctx, ThreadSpinDestroyEvent::new(spinlock)) {
+            Ok(()) => {
+                crate::strace!("pthread_spin_destroy(lock={:?}) -> 0", spinlock);
+                0
+            },
+            Err(()) => unreachable!(),
         }
-
-        0
     }
 }
 
@@ -367,23 +464,20 @@ hook_macros::hook! {
     unsafe fn pthread_spin_lock(
         lock: *mut libc::pthread_spinlock_t
     ) -> libc::c_int => fizzle_pthread_spin_lock(ctx) {
-        let mut state = ctx.acquire();
-
         let spinlock = SpinlockPtr::from(lock);
 
-        let Some(spinlock_queue) = state.local.spinlocks.get_mut(&spinlock) else {
-            panic!("[UB] `pthread_spin_lock` called on uninitialized spinlock")
-        };
-
-        let available = spinlock_queue.is_empty();
-        spinlock_queue.push_back(thread::current().id());
-
-        if !available {
-            drop(state);
-            ctx.yield_thread();
+        crate::strace!("pthread_spin_lock(lock={:?}) -> ...", spinlock);
+        match Scheduler::handle_event(&mut ctx, ThreadSpinLockEvent::new(spinlock, false)) {
+            Ok(()) => {
+                crate::strace!("pthread_spin_lock(lock={:?}) -> 0", spinlock);
+                0
+            },
+            Err(e) => {
+                crate::strace!("pthread_spin_lock(lock={:?}) -> -1 ({})", spinlock, e);
+                e.set_errno();
+                -1
+            },
         }
-
-        0
     }
 }
 
@@ -391,20 +485,20 @@ hook_macros::hook! {
     unsafe fn pthread_spin_trylock(
         lock: *mut libc::pthread_spinlock_t
     ) -> libc::c_int => fizzle_pthread_spin_trylock(ctx) {
-        let mut state = ctx.acquire();
-
         let spinlock = SpinlockPtr::from(lock);
 
-        let Some(spinlock_queue) = state.local.spinlocks.get_mut(&spinlock) else {
-            panic!("[UB] `pthread_spin_trylock` called on uninitialized spinlock")
-        };
-
-        if !spinlock_queue.is_empty() {
-            return libc::EBUSY
+        crate::strace!("pthread_spin_lock({:?}) -> ...", spinlock);
+        match Scheduler::handle_event(&mut ctx, ThreadSpinLockEvent::new(spinlock, true)) {
+            Ok(()) => {
+                crate::strace!("pthread_spin_lock(lock={:?}) -> 0", spinlock);
+                0
+            },
+            Err(e) => {
+                crate::strace!("pthread_spin_lock(lock={:?}) -> -1 ({})", spinlock, e);
+                e.set_errno();
+                -1
+            },
         }
-        spinlock_queue.push_back(thread::current().id());
-
-        0
     }
 }
 
@@ -412,44 +506,68 @@ hook_macros::hook! {
     unsafe fn pthread_spin_unlock(
         lock: *mut libc::pthread_spinlock_t
     ) -> libc::c_int => fizzle_pthread_spin_unlock(ctx) {
-        let mut state = ctx.acquire();
-
         let spinlock = SpinlockPtr::from(lock);
 
-        let Some(spinlock_queue) = state.local.spinlocks.get_mut(&spinlock) else {
-            panic!("[UB] `pthread_spin_unlock` called on uninitialized spinlock")
-        };
-
-        let Some(popped_thread) = spinlock_queue.pop_front() else {
-            panic!("[UB] `pthread_spin_unlock` called when spinlock already unlocked")
-        };
-
-        if popped_thread != thread::current().id() {
-            panic!("[UB] `pthread_spin_unlock` called by a thread not currently holding the spinlock")
+        crate::strace!("pthread_spin_unlock(lock={:?}) -> ...", spinlock);
+        match Scheduler::handle_event(&mut ctx, ThreadSpinUnlockEvent::new(spinlock)) {
+            Ok(()) => {
+                crate::strace!("pthread_spin_unlock(lock={:?}) -> 0", spinlock);
+                0
+            },
+            Err(()) => unreachable!(),
         }
-
-        if let Some(next_thread) = spinlock_queue.front().copied() {
-            state.mark_thread_ready(next_thread);
-        }
-
-        0
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_mutex_init(
         lock: *mut libc::pthread_mutex_t,
-        _attr: *mut libc::pthread_mutexattr_t
+        attr: *const libc::pthread_mutexattr_t
     ) -> libc::c_int => fizzle_pthread_mutex_init(ctx) {
-        let mut state = ctx.acquire();
-
         let mutex = MutexPtr::from(lock);
 
-        if state.local.mutexes.insert(mutex, VecDeque::new()).is_some() {
-            panic!("[UB] `pthread_mutex_init` called twice on one mutex");
-        }
+        let (kind, robustness) = if attr.is_null() {
+            crate::strace!("pthread_mutex_init(mutex={:?}, attr=NULL) -> ...", lock);
+            (MutexKind::Fast, MutexRobustness::Stalled)
 
-        0
+        } else {
+            let mut kind: libc::c_int = 0;
+            let mut robustness: libc::c_int = 0;
+            assert_eq!(pthread_mutexattr_gettype(attr, ptr::addr_of_mut!(kind)), 0);
+            assert_eq!(libc::pthread_mutexattr_getrobust(attr, ptr::addr_of_mut!(robustness)), 0);
+            let kind = match kind {
+                PTHREAD_MUTEX_FAST_NP => MutexKind::Fast,
+                PTHREAD_MUTEX_RECURSIVE_NP => MutexKind::Recursive,
+                PTHREAD_MUTEX_ERRORCHECK_NP => MutexKind::ErrorChecking,
+                _ => {
+                    crate::strace!("pthread_mutex_init(mutex={:?}, attr={{type={}, robust={}}}) -> -1 (EINVAL)", lock, kind, robustness);
+                    Errno::EINVAL.set_errno();
+                    return -1
+                }
+            };
+
+            let robustness = match robustness {
+                libc::PTHREAD_MUTEX_STALLED => MutexRobustness::Stalled,
+                libc::PTHREAD_MUTEX_ROBUST => MutexRobustness::Robust,
+                _ => {
+                    crate::strace!("pthread_mutex_init(mutex={:?}, attr={{type={}, robust={}}}) -> -1 (EINVAL)", lock, kind, robustness);
+                    Errno::EINVAL.set_errno();
+                    return -1
+                }
+            };
+
+            crate::strace!("pthread_mutex_init(mutex={:?}, attr={{type={}, robust={}}}) -> ...", lock, kind, robustness);
+
+            (kind, robustness)
+        };
+
+        match Scheduler::handle_event(&mut ctx, MutexInitEvent::new(mutex, kind, robustness)) {
+            Ok(()) => {
+                crate::strace!("pthread_mutex_init(mutex={:?}, ...) -> 0", mutex);
+                0
+            },
+            Err(()) => unreachable!(),
+        }
     }
 }
 
@@ -457,19 +575,21 @@ hook_macros::hook! {
     unsafe fn pthread_mutex_destroy(
         lock: *mut libc::pthread_mutex_t
     ) -> libc::c_int => fizzle_pthread_mutex_destroy(ctx) {
-        let mut state = ctx.acquire();
-
         let mutex = MutexPtr::from(lock);
 
-        let Some(mutex_queue) = state.local.mutexes.remove(&mutex) else {
-            return 0
-        };
+        crate::strace!("pthread_mutex_destroy(mutex={:?}) -> ...", lock);
 
-        if !mutex_queue.is_empty() {
-            panic!("[UB] `pthread_mutex_destroy` called on locked mutex")
+        match Scheduler::handle_event(&mut ctx, MutexDestroyEvent::new(mutex)) {
+            Ok(()) => {
+                crate::strace!("pthread_mutex_destroy(mutex={:?}) -> 0", mutex);
+                0
+            },
+            Err(e) => {
+                crate::strace!("pthread_mutex_destroy(mutex={:?}) -> -1 ({})", mutex, e);
+                e.set_errno();
+                -1
+            }
         }
-
-        0
     }
 }
 
@@ -477,45 +597,21 @@ hook_macros::hook! {
     unsafe fn pthread_mutex_lock(
         lock: *mut libc::pthread_mutex_t
     ) -> libc::c_int => fizzle_pthread_mutex_lock(ctx) {
-        let mut state = ctx.acquire();
-
         let mutex = MutexPtr::from(lock);
 
-        let mutex_queue = match state.local.mutexes.get_mut(&mutex) {
-            Some(queue) => queue,
-            None => {
-                let res = libc::pthread_mutex_trylock(lock);
-                if res < 0 {
-                    *libc::__errno_location() = libc::EINVAL;
-                    return -1
-                } else {
-                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    state.local.mutexes.insert(mutex, VecDeque::new());
-                    state.local.mutexes.get_mut(&mutex).unwrap()
-                }
+        crate::strace!("pthread_mutex_lock(mutex={:?}) -> ...", lock);
+
+        match Scheduler::handle_event(&mut ctx, MutexLockEvent::new(mutex, WaitDuration::Indefinite)) {
+            Ok(()) => {
+                crate::strace!("pthread_mutex_lock(mutex={:?}) -> 0", mutex);
+                0
+            },
+            Err(e) => {
+                crate::strace!("pthread_mutex_lock(mutex={:?}) -> -1 ({})", mutex, e);
+                e.set_errno();
+                -1
             }
-        };
-
-        // TODO: PTHREAD_MUTEX_INITIALIZER
-        //   { 0, 0, 0, 0, __PTHREAD_MUTEX_TIMED, 0, { { 0, 0 } } }
-        //
-        // typedef union
-        // {
-        //   struct __pthread_mutex_s __data;
-        //   char __size[__SIZEOF_PTHREAD_MUTEX_T];
-        //   long int __align;
-        // } pthread_mutex_t;
-
-
-        let available = mutex_queue.is_empty();
-        mutex_queue.push_back(thread::current().id());
-
-        if !available {
-            drop(state);
-            ctx.yield_thread();
         }
-
-        0
     }
 }
 
@@ -523,163 +619,149 @@ hook_macros::hook! {
     unsafe fn pthread_mutex_trylock(
         lock: *mut libc::pthread_mutex_t
     ) -> libc::c_int => fizzle_pthread_mutex_trylock(ctx) {
-        let mut state = ctx.acquire();
-
         let mutex = MutexPtr::from(lock);
 
-        let mutex_queue = match state.local.mutexes.get_mut(&mutex) {
-            Some(queue) => queue,
-            None => {
-                let res = libc::pthread_mutex_lock(lock);
-                if res < 0 {
-                    *libc::__errno_location() = libc::EINVAL;
-                    return -1
-                } else {
-                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    state.local.mutexes.insert(mutex, VecDeque::new());
-                    state.local.mutexes.get_mut(&mutex).unwrap()
-                }
+        crate::strace!("pthread_mutex_trylock(mutex={:?}) -> ...", lock);
+
+        match Scheduler::handle_event(&mut ctx, MutexLockEvent::new(mutex, WaitDuration::Immediate)) {
+            Ok(()) => {
+                crate::strace!("pthread_mutex_trylock(mutex={:?}) -> 0", mutex);
+                0
+            },
+            Err(e) => {
+                crate::strace!("pthread_mutex_trylock(mutex={:?}) -> -1 ({})", mutex, e);
+                e.set_errno();
+                -1
             }
-        };
-
-        if !mutex_queue.is_empty() {
-            return libc::EBUSY
         }
-        mutex_queue.push_back(thread::current().id());
-
-        0
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_mutex_timedlock(
         lock: *mut libc::pthread_mutex_t,
-        _abstime: *const libc::timespec
+        abstime: *const libc::timespec
     ) -> libc::c_int => fizzle_pthread_mutex_timedlock(ctx) {
-        let mut state = ctx.acquire();
-        // TODO: this just returns immediately if locked
-
         let mutex = MutexPtr::from(lock);
 
-        let mutex_queue = match state.local.mutexes.get_mut(&mutex) {
-            Some(queue) => queue,
-            None => {
-                let res = libc::pthread_mutex_lock(lock);
-                if res < 0 {
-                    *libc::__errno_location() = libc::EINVAL;
-                    return -1
-                } else {
-                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    state.local.mutexes.insert(mutex, VecDeque::new());
-                    state.local.mutexes.get_mut(&mutex).unwrap()
-                }
-            }
-        };
-
-        if !mutex_queue.is_empty() {
-            return libc::EBUSY
+        if abstime.is_null() || unsafe { (*abstime).tv_sec < 0 || (*abstime).tv_nsec < 0 } {
+            crate::strace!("pthread_mutex_timedlock(mutex={:?}, abstime={:?}) -> -1 (EINVAL)", lock, abstime);
+            Errno::EINVAL.set_errno();
+            return -1
         }
-        mutex_queue.push_back(thread::current().id());
 
-        0
+        let duration = Duration::from_secs(unsafe { (*abstime).tv_sec as u64 }) + Duration::from_nanos(unsafe { (*abstime).tv_nsec as u64 });
+
+        crate::strace!("pthread_mutex_timedlock(mutex={:?}, abstime={:?}) -> ...", lock, duration);
+
+        match Scheduler::handle_event(&mut ctx, MutexLockEvent::new(mutex, WaitDuration::Timed(duration))) {
+            Ok(()) => {
+                crate::strace!("pthread_mutex_timedlock(mutex={:?}, abstime={:?}) -> 0", mutex, duration);
+                0
+            },
+            Err(e) => {
+                crate::strace!("pthread_mutex_timedlock(mutex={:?}, abstime={:?}) -> -1 ({})", mutex, duration, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_mutex_clocklock(
         lock: *mut libc::pthread_mutex_t,
-        _clock_id: libc::clockid_t,
-        _abstime: *const libc::timespec
+        clock_id: libc::clockid_t,
+        abstime: *const libc::timespec
     ) -> libc::c_int => fizzle_pthread_mutex_clocklock(ctx) {
-        let mut state = ctx.acquire();
-        // TODO: what about mutexes shared across processes?
-
-        // TODO: this just returns immediately if locked
-
         let mutex = MutexPtr::from(lock);
 
-        let mutex_queue = match state.local.mutexes.get_mut(&mutex) {
-            Some(queue) => queue,
-            None => {
-                let res = libc::pthread_mutex_lock(lock);
-                if res < 0 {
-                    *libc::__errno_location() = libc::EINVAL;
-                    return -1
-                } else {
-                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    state.local.mutexes.insert(mutex, VecDeque::new());
-                    state.local.mutexes.get_mut(&mutex).unwrap()
-                }
-            }
-        };
-
-        if !mutex_queue.is_empty() {
-            return libc::EBUSY
+        if abstime.is_null() || unsafe { (*abstime).tv_sec < 0 || (*abstime).tv_nsec < 0 } {
+            crate::strace!("pthread_mutex_timedlock(mutex={:?}, abstime={:?}) -> -1 (EINVAL)", lock, abstime);
+            Errno::EINVAL.set_errno();
+            return -1
         }
-        mutex_queue.push_back(thread::current().id());
 
-        0
+        let duration = Duration::from_secs(unsafe { (*abstime).tv_sec as u64 }) + Duration::from_nanos(unsafe { (*abstime).tv_nsec as u64 });
+
+        crate::strace!("pthread_mutex_clocklock(mutex={:?}, clock_id={}, abstime={:?}) -> ...", lock, clock_id, duration);
+
+        match Scheduler::handle_event(&mut ctx, MutexLockEvent::new(mutex, WaitDuration::Timed(duration))) {
+            Ok(()) => {
+                crate::strace!("pthread_mutex_timedlock(mutex={:?}, clock_id={}, abstime={:?}) -> 0", mutex, clock_id, duration);
+                0
+            },
+            Err(e) => {
+                crate::strace!("pthread_mutex_timedlock(mutex={:?}, clock_id={}, abstime={:?}) -> -1 ({})", mutex, clock_id, duration, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_mutex_unlock(
-        lock: *mut libc::pthread_mutex_t
+        mutex: *mut libc::pthread_mutex_t
     ) -> libc::c_int => fizzle_pthread_mutex_unlock(ctx) {
-        let mut state = ctx.acquire();
+        let lock = MutexPtr::from(mutex);
 
-        let mutex = MutexPtr::from(lock);
+        crate::strace!("pthread_mutex_unlock(mutex={:?}) -> ...", mutex);
 
-        let Some(mutex_queue) = state.local.mutexes.get_mut(&mutex) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
-
-        let Some(popped_thread) = mutex_queue.pop_front() else {
-            panic!("[UB] `pthread_mutex_unlock` called when mutex already unlocked")
-        };
-
-        if popped_thread != thread::current().id() {
-            panic!("[UB] `pthread_mutex_unlock` called by a thread not currently holding the lock")
+        match Scheduler::handle_event(&mut ctx, MutexUnlockEvent::new(lock)) {
+            Ok(()) => {
+                crate::strace!("pthread_mutex_unlock(mutex={:?}) -> 0", mutex);
+                0
+            },
+            Err(e) => {
+                crate::strace!("pthread_mutex_timedlock(mutex={:?}) -> -1 ({})", mutex, e);
+                e.set_errno();
+                -1
+            }
         }
-
-        if let Some(next_thread) = mutex_queue.front().copied() {
-            state.mark_thread_ready(next_thread);
-        }
-
-        0
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_mutex_consistent(
-        _mutex: *mut libc::pthread_mutex_t
-    ) -> libc::c_int => fizzle_pthread_mutex_consistent(_ctx) {
+        mutex: *mut libc::pthread_mutex_t
+    ) -> libc::c_int => fizzle_pthread_mutex_consistent(ctx) {
+        let lock = MutexPtr::from(mutex);
 
-        // TODO: make poisoned lock behavior compliant with POSIX
+        crate::strace!("pthread_mutex_consistent(mutex={:?}) -> ...", mutex);
 
-        crate::report_strict_failure("`pthread_mutex_consistent` unimplemented");
-
-        0
+        match Scheduler::handle_event(&mut ctx, MutexConsistentEvent::new(lock)) {
+            Ok(()) => {
+                crate::strace!("pthread_mutex_consistent(mutex={:?}) -> 0", mutex);
+                0
+            },
+            Err(e) => {
+                crate::strace!("pthread_mutex_consistent(mutex={:?}) -> -1 ({})", mutex, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
+
+// TODO: pthread_cond_clockwait
 
 hook_macros::hook! {
     unsafe fn pthread_cond_init(
         lock: *mut libc::pthread_cond_t,
-        _attr: *mut libc::pthread_condattr_t
+        attr: *mut libc::pthread_condattr_t
     ) -> libc::c_int => fizzle_pthread_cond_init(ctx) {
-        let mut state = ctx.acquire();
-
-        // TODO: what about mutexes shared across processes?
-
         let cond = CondVarPtr::from(lock);
 
-        if state.local.condvars.insert(cond, VecDeque::new()).is_some() {
-            panic!("[UB] `pthread_cond_init` called twice on one condvar");
-        }
+        crate::strace!("pthread_cond_init(cond={:?}, attr={:?}) -> ...", lock, attr);
 
-        0
+        match Scheduler::handle_event(&mut ctx, CondInitEvent::new(cond)) {
+            Ok(()) => {
+                crate::strace!("pthread_cond_init(cond={:?}, attr={:?}) -> 0", lock, attr);
+                0
+            },
+            Err(()) => unreachable!(),
+        }
     }
 }
 
@@ -687,25 +769,17 @@ hook_macros::hook! {
     unsafe fn pthread_cond_destroy(
         lock: *mut libc::pthread_cond_t
     ) -> libc::c_int => fizzle_pthread_cond_destroy(ctx) {
-        let mut state = ctx.acquire();
-
         let cond = CondVarPtr::from(lock);
 
-        match state.local.condvars.remove(&cond) {
-            Some(queue) => {
-                if !queue.is_empty() {
-                    panic!("[UB] `pthread_cond_destroy` called on locked condvar")
-                }
-            }
-            None => {
-                let res = libc::pthread_cond_signal(lock);
-                if res < 0 {
-                    panic!("[UB] `pthread_cond_destroy` called on uninitialized condvar")
-                }
-            }
-        };
+        crate::strace!("pthread_cond_destroy(cond={:?}) -> ...", lock);
 
-        0
+        match Scheduler::handle_event(&mut ctx, CondDestroyEvent::new(cond)) {
+            Ok(()) => {
+                crate::strace!("pthread_cond_destroy(cond={:?}) -> 0", lock);
+                0
+            },
+            Err(()) => unreachable!(),
+        }
     }
 }
 
@@ -713,29 +787,17 @@ hook_macros::hook! {
     unsafe fn pthread_cond_signal(
         lock: *mut libc::pthread_cond_t
     ) -> libc::c_int => fizzle_pthread_cond_signal(ctx) {
-        let mut state = ctx.acquire();
-
         let cond = CondVarPtr::from(lock);
 
-        let cond_queue = match state.local.condvars.get_mut(&cond) {
-            Some(queue) => queue,
-            None => {
-                let res = libc::pthread_cond_signal(lock);
-                if res < 0 {
-                    panic!("[UB] `pthread_cond_signal` called on uninitialized condvar")
-                } else {
-                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    state.local.condvars.insert(cond, VecDeque::new());
-                    state.local.condvars.get_mut(&cond).unwrap()
-                }
-            }
-        };
+        crate::strace!("pthread_cond_signal(cond={:?}) -> ...", lock);
 
-        if let Some(thread_id) = cond_queue.pop_front() {
-            state.mark_thread_ready(thread_id);
+        match Scheduler::handle_event(&mut ctx, CondSignalEvent::new(cond)) {
+            Ok(()) => {
+                crate::strace!("pthread_cond_signal(cond={:?}) -> 0", lock);
+                0
+            },
+            Err(()) => unreachable!(),
         }
-
-        0
     }
 }
 
@@ -743,232 +805,108 @@ hook_macros::hook! {
     unsafe fn pthread_cond_broadcast(
         lock: *mut libc::pthread_cond_t
     ) -> libc::c_int => fizzle_pthread_cond_broadcast(ctx) {
-        let mut state = ctx.acquire();
-
         let cond = CondVarPtr::from(lock);
 
-        let cond_queue = match state.local.condvars.get_mut(&cond) {
-            Some(queue) => queue,
-            None => {
-                let res = libc::pthread_cond_signal(lock);
-                if res < 0 {
-                    panic!("[UB] `pthread_cond_broadcast` called on uninitialized condvar")
-                } else {
-                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    state.local.condvars.insert(cond, VecDeque::new());
-                    state.local.condvars.get_mut(&cond).unwrap()
-                }
-            }
-        };
+        crate::strace!("pthread_cond_broadcast(cond={:?}) -> ...", lock);
 
-        let threads: Vec<ThreadId> = cond_queue.drain(..).collect();
-
-        for thread in threads {
-            state.mark_thread_ready(thread);
+        match Scheduler::handle_event(&mut ctx, CondBroadcastEvent::new(cond)) {
+            Ok(()) => {
+                crate::strace!("pthread_cond_broadcast(cond={:?}) -> 0", lock);
+                0
+            },
+            Err(()) => unreachable!(),
         }
-
-        0
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_cond_wait(
-        lock: *mut libc::pthread_cond_t,
+        cond: *mut libc::pthread_cond_t,
         mutex: *mut libc::pthread_mutex_t
     ) -> libc::c_int => fizzle_pthread_cond_wait(ctx) {
-        let mut state = ctx.acquire();
+        let cond_id = CondVarPtr::from(cond);
+        let mutex_id = MutexPtr::from(mutex);
 
-        let cond = CondVarPtr::from(lock);
+        crate::strace!("pthread_cond_wait(cond={:?}, mutex={:?}) -> ...", cond, mutex);
 
-        let cond_queue = match state.local.condvars.get_mut(&cond) {
-            Some(queue) => queue,
-            None => {
-                let res = libc::pthread_cond_signal(lock);
-                if res < 0 {
-                    panic!("[UB] `pthread_cond_wait` called on uninitialized condvar")
-                } else {
-                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    state.local.condvars.insert(cond, VecDeque::new());
-                    state.local.condvars.get_mut(&cond).unwrap()
-                }
+        match Scheduler::handle_event(&mut ctx, CondWaitEvent::new(cond_id, mutex_id, WaitDuration::Indefinite)) {
+            Ok(()) => {
+                crate::strace!("pthread_cond_wait(cond={:?}, mutex={:?}) -> 0", cond, mutex);
+                0
+            },
+            Err(e) => {
+                crate::strace!("pthread_cond_wait(cond={:?}, mutex={:?}) -> -1 ({})", cond, mutex, e);
+                e.set_errno();
+                -1
             }
-        };
-
-        cond_queue.push_back(thread::current().id());
-
-        // Now unlock the mutex
-        let mutex = MutexPtr::from(mutex);
-
-        let Some(mutex_queue) = state.local.mutexes.get_mut(&mutex) else {
-            panic!("[UB] `pthread_cond_wait` called on uninitialized mutex")
-        };
-
-        let Some(popped_thread) = mutex_queue.pop_front() else {
-            panic!("[UB] `pthread_cond_wait` called when mutex already unlocked")
-        };
-
-        if popped_thread != thread::current().id() {
-            panic!("[UB] `pthread_cond_wait` called by a thread not currently holding the mutex lock")
         }
-
-        if let Some(next_thread) = mutex_queue.front().copied() {
-            state.mark_thread_ready(next_thread);
-        }
-
-        // Wait until the thread is signaled
-        drop(state);
-        ctx.yield_thread();
-        let mut state = ctx.acquire();
-
-        let Some(mutex_queue) = state.local.mutexes.get_mut(&mutex) else {
-            panic!("[UB] `pthread_cond_wait` called on uninitialized mutex")
-        };
-
-        let available = mutex_queue.is_empty();
-        mutex_queue.push_back(thread::current().id());
-
-        if !available {
-            drop(state);
-            ctx.yield_thread();
-        }
-
-        0
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_cond_timedwait(
-        lock: *mut libc::pthread_cond_t,
+        cond: *mut libc::pthread_cond_t,
         mutex: *mut libc::pthread_mutex_t,
-        _abstime: *const libc::timespec
+        abstime: *const libc::timespec
     ) -> libc::c_int => fizzle_pthread_cond_timedwait(ctx) {
-        let mut state = ctx.acquire();
+        let cond_id = CondVarPtr::from(cond);
+        let mutex_id = MutexPtr::from(mutex);
 
-        // TODO: timeout is infinite by default
+        if abstime.is_null() || unsafe { (*abstime).tv_sec < 0 || (*abstime).tv_nsec < 0 } {
+            crate::strace!("pthread_cond_timedwait(cond={:?}, mutex={:?}, abstime={:?}) -> -1 (EINVAL)", cond, mutex, abstime);
+            Errno::EINVAL.set_errno();
+            return -1
+        }
 
-        let cond = CondVarPtr::from(lock);
+        let duration = Duration::from_secs(unsafe { (*abstime).tv_sec as u64 }) + Duration::from_nanos(unsafe { (*abstime).tv_nsec as u64 });
 
-        let cond_queue = match state.local.condvars.get_mut(&cond) {
-            Some(queue) => queue,
-            None => {
-                let res = libc::pthread_cond_signal(lock);
-                if res < 0 {
-                    panic!("[UB] `pthread_cond_timedwait` called on uninitialized condvar")
-                } else {
-                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    state.local.condvars.insert(cond, VecDeque::new());
-                    state.local.condvars.get_mut(&cond).unwrap()
-                }
+        crate::strace!("pthread_cond_timedwait(cond={:?}, mutex={:?}, abstime={:?}) -> ...", cond, mutex, duration);
+
+        match Scheduler::handle_event(&mut ctx, CondWaitEvent::new(cond_id, mutex_id, WaitDuration::Timed(duration))) {
+            Ok(()) => {
+                crate::strace!("pthread_cond_timedwait(cond={:?}, mutex={:?}, abstime={:?}) -> 0", cond, mutex, duration);
+                0
+            },
+            Err(e) => {
+                crate::strace!("pthread_cond_timedwait(cond={:?}, mutex={:?}, abstime={:?}) -> -1 ({})", cond, mutex, duration, e);
+                e.set_errno();
+                -1
             }
-        };
-
-        cond_queue.push_back(thread::current().id());
-
-        // Now unlock the mutex
-        let mutex = MutexPtr::from(mutex);
-
-        let Some(mutex_queue) = state.local.mutexes.get_mut(&mutex) else {
-            panic!("[UB] `pthread_cond_timedwait` called on uninitialized mutex")
-        };
-
-        let Some(popped_thread) = mutex_queue.pop_front() else {
-            panic!("[UB] `pthread_cond_timedwait` called when mutex already unlocked")
-        };
-
-        if popped_thread != thread::current().id() {
-            panic!("[UB] `pthread_cond_timedwait` called by a thread not currently holding the lock")
         }
-
-        if let Some(next_thread) = mutex_queue.front().copied() {
-            state.mark_thread_ready(next_thread);
-        }
-
-        // Wait until the thread is signaled
-        drop(state);
-        ctx.yield_thread();
-        let mut state = ctx.acquire();
-
-        let Some(mutex_queue) = state.local.mutexes.get_mut(&mutex) else {
-            panic!("[UB] `pthread_cond_timedwait` called on uninitialized mutex")
-        };
-
-        let available = mutex_queue.is_empty();
-        mutex_queue.push_back(thread::current().id());
-
-        if !available {
-            drop(state);
-            ctx.yield_thread();
-        }
-
-        0
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_cond_clockwait(
-        lock: *mut libc::pthread_cond_t,
+        cond: *mut libc::pthread_cond_t,
         mutex: *mut libc::pthread_mutex_t,
-        _clock_id: libc::clockid_t,
-        _abstime: *const libc::timespec
+        clock_id: libc::clockid_t,
+        abstime: *const libc::timespec
     ) -> libc::c_int => fizzle_pthread_cond_clockwait(ctx) {
-        let mut state = ctx.acquire();
+        let cond_id = CondVarPtr::from(cond);
+        let mutex_id = MutexPtr::from(mutex);
 
-        // TODO: timeout is infinite by default
-        let cond = CondVarPtr::from(lock);
+        if abstime.is_null() || unsafe { (*abstime).tv_sec < 0 || (*abstime).tv_nsec < 0 } {
+            crate::strace!("pthread_cond_clockwait(cond={:?}, mutex={:?}, clock_id={}, abstime={:?}) -> -1 (EINVAL)", cond, mutex, clock_id, abstime);
+            Errno::EINVAL.set_errno();
+            return -1
+        }
 
-        let cond_queue = match state.local.condvars.get_mut(&cond) {
-            Some(queue) => queue,
-            None => {
-                let res = libc::pthread_cond_signal(lock);
-                if res < 0 {
-                    panic!("[UB] `pthread_cond_clockwait` called on uninitialized condvar")
-                } else {
-                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    state.local.condvars.insert(cond, VecDeque::new());
-                    state.local.condvars.get_mut(&cond).unwrap()
-                }
+        let duration = Duration::from_secs(unsafe { (*abstime).tv_sec as u64 }) + Duration::from_nanos(unsafe { (*abstime).tv_nsec as u64 });
+
+        crate::strace!("pthread_cond_clockwait(cond={:?}, mutex={:?}, clock_id={}, abstime={:?}) -> ...", cond, mutex, clock_id, duration);
+
+        match Scheduler::handle_event(&mut ctx, CondWaitEvent::new(cond_id, mutex_id, WaitDuration::Timed(duration))) {
+            Ok(()) => {
+                crate::strace!("pthread_cond_clockwait(cond={:?}, mutex={:?}, clock_id={}, abstime={:?}) -> 0", cond, mutex, clock_id, duration);
+                0
+            },
+            Err(e) => {
+                crate::strace!("pthread_cond_clockwait(cond={:?}, mutex={:?}, clock_id={}, abstime={:?}) -> -1 ({})", cond, mutex, clock_id, duration, e);
+                e.set_errno();
+                -1
             }
-        };
-
-        cond_queue.push_back(thread::current().id());
-
-        // Now unlock the mutex
-        let mutex = MutexPtr::from(mutex);
-
-        let Some(mutex_queue) = state.local.mutexes.get_mut(&mutex) else {
-            panic!("[UB] `pthread_cond_clockwait` called on uninitialized mutex")
-        };
-
-        let Some(popped_thread) = mutex_queue.pop_front() else {
-            panic!("[UB] `pthread_cond_clockwait` called when mutex already unlocked")
-        };
-
-        if popped_thread != thread::current().id() {
-            panic!("[UB] `pthread_cond_clockwait` called by a thread not currently holding the lock")
         }
-
-        if let Some(next_thread) = mutex_queue.front().copied() {
-            state.mark_thread_ready(next_thread);
-        }
-
-        // Wait until the thread is signaled
-        drop(state);
-        ctx.yield_thread();
-        let mut state = ctx.acquire();
-
-        let Some(mutex_queue) = state.local.mutexes.get_mut(&mutex) else {
-            panic!("[UB] `pthread_cond_clockwait` mutex freed while waiting for condition")
-        };
-
-        let available = mutex_queue.is_empty();
-        mutex_queue.push_back(thread::current().id());
-
-        if !available {
-            drop(state);
-            ctx.yield_thread();
-        }
-
-        0
     }
 }
 
