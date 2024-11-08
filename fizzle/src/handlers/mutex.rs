@@ -1,4 +1,7 @@
-use std::{collections::{hash_map::Entry, VecDeque}, fmt::Display, mem, ptr, thread::{self, ThreadId}};
+use std::{mem, ptr, thread};
+use std::collections::{hash_map::Entry, VecDeque};
+use std::fmt::Display;
+use std::thread::ThreadId;
 
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
@@ -181,16 +184,7 @@ impl Event for MutexLockEvent {
         &mut self,
         state: &mut FizzleState,
     ) -> Outcome<Self::Success, Self::Error> {
-
-        // TODO: PTHREAD_MUTEX_INITIALIZER
-        //   { 0, 0, 0, 0, __PTHREAD_MUTEX_TIMED, 0, { { 0, 0 } } }
-        //
-        // typedef union
-        // {
-        //   struct __pthread_mutex_s __data;
-        //   char __size[__SIZEOF_PTHREAD_MUTEX_T];
-        //   long int __align;
-        // } pthread_mutex_t;
+        let current_thread = thread::current().id();
 
         match self.state {
             MutexLockState::Start => {
@@ -205,7 +199,7 @@ impl Event for MutexLockEvent {
                                 // This state is set when the owner of the mutex dies.
 
                                 // Make the current thread the owner of the mutex
-                                mutex_info.queued_threads.push_front(thread::current().id());
+                                mutex_info.queued_threads.push_front(current_thread);
 
                                 return Outcome::Continue // Go to Finish state to return poisoned lock
                             }
@@ -214,13 +208,13 @@ impl Event for MutexLockEvent {
 
                         if mutex_info.queued_threads.is_empty() {
                             // Mutex is immediately available
-                            mutex_info.queued_threads.push_back(thread::current().id());
+                            mutex_info.queued_threads.push_back(current_thread);
 
                             return Outcome::Continue
                         }
                         
                         let holding_thread = *mutex_info.queued_threads.front().unwrap();
-                        if holding_thread == thread::current().id() {
+                        if holding_thread == current_thread {
                             match mutex_info.kind {
                                 // Suspend calling thread forever
                                 MutexKind::Fast => {
@@ -237,11 +231,11 @@ impl Event for MutexLockEvent {
                             match self.wait {
                                 WaitDuration::Immediate => Outcome::Error(Errno::EBUSY),
                                 WaitDuration::Timed(duration) => {
-                                    mutex_info.queued_threads.push_back(thread::current().id());
+                                    mutex_info.queued_threads.push_back(current_thread);
                                     Outcome::Yield(Some(duration))
                                 }
                                 WaitDuration::Indefinite => {
-                                    mutex_info.queued_threads.push_back(thread::current().id());
+                                    mutex_info.queued_threads.push_back(current_thread);
                                     Outcome::Yield(None)
                                 }
                             }
@@ -254,7 +248,7 @@ impl Event for MutexLockEvent {
 
                         // This was a statically-initialized mutex--add it to our queue (and leave locked)
                         let mut mutex_info = MutexInfo::new(kind, MutexRobustness::Stalled);
-                        mutex_info.queued_threads.push_back(thread::current().id());
+                        mutex_info.queued_threads.push_back(current_thread);
 
                         v.insert(mutex_info);
                         return Outcome::Continue // Go to Finish state
@@ -262,7 +256,36 @@ impl Event for MutexLockEvent {
                 }
             }
             MutexLockState::Finish => {
-                match state.local.mutexes.get(&self.lock).unwrap().status {
+                let Some(mutex) = state.local.mutexes.get_mut(&self.lock) else {
+                    panic!("internal Fizzle error: mutex destroyed while being waited on");
+                };
+
+                if mutex.queued_threads.front() != Some(&current_thread) {
+                    // This thread isn't designated as the owner of the mutex...
+
+                    if mutex.status == MutexStatus::Unusable{
+                        // ...because the thread was poisoned and not recovered.
+                        return Outcome::Error(Errno::ENOTRECOVERABLE)
+                    }
+
+                    // ...because there was a timeout.
+                    for (idx, thread_id) in mutex.queued_threads.iter().enumerate() {
+                        if *thread_id == current_thread {
+                            mutex.queued_threads.remove(idx).unwrap();
+                            break
+                        }
+                    }
+
+                    // The worker was still waiting--this must have been a timeout wakeup
+                    let WaitDuration::Timed(t) = self.wait else {
+                        panic!("internal Fizzle error: mutex awakened despite thread still being in queue");
+                    };
+
+                    log::debug!("mutex timed lock timed out after {:?}", t);
+                    return Outcome::Error(Errno::ETIMEDOUT)
+                }
+
+                match mutex.status {
                     MutexStatus::Ready => {
                         // Mark the thread as being owned by the current process
                         state.local.pthreads.get_mut(unsafe { &libc::pthread_self() }).unwrap().held_mutexes.insert(self.lock);

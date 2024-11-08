@@ -2,7 +2,7 @@ use crate::hook_macros;
 
 hook_macros::hook! {
     unsafe fn opendir(
-        name: *const libc::c_char
+        _name: *const libc::c_char
     ) -> *mut libc::DIR => fizzle_opendir(_ctx) {
         unimplemented!("opendir()")
     }
@@ -10,7 +10,7 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn fdopendir(
-        fd: libc::c_int
+        _fd: libc::c_int
     ) -> *mut libc::DIR => fizzle_fdopendir(_ctx) {
         unimplemented!("fdopendir()")
     }

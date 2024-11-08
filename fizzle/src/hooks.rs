@@ -18,5 +18,4 @@ pub mod sleep;
 pub mod socket;
 pub mod syscall;
 pub mod time;
-pub mod vm;
 pub mod xattr;

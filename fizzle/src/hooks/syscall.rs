@@ -1,6 +1,7 @@
+use std::time::Duration;
 use std::{mem, slice};
 
-use crate::{hook_macros, state};
+use crate::{hook_macros, state, WaitDuration};
 use crate::handlers::entropy::*;
 use crate::handlers::futex::*;
 use crate::scheduler::Scheduler;
@@ -114,24 +115,24 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                     let timeout = if timeout_ptr.is_null() {
                         None
                     } else {
-                        Some(*timeout_ptr)
+                        Some(Duration::from_secs((*timeout_ptr).tv_sec as u64) + Duration::from_secs((*timeout_ptr).tv_nsec as u64))
+                    };
+                    
+                    let duration = match timeout {
+                        None => WaitDuration::Indefinite,
+                        Some(t) => WaitDuration::Timed(t),
                     };
 
-                    let timeout_fmt = match timeout {
-                        None => "<null>".to_string(),
-                        Some(t) => format!("{}.{:09}", t.tv_sec, t.tv_nsec),
-                    };
+                    crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={:?}) -> ...", uaddr, futex_op_fmt(futex_op), val, timeout);
 
-                    crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={}) -> ...", uaddr, futex_op_fmt(futex_op), val, timeout_fmt);
-
-                    match Scheduler::handle_event(&mut ctx, FutexWaitEvent::new(&mut *uaddr, val, timeout)) {
+                    match Scheduler::handle_event(&mut ctx, FutexWaitEvent::new(&mut *uaddr, val, duration)) {
                         Ok(()) => {
-                            crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={}) -> {}", uaddr, futex_op_fmt(futex_op), val, timeout_fmt, 0);
+                            crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={:?}) -> {}", uaddr, futex_op_fmt(futex_op), val, timeout, 0);
                             0
                         },
                         Err(e) => {
                             let ret = e.out();
-                            crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={}) -> {} ({})", uaddr, futex_op_fmt(futex_op), val, timeout_fmt, ret, e.errno());
+                            crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={:?}) -> {} ({})", uaddr, futex_op_fmt(futex_op), val, timeout, ret, e.errno());
                             ret
                         },
                     }
@@ -233,24 +234,24 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                     let timeout = if timeout_ptr.is_null() {
                         None
                     } else {
-                        Some(*timeout_ptr)
+                        Some(Duration::from_secs((*timeout_ptr).tv_sec as u64) + Duration::from_secs((*timeout_ptr).tv_nsec as u64))
+                    };
+                    
+                    let duration = match timeout {
+                        None => WaitDuration::Indefinite,
+                        Some(t) => WaitDuration::Timed(t),
                     };
 
-                    let timeout_fmt = match timeout {
-                        None => "<null>".to_string(),
-                        Some(t) => format!("{}.{:09}", t.tv_sec, t.tv_nsec),
-                    };
+                    crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={:?}, uaddr2={:?}, val3={}) -> ...", uaddr, futex_op_fmt(futex_op), val, timeout, uaddr2, val3);
 
-                    crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={}, uaddr2={:?}, val3={}) -> ...", uaddr, futex_op_fmt(futex_op), val, timeout_fmt, uaddr2, val3);
-
-                    match Scheduler::handle_event(&mut ctx, FutexWaitEvent::new(&mut *uaddr, val, timeout)) {
+                    match Scheduler::handle_event(&mut ctx, FutexWaitEvent::new(&mut *uaddr, val, duration)) {
                         Ok(()) => {
-                            crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={}, uaddr2:{:?}, val3={}) -> {}", uaddr, futex_op_fmt(futex_op), val, timeout_fmt, uaddr2, val3, 0);
+                            crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={:?}, uaddr2:{:?}, val3={}) -> {}", uaddr, futex_op_fmt(futex_op), val, timeout, uaddr2, val3, 0);
                             0
                         },
                         Err(e) => {
                             let ret = e.out();
-                            crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={}, uaddr2={:?}, val3={}) -> {} ({})", uaddr, futex_op_fmt(futex_op), val, timeout_fmt, uaddr2, val3, ret, e.errno());
+                            crate::strace!("syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, timeout={:?}, uaddr2={:?}, val3={}) -> {} ({})", uaddr, futex_op_fmt(futex_op), val, timeout, uaddr2, val3, ret, e.errno());
                             ret
                         },
                     }
@@ -271,7 +272,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                         Err(_) => unreachable!(),
                     }
                 }
-                libc::FUTEX_FD => unimplemented!("FUTEX_FD"),
+                libc::FUTEX_FD => panic!("syscall SYS_futex with FUTEX_FD has been deprecated since Linux 2.6"),
                 libc::FUTEX_LOCK_PI => unimplemented!("FUTEX_LOCK_PI"),
                 libc::FUTEX_LOCK_PI2 => unimplemented!("FUTEX_LOCK_PI2"),
                 libc::FUTEX_TRYLOCK_PI => unimplemented!("FUTEX_TRYLOCK_PI"),

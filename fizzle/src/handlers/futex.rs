@@ -5,6 +5,7 @@ use std::{ptr, thread};
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
+use crate::WaitDuration;
 
 const FUTEX_OP_SHIFT_SET: i32 = libc::FUTEX_OP_OPARG_SHIFT | libc::FUTEX_OP_SET;
 const FUTEX_OP_SHIFT_ADD: i32 = libc::FUTEX_OP_OPARG_SHIFT | libc::FUTEX_OP_ADD;
@@ -61,13 +62,13 @@ enum FutexWaitState {
 pub struct FutexWaitEvent<'a> {
     uaddr: &'a mut u32,
     val: u32,
-    timeout: Option<libc::timespec>,
+    duration: WaitDuration,
     state: FutexWaitState,
 }
 
 impl<'a> FutexWaitEvent<'a> {
-    pub fn new(uaddr: &'a mut u32, val: u32, timeout: Option<libc::timespec>) -> Self {
-        Self { uaddr, val, timeout, state: FutexWaitState::Start }
+    pub fn new(uaddr: &'a mut u32, val: u32, duration: WaitDuration) -> Self {
+        Self { uaddr, val, duration, state: FutexWaitState::Start }
     }
 }
 
@@ -79,18 +80,23 @@ impl Event for FutexWaitEvent<'_> {
         &mut self,
         state: &mut FizzleState,
     ) -> Outcome<Self::Success, Self::Error> {
+        let futex_ptr = FutexPtr::from_mut(self.uaddr);
+
         match self.state {
             FutexWaitState::Start => {
+                self.state = FutexWaitState::Finish;
+
                 if *self.uaddr != self.val {
                     return Outcome::Error(FutexError::NotReady)
                 }
 
-                match state.local.futex_waiters.entry(FutexPtr::from_mut(self.uaddr)) {
+                match state.local.futex_waiters.entry(futex_ptr) {
                     Entry::Occupied(mut o) => o.get_mut().push_back((
                         libc::FUTEX_BITSET_MATCH_ANY as u32,
                         thread::current().id(),
                     )),
                     Entry::Vacant(v) => {
+                        // Create a new Futex location at the specified address
                         let mut deque = VecDeque::new();
                         deque.push_back((
                             libc::FUTEX_BITSET_MATCH_ANY as u32,
@@ -98,16 +104,35 @@ impl Event for FutexWaitEvent<'_> {
                         ));
                         v.insert(deque);
                     }
-                };
-
-                if let Some(libc::timespec { tv_sec: 0, tv_nsec: 0}) = self.timeout {
-                    return Outcome::Error(FutexError::TimedOut)
                 }
 
                 // Now wait for futex to be unblocked
-                Outcome::Yield
+                match self.duration {
+                    WaitDuration::Immediate => unreachable!(), // No such thing as try* in futex semantics
+                    WaitDuration::Indefinite => Outcome::Yield(None),
+                    WaitDuration::Timed(duration) => Outcome::Yield(Some(duration)),
+                }
             }
-            FutexWaitState::Finish => Outcome::Success(()),
+            FutexWaitState::Finish => {
+                let Some(waiters) = state.local.futex_waiters.get_mut(&futex_ptr) else {
+                    panic!("internal Fizzle error: mutex destroyed while being waited on");
+                };
+
+                for (idx, (_, thread_id)) in waiters.iter().enumerate() {
+                    if *thread_id == thread::current().id() {
+                        waiters.remove(idx).unwrap();
+                        // The worker was still waiting--this must have been a timeout wakeup
+                        let WaitDuration::Timed(t) = self.duration else {
+                            panic!("internal Fizzle error: mutex awakened despite thread still being in queue");
+                        };
+
+                        log::debug!("futex wait timed out after {:?}", t);
+                        return Outcome::Error(FutexError::TimedOut)
+                    }
+                }
+
+                Outcome::Success(())
+            },
         }
     }
 }
@@ -373,14 +398,14 @@ impl Event for FutexWakeOpEvent<'_> {
 pub struct FutexWaitBitsetEvent<'a> {
     uaddr: &'a mut u32,
     val: u32,
-    timeout: Option<libc::timespec>,
+    duration: WaitDuration,
     state: FutexWaitState,
     val3: u32,
 }
 
 impl<'a> FutexWaitBitsetEvent<'a> {
-    pub fn new(uaddr: &'a mut u32, val: u32, timeout: Option<libc::timespec>, val3: u32) -> Self {
-        Self { uaddr, val, timeout, val3, state: FutexWaitState::Start }
+    pub fn new(uaddr: &'a mut u32, val: u32, duration: WaitDuration, val3: u32) -> Self {
+        Self { uaddr, val, duration, val3, state: FutexWaitState::Start }
     }
 }
 
@@ -392,13 +417,17 @@ impl Event for FutexWaitBitsetEvent<'_> {
         &mut self,
         state: &mut FizzleState,
     ) -> Outcome<Self::Success, Self::Error> {
+        let futex_ptr = FutexPtr::from_mut(self.uaddr);
+
         match self.state {
             FutexWaitState::Start => {
+                self.state = FutexWaitState::Finish;
+
                 if *self.uaddr != self.val {
                     return Outcome::Error(FutexError::NotReady)
                 }
 
-                match state.local.futex_waiters.entry(FutexPtr::from_mut(self.uaddr)) {
+                match state.local.futex_waiters.entry(futex_ptr) {
                     Entry::Occupied(mut o) => {
                         o.get_mut().push_back((self.val3, thread::current().id()))
                     }
@@ -409,14 +438,34 @@ impl Event for FutexWaitBitsetEvent<'_> {
                     }
                 };
 
-                if let Some(libc::timespec { tv_sec: 0, tv_nsec: 0}) = self.timeout {
-                    return Outcome::Error(FutexError::TimedOut)
+                // Now wait for futex to be unblocked
+                match self.duration {
+                    WaitDuration::Immediate => unreachable!(), // No such thing as try* in futex semantics
+                    WaitDuration::Indefinite => Outcome::Yield(None),
+                    WaitDuration::Timed(duration) => Outcome::Yield(Some(duration)),
+                }
+            }
+            FutexWaitState::Finish => {
+                let Some(waiters) = state.local.futex_waiters.get_mut(&futex_ptr) else {
+                    panic!("internal Fizzle error: mutex destroyed while being waited on");
+                };
+
+                for (idx, (_, thread_id)) in waiters.iter().enumerate() {
+                    if *thread_id == thread::current().id() {
+                        waiters.remove(idx).unwrap();
+
+                        // The worker was still waiting--this must have been a timeout wakeup
+                        let WaitDuration::Timed(t) = self.duration else {
+                            panic!("internal Fizzle error: mutex awakened despite thread still being in queue");
+                        };
+
+                        log::debug!("futex bitset wait timed out after {:?}", t);
+                        return Outcome::Error(FutexError::TimedOut)
+                    }
                 }
 
-                self.state = FutexWaitState::Finish;
-                Outcome::Yield
-            }
-            FutexWaitState::Finish => Outcome::Success(()),
+                Outcome::Success(())
+            },
         }
     }
 }

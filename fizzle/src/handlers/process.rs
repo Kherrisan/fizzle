@@ -1,9 +1,5 @@
-use std::mem::MaybeUninit;
-use std::ptr;
 
 use crate::arena::ArenaKey;
-use crate::semaphore::Semaphore;
-use crate::state::FizzleSingleton;
 
 use super::signal::ProcSigInfo;
 

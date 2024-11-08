@@ -78,3 +78,14 @@ hook_macros::hook! {
         0
     }
 }
+
+hook_macros::hook! {
+    unsafe fn vmsplice(
+        _fd: libc::c_int,
+        _iov: *const libc::iovec,
+        _nr_segs: libc::size_t,
+        _flags: libc::c_uint
+    ) -> libc::ssize_t => fizzle_vmsplice(_ctx) {
+        unimplemented!("vmsplice()")
+    }
+}

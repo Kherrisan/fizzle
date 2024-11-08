@@ -6,13 +6,11 @@ use bitflags::bitflags;
 use fizzle_common::path::SemaphorePath;
 
 use crate::arena::ArenaKey;
-use crate::constants::FIZZLE_MAX_WAITING_SEMAPHORES;
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::{FizzleState, WorkerId};
 use crate::WaitDuration;
 
-use heapless::Deque;
 pub use private::SemaphoreId;
 
 use super::file::AccessMode;
@@ -33,7 +31,7 @@ pub struct SemaphoreInfo {
     pub refs: usize,
     pub unlinked: bool,
     pub value: usize,
-    pub waiting: heapless::Deque<WorkerId, FIZZLE_MAX_WAITING_SEMAPHORES>,
+    pub waiting: VecDeque<WorkerId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -82,7 +80,7 @@ impl Event for SemInitEvent {
             refs: 1, // Unused except for named semaphores
             unlinked: false, // Unused except for named semaphores
             value: self.value as usize,
-            waiting: Deque::new(),
+            waiting: VecDeque::new(),
         }).is_some() {
             log::warn!("`sem_init` called twice on one semaphore");
         }
@@ -159,7 +157,7 @@ impl Event for SemOpenEvent<'_> {
                 refs: 1,
                 unlinked: false,
                 value: value as usize,
-                waiting: Deque::new(),
+                waiting: VecDeque::new(),
             }).unwrap();
 
             state.local.named_semaphores.insert(semaphore_ptr, sem_id);
@@ -410,41 +408,28 @@ impl Event for SemWaitEvent {
                 }
             }
             SemWaitState::Finish => {
-                // Check to see if this is due to timeout
                 let Some(semaphore) = state.local.semaphores.get_mut(&self.sem) else {
                     panic!("[UB] semaphore being waited on by sem_wait was destroyed");
                 };
 
-                let mut workers = VecDeque::new();
-                let mut worker_present = false;
+                // Check to see if this is due to timeout
+                for (idx, worker_id) in semaphore.waiting.iter().enumerate() {
+                    if *worker_id == current_worker_id {
+                        // Remove the current worker from the wait queue
+                        semaphore.waiting.remove(idx).unwrap();
 
-                // Go through all pending workers, checking to see if the current worker wasn't yet awakened
-                while let Some(worker_id) = semaphore.waiting.pop_front() {
-                    if worker_id == current_worker_id {
-                        worker_present = true;
-                    } else {
-                        workers.push_back(worker_id);
+                        // The worker was still waiting--this must have been a timeout wakeup
+                        let WaitDuration::Timed(t) = self.duration else {
+                            panic!("internal Fizzle error: semaphore awakened despite worker still being in queue");
+                        };
+
+                        log::debug!("sem_timedwait() timed out after {:?}", t);
+                        return Outcome::Error(Errno::ETIMEDOUT)
                     }
                 }
 
-                while let Some(worker_id) = workers.pop_front() {
-                    semaphore.waiting.push_back(worker_id);
-                }
-
-                if worker_present {
-                    // The worker was still waiting--this must have been a timeout wakeup
-
-                    let WaitDuration::Timed(t) = self.duration else {
-                        panic!("internal Fizzle error: semaphore awakened despite worker still being in queue");
-                    };
-
-                    log::debug!("sem_timedwait() timed out after {:?}", t);
-                    return Outcome::Error(Errno::ETIMEDOUT)
-
-                } else {
-                    // The worker was dequeued from the semaphore--ready to run
-                    Outcome::Success(())
-                }
+                // The worker was dequeued from the semaphore--ready to run
+                Outcome::Success(())
             }
         }
 

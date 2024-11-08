@@ -1,7 +1,7 @@
 use crate::errno::Errno;
 use crate::handlers::file::AccessMode;
 use crate::handlers::semaphore::*;
-use crate::hook_macros;
+use crate::{hook_macros, WaitDuration};
 use crate::scheduler::Scheduler;
 
 use std::ffi::CStr;
