@@ -1,11 +1,8 @@
-use std::collections::VecDeque;
-use std::ptr;
-use std::thread::{self, ThreadId};
+use std::{ptr, thread};
 use std::time::Duration;
 
 use crate::errno::Errno;
-use crate::handlers::barrier::{BarrierInfo, BarrierPtr};
-use crate::handlers::condvar::CondVarPtr;
+use crate::handlers::barrier::*;
 use crate::handlers::mutex::*;
 use crate::handlers::condvar::*;
 use crate::handlers::rwlock::*;
@@ -22,6 +19,12 @@ const PTHREAD_CANCEL_ASYNCHRONOUS: libc::c_int = 1;
 const PTHREAD_MUTEX_FAST_NP: libc::c_int = 0;
 const PTHREAD_MUTEX_RECURSIVE_NP: libc::c_int = 1;
 const PTHREAD_MUTEX_ERRORCHECK_NP: libc::c_int = 2;
+
+const PTHREAD_RWLOCK_PREFER_READER_NP: libc::c_int = 0;
+const PTHREAD_RWLOCK_PREFER_WRITER_NP: libc::c_int = 1;
+const PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP: libc::c_int = 2;
+
+const PTHREAD_BARRIER_SERIAL_THREAD: libc::c_int = -1;
 
 extern "C" {
     pub fn pthread_mutexattr_gettype(
@@ -912,408 +915,398 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn pthread_rwlock_init(
-        lock: *mut libc::pthread_rwlock_t,
-        _attr: *mut libc::pthread_rwlockattr_t
+        rwlock: *mut libc::pthread_rwlock_t,
+        attr: *mut libc::pthread_rwlockattr_t
     ) -> libc::c_int => fizzle_pthread_rwlock_init(ctx) {
-        let mut state = ctx.acquire();
-        // TODO: what about mutexes shared across processes?
+        let rwlock_ptr = RwLockPtr::from(rwlock);
 
-        let rwlock = RwLockPtr::from(lock);
+        let (pshared, kind) = if attr.is_null() {
+            crate::strace!("pthread_rwlock_init(rwlock={:?}, attr={{}}) -> ...", rwlock);
+            // Set default values         
+            (false, RwLockKind::PreferReader)
+        } else {
+            let mut pshared: libc::c_int = 0;
+            let mut kind: libc::c_int = 0;
+            assert_eq!(libc::pthread_rwlockattr_getpshared(attr, ptr::addr_of_mut!(pshared)), 0);
+            assert_eq!(libc::pthread_rwlockattr_getkind_np(attr, ptr::addr_of_mut!(kind)), 0);
+            let pshared = match pshared {
+                libc::PTHREAD_PROCESS_SHARED => true,
+                libc::PTHREAD_PROCESS_PRIVATE => false,
+                _ => {
+                    crate::strace!("pthread_rwlock_init(rwlock={:?}, attr={{pshared={}, kind={}}}) -> -1 (EINVAL)", rwlock, pshared, kind);
+                    Errno::EINVAL.set_errno();
+                    return -1
+                }
+            };
 
-        if state.local.rwlocks.insert(rwlock, RwLockInfo::default()).is_some() {
-            panic!("[UB] `pthread_rwlock_init` called twice on one rwlock");
+            let kind = match kind {
+                PTHREAD_RWLOCK_PREFER_READER_NP => RwLockKind::PreferReader,
+                PTHREAD_RWLOCK_PREFER_WRITER_NP | PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP => RwLockKind::PreferWriter,
+                _ => {
+                    crate::strace!("pthread_rwlock_init(rwlock={:?}, attr={{pshared={}, kind={}}}) -> -1 (EINVAL)", rwlock, pshared, kind);
+                    Errno::EINVAL.set_errno();
+                    return -1
+                }
+            };
+
+            crate::strace!("pthread_rwlock_init(rwlock={:?}, attr={{pshared={}, kind={}}}) -> ...", rwlock, pshared, kind);
+            (pshared, kind)
+        };
+
+        if pshared {
+            log::warn!("Process-shared RwLock requested (not supported by Fizzle)");
         }
 
-        0
+        match Scheduler::handle_event(&mut ctx, RwLockInitEvent::new(rwlock_ptr, kind)) {
+            Ok(()) => {
+                crate::strace!("pthread_rwlock_init(rwlock={:?}, attr={{pshared={}, kind={}}}) -> 0", rwlock, pshared, kind);
+                0
+            }
+            Err(()) => unreachable!(),
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_rwlock_destroy(
-        lock: *mut libc::pthread_rwlock_t
+        rwlock: *mut libc::pthread_rwlock_t
     ) -> libc::c_int => fizzle_pthread_rwlock_destroy(ctx) {
-        let mut state = ctx.acquire();
+        let rwlock_ptr = RwLockPtr::from(rwlock);
 
-        let rwlock = RwLockPtr::from(lock);
+        crate::strace!("pthread_rwlock_destroy(rwlock={:?}) -> ...", rwlock);
 
-        match state.local.rwlocks.remove(&rwlock) {
-            Some(rwlock_info) => {
-                if rwlock_info.state != RwLockState::Available {
-                    panic!("[UB] `pthread_rwlock_destroy` called on locked rwlock") // Undefined behavior
-                }
-
-                if !rwlock_info.awaiting_read.is_empty() || !rwlock_info.awaiting_read.is_empty() || !rwlock_info.awaiting_read.is_empty() {
-                    panic!("inconsistent fizzle RwLock state in `pthread_rwlock_destroy`");
-                }
-            },
-            None => {
-                let res = libc::pthread_rwlock_trywrlock(lock);
-                if res < 0 {
-                    panic!("[UB] `pthread_rwlock_destroy` called on uninitialized rwlock")
-                }
+        match Scheduler::handle_event(&mut ctx, RwLockDestroyEvent::new(rwlock_ptr)) {
+            Ok(()) => {
+                crate::strace!("pthread_rwlock_destroy(rwlock={:?}) -> 0", rwlock);
+                0
             }
-        };
-
-        0
+            Err(()) => unreachable!(),
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_rwlock_rdlock(
-        lock: *mut libc::pthread_rwlock_t
+        rwlock: *mut libc::pthread_rwlock_t
     ) -> libc::c_int => fizzle_pthread_rwlock_rdlock(ctx) {
-        let mut state = ctx.acquire();
+        let rwlock_ptr = RwLockPtr::from(rwlock);
 
-        let rwlock = RwLockPtr::from(lock);
+        crate::strace!("pthread_rwlock_rdlock(rwlock={:?}) -> ...", rwlock);
 
-        let rwlock_info = match state.local.rwlocks.get_mut(&rwlock) {
-            Some(rwlock_info) => rwlock_info,
-            None => {
-                let res = libc::pthread_rwlock_trywrlock(lock);
-                if res < 0 {
-                    panic!("[UB] `pthread_rwlock_rdlock` called on uninitialized rwlock")
-                } else {
-                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    state.local.rwlocks.insert(rwlock, RwLockInfo::default());
-                    state.local.rwlocks.get_mut(&rwlock).unwrap()
-                }
+        match Scheduler::handle_event(&mut ctx, RwLockReadEvent::new(rwlock_ptr, WaitDuration::Indefinite)) {
+            Ok(()) => {
+                crate::strace!("pthread_rwlock_rdlock(rwlock={:?}) -> 0", rwlock);
+                0
             }
-        };
-
-        match rwlock_info.state {
-            RwLockState::Writing => {
-                rwlock_info.awaiting_read.push_back(thread::current().id());
-                drop(state);
-                ctx.yield_thread();
-                // State should already be set by prior thread--no need to change here
-            }
-            RwLockState::Reading if !rwlock_info.awaiting_write.is_empty() => {
-                // Avoid starvation of blocking writers
-                rwlock_info.awaiting_read.push_back(thread::current().id());
-                // Wait for write lock to be handled, then read lock
-                drop(state);
-                ctx.yield_thread();
-                // State should already be set by prior thread--no need to change here
-            }
-            RwLockState::Reading => { // The lock is ready to be taken
-                rwlock_info.holding_state.insert(thread::current().id());
-            },
-            RwLockState::Available => {
-                if !rwlock_info.holding_state.is_empty() {
-                    panic!("fizzle RwLock in inconsistent state (RwLockState::Available when some threads still holding state)");
-                }
-
-                rwlock_info.state = RwLockState::Reading;
-                rwlock_info.holding_state.insert(thread::current().id());
+            Err(e) => {
+                crate::strace!("pthread_rwlock_rdlock(rwlock={:?}) -> -1 ({})", rwlock, e);
+                e.set_errno();
+                -1
             }
         }
-
-        0
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_rwlock_tryrdlock(
-        lock: *mut libc::pthread_rwlock_t
+        rwlock: *mut libc::pthread_rwlock_t
     ) -> libc::c_int => fizzle_pthread_rwlock_tryrdlock(ctx) {
-        let mut state = ctx.acquire();
+        let rwlock_ptr = RwLockPtr::from(rwlock);
 
-        let rwlock = RwLockPtr::from(lock);
+        crate::strace!("pthread_rwlock_tryrdlock(rwlock={:?}) -> ...", rwlock);
 
-        let rwlock_info = match state.local.rwlocks.get_mut(&rwlock) {
-            Some(rwlock_info) => rwlock_info,
-            None => {
-                let res = libc::pthread_rwlock_trywrlock(lock);
-                if res < 0 {
-                    panic!("[UB] `pthread_rwlock_tryrdlock` called on uninitialized rwlock")
-                } else {
-                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    state.local.rwlocks.insert(rwlock, RwLockInfo::default());
-                    state.local.rwlocks.get_mut(&rwlock).unwrap()
-                }
+        match Scheduler::handle_event(&mut ctx, RwLockReadEvent::new(rwlock_ptr, WaitDuration::Immediate)) {
+            Ok(()) => {
+                crate::strace!("pthread_rwlock_tryrdlock(rwlock={:?}) -> 0", rwlock);
+                0
             }
-        };
-
-        match rwlock_info.state {
-            RwLockState::Writing => return libc::EBUSY,
-            RwLockState::Reading if !rwlock_info.awaiting_write.is_empty() => return libc::EBUSY,
-            RwLockState::Reading => { // The lock is ready to be taken
-                rwlock_info.holding_state.insert(thread::current().id());
-            },
-            RwLockState::Available => {
-                if !rwlock_info.holding_state.is_empty() {
-                    panic!("fizzle RwLock in inconsistent state (RwLockState::Available when some threads still holding state)");
-                }
-
-                rwlock_info.state = RwLockState::Reading;
-                rwlock_info.holding_state.insert(thread::current().id());
+            Err(e) => {
+                crate::strace!("pthread_rwlock_tryrdlock(rwlock={:?}) -> -1 ({})", rwlock, e);
+                e.set_errno();
+                -1
             }
         }
-
-        0
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_rwlock_timedrdlock(
-        _lock: *mut libc::pthread_rwlock_t,
-        _abstime: *const libc::timespec
-    ) -> libc::c_int => fizzle_pthread_rwlock_timedrdlock(_ctx) {
+        rwlock: *mut libc::pthread_rwlock_t,
+        abstime: *const libc::timespec
+    ) -> libc::c_int => fizzle_pthread_rwlock_timedrdlock(ctx) {
+        let rwlock_ptr = RwLockPtr::from(rwlock);
 
-        crate::report_strict_failure("`pthread_rwlock_timedrdlock` unimplemented");
-        0
+        if abstime.is_null() || unsafe { (*abstime).tv_sec < 0 || (*abstime).tv_nsec < 0 } {
+            crate::strace!("pthread_rwlock_timedrdlock(rwlock={:?}, abstime={:?}) -> -1 (EINVAL)", rwlock, abstime);
+            Errno::EINVAL.set_errno();
+            return -1
+        }
+
+        let duration = Duration::from_secs(unsafe { (*abstime).tv_sec as u64 }) + Duration::from_nanos(unsafe { (*abstime).tv_nsec as u64 });
+
+        crate::strace!("pthread_rwlock_timedrdlock(rwlock={:?}, abstime={:?}) -> ...", rwlock, duration);
+
+        match Scheduler::handle_event(&mut ctx, RwLockReadEvent::new(rwlock_ptr, WaitDuration::Timed(duration))) {
+            Ok(()) => {
+                crate::strace!("pthread_rwlock_timedrdlock(rwlock={:?}, abstime={:?}) -> 0", rwlock, duration);
+                0
+            }
+            Err(e) => {
+                crate::strace!("pthread_rwlock_timedrdlock(rwlock={:?}, abstime={:?}) -> -1 ({})", rwlock, duration, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_rwlock_clockrdlock(
-        _lock: *mut libc::pthread_rwlock_t,
-        _clock_id: libc::clockid_t,
-        _abstime: *const libc::timespec
-    ) -> libc::c_int => fizzle_pthread_rwlock_clockrdlock(_ctx) {
+        rwlock: *mut libc::pthread_rwlock_t,
+        clock_id: libc::clockid_t,
+        abstime: *const libc::timespec
+    ) -> libc::c_int => fizzle_pthread_rwlock_clockrdlock(ctx) {
+        let rwlock_ptr = RwLockPtr::from(rwlock);
 
-        crate::report_strict_failure("`pthread_rwlock_clockrdlock` unimplemented");
-        0
+        if abstime.is_null() || unsafe { (*abstime).tv_sec < 0 || (*abstime).tv_nsec < 0 } {
+            crate::strace!("pthread_rwlock_clockrdlock(rwlock={:?}, clock_id={:?}, abstime={:?}) -> -1 (EINVAL)", rwlock, clock_id, abstime);
+            Errno::EINVAL.set_errno();
+            return -1
+        }
+
+        let duration = Duration::from_secs(unsafe { (*abstime).tv_sec as u64 }) + Duration::from_nanos(unsafe { (*abstime).tv_nsec as u64 });
+
+        crate::strace!("pthread_rwlock_clockrdlock(rwlock={:?}, clock_id={:?}, abstime={:?}) -> ...", rwlock, clock_id, duration);
+
+        match Scheduler::handle_event(&mut ctx, RwLockReadEvent::new(rwlock_ptr, WaitDuration::Timed(duration))) {
+            Ok(()) => {
+                crate::strace!("pthread_rwlock_clockrdlock(rwlock={:?}, clock_id={:?}, abstime={:?}) -> 0", rwlock, clock_id, duration);
+                0
+            }
+            Err(e) => {
+                crate::strace!("pthread_rwlock_clockrdlock(rwlock={:?}, clock_id={:?}, abstime={:?}) -> -1 ({})", rwlock, clock_id, duration, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_rwlock_wrlock(
-        lock: *mut libc::pthread_rwlock_t
+        rwlock: *mut libc::pthread_rwlock_t
     ) -> libc::c_int => fizzle_pthread_rwlock_wrlock(ctx) {
-        let mut state = ctx.acquire();
+        let rwlock_ptr = RwLockPtr::from(rwlock);
 
-        let rwlock = RwLockPtr::from(lock);
+        crate::strace!("pthread_rwlock_wrlock(rwlock={:?}) -> ...", rwlock);
 
-        let rwlock_info = match state.local.rwlocks.get_mut(&rwlock) {
-            Some(rwlock_info) => rwlock_info,
-            None => {
-                let res = libc::pthread_rwlock_trywrlock(lock);
-                if res < 0 {
-                    panic!("[UB] `pthread_rwlock_wrlock` called on uninitialized rwlock")
-                } else {
-                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    state.local.rwlocks.insert(rwlock, RwLockInfo::default());
-                    state.local.rwlocks.get_mut(&rwlock).unwrap()
-                }
+        match Scheduler::handle_event(&mut ctx, RwLockWriteEvent::new(rwlock_ptr, WaitDuration::Indefinite)) {
+            Ok(()) => {
+                crate::strace!("pthread_rwlock_wrlock(rwlock={:?}) -> 0", rwlock);
+                0
             }
-        };
-
-        match rwlock_info.state {
-            RwLockState::Available => {
-                if !rwlock_info.holding_state.is_empty() {
-                    panic!("PTRwLock in inconsistent state (RwLockState::Available when some threads still holding state)");
-                }
-
-                rwlock_info.state = RwLockState::Writing;
-                rwlock_info.holding_state.insert(thread::current().id());
-            }
-            _ => {
-                rwlock_info.awaiting_write.push_back(thread::current().id());
-                // Wait for rwlock to become available
-                drop(state);
-                ctx.yield_thread();
-                // State should already be set by prior thread--no need to change here
+            Err(e) => {
+                crate::strace!("pthread_rwlock_wrlock(rwlock={:?}) -> -1 ({})", rwlock, e);
+                e.set_errno();
+                -1
             }
         }
-
-        0
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_rwlock_trywrlock(
-        lock: *mut libc::pthread_rwlock_t
+        rwlock: *mut libc::pthread_rwlock_t
     ) -> libc::c_int => fizzle_pthread_rwlock_trywrlock(ctx) {
-        let mut state = ctx.acquire();
+        let rwlock_ptr = RwLockPtr::from(rwlock);
 
-        let rwlock = RwLockPtr::from(lock);
+        crate::strace!("pthread_rwlock_trywrlock(rwlock={:?}) -> ...", rwlock);
 
-        let rwlock_info = match state.local.rwlocks.get_mut(&rwlock) {
-            Some(rwlock_info) => rwlock_info,
-            None => {
-                let res = libc::pthread_rwlock_trywrlock(lock);
-                if res < 0 {
-                    panic!("[UB] `pthread_rwlock_trywrlock` called on uninitialized rwlock")
-                } else {
-                    // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                    state.local.rwlocks.insert(rwlock, RwLockInfo::default());
-                    state.local.rwlocks.get_mut(&rwlock).unwrap()
-                }
-            }
-        };
-
-        match rwlock_info.state {
-            RwLockState::Available => {
-                if !rwlock_info.holding_state.is_empty() {
-                    panic!("PTRwLock in inconsistent state (RwLockState::Available when some threads still holding state)");
-                }
-
-                rwlock_info.state = RwLockState::Writing;
-                rwlock_info.holding_state.insert(thread::current().id());
+        match Scheduler::handle_event(&mut ctx, RwLockWriteEvent::new(rwlock_ptr, WaitDuration::Immediate)) {
+            Ok(()) => {
+                crate::strace!("pthread_rwlock_trywrlock(rwlock={:?}) -> 0", rwlock);
                 0
             }
-            _ => libc::EBUSY,
+            Err(e) => {
+                crate::strace!("pthread_rwlock_trywrlock(rwlock={:?}) -> -1 ({})", rwlock, e);
+                e.set_errno();
+                -1
+            }
         }
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_rwlock_timedwrlock(
-        _lock: *mut libc::pthread_rwlock_t,
-        _abstime: *const libc::timespec
-    ) -> libc::c_int => fizzle_pthread_rwlock_timedwrlock(_ctx) {
+        rwlock: *mut libc::pthread_rwlock_t,
+        abstime: *const libc::timespec
+    ) -> libc::c_int => fizzle_pthread_rwlock_timedwrlock(ctx) {
+        let rwlock_ptr = RwLockPtr::from(rwlock);
 
-        crate::report_strict_failure("`pthread_rwlock_timedwrlock` unimplemented");
-        0
+        if abstime.is_null() || unsafe { (*abstime).tv_sec < 0 || (*abstime).tv_nsec < 0 } {
+            crate::strace!("pthread_rwlock_timedwrlock(rwlock={:?}, abstime={:?}) -> -1 (EINVAL)", rwlock, abstime);
+            Errno::EINVAL.set_errno();
+            return -1
+        }
+
+        let duration = Duration::from_secs(unsafe { (*abstime).tv_sec as u64 }) + Duration::from_nanos(unsafe { (*abstime).tv_nsec as u64 });
+
+        crate::strace!("pthread_rwlock_timedwrlock(rwlock={:?}, abstime={:?}) -> ...", rwlock, duration);
+
+        match Scheduler::handle_event(&mut ctx, RwLockWriteEvent::new(rwlock_ptr, WaitDuration::Timed(duration))) {
+            Ok(()) => {
+                crate::strace!("pthread_rwlock_timedwrlock(rwlock={:?}, abstime={:?}) -> 0", rwlock, duration);
+                0
+            }
+            Err(e) => {
+                crate::strace!("pthread_rwlock_timedwrlock(rwlock={:?}, abstime={:?}) -> -1 ({})", rwlock, duration, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_rwlock_clockwrlock(
-        _lock: *mut libc::pthread_rwlock_t,
-        _clock_id: libc::clockid_t,
-        _abstime: *const libc::timespec
-    ) -> libc::c_int => fizzle_pthread_rwlock_clockwrlock(_ctx) {
+        rwlock: *mut libc::pthread_rwlock_t,
+        clock_id: libc::clockid_t,
+        abstime: *const libc::timespec
+    ) -> libc::c_int => fizzle_pthread_rwlock_clockwrlock(ctx) {
+        let rwlock_ptr = RwLockPtr::from(rwlock);
 
-        crate::report_strict_failure("`pthread_rwlock_clockwrlock` unimplemented");
-        0
+        if abstime.is_null() || unsafe { (*abstime).tv_sec < 0 || (*abstime).tv_nsec < 0 } {
+            crate::strace!("pthread_rwlock_clockwrlock(rwlock={:?}, clock_id={:?}, abstime={:?}) -> -1 (EINVAL)", rwlock, clock_id, abstime);
+            Errno::EINVAL.set_errno();
+            return -1
+        }
+
+        let duration = Duration::from_secs(unsafe { (*abstime).tv_sec as u64 }) + Duration::from_nanos(unsafe { (*abstime).tv_nsec as u64 });
+
+        crate::strace!("pthread_rwlock_clockwrlock(rwlock={:?}, clock_id={:?}, abstime={:?}) -> ...", rwlock, clock_id, duration);
+
+        match Scheduler::handle_event(&mut ctx, RwLockWriteEvent::new(rwlock_ptr, WaitDuration::Timed(duration))) {
+            Ok(()) => {
+                crate::strace!("pthread_rwlock_clockwrlock(rwlock={:?}, clock_id={:?}, abstime={:?}) -> 0", rwlock, clock_id, duration);
+                0
+            }
+            Err(e) => {
+                crate::strace!("pthread_rwlock_clockwrlock(rwlock={:?}, clock_id={:?}, abstime={:?}) -> -1 ({})", rwlock, clock_id, duration, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_rwlock_unlock(
-        lock: *mut libc::pthread_rwlock_t
+        rwlock: *mut libc::pthread_rwlock_t
     ) -> libc::c_int => fizzle_pthread_rwlock_unlock(ctx) {
-        let mut state = ctx.acquire();
+        let rwlock_ptr = RwLockPtr::from(rwlock);
 
-        let rwlock = RwLockPtr::from(lock);
+        crate::strace!("pthread_rwlock_unlock(rwlock={:?}) -> ...", rwlock);
 
-        let Some(rwlock_info) = state.local.rwlocks.get_mut(&rwlock) else {
-            panic!("[UB] `pthread_rwlock_unlock` called on uninitialized rwlock")
-        };
-
-        if !rwlock_info.holding_state.remove(&thread::current().id()) {
-            panic!("[UB] `pthread_rwlock_unlock` called on rwlock when not locked")
-        }
-
-        if rwlock_info.state == RwLockState::Available {
-            panic!("fizzle RwLock in inconsistent state (RwLockState::Available during unlock procedure)");
-        }
-
-        if rwlock_info.holding_state.is_empty() {
-            // No more threads holding lock--time to transition to a new state
-            match rwlock_info.state {
-                RwLockState::Reading => match rwlock_info.awaiting_write.pop_front() {
-                    Some(write_thread) => {
-                        rwlock_info.holding_state.insert(write_thread);
-                        rwlock_info.state = RwLockState::Writing;
-                        state.mark_thread_ready(write_thread);
-                    }
-                    None => {
-                        let threads: Vec<ThreadId> = rwlock_info.awaiting_read.drain(..).collect();
-                        rwlock_info.holding_state.extend(threads.clone());
-                        if rwlock_info.holding_state.is_empty() { // No threads awaiting reads or writes
-                            rwlock_info.state = RwLockState::Available;
-                        }
-
-                        for thread in threads {
-                            state.mark_thread_ready(thread);
-                        }
-                    }
-                }
-                RwLockState::Writing => if rwlock_info.awaiting_read.is_empty() {
-                    if let Some(write_thread) = rwlock_info.awaiting_write.pop_front() {
-                        rwlock_info.holding_state.insert(write_thread);
-                        state.mark_thread_ready(write_thread);
-
-                    }else { // No threads waiting reads or writes
-                        rwlock_info.state = RwLockState::Available;
-                    }
-                } else {
-                    let threads: Vec<ThreadId> = rwlock_info.awaiting_read.drain(..).collect();
-                    rwlock_info.holding_state.extend(threads.clone());
-                    rwlock_info.state = RwLockState::Reading;
-
-                    for thread in threads {
-                        state.mark_thread_ready(thread);
-                    }
-                }
-                _ => ()
+        match Scheduler::handle_event(&mut ctx, RwLockUnlockEvent::new(rwlock_ptr)) {
+            Ok(()) => {
+                crate::strace!("pthread_rwlock_unlock(rwlock={:?}) -> 0", rwlock);
+                0
+            }
+            Err(e) => {
+                crate::strace!("pthread_rwlock_unlock(rwlock={:?}) -> -1 ({})", rwlock, e);
+                e.set_errno();
+                -1
             }
         }
-
-        0
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_barrier_init(
-        lock: *mut libc::pthread_barrier_t,
-        _attr: *mut libc::pthread_barrierattr_t,
+        barrier: *mut libc::pthread_barrier_t,
+        attr: *mut libc::pthread_barrierattr_t,
         count: libc::c_uint
     ) -> libc::c_int => fizzle_pthread_barrier_init(ctx) {
-        let mut state = ctx.acquire();
-        // TODO: what about mutexes shared across processes?
+        let barrier_ptr = BarrierPtr::from(barrier);
 
-        let barrier = BarrierPtr::from(lock);
+        let pshared = if attr.is_null() {
+            crate::strace!("pthread_barrier_init(barrier={:?}, attr=NULL, count={}) -> ...", barrier, count);
+            // Set default values         
+            false
 
-        if state.local.barriers.insert(barrier, BarrierInfo { curr: Vec::new(), needed: count as usize }).is_some() {
-            panic!("[UB] `pthread_barrier_init` called twice on one barrier");
+        } else {
+            let mut pshared: libc::c_int = 0;
+            assert_eq!(libc::pthread_barrierattr_getpshared(attr, ptr::addr_of_mut!(pshared)), 0);
+            let pshared = match pshared {
+                libc::PTHREAD_PROCESS_SHARED => true,
+                libc::PTHREAD_PROCESS_PRIVATE => false,
+                _ => {
+                    crate::strace!("pthread_barrier_init(barrier={:?}, attr={{pshared={}}}, count={}) -> -1 (EINVAL)", barrier, pshared, count);
+                    Errno::EINVAL.set_errno();
+                    return -1
+                }
+            };
+
+            crate::strace!("pthread_barrier_init(barrier={:?}, attr={{pshared={}}}, count={}) -> ...", barrier, pshared, count);
+            pshared
+        };
+
+        if pshared {
+            log::warn!("Process-shared Barrier requested (not supported by Fizzle)");
         }
 
-        0
+        match Scheduler::handle_event(&mut ctx, BarrierInitEvent::new(barrier_ptr, count as usize)) {
+            Ok(()) => {
+                crate::strace!("pthread_barrier_init(barrier={:?}, attr={{pshared={}}}, count={}) -> 0", barrier, pshared, count);
+                0
+            }
+            Err(()) => unreachable!(),
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_barrier_destroy(
-        lock: *mut libc::pthread_barrier_t
+        barrier: *mut libc::pthread_barrier_t
     ) -> libc::c_int => fizzle_pthread_barrier_destroy(ctx) {
-        let mut state = ctx.acquire();
+        let barrier_ptr = BarrierPtr::from(barrier);
 
-        let barrier = BarrierPtr::from(lock);
+        crate::strace!("pthread_barrier_destroy(barrier={:?}) -> ...", barrier);
 
-        match state.local.barriers.remove(&barrier) {
-            Some(barrier_info) if !barrier_info.curr.is_empty() => panic!("[UB] `pthread_barrier_destroy` called on barrier other threads were waiting on"),
-            None => panic!("[UB] `pthread_barrier_destroy` called on uninitialized barrier"),
-            _ => ()
+        match Scheduler::handle_event(&mut ctx, BarrierDestroyEvent::new(barrier_ptr)) {
+            Ok(()) => {
+                crate::strace!("pthread_barrier_destroy(barrier={:?}) -> 0", barrier);
+                0
+            }
+            Err(()) => unreachable!(),
         }
-
-        0
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_barrier_wait(
-        lock: *mut libc::pthread_barrier_t
+        barrier: *mut libc::pthread_barrier_t
     ) -> libc::c_int => fizzle_pthread_barrier_wait(ctx) {
-        let mut state = ctx.acquire();
+        let barrier_ptr = BarrierPtr::from(barrier);
 
-        let barrier = BarrierPtr::from(lock);
+        crate::strace!("pthread_barrier_wait(barrier={:?}) -> ...", barrier);
 
-        let Some(barrier_info) = state.local.barriers.get_mut(&barrier) else {
-            panic!("[UB] `pthread_barrier_wait` called on uninitialized barrier");
-        };
+        match Scheduler::handle_event(&mut ctx, BarrierWaitEvent::new(barrier_ptr)) {
+            Ok(is_leader) => {
+                let ret = match is_leader {
+                    true => PTHREAD_BARRIER_SERIAL_THREAD,
+                    false => 0,
+                };
 
-        barrier_info.curr.push(thread::current().id());
-
-        if barrier_info.curr.len() == barrier_info.needed {
-            // Release all threads (including this one)
-            let threads: Vec<ThreadId> = barrier_info.curr.drain(..).collect();
-            for thread_id in threads {
-                state.mark_thread_ready(thread_id);
+                crate::strace!("pthread_barrier_wait(barrier={:?}) -> {}", barrier, ret);
+                ret
             }
-
-            -1 // TODO: replace this with `libc::PTHREAD_BARRIER_SERIAL_THREAD` once it exists
-        } else {
-            drop(state);
-            ctx.yield_thread();
-            0
+            Err(()) => unreachable!(),
         }
     }
 }
 
+// TODO: where should this go?
 hook_macros::hook! {
     unsafe fn setns(
         _fd: libc::c_int,
