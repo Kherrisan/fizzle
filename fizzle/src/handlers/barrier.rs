@@ -1,6 +1,9 @@
 use std::thread::{self, ThreadId};
 
-use crate::{scheduler::{Event, Outcome}, state::FizzleState};
+use crate::{
+    scheduler::{Event, Outcome},
+    state::FizzleState,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BarrierPtr(usize);
@@ -33,10 +36,7 @@ pub struct BarrierInitEvent {
 
 impl BarrierInitEvent {
     pub fn new(barrier: BarrierPtr, count: usize) -> Self {
-        Self {
-            barrier,
-            count,
-        }
+        Self { barrier, count }
     }
 }
 
@@ -44,12 +44,13 @@ impl Event for BarrierInitEvent {
     type Success = ();
     type Error = ();
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-
-        if state.local.barriers.insert(self.barrier, BarrierInfo::new(self.count)).is_some() {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        if state
+            .local
+            .barriers
+            .insert(self.barrier, BarrierInfo::new(self.count))
+            .is_some()
+        {
             panic!("[UB] `pthread_mutex_init()` called twice on one mutex");
         }
 
@@ -63,9 +64,7 @@ pub struct BarrierDestroyEvent {
 
 impl BarrierDestroyEvent {
     pub fn new(barrier: BarrierPtr) -> Self {
-        Self {
-            barrier,
-        }
+        Self { barrier }
     }
 }
 
@@ -73,15 +72,13 @@ impl Event for BarrierDestroyEvent {
     type Success = ();
     type Error = ();
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match state.local.barriers.remove(&self.barrier) {
-            Some(barrier_info) if !barrier_info.curr.is_empty() => panic!("[UB] `pthread_barrier_destroy()` called on barrier other threads were waiting on"),
+            Some(barrier_info) if !barrier_info.curr.is_empty() => panic!(
+                "[UB] `pthread_barrier_destroy()` called on barrier other threads were waiting on"
+            ),
             None => panic!("[UB] `pthread_barrier_destroy()` called on uninitialized barrier"),
-            _ => ()
+            _ => (),
         }
 
         Outcome::Success(())
@@ -111,10 +108,7 @@ impl Event for BarrierWaitEvent {
     type Success = bool;
     type Error = ();
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match self.state {
             BarrierWaitState::Start => {
                 self.state = BarrierWaitState::Finish;
@@ -133,7 +127,6 @@ impl Event for BarrierWaitEvent {
                     }
 
                     Outcome::Success(true)
-
                 } else {
                     Outcome::Yield(None)
                 }

@@ -11,7 +11,7 @@ use std::thread::ThreadId;
 use std::{array, env, mem, process, ptr, thread};
 
 use fizzle_common::io::{
-    AddressFamily, SocketAddrUnix, SocketType, TransportAddress, TransportProtocol, MAX_PATH_LEN
+    AddressFamily, SocketAddrUnix, SocketType, TransportAddress, TransportProtocol, MAX_PATH_LEN,
 };
 use fizzle_common::path::{FilePath, SemaphorePath};
 use fizzle_common::storage::Buffer;
@@ -22,6 +22,7 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
 use crate::arena::{KeyedArena, Rc};
+use crate::comptime;
 use crate::constants::*;
 use crate::handlers::barrier::{BarrierInfo, BarrierPtr};
 use crate::handlers::buffer::BufferId;
@@ -30,7 +31,7 @@ use crate::handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource};
 use crate::handlers::directory::DirectoryId;
 use crate::handlers::epoll::{EpollId, EpollInfo};
 use crate::handlers::eventfd::{EventfdId, EventfdInfo};
-use crate::handlers::file::{FileId, FileObject, FilePtr};
+use crate::handlers::file::{FileId, FileInfo, FileObject, FilePtr};
 use crate::handlers::futex::FutexPtr;
 use crate::handlers::fuzz_endpoint::{FuzzEndpointId, FuzzEndpointInfo};
 use crate::handlers::message_queue::{MessageQueueId, MessageQueueInfo};
@@ -40,19 +41,19 @@ use crate::handlers::plugin::{PluginEndpointId, PluginInfo};
 use crate::handlers::plugin_module::PluginId;
 use crate::handlers::polled::{PolledId, PolledInfo};
 use crate::handlers::poller::{PollerId, PollerInfo};
-use crate::handlers::process::ProcessId;
+use crate::handlers::process::{AtForkInfo, ProcessId};
 use crate::handlers::rwlock::{RwLockInfo, RwLockPtr};
 use crate::handlers::semaphore::{SemaphoreId, SemaphoreInfo, SemaphorePtr};
 use crate::handlers::signal::{ProcSigInfo, SignalHandlers, SignalSet, ThreadSigInfo};
 use crate::handlers::socket::{
-    LocalAddress, PendingInfo, PendingSocket, ServerSocket, SocketId, SocketInfo, SocketState, TransportLocationInfo
+    LocalAddress, PendingInfo, PendingSocket, ServerSocket, SocketId, SocketInfo, SocketState,
+    TransportLocationInfo,
 };
 use crate::handlers::spinlock::SpinlockPtr;
 use crate::handlers::thread::{PThreadRoutine, ThreadInfo};
 use crate::once::SeqOnceCell;
 use crate::plugins::{IoEmulationType, PluginEndpoint, Plugins};
 use crate::semaphore::Semaphore;
-use crate::comptime;
 
 use crate::backend::{FileBackend, PendingBackend, ServerBackend, StandardFeedback, StdioBackend};
 
@@ -214,10 +215,10 @@ impl FizzleSingleton {
     pub fn init_new_thread(&mut self, sigmask: Option<SignalSet>, detached: bool) {
         let thread_id = thread::current().id();
         let mut state = self.acquire();
-        state
-            .local
-            .pthreads
-            .insert(unsafe { libc::pthread_self() }, ThreadInfo::new(thread_id, detached, false));
+        state.local.pthreads.insert(
+            unsafe { libc::pthread_self() },
+            ThreadInfo::new(thread_id, detached, false),
+        );
         state
             .local
             .signals
@@ -362,20 +363,31 @@ impl FizzleState {
         local.process_id = process_id;
 
         // Insert the current (main) pthread into `pthreads`
-        local.pthreads.insert(unsafe { libc::pthread_self() }, ThreadInfo::new(thread::current().id(), false, true));
+        local.pthreads.insert(
+            unsafe { libc::pthread_self() },
+            ThreadInfo::new(thread::current().id(), false, true),
+        );
 
         // Inherit signal handlers
         if let Some(handlers) = global.inherited_handlers.take() {
-            global.signals.allocate_with_key(process_id, ProcSigInfo::inherit(handlers));
+            global
+                .signals
+                .allocate_with_key(process_id, ProcSigInfo::inherit(handlers));
         } else {
-            global.signals.allocate_with_key(process_id, ProcSigInfo::new());
+            global
+                .signals
+                .allocate_with_key(process_id, ProcSigInfo::new());
         }
 
         // Inherit blocked sigmask
         if let Some(sigmask) = global.inherited_sigmask.take() {
-            local.signals.insert(thread::current().id(), ThreadSigInfo::inherit(sigmask));
+            local
+                .signals
+                .insert(thread::current().id(), ThreadSigInfo::inherit(sigmask));
         } else {
-            local.signals.insert(thread::current().id(), ThreadSigInfo::new(None));
+            local
+                .signals
+                .insert(thread::current().id(), ThreadSigInfo::new(None));
         }
 
         // Inherit parent's file descriptors
@@ -384,23 +396,30 @@ impl FizzleState {
             // remaining in a fixed location in memory. However, `fds` never makes use of these
             // references, so this is safe to do.
             self.local.fds = transfer_fds;
+            self.global.transfer_fds = None;
         } else {
             // Initialize parent's file descriptors
-            self.local.fds.allocate_with_key(
-                DescriptorId::from_raw_fd(0),
-                DescriptorInfo::new(FdResource::Stdin),
-            )
-            .unwrap();
-            self.local.fds.allocate_with_key(
-                DescriptorId::from_raw_fd(1),
-                DescriptorInfo::new(FdResource::Stdout),
-            )
-            .unwrap();
-            self.local.fds.allocate_with_key(
-                DescriptorId::from_raw_fd(2),
-                DescriptorInfo::new(FdResource::Stderr),
-            )
-            .unwrap();
+            self.local
+                .fds
+                .allocate_with_key(
+                    DescriptorId::from_raw_fd(0),
+                    DescriptorInfo::new(FdResource::Stdin),
+                )
+                .unwrap();
+            self.local
+                .fds
+                .allocate_with_key(
+                    DescriptorId::from_raw_fd(1),
+                    DescriptorInfo::new(FdResource::Stdout),
+                )
+                .unwrap();
+            self.local
+                .fds
+                .allocate_with_key(
+                    DescriptorId::from_raw_fd(2),
+                    DescriptorInfo::new(FdResource::Stderr),
+                )
+                .unwrap();
         }
 
         // Initialize this process's global lock
@@ -521,6 +540,7 @@ impl FizzleState {
         }
     }
 
+    /*
     // TODO: need to figure out where this fits...
     pub fn copy_exec_fds(&mut self) {
         let fds = self.global.transfer_fds.insert(self.local.fds.as_ref().clone());
@@ -540,6 +560,7 @@ impl FizzleState {
             fds.downref(&key);
         }
     }
+    */
 
     /// Adds a thread from the current process to the back of the `ready` queue.
     pub fn mark_thread_ready(&mut self, thread_id: ThreadId) {
@@ -651,6 +672,7 @@ pub struct ProcessLocalState {
     pub semaphores: HashMap<SemaphorePtr, SemaphoreInfo>,
     pub spinlocks: HashMap<SpinlockPtr, VecDeque<ThreadId>, FxBuildHasher>,
     pub pthreads: HashMap<libc::pthread_t, ThreadInfo, FxBuildHasher>,
+    pub atfork_handlers: Vec<AtForkInfo>,
     pub pthread_cleanup: HashMap<ThreadId, VecDeque<PThreadRoutine>, FxBuildHasher>,
     pub pthread_keys: HashMap<libc::pthread_key_t, PThreadRoutine, FxBuildHasher>,
     pub pthread_key_values: HashMap<
@@ -687,6 +709,7 @@ impl Debug for ProcessLocalState {
             .field("semaphores", &self.semaphores)
             .field("spinlocks", &self.spinlocks)
             .field("pthreads", &self.pthreads)
+            .field("pthread_atfork", &self.atfork_handlers)
             .field("pthread_cleanup", &self.pthread_cleanup)
             .field("pthread_keys", &self.pthread_keys)
             .field("pthread_key_values", &self.pthread_key_values)
@@ -721,6 +744,7 @@ impl ProcessLocalState {
             semaphores: HashMap::default(),
             spinlocks: HashMap::default(),
             pthreads: HashMap::default(),
+            atfork_handlers: Vec::default(),
             pthread_cleanup: HashMap::default(),
             pthread_keys: HashMap::default(),
             pthread_key_values: HashMap::default(),
@@ -745,7 +769,7 @@ pub struct InterprocessState {
     /// is currently exiting.
     pub exiting_id: Option<WorkerId>,
     /// The process ID to be passed through a call to one of the `exec*` family of functions.
-    /// 
+    ///
     /// The pid of a process changes when `fork()` is called, but not when `exec*` is.
     pub passthrough_id: Option<ProcessId>, // TODO: implement
     /// The signal handlers that have been inherited from a parent process.
@@ -775,7 +799,7 @@ pub struct InterprocessState {
     pub epolls: KeyedArena<EpollId, EpollInfo, FIZZLE_MAX_EPOLLS>,
     pub event_fds: KeyedArena<EventfdId, EventfdInfo, FIZZLE_MAX_EVENTFDS>,
     pub file_paths: FnvIndexMap<FilePath<MAX_PATH_LEN>, Rc<FileId>, FIZZLE_MAX_FILE_PATHS>,
-    pub files: KeyedArena<FileId, FileBackend, FIZZLE_MAX_FILES>,
+    pub files: KeyedArena<FileId, FileInfo, FIZZLE_MAX_FILES>,
     pub sem_paths: FnvIndexMap<SemaphorePath, Rc<SemaphoreId>, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub semaphores: KeyedArena<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub pipes: KeyedArena<PipeId, PipeInfo, FIZZLE_MAX_PIPES>,
@@ -817,7 +841,7 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).inherited_handlers) = None;
             *ptr::addr_of_mut!((*state).inherited_sigmask) = None;
 
-            *ptr::addr_of_mut!((*state).signal) = None; 
+            *ptr::addr_of_mut!((*state).signal) = None;
             KeyedArena::initialize(ptr::addr_of_mut!((*state).signals));
 
             *ptr::addr_of_mut!((*state).plugin_worker) = None;
@@ -1210,10 +1234,11 @@ impl InterprocessState {
                     Some(PendingInfo { client, .. }) => {
                         let mut last_client = client.clone();
                         while let Some(SocketInfo {
-                            state: SocketState::PendingConnection(PendingSocket {
-                                next_pending: Some(id),
-                                ..
-                            }),
+                            state:
+                                SocketState::PendingConnection(PendingSocket {
+                                    next_pending: Some(id),
+                                    ..
+                                }),
                             ..
                         }) = self.sockets.get(&last_client)
                         {

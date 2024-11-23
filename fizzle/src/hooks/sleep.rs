@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use crate::hook_macros;
 use crate::handlers::sleep::SleepEvent;
+use crate::hook_macros;
 use crate::scheduler::Scheduler;
 
 hook_macros::hook! {

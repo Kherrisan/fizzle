@@ -1,6 +1,10 @@
 use std::{collections::VecDeque, thread};
 
-use crate::{errno::Errno, scheduler::{Event, Outcome}, state::FizzleState};
+use crate::{
+    errno::Errno,
+    scheduler::{Event, Outcome},
+    state::FizzleState,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SpinlockPtr(usize);
@@ -18,10 +22,7 @@ pub struct ThreadSpinInitEvent {
 
 impl ThreadSpinInitEvent {
     pub fn new(lock: SpinlockPtr, shared: bool) -> Self {
-        Self {
-            lock,
-            shared,
-        }
+        Self { lock, shared }
     }
 }
 
@@ -29,16 +30,17 @@ impl Event for ThreadSpinInitEvent {
     type Success = ();
     type Error = ();
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         if self.shared {
             log::warn!("Process-shared spinlocks not implemented");
         }
 
-        if state.local.spinlocks.insert(self.lock, VecDeque::new()).is_some() {
+        if state
+            .local
+            .spinlocks
+            .insert(self.lock, VecDeque::new())
+            .is_some()
+        {
             panic!("[UB] `pthread_spin_init()` called twice on one spinlock");
         }
 
@@ -52,9 +54,7 @@ pub struct ThreadSpinDestroyEvent {
 
 impl ThreadSpinDestroyEvent {
     pub fn new(lock: SpinlockPtr) -> Self {
-        Self {
-            lock,
-        }
+        Self { lock }
     }
 }
 
@@ -62,11 +62,7 @@ impl Event for ThreadSpinDestroyEvent {
     type Success = ();
     type Error = ();
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let Some(spinlock_queue) = state.local.spinlocks.remove(&self.lock) else {
             panic!("[UB] `pthread_spin_destroy()` called on uninitialized spinlock");
         };
@@ -104,12 +100,7 @@ impl Event for ThreadSpinLockEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-        
-
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match self.state {
             ThreadSpinLockState::Start => {
                 self.state = ThreadSpinLockState::Finish;
@@ -122,18 +113,14 @@ impl Event for ThreadSpinLockEvent {
                     // Spinlock is immediately available
                     spinlock_queue.push_back(thread::current().id());
                     Outcome::Success(())
-
                 } else if self.nonblocking {
                     Outcome::Error(Errno::EBUSY)
-
                 } else {
                     spinlock_queue.push_back(thread::current().id());
                     Outcome::Yield(None)
                 }
             }
-            ThreadSpinLockState::Finish => {
-                Outcome::Success(())
-            }
+            ThreadSpinLockState::Finish => Outcome::Success(()),
         }
     }
 }
@@ -144,9 +131,7 @@ pub struct ThreadSpinUnlockEvent {
 
 impl ThreadSpinUnlockEvent {
     pub fn new(lock: SpinlockPtr) -> Self {
-        Self {
-            lock,
-        }
+        Self { lock }
     }
 }
 
@@ -154,10 +139,7 @@ impl Event for ThreadSpinUnlockEvent {
     type Success = ();
     type Error = ();
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let Some(spinlock_queue) = state.local.spinlocks.get_mut(&self.lock) else {
             panic!("[UB] `pthread_spin_unlock()` called on uninitialized spinlock")
         };

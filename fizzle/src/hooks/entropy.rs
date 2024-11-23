@@ -138,13 +138,13 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
-    unsafe fn seed48(_seed16v: *mut libc::c_ushort) -> *mut libc::c_ushort => fizzle_srand48(_ctx) {
+    unsafe fn seed48(_seed16v: *mut libc::c_ushort) -> *mut libc::c_ushort => fizzle_seed48(_ctx) {
         unimplemented!("seed48()")
     }
 }
 
 hook_macros::hook! {
-    unsafe fn lcong48(_param: *mut libc::c_ushort) => fizzle_srand48(_ctx) {
+    unsafe fn lcong48(_param: *mut libc::c_ushort) => fizzle_lcong48(_ctx) {
         unimplemented!("lcong48()")
     }
 }

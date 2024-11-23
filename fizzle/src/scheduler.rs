@@ -25,7 +25,7 @@ pub trait Event {
     type Error;
 
     /// Executes the action associated with the event.
-    /// 
+    ///
     /// This function is meant to be called repeatedly until one of `Outcome::Success` or
     /// `Outcome::Error` is returned. It should not be called following that.
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error>;
@@ -44,13 +44,18 @@ pub enum Outcome<S, E> {
     Pause(DelegationSource),
     /// Terminates the given thread's execution.
     TerminateThread(TerminationMethod),
+    // TODO: make this generic in the future.
+    Execute(unsafe extern "C" fn()),
 }
 
 pub struct Scheduler;
 
 impl Scheduler {
-    pub fn handle_event<T: Event>(ctx: &mut FizzleSingleton, mut event: T) -> Result<T::Success, T::Error> {
-        loop { 
+    pub fn handle_event<T: Event>(
+        ctx: &mut FizzleSingleton,
+        mut event: T,
+    ) -> Result<T::Success, T::Error> {
+        loop {
             // First `acquire()` call for state allocates and instantiates shared memory
             let mut state = ctx.acquire();
 
@@ -91,20 +96,21 @@ impl Scheduler {
                 Outcome::Yield(Some(duration)) => {
                     log::debug!("Thread being yielded with timeout");
 
-                    if duration.as_millis() <= 1000 { // TODO: make into constant
-                        // Short enough 
+                    if duration.as_millis() <= 1000 {
+                        // TODO: make into constant
+                        // Short enough
                         drop(state);
                         ctx.acquire().mark_thread_ready(thread::current().id());
 
                         Scheduler::yield_worker(ctx, DelegationAction::RunNextWorker);
-
-                    } else if duration.as_millis() <= 5000 { // TODO: make into constant
+                    } else if duration.as_millis() <= 5000 {
+                        // TODO: make into constant
                         // Long, but not so long as to time out the fuzzer
                         drop(state);
-                        ctx.acquire().mark_thread_delayed_ready(thread::current().id());
+                        ctx.acquire()
+                            .mark_thread_delayed_ready(thread::current().id());
 
                         Scheduler::yield_worker(ctx, DelegationAction::RunNextWorker);
-
                     } else {
                         // Long enough to consider as a permanent timer--just leave
                     }
@@ -117,6 +123,10 @@ impl Scheduler {
                 Outcome::TerminateThread(method) => {
                     drop(state);
                     Scheduler::terminate_thread(ctx, method);
+                }
+                Outcome::Execute(f) => {
+                    drop(state);
+                    Scheduler::run_outside_hook(ctx, || unsafe { f() });
                 }
             }
         }
@@ -135,7 +145,7 @@ impl Scheduler {
     }
 
     /// Gives up execution of the current thread until it is rescheduled.
-    /// 
+    ///
     /// This should be the **only** method that uses per-thread/process semaphores.
     fn yield_worker(ctx: &mut FizzleSingleton, action: DelegationAction) {
         // SAFETY: `state` must not be accessed prior to 'yielded
@@ -156,8 +166,8 @@ impl Scheduler {
                     let mut state = ctx.acquire();
 
                     let Some(worker_id) = Self::next_ready_worker(&mut state) else {
-                        delegation_state = DelegationState::NoMoreWorkers; 
-                        continue 'yielded
+                        delegation_state = DelegationState::NoMoreWorkers;
+                        continue 'yielded;
                     };
 
                     log::debug!("Scheduling worker {:?} for execution", worker_id);
@@ -171,19 +181,20 @@ impl Scheduler {
                         // Execution needs to move to another process
                         Scheduler::wake_process(ctx, worker_id.process_id);
                         delegation_source = DelegationSource::Process;
-
                     } else if worker_id.thread_id != current_thread_id {
                         // Execution needs to move to another thread
-                        ctx.thread_lock(&worker_id.thread_id).as_ref().unwrap().post();
+                        ctx.thread_lock(&worker_id.thread_id)
+                            .as_ref()
+                            .unwrap()
+                            .post();
                         delegation_source = DelegationSource::Thread;
-
                     } else {
                         let mut state = ctx.acquire();
                         state.global.waking_id = None;
                         drop(state);
 
                         delegation_state = DelegationState::RunCurrentWorker;
-                        continue 'yielded
+                        continue 'yielded;
                     }
                 }
                 DelegationState::RunProcess(process_id) => {
@@ -209,11 +220,10 @@ impl Scheduler {
                         // Execution needs to be moved to the main process
                         Scheduler::wake_process(ctx, main_id);
                         delegation_source = DelegationSource::Process;
-
                     } else {
                         // Execution is already in the main process
                         delegation_state = DelegationState::RunPlugins;
-                        continue 'yielded
+                        continue 'yielded;
                     }
                 }
                 DelegationState::RunPlugins => {
@@ -224,13 +234,11 @@ impl Scheduler {
                         // There are outstanding inputs from plugins to be processed
                         delegation_state = DelegationState::RunNextWorker;
                         continue 'yielded;
-
                     } else if let Some(ready) = state.global.delayed_ready.pop_front() {
                         // There are outstanding delayed workers
                         state.global.ready.push_back(ready).unwrap();
                         delegation_state = DelegationState::RunNextWorker;
                         continue 'yielded;
-
                     } else if let Some(onready) = state
                         .local
                         .main_state
@@ -244,7 +252,6 @@ impl Scheduler {
                         drop(state);
                         Scheduler::run_subprocess(ctx, onready);
                         delegation_source = DelegationSource::Process;
-
                     } else if !state.global.per_round_endpoints.is_empty() {
                         // Not all endpoints have been disconnected for this round?
 
@@ -252,7 +259,6 @@ impl Scheduler {
                         Scheduler::remove_perround_endpoints(ctx);
                         delegation_state = DelegationState::RunNextWorker;
                         continue 'yielded;
-
                     } else {
                         drop(state);
 
@@ -262,7 +268,7 @@ impl Scheduler {
                         // TODO: handle per_round_endpoints here??
 
                         delegation_state = DelegationState::RunNextWorker;
-                        continue 'yielded
+                        continue 'yielded;
                     }
                 }
                 DelegationState::TerminateThread(method) => {
@@ -276,16 +282,15 @@ impl Scheduler {
                         delegation_source = DelegationSource::Thread;
                         drop(state);
                         ctx.thread_lock(&thread_id).as_ref().unwrap().post();
-
                     } else {
                         delegation_state = DelegationState::HandleSignal(signal);
-                        continue 'yielded
+                        continue 'yielded;
                     }
                 }
                 DelegationState::HandleSignal(signal) => {
                     Scheduler::handle_signal(ctx, signal);
                     delegation_state = DelegationState::RunNextWorker;
-                    continue 'yielded
+                    continue 'yielded;
                 }
             }
 
@@ -309,7 +314,6 @@ impl Scheduler {
 
                 assert_eq!(thread_id, thread::current().id());
                 DelegationState::TerminateThread(TerminationMethod::Cancellation)
-
             } else if let Some((dst, signal)) = state.global.signal.take() {
                 // ...because it has received a signal (e.g. from `kill()`, `pthread_kill()`)
 
@@ -324,41 +328,37 @@ impl Scheduler {
                                 chosen_thread = Some(*thread_id);
                             }
                         }
-                        
+
                         if let Some(chosen_thread) = chosen_thread {
                             DelegationState::SignalToThread(chosen_thread, signal)
-
                         } else {
                             // None of the threads were ready--mark the (blocked) signal as raised
-                            state.global.signals.get_mut(&process_id).unwrap().raised |= SignalSet::from_signum(signal);
+                            state.global.signals.get_mut(&process_id).unwrap().raised |=
+                                SignalSet::from_signum(signal);
                             DelegationState::RunNextWorker
                         }
-                    },
+                    }
                     SignalDestination::Thread(thread_id) => {
                         assert_eq!(thread_id, thread::current().id());
                         DelegationState::HandleSignal(signal)
                     }
                 }
-                
             } else if let Some(_worker_id) = state.global.exiting_id.take() {
                 // ...because a thread is being reaped and needs to delegate execution
 
                 // TODO: use `pthread_join` or `waitpid` here to ensure completion?
                 DelegationState::RunNextWorker
-
             } else if let Some(thread_id) = state.global.waking_id.take() {
                 // ...because a worker in this process is being actively scheduled
 
                 if thread_id == thread::current().id() {
                     // This worker is being actively scheduled
                     DelegationState::RunCurrentWorker
-
                 } else {
                     // Some other thread is being scheduled--delegate execution
                     state.global.waking_id = Some(thread_id);
                     DelegationState::RunThread(thread_id)
                 }
-
             } else {
                 // The thread was awoken despite no event...
                 unreachable!()
@@ -400,12 +400,7 @@ impl Scheduler {
             .collect();
         for module in modules {
             let (local, global) = state.split();
-            let plugin_module = local
-                .plugins
-                .as_mut()
-                .unwrap()
-                .get_mut(&module)
-                .unwrap();
+            let plugin_module = local.plugins.as_mut().unwrap().get_mut(&module).unwrap();
             plugin_module.fuzz_round_start(global.fuzz_input.data());
         }
 
@@ -601,7 +596,10 @@ impl Scheduler {
 
         // Continue this worker once the cancellation is complete
         let this_worker = state.current_worker_id();
-        state.global.ready.push_front(ReadyInfo::Worker(this_worker));
+        state
+            .global
+            .ready
+            .push_front(ReadyInfo::Worker(this_worker));
         drop(state);
 
         Scheduler::yield_worker(ctx, DelegationAction::RunThread(thread_id));
@@ -624,10 +622,13 @@ impl Scheduler {
 
         let disposition = &state.global.signals.get(&process_id).unwrap().handlers[signal as usize];
         if disposition == &SigDisposition::Ignore {
-            return // Ignores the signal without saving it
+            return; // Ignores the signal without saving it
         }
 
-        state.global.ready.push_front(ReadyInfo::Worker(current_worker));
+        state
+            .global
+            .ready
+            .push_front(ReadyInfo::Worker(current_worker));
 
         // Add the signal to the global state
         assert!(state.global.signal.replace((dst.clone(), signal)).is_none());
@@ -635,8 +636,12 @@ impl Scheduler {
 
         // TODO: delegate to process/thread signal is being sent to
         match dst {
-            SignalDestination::Process(p) => Scheduler::yield_worker(ctx, DelegationAction::RunProcess(p)),
-            SignalDestination::Thread(t) => Scheduler::yield_worker(ctx, DelegationAction::RunThread(t)),
+            SignalDestination::Process(p) => {
+                Scheduler::yield_worker(ctx, DelegationAction::RunProcess(p))
+            }
+            SignalDestination::Thread(t) => {
+                Scheduler::yield_worker(ctx, DelegationAction::RunThread(t))
+            }
         };
     }
 
@@ -646,11 +651,15 @@ impl Scheduler {
         let thread_id = thread::current().id();
         let process_id = local.process_id;
 
-
         let thread_siginfo = local.signals.get_mut(&thread_id).unwrap();
         let proc_siginfo = global.signals.get_mut(&process_id).unwrap();
 
-        match (&proc_siginfo.handlers[signal as usize], thread_siginfo.blocked.contains(SignalSet::from_signum(signal))) {
+        match (
+            &proc_siginfo.handlers[signal as usize],
+            thread_siginfo
+                .blocked
+                .contains(SignalSet::from_signum(signal)),
+        ) {
             (_, true) => thread_siginfo.raised |= SignalSet::from_signum(signal),
             (SigDisposition::Default, false) => match SignalSet::from_signum(signal) {
                 // Ignore the signal--do nothing
@@ -660,7 +669,10 @@ impl Scheduler {
                     unimplemented!("Need to implement SIGCONT");
                 }
                 // Stop the thread (process?)
-                SignalSet::SIGSTOP | SignalSet::SIGTSTP | SignalSet::SIGTTIN | SignalSet::SIGTTOU => {
+                SignalSet::SIGSTOP
+                | SignalSet::SIGTSTP
+                | SignalSet::SIGTTIN
+                | SignalSet::SIGTTOU => {
                     unimplemented!("Need to implement SIGSTOP family of signals");
                 }
                 _ => {
@@ -671,12 +683,10 @@ impl Scheduler {
             (SigDisposition::Handler(handler), false) => {
                 let handler = *handler;
                 drop(state);
-                Scheduler::run_outside_hook(ctx, || {
-                    unsafe {
-                        handler(signal);
-                    }
+                Scheduler::run_outside_hook(ctx, || unsafe {
+                    handler(signal);
                 });
-            },
+            }
             (SigDisposition::Action(action), false) => {
                 let action = *action;
                 drop(state);
@@ -786,10 +796,7 @@ impl Scheduler {
                     .wait();
             }
             DelegationSource::Thread => {
-                ctx.thread_lock(&thread_id)
-                    .as_ref()
-                    .unwrap()
-                    .wait();
+                ctx.thread_lock(&thread_id).as_ref().unwrap().wait();
             }
         }
     }
@@ -857,9 +864,9 @@ impl Scheduler {
         let thread_info = state
             .local
             .pthreads
-            .remove(&unsafe { libc::pthread_self() }).unwrap();
+            .remove(&unsafe { libc::pthread_self() })
+            .unwrap();
 
-        
         for mutex in thread_info.held_mutexes {
             let mutex_info = state.local.mutexes.get_mut(&mutex).unwrap();
             // Mark the thread as poisoned
@@ -891,7 +898,9 @@ impl Scheduler {
                     libc::sleep(1); // Acts as a backup cancellation point in case `pthread_kill` didn't work
                     unreachable!("`pthread_kill` failed to kill current thread");
                 },
-                TerminationMethod::ProcessExit(_) => unreachable!("terminate_thread() incorrectly used for process exit"),
+                TerminationMethod::ProcessExit(_) | TerminationMethod::ProcessImmediateExit(_) => {
+                    unreachable!("terminate_thread() incorrectly used for process exit")
+                }
             }
         } else {
             // ...another process, as this process is going out of scope.
@@ -910,10 +919,18 @@ impl Scheduler {
         // Clean up process state
         let mut state = ctx.acquire();
         let process_id = state.local.process_id;
-        assert!(!process_id.is_main_process(), "main process forcibly terminated");
+        assert!(
+            !process_id.is_main_process(),
+            "main process forcibly terminated"
+        );
 
         // Remove the PID of the current process
-        let (&pid, _) = state.global.pids.iter().find(|(_, v)| **v == process_id).unwrap();
+        let (&pid, _) = state
+            .global
+            .pids
+            .iter()
+            .find(|(_, v)| **v == process_id)
+            .unwrap();
         state.global.pids.remove(&pid);
 
         // Remove process signals
@@ -935,14 +952,16 @@ impl Scheduler {
                 // This is the last thread in the group
                 libc::pthread_cancel(libc::pthread_self());
                 libc::sleep(1); // Acts as a backup cancellation point in case `pthread_cancel` didn't work
-                panic!("`pthread_cancel` failed to kill current thread");
+                panic!("`pthread_cancel()` failed to kill current thread");
             },
             TerminationMethod::ThreadExit(retval) => unsafe { libc::pthread_exit(retval) },
-            TerminationMethod::ProcessExit(retval) => unsafe { libc::exit(retval) },
+            TerminationMethod::ProcessExit(retval) => unsafe { libc::_exit(retval) },
+            TerminationMethod::ProcessImmediateExit(retval) => unsafe { libc::_exit(retval) },
             TerminationMethod::Signal(signal) => unsafe {
+                // TODO: if SIGKILL (or any other signal that doesn't run `atexit()`), make sure our atexit handlers still work
                 libc::kill(pid, signal);
                 libc::sleep(1); // Acts as a backup cancellation point in case `pthread_kill` didn't work
-                panic!("`pthread_kill` failed to kill current thread");
+                panic!("`pthread_kill()` failed to kill current thread");
             },
         }
     }
@@ -1003,13 +1022,14 @@ impl<'a> From<DelegationAction> for DelegationState {
 #[derive(Clone, Copy)]
 pub enum DelegationSource {
     Thread,
-    Process
+    Process,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TerminationMethod {
     Cancellation,
     ProcessExit(i32),
+    ProcessImmediateExit(i32),
     ThreadExit(*mut libc::c_void),
     Signal(i32),
 }

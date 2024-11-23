@@ -1,6 +1,8 @@
 # TODO
 
 ## Immediately Needed Features
+- Exit handling
+- Refactoring of sockets
 - Signal handling/passing procedures between processes
 - C streams (FILE*) implementation
 

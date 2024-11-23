@@ -1,8 +1,8 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Display;
-use std::{mem, ptr, thread};
 use std::thread::ThreadId;
+use std::{mem, ptr, thread};
 
 use fxhash::FxBuildHasher;
 
@@ -33,11 +33,11 @@ pub struct RwLockInfo {
     pub awaiting_read: VecDeque<ThreadId>,
     pub awaiting_write: VecDeque<ThreadId>,
     /// The set of threads currently holding the RwLock.
-    /// 
+    ///
     /// POSIX specifies that read-write locks must allow for recursive reads (i.e., multiple held
     /// read locks by one thread). This is implemented using a HashMap with a counter for each
     /// thread holding the lock.
-    /// 
+    ///
     /// Only one thread should be in this when the state is `RwLockState::Writing`.
     pub holding_state: HashMap<ThreadId, usize, FxBuildHasher>,
 }
@@ -83,10 +83,7 @@ pub struct RwLockInitEvent {
 
 impl RwLockInitEvent {
     pub fn new(rwlock: RwLockPtr, kind: RwLockKind) -> Self {
-        Self {
-            rwlock,
-            kind,
-        }
+        Self { rwlock, kind }
     }
 }
 
@@ -94,12 +91,13 @@ impl Event for RwLockInitEvent {
     type Success = ();
     type Error = ();
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-
-        if state.local.rwlocks.insert(self.rwlock, RwLockInfo::new(self.kind)).is_some() {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        if state
+            .local
+            .rwlocks
+            .insert(self.rwlock, RwLockInfo::new(self.kind))
+            .is_some()
+        {
             panic!("[UB] `pthread_rwlock_init()` called twice on one rwlock");
         }
 
@@ -113,9 +111,7 @@ pub struct RwLockDestroyEvent {
 
 impl RwLockDestroyEvent {
     pub fn new(rwlock: RwLockPtr) -> Self {
-        Self {
-            rwlock,
-        }
+        Self { rwlock }
     }
 }
 
@@ -123,21 +119,20 @@ impl Event for RwLockDestroyEvent {
     type Success = ();
     type Error = ();
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match state.local.rwlocks.remove(&self.rwlock) {
             Some(rwlock_info) => {
                 if rwlock_info.state != RwLockState::Available {
                     panic!("[UB] `pthread_rwlock_destroy` called on locked rwlock")
                 }
 
-                if !rwlock_info.awaiting_read.is_empty() || !rwlock_info.awaiting_write.is_empty() || !rwlock_info.holding_state.is_empty() {
+                if !rwlock_info.awaiting_read.is_empty()
+                    || !rwlock_info.awaiting_write.is_empty()
+                    || !rwlock_info.holding_state.is_empty()
+                {
                     panic!("inconsistent fizzle RwLock state in `pthread_rwlock_destroy`");
                 }
-            },
+            }
             None => {
                 panic!("[UB] `pthread_rwlock_destroy` called on uninitialized rwlock")
                 /*
@@ -146,7 +141,7 @@ impl Event for RwLockDestroyEvent {
                 // We need to find out if this lock is statically-initialized
                 unsafe {
                     if libc::memcmp(self.rwlock.to_mut_ptr() as *const libc::c_void, ptr::addr_of!(RWLOCK_INIT) as *const libc::c_void, mem::size_of::<libc::pthread_rwlock_t>()) != 0 {
-                        
+
                     }
                 }
 
@@ -160,7 +155,7 @@ impl Event for RwLockDestroyEvent {
 
                 v.insert(mutex_info);
                 return Outcome::Continue // Go to Finish state
-                
+
                 let res = libc::pthread_rwlock_trywrlock(lock);
                 if res < 0 {
                     panic!("[UB] `pthread_rwlock_destroy` called on uninitialized rwlock")
@@ -198,10 +193,7 @@ impl Event for RwLockReadEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let current_thread = thread::current().id();
 
         match self.state {
@@ -211,17 +203,26 @@ impl Event for RwLockReadEvent {
                 let rwlock_info = match state.local.rwlocks.get_mut(&self.rwlock) {
                     Some(rwlock_info) => rwlock_info,
                     None => {
-                        static RWLOCK_INIT: libc::pthread_rwlock_t = libc::PTHREAD_RWLOCK_INITIALIZER;
+                        static RWLOCK_INIT: libc::pthread_rwlock_t =
+                            libc::PTHREAD_RWLOCK_INITIALIZER;
 
                         // We need to find out if this lock is statically-initialized
                         unsafe {
-                            if libc::memcmp(self.rwlock.to_mut_ptr() as *const libc::c_void, ptr::addr_of!(RWLOCK_INIT) as *const libc::c_void, mem::size_of::<libc::pthread_rwlock_t>()) != 0 {
+                            if libc::memcmp(
+                                self.rwlock.to_mut_ptr() as *const libc::c_void,
+                                ptr::addr_of!(RWLOCK_INIT) as *const libc::c_void,
+                                mem::size_of::<libc::pthread_rwlock_t>(),
+                            ) != 0
+                            {
                                 panic!("[UB] read lock called on uninitialized rwlock")
                             }
                         }
 
                         // This was a statically-initialized rwlock--add it to our internal state
-                        state.local.rwlocks.insert(self.rwlock, RwLockInfo::new(RwLockKind::PreferReader));
+                        state
+                            .local
+                            .rwlocks
+                            .insert(self.rwlock, RwLockInfo::new(RwLockKind::PreferReader));
                         state.local.rwlocks.get_mut(&self.rwlock).unwrap()
                     }
                 };
@@ -237,17 +238,22 @@ impl Event for RwLockReadEvent {
                             rwlock_info.awaiting_read.push_back(current_thread);
                             Outcome::Yield(None)
                         }
-                    }
+                    },
                     // We have a pending writer, and this RwLock is configured to prioritize writes
-                    RwLockState::Reading if rwlock_info.kind == RwLockKind::PreferWriter && !rwlock_info.awaiting_write.is_empty() => match self.duration {
-                        WaitDuration::Immediate => Outcome::Error(Errno::EBUSY),
-                        WaitDuration::Timed(duration) => {
-                            rwlock_info.awaiting_read.push_back(current_thread);
-                            Outcome::Yield(Some(duration))
-                        }
-                        WaitDuration::Indefinite => {
-                            rwlock_info.awaiting_read.push_back(current_thread);
-                            Outcome::Yield(None)
+                    RwLockState::Reading
+                        if rwlock_info.kind == RwLockKind::PreferWriter
+                            && !rwlock_info.awaiting_write.is_empty() =>
+                    {
+                        match self.duration {
+                            WaitDuration::Immediate => Outcome::Error(Errno::EBUSY),
+                            WaitDuration::Timed(duration) => {
+                                rwlock_info.awaiting_read.push_back(current_thread);
+                                Outcome::Yield(Some(duration))
+                            }
+                            WaitDuration::Indefinite => {
+                                rwlock_info.awaiting_read.push_back(current_thread);
+                                Outcome::Yield(None)
+                            }
                         }
                     }
                     RwLockState::Reading => {
@@ -261,7 +267,7 @@ impl Event for RwLockReadEvent {
                             }
                         }
                         Outcome::Success(())
-                    },
+                    }
                     RwLockState::Available => {
                         if !rwlock_info.holding_state.is_empty() {
                             panic!("fizzle RwLock in inconsistent state (RwLockState::Available when some threads still holding state)");
@@ -277,13 +283,12 @@ impl Event for RwLockReadEvent {
                 let rwlock_info = state.local.rwlocks.get_mut(&self.rwlock).unwrap();
                 if rwlock_info.holding_state.contains_key(&current_thread) {
                     Outcome::Success(())
-
                 } else {
                     // Remove the thread from the read lock queue
                     for (i, thread_id) in rwlock_info.awaiting_read.iter().enumerate() {
                         if *thread_id == current_thread {
                             rwlock_info.awaiting_read.remove(i).unwrap();
-                            break
+                            break;
                         }
                     }
 
@@ -319,10 +324,7 @@ impl Event for RwLockWriteEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let current_thread = thread::current().id();
 
         match self.state {
@@ -332,17 +334,26 @@ impl Event for RwLockWriteEvent {
                 let rwlock_info = match state.local.rwlocks.get_mut(&self.rwlock) {
                     Some(rwlock_info) => rwlock_info,
                     None => {
-                        static RWLOCK_INIT: libc::pthread_rwlock_t = libc::PTHREAD_RWLOCK_INITIALIZER;
+                        static RWLOCK_INIT: libc::pthread_rwlock_t =
+                            libc::PTHREAD_RWLOCK_INITIALIZER;
 
                         // We need to find out if this lock is statically-initialized
                         unsafe {
-                            if libc::memcmp(self.rwlock.to_mut_ptr() as *const libc::c_void, ptr::addr_of!(RWLOCK_INIT) as *const libc::c_void, mem::size_of::<libc::pthread_rwlock_t>()) != 0 {
+                            if libc::memcmp(
+                                self.rwlock.to_mut_ptr() as *const libc::c_void,
+                                ptr::addr_of!(RWLOCK_INIT) as *const libc::c_void,
+                                mem::size_of::<libc::pthread_rwlock_t>(),
+                            ) != 0
+                            {
                                 panic!("[UB] read lock called on uninitialized rwlock")
                             }
                         }
 
                         // This was a statically-initialized rwlock--add it to our internal state
-                        state.local.rwlocks.insert(self.rwlock, RwLockInfo::new(RwLockKind::PreferReader));
+                        state
+                            .local
+                            .rwlocks
+                            .insert(self.rwlock, RwLockInfo::new(RwLockKind::PreferReader));
                         state.local.rwlocks.get_mut(&self.rwlock).unwrap()
                     }
                 };
@@ -358,7 +369,7 @@ impl Event for RwLockWriteEvent {
                             rwlock_info.awaiting_write.push_back(current_thread);
                             Outcome::Yield(None)
                         }
-                    }
+                    },
                     RwLockState::Available => {
                         if !rwlock_info.holding_state.is_empty() {
                             panic!("fizzle RwLock in inconsistent state (RwLockState::Available when some threads still holding state)");
@@ -374,13 +385,12 @@ impl Event for RwLockWriteEvent {
                 let rwlock_info = state.local.rwlocks.get_mut(&self.rwlock).unwrap();
                 if rwlock_info.holding_state.contains_key(&current_thread) {
                     Outcome::Success(())
-
                 } else {
                     // Remove the thread from the read lock queue
                     for (i, thread_id) in rwlock_info.awaiting_write.iter().enumerate() {
                         if *thread_id == current_thread {
                             rwlock_info.awaiting_write.remove(i).unwrap();
-                            break
+                            break;
                         }
                     }
 
@@ -397,9 +407,7 @@ pub struct RwLockUnlockEvent {
 
 impl RwLockUnlockEvent {
     pub fn new(rwlock: RwLockPtr) -> Self {
-        Self {
-            rwlock,
-        }
+        Self { rwlock }
     }
 }
 
@@ -407,10 +415,7 @@ impl Event for RwLockUnlockEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let current_thread = thread::current().id();
 
         let Some(rwlock_info) = state.local.rwlocks.get_mut(&self.rwlock) else {
@@ -429,7 +434,7 @@ impl Event for RwLockUnlockEvent {
         }
 
         if !rwlock_info.holding_state.is_empty() {
-            return Outcome::Success(())
+            return Outcome::Success(());
         }
 
         // No more threads holding lock--time to transition to a new state

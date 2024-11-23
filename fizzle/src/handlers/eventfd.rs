@@ -1,13 +1,18 @@
 use std::{cmp, os::fd::RawFd};
 
 use crate::{
-    arena::{ArenaKey, Rc}, scheduler::{Event, Outcome}, state::{FizzleSingleton, FizzleState}
+    arena::{ArenaKey, Rc},
+    scheduler::{Event, Outcome},
+    state::{FizzleSingleton, FizzleState},
 };
 
 pub use private::EventfdId;
 
 use super::{
-    descriptor::{DescriptorError, DescriptorId, DescriptorInfo, FdResource}, init_from_slice, polled::{PolledId, PolledInfo}, FfiOutput, MsgHdr, MsgHdrOut,
+    descriptor::{DescriptorError, DescriptorId, DescriptorInfo, FdResource},
+    init_from_slice,
+    polled::{PolledId, PolledInfo},
+    FfiOutput, MsgHdr, MsgHdrOut,
 };
 
 // This is to forbid access to the SocketId's inner `usize` field.
@@ -247,12 +252,21 @@ pub struct EventfdCreateEvent {
     is_semaphore: bool,
     close_on_exec: bool,
     nonblocking: bool,
-    
 }
 
 impl EventfdCreateEvent {
-    pub fn new(initial_value: libc::c_uint, is_semaphore: bool, close_on_exec: bool, nonblocking: bool) -> Self {
-        Self { initial_value, is_semaphore, close_on_exec, nonblocking }
+    pub fn new(
+        initial_value: libc::c_uint,
+        is_semaphore: bool,
+        close_on_exec: bool,
+        nonblocking: bool,
+    ) -> Self {
+        Self {
+            initial_value,
+            is_semaphore,
+            close_on_exec,
+            nonblocking,
+        }
     }
 }
 
@@ -260,28 +274,48 @@ impl Event for EventfdCreateEvent {
     type Success = RawFd;
     type Error = ();
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let fd = crate::create_descriptor();
 
-        let read_polled = state.global.polled_events.allocate(if self.initial_value == 0 { PolledInfo::new() } else { PolledInfo::new_raised() }).unwrap();
-        let write_polled = state.global.polled_events.allocate(PolledInfo::new_raised()).unwrap();
+        let read_polled = state
+            .global
+            .polled_events
+            .allocate(if self.initial_value == 0 {
+                PolledInfo::new()
+            } else {
+                PolledInfo::new_raised()
+            })
+            .unwrap();
+        let write_polled = state
+            .global
+            .polled_events
+            .allocate(PolledInfo::new_raised())
+            .unwrap();
 
-        let eventfd_id = state.global.event_fds.allocate(EventfdInfo {
-            read_polled,
-            write_polled,
-            is_semaphore: self.is_semaphore,
-            counter: self.initial_value as u64,
-        }).unwrap();
+        let eventfd_id = state
+            .global
+            .event_fds
+            .allocate(EventfdInfo {
+                read_polled,
+                write_polled,
+                is_semaphore: self.is_semaphore,
+                counter: self.initial_value as u64,
+            })
+            .unwrap();
 
-        state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
-            close_on_exec: self.close_on_exec,
-            nonblocking: self.nonblocking,
-            is_passthrough: false,
-            resource: FdResource::EventFd(eventfd_id),
-        }).unwrap();
+        state
+            .local
+            .fds
+            .allocate_with_key(
+                DescriptorId::from_raw_fd(fd),
+                DescriptorInfo {
+                    close_on_exec: self.close_on_exec,
+                    nonblocking: self.nonblocking,
+                    is_passthrough: false,
+                    resource: FdResource::EventFd(eventfd_id),
+                },
+            )
+            .unwrap();
 
         Outcome::Success(fd)
     }

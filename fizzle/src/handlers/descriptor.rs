@@ -503,13 +503,9 @@ impl Event for DescriptorCloseEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let Some(fd_info) = state.local.fds.get(&self.fd) else {
-            return Outcome::Error(Errno::EBADFD)
+            return Outcome::Error(Errno::EBADFD);
         };
 
         if let FdResource::Socket(socket_id) = fd_info.resource.clone() {
@@ -522,10 +518,11 @@ impl Event for DescriptorCloseEvent {
                 // Remove the socket's address from the global space
                 if let LocalAddress::Assigned(sockaddr) = socket_info.local_addr.clone() {
                     let protocol = socket_info.protocol;
-                    state.global.socket_locations.remove(&TransportAddress {
-                        sockaddr,
-                        protocol,
-                    }).unwrap();
+                    state
+                        .global
+                        .socket_locations
+                        .remove(&TransportAddress { sockaddr, protocol })
+                        .unwrap();
                 }
 
                 // Certain socket states contain cyclic references with other sockets.
@@ -565,7 +562,11 @@ pub struct DescriptorDuplicateEvent {
 impl DescriptorDuplicateEvent {
     #[inline]
     pub fn new(old_fd: DescriptorId, new_fd: Option<DescriptorId>, close_on_exec: bool) -> Self {
-        Self { old_fd, new_fd, close_on_exec }
+        Self {
+            old_fd,
+            new_fd,
+            close_on_exec,
+        }
     }
 }
 
@@ -573,16 +574,11 @@ impl Event for DescriptorDuplicateEvent {
     type Success = RawFd;
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         // Copy over associated data from the old fd
         let Some(mut new_fd_info) = state.local.fds.get_mut(&self.old_fd).cloned() else {
-            return Outcome::Error(Errno::EBADFD)
+            return Outcome::Error(Errno::EBADFD);
         };
-
 
         // Create a new, unique file descriptor
         let new_fd = match self.new_fd {
@@ -591,7 +587,7 @@ impl Event for DescriptorDuplicateEvent {
         };
 
         if self.old_fd == new_fd {
-            return Outcome::Error(Errno::EINVAL) // Behavior for dup3 (dup2 is different)
+            return Outcome::Error(Errno::EINVAL); // Behavior for dup3 (dup2 is different)
         }
 
         // Update the close-on-exec flag
@@ -614,7 +610,11 @@ impl Event for DescriptorDuplicateEvent {
             }
         }
 
-        state.local.fds.allocate_with_key(new_fd, new_fd_info).unwrap();
+        state
+            .local
+            .fds
+            .allocate_with_key(new_fd, new_fd_info)
+            .unwrap();
 
         Outcome::Success(new_fd.as_raw_fd())
     }

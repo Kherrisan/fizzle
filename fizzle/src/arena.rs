@@ -243,7 +243,7 @@ impl<K: ArenaKey<Value = V>, V: Sized + Clone, const N: usize> Clone for KeyedAr
 struct ArenaItem<V: Sized> {
     value: MaybeUninit<V>,
     ref_cnt: u16,
-                  //    _pinned: PhantomPinned,
+    //    _pinned: PhantomPinned,
 }
 
 impl<V: Sized + Clone> Clone for ArenaItem<V> {
@@ -412,7 +412,9 @@ impl<K: ArenaKey + 'static> Rc<K> {
         unsafe {
             let item = &mut (*(*rc.ptr).get());
             assert!((*(*rc.ptr).get()).ref_cnt > 0);
-            item.ref_cnt.checked_add(1).expect("KeyedArena Rc exceeded max number of references");
+            item.ref_cnt
+                .checked_add(1)
+                .expect("KeyedArena Rc exceeded max number of references");
         }
     }
 }
@@ -449,7 +451,10 @@ impl<K: ArenaKey> Clone for Rc<K> {
         unsafe {
             debug_assert!((*(*self.ptr).get()).ref_cnt > 0);
             assert!((*(*self.ptr).get()).ref_cnt < u16::MAX);
-            (*(*self.ptr).get()).ref_cnt.checked_add(1).expect("KeyedArena Rc exceeded max number of references");
+            (*(*self.ptr).get())
+                .ref_cnt
+                .checked_add(1)
+                .expect("KeyedArena Rc exceeded max number of references");
         }
         Self {
             key: self.key,

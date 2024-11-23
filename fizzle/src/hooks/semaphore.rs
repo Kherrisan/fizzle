@@ -1,8 +1,8 @@
 use crate::errno::Errno;
 use crate::handlers::file::AccessMode;
 use crate::handlers::semaphore::*;
-use crate::{hook_macros, WaitDuration};
 use crate::scheduler::Scheduler;
+use crate::{hook_macros, WaitDuration};
 
 use std::ffi::CStr;
 use std::ptr;
@@ -226,5 +226,26 @@ hook_macros::hook! {
                 -1
             },
         }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn semop(
+        _semid: libc::c_int,
+        _sops: *mut libc::c_void, // Should be *mut libc::sembuf
+        _nsops: libc::size_t
+    ) -> libc::c_int => fizzle_semop(_ctx) {
+        unimplemented!("semop")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn semtimedop(
+        _semid: libc::c_int,
+        _sops: *mut libc::c_void, // Should be *mut libc::sembuf
+        _nsops: libc::size_t,
+        _timeout: *const libc::timespec
+    ) -> libc::c_int => fizzle_semtimedop(_ctx) {
+        unimplemented!("semtimedop")
     }
 }

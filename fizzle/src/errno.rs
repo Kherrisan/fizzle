@@ -1,6 +1,5 @@
 use std::fmt::Display;
 
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Errno(i32);
 
@@ -261,4 +260,3 @@ impl Display for Errno {
         }
     }
 }
-

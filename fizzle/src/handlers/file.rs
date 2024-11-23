@@ -3,14 +3,16 @@ use std::fmt::Display;
 use std::os::fd::RawFd;
 
 use bitflags::bitflags;
+use fizzle_common::io::MAX_PATH_LEN;
+use fizzle_common::path::FilePath;
 use fizzle_common::storage::Buffer;
 
-use crate::arena::{ArenaKey, Rc};
+use crate::arena::ArenaKey;
 use crate::backend::FileBackend;
 use crate::constants::FIZZLE_FOPEN_BUFSIZE;
 use crate::state::FizzleSingleton;
 
-use super::descriptor::{DescriptorError, DescriptorId};
+use super::descriptor::DescriptorId;
 use super::fuzz_endpoint::FuzzEndpointInfo;
 use super::{init_from_slice, MsgHdr, MsgHdrOut};
 
@@ -23,10 +25,7 @@ mod private {
     pub struct FileId(usize);
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FilePtr(usize);
-
-impl Rc<FileId> {
+impl FileId {
     pub fn read(&self, ctx: &mut FizzleSingleton, msg: &mut MsgHdrOut) -> Result<usize, FileError> {
         let mut state = ctx.acquire();
 
@@ -250,6 +249,19 @@ impl Rc<FileId> {
     }
 }
 
+impl ArenaKey for FileId {
+    type Value = FileInfo;
+}
+
+#[derive(Debug)]
+pub struct FileInfo {
+    pub path: FilePath<MAX_PATH_LEN>,
+    pub backend: FileBackend,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FilePtr(usize);
+
 impl From<*mut libc::FILE> for FilePtr {
     fn from(value: *mut libc::FILE) -> Self {
         FilePtr(value as usize)
@@ -304,47 +316,13 @@ bitflags! {
 
 impl Display for AccessMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("{}{}{}{}", (self.bits() >> 9) & 7, (self.bits() >> 6) & 7, (self.bits() >> 3) & 7, self.bits() & 7))
-    }
-}
-
-#[derive(Debug)]
-pub enum FileError {
-    /// The supplied FILE* did not correspond to an existing entry in the Fizzle state.
-    InvalidPtr,
-    /// The underlying file pointed to by the stream was not open, or not open for the intended mode.
-    BadFile,
-    /// A socket-specific operation was attempted on the file.
-    NotSocket,
-}
-
-impl From<FileError> for DescriptorError {
-    fn from(value: FileError) -> Self {
-        match value {
-            FileError::InvalidPtr => DescriptorError::InvalidInput,
-            FileError::BadFile => DescriptorError::BadFd,
-            FileError::NotSocket => DescriptorError::NotSocket,
-        }
-    }
-}
-
-impl Display for FileError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::InvalidPtr => "InvalidPtr",
-            Self::BadFile => "BadFile",
-            Self::NotSocket => "NotSocket",
-        })
-    }
-}
-
-impl FileError {
-    pub fn as_os_error(&self) -> i32 {
-        match self {
-            Self::InvalidPtr => libc::EFAULT,
-            Self::BadFile => libc::EBADF,
-            Self::NotSocket => libc::ENOTSOCK,
-        }
+        f.write_fmt(format_args!(
+            "{}{}{}{}",
+            (self.bits() >> 9) & 7,
+            (self.bits() >> 6) & 7,
+            (self.bits() >> 3) & 7,
+            self.bits() & 7
+        ))
     }
 }
 
@@ -363,8 +341,4 @@ impl FileObject {
             write_buf: Buffer::new(),
         }
     }
-}
-
-impl ArenaKey for FileId {
-    type Value = FileBackend;
 }

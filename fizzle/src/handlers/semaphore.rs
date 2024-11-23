@@ -59,7 +59,11 @@ pub struct SemInitEvent {
 
 impl SemInitEvent {
     pub fn new(sem: SemaphorePtr, pshared: bool, value: u32) -> Self {
-        Self { sem, pshared, value }
+        Self {
+            sem,
+            pshared,
+            value,
+        }
     }
 }
 
@@ -67,21 +71,25 @@ impl Event for SemInitEvent {
     type Success = ();
     type Error = ();
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         if self.pshared {
             panic!("shared anonymous semaphores unsupported by fizzle")
         }
 
-        if state.local.semaphores.insert(self.sem, SemaphoreInfo {
-            refs: 1, // Unused except for named semaphores
-            unlinked: false, // Unused except for named semaphores
-            value: self.value as usize,
-            waiting: VecDeque::new(),
-        }).is_some() {
+        if state
+            .local
+            .semaphores
+            .insert(
+                self.sem,
+                SemaphoreInfo {
+                    refs: 1,         // Unused except for named semaphores
+                    unlinked: false, // Unused except for named semaphores
+                    value: self.value as usize,
+                    waiting: VecDeque::new(),
+                },
+            )
+            .is_some()
+        {
             log::warn!("`sem_init` called twice on one semaphore");
         }
 
@@ -124,7 +132,11 @@ pub struct SemOpenEvent<'a> {
 impl<'a> SemOpenEvent<'a> {
     #[inline]
     pub fn new(name: &'a CStr, exclusive: bool, create: Option<(AccessMode, u32)>) -> Self {
-        Self { name, exclusive, create }
+        Self {
+            name,
+            exclusive,
+            create,
+        }
     }
 }
 
@@ -132,20 +144,16 @@ impl Event for SemOpenEvent<'_> {
     type Success = SemaphorePtr;
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let Ok(sem_path) = SemaphorePath::from_cstr(self.name) else {
-            return Outcome::Error(Errno::EINVAL)
+            return Outcome::Error(Errno::EINVAL);
         };
 
         if let Some((_access, value)) = self.create {
             // Create new semaphore
 
             if self.exclusive && state.global.sem_paths.contains_key(&sem_path) {
-                return Outcome::Error(Errno::EEXIST)
+                return Outcome::Error(Errno::EEXIST);
             }
 
             // TODO: we ignore access `mode` permissions here
@@ -153,24 +161,31 @@ impl Event for SemOpenEvent<'_> {
             let sem = unsafe { crate::unique_mem_create() } as *mut libc::sem_t;
             let semaphore_ptr = SemaphorePtr::from(sem);
 
-            let sem_id = state.global.semaphores.allocate(SemaphoreInfo {
-                refs: 1,
-                unlinked: false,
-                value: value as usize,
-                waiting: VecDeque::new(),
-            }).unwrap();
+            let sem_id = state
+                .global
+                .semaphores
+                .allocate(SemaphoreInfo {
+                    refs: 1,
+                    unlinked: false,
+                    value: value as usize,
+                    waiting: VecDeque::new(),
+                })
+                .unwrap();
 
             state.local.named_semaphores.insert(semaphore_ptr, sem_id);
 
             Outcome::Success(semaphore_ptr)
-
         } else if let Some(sem_id) = state.global.sem_paths.get(&sem_path).cloned() {
             // Open existing semaphore
 
             let sem = unsafe { crate::unique_mem_create() } as *mut libc::sem_t;
             let semaphore_ptr = SemaphorePtr::from(sem);
 
-            state.local.named_semaphores.insert(semaphore_ptr, sem_id.clone()).unwrap();
+            state
+                .local
+                .named_semaphores
+                .insert(semaphore_ptr, sem_id.clone())
+                .unwrap();
 
             let sem_ctx = state.global.semaphores.get_mut(&sem_id).unwrap();
             sem_ctx.refs += 1;
@@ -198,19 +213,15 @@ impl Event for SemDestroyEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         if state.local.named_semaphores.contains_key(&self.sem) {
             log::warn!("`sem_destroy` called on named pointer");
-            return Outcome::Error(Errno::EINVAL)
+            return Outcome::Error(Errno::EINVAL);
         }
 
         let Some(semaphore) = state.local.semaphores.remove(&self.sem) else {
             log::warn!("`sem_destroy` called on uninitialized semaphore");
-            return Outcome::Error(Errno::EINVAL)
+            return Outcome::Error(Errno::EINVAL);
         };
 
         unsafe {
@@ -239,13 +250,9 @@ impl Event for SemCloseEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let Some(sem_id) = state.local.named_semaphores.remove(&self.sem) else {
-            return Outcome::Error(Errno::EINVAL)
+            return Outcome::Error(Errno::EINVAL);
         };
 
         unsafe {
@@ -261,7 +268,7 @@ impl Event for SemCloseEvent {
             state.global.semaphores.downref(&sem_id);
         }
 
-        return Outcome::Success(())
+        return Outcome::Success(());
     }
 }
 
@@ -279,17 +286,14 @@ impl Event for SemUnlinkEvent<'_> {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let Ok(sem_path) = SemaphorePath::from_cstr(self.path) else {
-            return Outcome::Error(Errno::EINVAL)
+            return Outcome::Error(Errno::EINVAL);
         };
 
         let Some(sem_id) = state.global.sem_paths.remove(&sem_path) else {
             log::warn!("`sem_unlink` called on nonexistent named semaphore");
-            return Outcome::Error(Errno::ENOENT)
+            return Outcome::Error(Errno::ENOENT);
         };
 
         let Some(sem_info) = state.global.semaphores.get_mut(&sem_id) else {
@@ -321,10 +325,7 @@ impl Event for SemPostEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         if let Some(sem_info) = state.local.semaphores.get_mut(&self.sem) {
             match sem_info.waiting.pop_front() {
                 Some(worker_id) => state.mark_thread_ready(worker_id.thread_id),
@@ -332,7 +333,6 @@ impl Event for SemPostEvent {
             }
 
             Outcome::Success(())
-
         } else if let Some(semaphore_id) = state.local.named_semaphores.get(&self.sem).cloned() {
             let Some(sem_info) = state.global.semaphores.get_mut(&semaphore_id) else {
                 panic!("inconsistent fizzle state--named semaphore without global context in `sem_post()`");
@@ -344,7 +344,6 @@ impl Event for SemPostEvent {
             }
 
             Outcome::Success(())
-
         } else {
             log::warn!("`sem_post()` passed in invalid semaphore pointer");
             Outcome::Error(Errno::EINVAL)
@@ -366,7 +365,11 @@ pub struct SemWaitEvent {
 
 impl SemWaitEvent {
     pub fn new(sem: SemaphorePtr, duration: WaitDuration) -> Self {
-        Self { sem, duration, state: SemWaitState::Start }
+        Self {
+            sem,
+            duration,
+            state: SemWaitState::Start,
+        }
     }
 }
 
@@ -374,24 +377,21 @@ impl Event for SemWaitEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let current_worker_id = state.current_worker_id();
 
         match self.state {
             SemWaitState::Start => {
                 let Some(semaphore) = state.local.semaphores.get_mut(&self.sem) else {
                     log::warn!("semaphore to wait on was uninitialized");
-                    return Outcome::Error(Errno::EINVAL)
+                    return Outcome::Error(Errno::EINVAL);
                 };
 
                 match semaphore.value.checked_sub(1) {
                     Some(value) => {
                         semaphore.value = value;
                         Outcome::Success(())
-                    },
+                    }
                     None => match self.duration {
                         WaitDuration::Immediate => Outcome::Error(Errno::EAGAIN),
                         WaitDuration::Timed(t) => {
@@ -404,7 +404,7 @@ impl Event for SemWaitEvent {
                             self.state = SemWaitState::Finish;
                             Outcome::Yield(None)
                         }
-                    }
+                    },
                 }
             }
             SemWaitState::Finish => {
@@ -424,7 +424,7 @@ impl Event for SemWaitEvent {
                         };
 
                         log::debug!("sem_timedwait() timed out after {:?}", t);
-                        return Outcome::Error(Errno::ETIMEDOUT)
+                        return Outcome::Error(Errno::ETIMEDOUT);
                     }
                 }
 
@@ -432,7 +432,5 @@ impl Event for SemWaitEvent {
                 Outcome::Success(())
             }
         }
-
-
     }
 }

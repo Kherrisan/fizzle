@@ -13,6 +13,8 @@ const FUTEX_OP_SHIFT_OR: i32 = libc::FUTEX_OP_OPARG_SHIFT | libc::FUTEX_OP_OR;
 const FUTEX_OP_SHIFT_NAND: i32 = libc::FUTEX_OP_OPARG_SHIFT | libc::FUTEX_OP_ANDN;
 const FUTEX_OP_SHIFT_XOR: i32 = libc::FUTEX_OP_OPARG_SHIFT | libc::FUTEX_OP_XOR;
 
+// TODO: some timeouts are absolute (I think FUTEX_WAIT_BITSET?)--handle these
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FutexPtr(usize);
 
@@ -49,7 +51,6 @@ impl FutexError {
             Self::NotReady => Errno::EAGAIN,
             Self::InvalidValue => Errno::EINVAL,
         }
-
     }
 }
 
@@ -68,7 +69,12 @@ pub struct FutexWaitEvent<'a> {
 
 impl<'a> FutexWaitEvent<'a> {
     pub fn new(uaddr: &'a mut u32, val: u32, duration: WaitDuration) -> Self {
-        Self { uaddr, val, duration, state: FutexWaitState::Start }
+        Self {
+            uaddr,
+            val,
+            duration,
+            state: FutexWaitState::Start,
+        }
     }
 }
 
@@ -76,10 +82,7 @@ impl Event for FutexWaitEvent<'_> {
     type Success = ();
     type Error = FutexError;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let futex_ptr = FutexPtr::from_mut(self.uaddr);
 
         match self.state {
@@ -87,14 +90,13 @@ impl Event for FutexWaitEvent<'_> {
                 self.state = FutexWaitState::Finish;
 
                 if *self.uaddr != self.val {
-                    return Outcome::Error(FutexError::NotReady)
+                    return Outcome::Error(FutexError::NotReady);
                 }
 
                 match state.local.futex_waiters.entry(futex_ptr) {
-                    Entry::Occupied(mut o) => o.get_mut().push_back((
-                        libc::FUTEX_BITSET_MATCH_ANY as u32,
-                        thread::current().id(),
-                    )),
+                    Entry::Occupied(mut o) => o
+                        .get_mut()
+                        .push_back((libc::FUTEX_BITSET_MATCH_ANY as u32, thread::current().id())),
                     Entry::Vacant(v) => {
                         // Create a new Futex location at the specified address
                         let mut deque = VecDeque::new();
@@ -127,12 +129,12 @@ impl Event for FutexWaitEvent<'_> {
                         };
 
                         log::debug!("futex wait timed out after {:?}", t);
-                        return Outcome::Error(FutexError::TimedOut)
+                        return Outcome::Error(FutexError::TimedOut);
                     }
                 }
 
                 Outcome::Success(())
-            },
+            }
         }
     }
 }
@@ -152,13 +154,13 @@ impl Event for FutexWakeEvent<'_> {
     type Success = usize;
     type Error = ();
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-        let Some(queue) = state.local.futex_waiters.get_mut(&FutexPtr::from_mut(self.uaddr))
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let Some(queue) = state
+            .local
+            .futex_waiters
+            .get_mut(&FutexPtr::from_mut(self.uaddr))
         else {
-            return Outcome::Success(0)
+            return Outcome::Success(0);
         };
 
         let mut awoken_threads = Vec::new();
@@ -187,8 +189,18 @@ pub struct FutexRequeueEvent<'a> {
 }
 
 impl<'a> FutexRequeueEvent<'a> {
-    pub fn new(uaddr: &'a mut u32, val: u32, timeout: Option<libc::timespec>, uaddr2: &'a mut u32) -> Self {
-        Self { uaddr, val, timeout, uaddr2 }
+    pub fn new(
+        uaddr: &'a mut u32,
+        val: u32,
+        timeout: Option<libc::timespec>,
+        uaddr2: &'a mut u32,
+    ) -> Self {
+        Self {
+            uaddr,
+            val,
+            timeout,
+            uaddr2,
+        }
     }
 }
 
@@ -196,15 +208,13 @@ impl Event for FutexRequeueEvent<'_> {
     type Success = usize;
     type Error = ();
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-
-        let Some(mut queue) =
-            state.local.futex_waiters.remove(&FutexPtr::from_mut(self.uaddr))
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let Some(mut queue) = state
+            .local
+            .futex_waiters
+            .remove(&FutexPtr::from_mut(self.uaddr))
         else {
-            return Outcome::Success(0)
+            return Outcome::Success(0);
         };
 
         let mut awoken_threads = Vec::new();
@@ -217,7 +227,11 @@ impl Event for FutexRequeueEvent<'_> {
 
         let ret = awoken_threads.len() + queue.len();
 
-        match state.local.futex_waiters.entry(FutexPtr::from_mut(self.uaddr2)) {
+        match state
+            .local
+            .futex_waiters
+            .entry(FutexPtr::from_mut(self.uaddr2))
+        {
             Entry::Occupied(mut o) => o.get_mut().extend(queue),
             Entry::Vacant(v) => {
                 v.insert(queue);
@@ -237,8 +251,20 @@ pub struct FutexCmpRequeueEvent<'a> {
 }
 
 impl<'a> FutexCmpRequeueEvent<'a> {
-    pub fn new(uaddr: &'a mut u32, val: u32, timeout: Option<libc::timespec>, uaddr2: &'a mut u32, val3: u32) -> Self {
-        Self { uaddr, val, timeout, uaddr2, val3 }
+    pub fn new(
+        uaddr: &'a mut u32,
+        val: u32,
+        timeout: Option<libc::timespec>,
+        uaddr2: &'a mut u32,
+        val3: u32,
+    ) -> Self {
+        Self {
+            uaddr,
+            val,
+            timeout,
+            uaddr2,
+            val3,
+        }
     }
 }
 
@@ -246,19 +272,17 @@ impl Event for FutexCmpRequeueEvent<'_> {
     type Success = usize;
     type Error = FutexError;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         if *self.uaddr != self.val3 {
-            return Outcome::Error(FutexError::NotReady)
+            return Outcome::Error(FutexError::NotReady);
         }
 
-        let Some(mut queue) =
-            state.local.futex_waiters.remove(&FutexPtr::from_mut(self.uaddr))
+        let Some(mut queue) = state
+            .local
+            .futex_waiters
+            .remove(&FutexPtr::from_mut(self.uaddr))
         else {
-            return Outcome::Success(0)
+            return Outcome::Success(0);
         };
 
         let mut awakened = Vec::new();
@@ -271,7 +295,11 @@ impl Event for FutexCmpRequeueEvent<'_> {
 
         let ret = awakened.len() + queue.len();
 
-        match state.local.futex_waiters.entry(FutexPtr::from_mut(self.uaddr2)) {
+        match state
+            .local
+            .futex_waiters
+            .entry(FutexPtr::from_mut(self.uaddr2))
+        {
             Entry::Occupied(mut o) => o.get_mut().extend(queue),
             Entry::Vacant(v) => {
                 v.insert(queue);
@@ -292,7 +320,13 @@ pub struct FutexWakeOpEvent<'a> {
 
 impl<'a> FutexWakeOpEvent<'a> {
     pub fn new(uaddr: &'a mut u32, val: u32, val2: u32, uaddr2: &'a mut u32, val3: u32) -> Self {
-        Self { uaddr, val, val2, uaddr2, val3 }
+        Self {
+            uaddr,
+            val,
+            val2,
+            uaddr2,
+            val3,
+        }
     }
 }
 
@@ -300,11 +334,7 @@ impl Event for FutexWakeOpEvent<'_> {
     type Success = usize;
     type Error = FutexError;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let oldval = *self.uaddr2;
 
         let op = self.val3 >> 28;
@@ -321,14 +351,14 @@ impl Event for FutexWakeOpEvent<'_> {
             FUTEX_OP_SHIFT_OR => *self.uaddr2 |= 1 << oparg,
             FUTEX_OP_SHIFT_NAND => *self.uaddr2 &= !(1 << oparg),
             FUTEX_OP_SHIFT_XOR => *self.uaddr2 ^= 1 << oparg,
-            5..=7 | 13..=15 => {
-                return Outcome::Error(FutexError::InvalidValue)
-            }
+            5..=7 | 13..=15 => return Outcome::Error(FutexError::InvalidValue),
             _ => unreachable!(),
         }
 
-        let awakened_1 = if let Some(queue) =
-            state.local.futex_waiters.get_mut(&FutexPtr::from_mut(self.uaddr))
+        let awakened_1 = if let Some(queue) = state
+            .local
+            .futex_waiters
+            .get_mut(&FutexPtr::from_mut(self.uaddr))
         {
             let mut awakened = Vec::new();
             for _ in 0..self.val {
@@ -366,8 +396,10 @@ impl Event for FutexWakeOpEvent<'_> {
         };
 
         if should_wake {
-            let awakened_2 = if let Some(queue) =
-                state.local.futex_waiters.get_mut(&&FutexPtr::from_mut(self.uaddr2))
+            let awakened_2 = if let Some(queue) = state
+                .local
+                .futex_waiters
+                .get_mut(&&FutexPtr::from_mut(self.uaddr2))
             {
                 let mut awoken_threads = Vec::new();
                 for _ in 0..self.val2 {
@@ -405,7 +437,13 @@ pub struct FutexWaitBitsetEvent<'a> {
 
 impl<'a> FutexWaitBitsetEvent<'a> {
     pub fn new(uaddr: &'a mut u32, val: u32, duration: WaitDuration, val3: u32) -> Self {
-        Self { uaddr, val, duration, val3, state: FutexWaitState::Start }
+        Self {
+            uaddr,
+            val,
+            duration,
+            val3,
+            state: FutexWaitState::Start,
+        }
     }
 }
 
@@ -413,10 +451,7 @@ impl Event for FutexWaitBitsetEvent<'_> {
     type Success = ();
     type Error = FutexError;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let futex_ptr = FutexPtr::from_mut(self.uaddr);
 
         match self.state {
@@ -424,7 +459,7 @@ impl Event for FutexWaitBitsetEvent<'_> {
                 self.state = FutexWaitState::Finish;
 
                 if *self.uaddr != self.val {
-                    return Outcome::Error(FutexError::NotReady)
+                    return Outcome::Error(FutexError::NotReady);
                 }
 
                 match state.local.futex_waiters.entry(futex_ptr) {
@@ -460,12 +495,12 @@ impl Event for FutexWaitBitsetEvent<'_> {
                         };
 
                         log::debug!("futex bitset wait timed out after {:?}", t);
-                        return Outcome::Error(FutexError::TimedOut)
+                        return Outcome::Error(FutexError::TimedOut);
                     }
                 }
 
                 Outcome::Success(())
-            },
+            }
         }
     }
 }
@@ -486,22 +521,20 @@ impl Event for FutexWakeBitsetEvent<'_> {
     type Success = usize;
     type Error = ();
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-        let Some(queue) = state.local.futex_waiters.get_mut(&FutexPtr::from_mut(self.uaddr))
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let Some(queue) = state
+            .local
+            .futex_waiters
+            .get_mut(&FutexPtr::from_mut(self.uaddr))
         else {
-            return Outcome::Success(0)
+            return Outcome::Success(0);
         };
 
         let mut awakened = Vec::new();
 
         for _ in 0..queue.len() {
             match queue.pop_front() {
-                Some((bitmap, thread)) if (bitmap & self.val3) != 0 => {
-                    awakened.push(thread)
-                }
+                Some((bitmap, thread)) if (bitmap & self.val3) != 0 => awakened.push(thread),
                 Some(entry) => queue.push_back(entry),
                 None => break,
             }
@@ -510,7 +543,10 @@ impl Event for FutexWakeBitsetEvent<'_> {
         let ret = awakened.len();
 
         if queue.is_empty() {
-            state.local.futex_waiters.remove(&FutexPtr::from_mut(self.uaddr));
+            state
+                .local
+                .futex_waiters
+                .remove(&FutexPtr::from_mut(self.uaddr));
         }
 
         for thread in awakened {

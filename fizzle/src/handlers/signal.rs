@@ -128,8 +128,6 @@ pub enum SigDisposition {
     Action(SigAction),
 }
 
-
-
 pub type SigHandler = unsafe extern "C" fn(libc::c_int);
 pub type SigAction = unsafe extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void);
 
@@ -155,7 +153,7 @@ impl ThreadSigInfo {
     pub fn inherit(sigmask: SignalSet) -> Self {
         Self {
             raised: SignalSet::empty(), // Raised signals are not inherited
-            blocked: sigmask, // Blocked signals are inherited
+            blocked: sigmask,           // Blocked signals are inherited
             polled: None,
         }
     }
@@ -180,7 +178,7 @@ pub struct ProcSigInfo {
     /// that cannot be immediately handled as they are blocked.
     pub raised: SignalSet,
     /// The handler to be run when the signal is received.
-    /// 
+    ///
     // According to `pthreads(7)`, POSIX.1 specifies that threads of a process should all share
     // signal disposition; this disposition is indicated by the `SigCallback` enum.
     pub handlers: SignalHandlers,

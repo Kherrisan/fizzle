@@ -27,7 +27,7 @@ hook_macros::hook! {
         match Scheduler::handle_event(&mut ctx, EventfdCreateEvent::new(initval, is_semaphore, close_on_exec, nonblocking)) {
             Ok(fd) => {
                 crate::strace!("eventfd(initval={}, flags={}) -> {}", initval, flags_fmt, fd);
-                fd 
+                fd
             },
             Err(_) => unreachable!(),
         }

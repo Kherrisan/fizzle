@@ -58,22 +58,24 @@ pub struct SocketInfo {
     // addresses rather quickly given our current scheme. If this becomes an issue, consider
     // revising this bit of code.
     /// The local address the socket is bound to.
-    /// 
+    ///
     /// By default, this is an ephemeral address assigned at socket creation.
     pub local_addr: LocalAddress,
     pub state: SocketState,
 }
 
 impl SocketInfo {
-    pub fn new_unassociated(family: AddressFamily, socktype: SocketType, protocol: TransportProtocol) -> Self {
+    pub fn new_unassociated(
+        family: AddressFamily,
+        socktype: SocketType,
+        protocol: TransportProtocol,
+    ) -> Self {
         Self {
             fd_count: 1,
             socktype,
             protocol,
             local_addr: LocalAddress::Ephemeral(family),
-            state: SocketState::Unassociated(UnassociatedSocket {
-                reuse_port: false,
-            }),
+            state: SocketState::Unassociated(UnassociatedSocket { reuse_port: false }),
         }
     }
 

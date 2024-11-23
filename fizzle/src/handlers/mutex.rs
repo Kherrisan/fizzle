@@ -1,7 +1,7 @@
-use std::{mem, ptr, thread};
 use std::collections::{hash_map::Entry, VecDeque};
 use std::fmt::Display;
 use std::thread::ThreadId;
+use std::{mem, ptr, thread};
 
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
@@ -108,12 +108,13 @@ impl Event for MutexInitEvent {
     type Success = ();
     type Error = ();
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-
-        if state.local.mutexes.insert(self.lock, MutexInfo::new(self.kind, self.robustness)).is_some() {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        if state
+            .local
+            .mutexes
+            .insert(self.lock, MutexInfo::new(self.kind, self.robustness))
+            .is_some()
+        {
             panic!("[UB] `pthread_mutex_init()` called twice on one mutex");
         }
 
@@ -127,9 +128,7 @@ pub struct MutexDestroyEvent {
 
 impl MutexDestroyEvent {
     pub fn new(lock: MutexPtr) -> Self {
-        Self {
-            lock,
-        }
+        Self { lock }
     }
 }
 
@@ -137,11 +136,7 @@ impl Event for MutexDestroyEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let Some(mutex_info) = state.local.mutexes.get(&self.lock) else {
             panic!("[UB] `pthread_mutex_destroy()` called on uninitialized mutex");
         };
@@ -180,10 +175,7 @@ impl Event for MutexLockEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let current_thread = thread::current().id();
 
         match self.state {
@@ -201,7 +193,7 @@ impl Event for MutexLockEvent {
                                 // Make the current thread the owner of the mutex
                                 mutex_info.queued_threads.push_front(current_thread);
 
-                                return Outcome::Continue // Go to Finish state to return poisoned lock
+                                return Outcome::Continue; // Go to Finish state to return poisoned lock
                             }
                             MutexStatus::Unusable => return Outcome::Continue, // Go to Finish state
                         }
@@ -210,23 +202,24 @@ impl Event for MutexLockEvent {
                             // Mutex is immediately available
                             mutex_info.queued_threads.push_back(current_thread);
 
-                            return Outcome::Continue
+                            return Outcome::Continue;
                         }
-                        
+
                         let holding_thread = *mutex_info.queued_threads.front().unwrap();
                         if holding_thread == current_thread {
                             match mutex_info.kind {
                                 // Suspend calling thread forever
                                 MutexKind::Fast => {
-                                    log::error!("[Deadlock] Thread locking a mutex it already holds");
+                                    log::error!(
+                                        "[Deadlock] Thread locking a mutex it already holds"
+                                    );
                                     Outcome::Yield(None)
-                                },
+                                }
                                 // Return successfully immediately
                                 MutexKind::Recursive => Outcome::Continue,
                                 // Return a deadlock error
                                 MutexKind::ErrorChecking => Outcome::Error(Errno::EDEADLK),
                             }
-
                         } else {
                             match self.wait {
                                 WaitDuration::Immediate => Outcome::Error(Errno::EBUSY),
@@ -243,7 +236,7 @@ impl Event for MutexLockEvent {
                     }
                     Entry::Vacant(v) => {
                         let Some(kind) = static_mutex_kind(self.lock) else {
-                            return Outcome::Error(Errno::EINVAL) // TODO: is this einval correct?
+                            return Outcome::Error(Errno::EINVAL); // TODO: is this einval correct?
                         };
 
                         // This was a statically-initialized mutex--add it to our queue (and leave locked)
@@ -251,7 +244,7 @@ impl Event for MutexLockEvent {
                         mutex_info.queued_threads.push_back(current_thread);
 
                         v.insert(mutex_info);
-                        return Outcome::Continue // Go to Finish state
+                        return Outcome::Continue; // Go to Finish state
                     }
                 }
             }
@@ -263,16 +256,16 @@ impl Event for MutexLockEvent {
                 if mutex.queued_threads.front() != Some(&current_thread) {
                     // This thread isn't designated as the owner of the mutex...
 
-                    if mutex.status == MutexStatus::Unusable{
+                    if mutex.status == MutexStatus::Unusable {
                         // ...because the thread was poisoned and not recovered.
-                        return Outcome::Error(Errno::ENOTRECOVERABLE)
+                        return Outcome::Error(Errno::ENOTRECOVERABLE);
                     }
 
                     // ...because there was a timeout.
                     for (idx, thread_id) in mutex.queued_threads.iter().enumerate() {
                         if *thread_id == current_thread {
                             mutex.queued_threads.remove(idx).unwrap();
-                            break
+                            break;
                         }
                     }
 
@@ -282,19 +275,31 @@ impl Event for MutexLockEvent {
                     };
 
                     log::debug!("mutex timed lock timed out after {:?}", t);
-                    return Outcome::Error(Errno::ETIMEDOUT)
+                    return Outcome::Error(Errno::ETIMEDOUT);
                 }
 
                 match mutex.status {
                     MutexStatus::Ready => {
                         // Mark the thread as being owned by the current process
-                        state.local.pthreads.get_mut(unsafe { &libc::pthread_self() }).unwrap().held_mutexes.insert(self.lock);
-                        
+                        state
+                            .local
+                            .pthreads
+                            .get_mut(unsafe { &libc::pthread_self() })
+                            .unwrap()
+                            .held_mutexes
+                            .insert(self.lock);
+
                         Outcome::Success(())
                     }
                     MutexStatus::Poisoned => {
                         // Mark the thread as being owned by the current process
-                        state.local.pthreads.get_mut(unsafe { &libc::pthread_self() }).unwrap().held_mutexes.insert(self.lock);
+                        state
+                            .local
+                            .pthreads
+                            .get_mut(unsafe { &libc::pthread_self() })
+                            .unwrap()
+                            .held_mutexes
+                            .insert(self.lock);
 
                         Outcome::Error(Errno::EOWNERDEAD)
                     }
@@ -312,15 +317,27 @@ pub fn static_mutex_kind(mutex: MutexPtr) -> Option<MutexKind> {
 
     // We need to find out if this lock is statically-initialized
     unsafe {
-        if libc::memcmp(mutex.to_mut_ptr() as *const libc::c_void, ptr::addr_of!(FAST_INIT) as *const libc::c_void, mem::size_of::<libc::pthread_mutex_t>()) == 0 {
+        if libc::memcmp(
+            mutex.to_mut_ptr() as *const libc::c_void,
+            ptr::addr_of!(FAST_INIT) as *const libc::c_void,
+            mem::size_of::<libc::pthread_mutex_t>(),
+        ) == 0
+        {
             Some(MutexKind::Fast)
-
-        } else if libc::memcmp(mutex.to_mut_ptr() as *const libc::c_void, ptr::addr_of!(RECURSIVE_INIT) as *const libc::c_void, mem::size_of::<libc::pthread_mutex_t>()) == 0 {
+        } else if libc::memcmp(
+            mutex.to_mut_ptr() as *const libc::c_void,
+            ptr::addr_of!(RECURSIVE_INIT) as *const libc::c_void,
+            mem::size_of::<libc::pthread_mutex_t>(),
+        ) == 0
+        {
             Some(MutexKind::Recursive)
-
-        } else if libc::memcmp(mutex.to_mut_ptr() as *const libc::c_void, ptr::addr_of!(ERRORCHECK_INIT) as *const libc::c_void, mem::size_of::<libc::pthread_mutex_t>()) == 0 {
+        } else if libc::memcmp(
+            mutex.to_mut_ptr() as *const libc::c_void,
+            ptr::addr_of!(ERRORCHECK_INIT) as *const libc::c_void,
+            mem::size_of::<libc::pthread_mutex_t>(),
+        ) == 0
+        {
             Some(MutexKind::ErrorChecking)
-
         } else {
             None
         }
@@ -333,9 +350,7 @@ pub struct MutexUnlockEvent {
 
 impl MutexUnlockEvent {
     pub fn new(lock: MutexPtr) -> Self {
-        Self {
-            lock,
-        }
+        Self { lock }
     }
 }
 
@@ -343,23 +358,20 @@ impl Event for MutexUnlockEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let Some(mutex_info) = state.local.mutexes.get_mut(&self.lock) else {
             // panic!("[UB] `pthread_mutex_unlock()` called on uninitialized mutex")
-            return Outcome::Error(Errno::EINVAL)
+            return Outcome::Error(Errno::EINVAL);
         };
 
         let Some(popped_thread) = mutex_info.queued_threads.front().cloned() else {
             // panic!("[UB] `pthread_mutex_unlock()` called when mutex already unlocked")
-            return Outcome::Error(Errno::EINVAL)
+            return Outcome::Error(Errno::EINVAL);
         };
 
         if popped_thread != thread::current().id() {
             if mutex_info.kind == MutexKind::ErrorChecking {
-                return Outcome::Error(Errno::EINVAL)
+                return Outcome::Error(Errno::EINVAL);
             } else {
                 panic!("[UB] `pthread_mutex_unlock()` called by a thread not currently holding the mutex")
             }
@@ -368,7 +380,13 @@ impl Event for MutexUnlockEvent {
         mutex_info.queued_threads.pop_front();
 
         // Mark the thread as no longer being owned by the current process
-        state.local.pthreads.get_mut(unsafe { &libc::pthread_self() }).unwrap().held_mutexes.remove(&self.lock);
+        state
+            .local
+            .pthreads
+            .get_mut(unsafe { &libc::pthread_self() })
+            .unwrap()
+            .held_mutexes
+            .remove(&self.lock);
 
         match mutex_info.status {
             MutexStatus::Ready => (),
@@ -383,7 +401,7 @@ impl Event for MutexUnlockEvent {
                     state.mark_thread_ready(thread_id);
                 }
 
-                return Outcome::Success(())
+                return Outcome::Success(());
             }
             MutexStatus::Unusable => unreachable!(),
         }
@@ -402,9 +420,7 @@ pub struct MutexConsistentEvent {
 
 impl MutexConsistentEvent {
     pub fn new(lock: MutexPtr) -> Self {
-        Self {
-            lock,
-        }
+        Self { lock }
     }
 }
 
@@ -412,16 +428,13 @@ impl Event for MutexConsistentEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let Some(mutex_info) = state.local.mutexes.get_mut(&self.lock) else {
             panic!("[UB] `pthread_mutex_consistent()` called on uninitialized mutex")
         };
 
         if mutex_info.robustness != MutexRobustness::Robust {
-            return Outcome::Error(Errno::EINVAL)
+            return Outcome::Error(Errno::EINVAL);
         }
 
         // TODO: is this important to enforce? Man page isn't clear...
@@ -440,7 +453,7 @@ impl Event for MutexConsistentEvent {
             MutexStatus::Poisoned => {
                 mutex_info.status = MutexStatus::Ready;
                 Outcome::Success(())
-            },
+            }
             MutexStatus::Unusable => Outcome::Error(Errno::EINVAL),
         }
     }

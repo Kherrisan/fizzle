@@ -1,7 +1,9 @@
 //! Hooks for general functions that can be applied to any file descriptor.
 //!
 
-use crate::handlers::descriptor::{DescriptorCloseEvent, DescriptorDuplicateEvent, DescriptorId, DescriptorInfo};
+use crate::handlers::descriptor::{
+    DescriptorCloseEvent, DescriptorDuplicateEvent, DescriptorId, DescriptorInfo,
+};
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
 

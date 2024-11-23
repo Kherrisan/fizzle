@@ -12,6 +12,8 @@ use crate::hook_macros;
 
 // TODO: need to DRY out this code...
 
+// TODO: sigsetjmp, siglongjmp
+
 hook_macros::hook! {
     unsafe fn sigwait(
         set: *const libc::sigset_t,
@@ -384,25 +386,6 @@ hook_macros::hook! {
         *set = state.global.signals.get(&process_id).unwrap().raised.to_sigset();
 
         0
-    }
-}
-
-hook_macros::hook! {
-    unsafe fn setitimer(
-        _which: libc::c_int,
-        _new_value: *mut libc::itimerval,
-        _old_value: *mut libc::itimerval
-    ) -> libc::c_int => fizzle_setitimer(_ctx) {
-        panic!("setitimer() unimplemented");
-    }
-}
-
-hook_macros::hook! {
-    unsafe fn getitimer(
-        _which: libc::c_int,
-        _curr_value: *mut libc::itimerval
-    ) -> libc::c_int => fizzle_getitimer(_ctx) {
-        panic!("getitimer() unimplemented");
     }
 }
 

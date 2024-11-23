@@ -1,4 +1,3 @@
-
 use rand::Fill;
 
 use crate::scheduler::{Event, Outcome};
@@ -18,10 +17,7 @@ impl Event for GetEntropyEvent<'_> {
     type Success = usize;
     type Error = ();
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         // TODO: this is a naive approach--make better later
 
         if state.global.fuzz_input.is_empty() {
@@ -30,7 +26,6 @@ impl Event for GetEntropyEvent<'_> {
             // This *should* always fill properly
             self.buf.try_fill(&mut state.global.prefuzz_rng).unwrap();
             Outcome::Success(self.buf.len())
-
         } else {
             // Fill directly with fuzzing input
 
@@ -40,7 +35,7 @@ impl Event for GetEntropyEvent<'_> {
                 self.buf[idx..idx + fuzz_len].copy_from_slice(state.global.fuzz_input.data());
                 idx += fuzz_len;
             }
-            
+
             let rem = self.buf.len() - idx;
             if rem > 0 {
                 self.buf[idx..].copy_from_slice(&state.global.fuzz_input.data()[..rem]);

@@ -38,10 +38,10 @@ pub const FIZZLE_MAX_PROCESSES: usize = 128;
 pub const FIZZLE_MAX_EVENTFDS: usize = 128;
 pub const FIZZLE_MAX_THREADS: usize = 256;
 /// The maximum number of paths to files fizzle emulates.
-pub const FIZZLE_MAX_FILE_PATHS: usize = 512;
+pub const FIZZLE_MAX_FILE_PATHS: usize = 128;
 /// The maximum number of files fizzle can emulate.
-pub const FIZZLE_MAX_FILES: usize = 512;
-pub const FIZZLE_MAX_DIRS: usize = 256;
+pub const FIZZLE_MAX_FILES: usize = 128;
+pub const FIZZLE_MAX_DIRS: usize = 64;
 pub const FIZZLE_MAX_PIPES: usize = 256;
 pub const FIZZLE_MAX_MESSAGE_QUEUES: usize = 256;
 pub const FIZZLE_BUFFER_LENGTH: usize = 262_144; // 256 KB per buffer (twice the Linux default for `/proc/sys/net/ipv4/tcp_rmem`)

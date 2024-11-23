@@ -1,10 +1,10 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
-use std::{ptr, thread};
 use std::hash::{Hash, Hasher};
 use std::mem::MaybeUninit;
 use std::thread::ThreadId;
+use std::{ptr, thread};
 
 use fxhash::FxBuildHasher;
 
@@ -165,9 +165,7 @@ extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void {
     // SAFETY: only one ctx at the time (so that it in turn enforces only one `state` alias at a time...)
     let mut ctx = unsafe { state::fizzle_singleton() };
 
-    let wrapped_arg = unsafe {
-        (arg as *mut PTCreateWrapper).as_mut().unwrap()
-    };
+    let wrapped_arg = unsafe { (arg as *mut PTCreateWrapper).as_mut().unwrap() };
 
     ctx.init_new_thread(wrapped_arg.sigmask, wrapped_arg.detached);
 
@@ -189,7 +187,12 @@ pub struct ThreadCreateEvent {
 }
 
 impl ThreadCreateEvent {
-    pub fn new(pthread: *mut libc::pthread_t, attrs: *const libc::pthread_attr_t, f: PTFunction, arg: *mut libc::c_void) -> Self {
+    pub fn new(
+        pthread: *mut libc::pthread_t,
+        attrs: *const libc::pthread_attr_t,
+        f: PTFunction,
+        arg: *mut libc::c_void,
+    ) -> Self {
         // If the attributes contain a sigmask, note it (but remove the actual sigmask)
         let sigmask = match attrs.is_null() {
             true => None,
@@ -204,7 +207,10 @@ impl ThreadCreateEvent {
             false
         } else {
             let mut detach_state: libc::c_int = 0;
-            assert_eq!(unsafe { pthread_attr_getdetachstate(attrs, ptr::addr_of_mut!(detach_state)) }, 0);
+            assert_eq!(
+                unsafe { pthread_attr_getdetachstate(attrs, ptr::addr_of_mut!(detach_state)) },
+                0
+            );
             detach_state != 0
         };
 
@@ -215,14 +221,22 @@ impl ThreadCreateEvent {
             detached,
         };
 
-        Self { pthread, attrs, wrapper, state: ThreadCreateState::Start }
+        Self {
+            pthread,
+            attrs,
+            wrapper,
+            state: ThreadCreateState::Start,
+        }
     }
 
     fn get_attr_sigmask(attrs: *const libc::pthread_attr_t) -> libc::sigset_t {
         let mut set = MaybeUninit::<libc::sigset_t>::uninit();
-        
+
         unsafe {
-            assert_eq!(pthread_attr_getsigmask_np(attrs, ptr::addr_of_mut!(set) as *mut libc::sigset_t), 0);
+            assert_eq!(
+                pthread_attr_getsigmask_np(attrs, ptr::addr_of_mut!(set) as *mut libc::sigset_t),
+                0
+            );
             set.assume_init()
         }
     }
@@ -244,10 +258,7 @@ impl Event for ThreadCreateEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match self.state {
             ThreadCreateState::Start => {
                 self.state = ThreadCreateState::Finish;
@@ -258,10 +269,14 @@ impl Event for ThreadCreateEvent {
                     state.global.shared_mem_initialized = true;
 
                     #[cfg(feature = "pcr")]
-                    unsafe { crate::__afl_sharedmem_fuzzing = 1; }
+                    unsafe {
+                        crate::__afl_sharedmem_fuzzing = 1;
+                    }
 
                     log::debug!("calling __afl_manual_init()");
-                    unsafe { crate::__afl_manual_init(); }
+                    unsafe {
+                        crate::__afl_manual_init();
+                    }
                     log::debug!("__afl_manual_init finished");
                 }
 
@@ -269,8 +284,14 @@ impl Event for ThreadCreateEvent {
                 state.mark_thread_ready(thread::current().id());
 
                 let res = unsafe {
-                    libc::pthread_create(self.pthread, self.attrs, pt_wrapper_fn, ptr::addr_of_mut!(self.wrapper) as *mut libc::c_void)
+                    libc::pthread_create(
+                        self.pthread,
+                        self.attrs,
+                        pt_wrapper_fn,
+                        ptr::addr_of_mut!(self.wrapper) as *mut libc::c_void,
+                    )
                 };
+                // SAFETY: `state` must not be used after here
 
                 match res {
                     // The newly-created thread executes now, so this thread pauses
@@ -281,7 +302,6 @@ impl Event for ThreadCreateEvent {
             }
             ThreadCreateState::Finish => Outcome::Success(()),
         }
-        
     }
 }
 
@@ -299,10 +319,7 @@ impl Event for ThreadExitEvent {
     type Success = ();
     type Error = ();
 
-    fn run(
-        &mut self,
-        _state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         Outcome::TerminateThread(TerminationMethod::ThreadExit(self.retval))
     }
 }
@@ -320,7 +337,11 @@ pub struct ThreadJoinEvent {
 
 impl ThreadJoinEvent {
     pub fn new(thread: libc::pthread_t, retval: *mut *mut libc::c_void) -> Self {
-        Self { thread, retval, state: ThreadJoinState::Start }
+        Self {
+            thread,
+            retval,
+            state: ThreadJoinState::Start,
+        }
     }
 }
 
@@ -328,16 +349,13 @@ impl Event for ThreadJoinEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match self.state {
             ThreadJoinState::Start => {
                 self.state = ThreadJoinState::Finish;
 
                 let Some(target_thread) = state.local.pthreads.remove(&self.thread) else {
-                    return Outcome::Error(Errno::EDEADLK)
+                    return Outcome::Error(Errno::EDEADLK);
                 };
 
                 if !state.local.terminated_threads.contains(&target_thread.id) {
@@ -345,13 +363,12 @@ impl Event for ThreadJoinEvent {
                     match state.local.awaiting_thread_death.entry(target_thread.id) {
                         Entry::Occupied(mut o) => o.get_mut().push(thread::current().id()),
                         Entry::Vacant(v) => {
-                            v.insert(vec![ thread::current().id() ]);
+                            v.insert(vec![thread::current().id()]);
                         }
                     }
 
                     drop(state);
                     Outcome::Yield(None)
-
                 } else {
                     state.local.terminated_threads.remove(&target_thread.id);
                     Outcome::Continue
@@ -362,12 +379,10 @@ impl Event for ThreadJoinEvent {
                 let ret = unsafe { libc::pthread_join(self.thread, self.retval) };
                 match ret {
                     0.. => Outcome::Success(()),
-                    ..=-1 => Outcome::Error(Errno::get_errno())
+                    ..=-1 => Outcome::Error(Errno::get_errno()),
                 }
             }
         }
-
-
     }
 }
 
@@ -385,11 +400,7 @@ impl Event for ThreadDetachEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match state.local.pthreads.get_mut(&self.thread) {
             None => Outcome::Error(Errno::ESRCH),
             Some(thread_info) => {
@@ -415,7 +426,10 @@ pub struct ThreadCancelEvent {
 
 impl ThreadCancelEvent {
     pub fn new(thread: libc::pthread_t) -> Self {
-        Self { thread, state: ThreadCancelState::Start }
+        Self {
+            thread,
+            state: ThreadCancelState::Start,
+        }
     }
 }
 
@@ -423,31 +437,28 @@ impl Event for ThreadCancelEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match self.state {
             ThreadCancelState::Start => {
                 self.state = ThreadCancelState::Finish;
 
                 let Some(target_thread) = state.local.pthreads.get_mut(&self.thread) else {
-                    return Outcome::Error(Errno::ESRCH)
+                    return Outcome::Error(Errno::ESRCH);
                 };
 
                 if !target_thread.cancellable {
                     target_thread.cancel_requested = true;
-                    return Outcome::Success(())
-                }       
+                    return Outcome::Success(());
+                }
 
                 if self.thread == unsafe { libc::pthread_self() } {
-                    return Outcome::TerminateThread(TerminationMethod::Cancellation)
+                    return Outcome::TerminateThread(TerminationMethod::Cancellation);
                 }
 
                 let thread_id = target_thread.id;
                 if !target_thread.cancellable {
                     target_thread.cancel_requested = true;
-                    return Outcome::Success(())
+                    return Outcome::Success(());
                 }
 
                 state.local.cancelling = Some(thread_id);
@@ -458,11 +469,8 @@ impl Event for ThreadCancelEvent {
                 state.mark_thread_immediately_ready(thread::current().id());
                 Outcome::Yield(None)
             }
-            ThreadCancelState::Finish => {
-                Outcome::Success(())
-            }
+            ThreadCancelState::Finish => Outcome::Success(()),
         }
-
     }
 }
 
@@ -481,14 +489,16 @@ impl Event for ThreadCleanupPushEvent {
     type Success = ();
     type Error = ();
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-        state.local.pthread_cleanup.get_mut(&thread::current().id()).unwrap().push_back(PThreadRoutine {
-            function: self.routine,
-            arg: Some(self.arg),
-        });
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        state
+            .local
+            .pthread_cleanup
+            .get_mut(&thread::current().id())
+            .unwrap()
+            .push_back(PThreadRoutine {
+                function: self.routine,
+                arg: Some(self.arg),
+            });
 
         Outcome::Success(())
     }
@@ -508,13 +518,16 @@ impl Event for ThreadCleanupPopEvent {
     type Success = Option<PThreadRoutine>;
     type Error = ();
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-        if let Some(routine) = state.local.pthread_cleanup.get_mut(&thread::current().id()).unwrap().pop_front() {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        if let Some(routine) = state
+            .local
+            .pthread_cleanup
+            .get_mut(&thread::current().id())
+            .unwrap()
+            .pop_front()
+        {
             if self.execute {
-                return Outcome::Success(Some(routine))
+                return Outcome::Success(Some(routine));
             }
         }
         Outcome::Success(None)
@@ -523,7 +536,7 @@ impl Event for ThreadCleanupPopEvent {
 
 pub struct ThreadKeyCreateEvent {
     key: *mut libc::pthread_key_t,
-    destructor: PTDestructor
+    destructor: PTDestructor,
 }
 
 impl ThreadKeyCreateEvent {
@@ -536,18 +549,23 @@ impl Event for ThreadKeyCreateEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let ret = unsafe { libc::pthread_key_create(self.key, None) };
         if ret == 0 {
             let key = unsafe { *self.key };
-            state.local.pthread_keys.insert(key, PThreadRoutine { function: self.destructor, arg: None });
-            state.local.pthread_key_values.insert(key, HashMap::with_hasher(Default::default()));
+            state.local.pthread_keys.insert(
+                key,
+                PThreadRoutine {
+                    function: self.destructor,
+                    arg: None,
+                },
+            );
+            state
+                .local
+                .pthread_key_values
+                .insert(key, HashMap::with_hasher(Default::default()));
 
             Outcome::Success(())
-
         } else {
             Outcome::Error(Errno::get_errno())
         }
@@ -568,17 +586,13 @@ impl Event for ThreadKeyDeleteEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let ret = unsafe { libc::pthread_key_delete(self.key) };
         if ret == 0 {
             state.local.pthread_keys.remove(&self.key);
             state.local.pthread_key_values.remove(&self.key);
 
             Outcome::Success(())
-
         } else {
             Outcome::Error(Errno::get_errno())
         }
@@ -606,18 +620,13 @@ impl Event for ThreadYieldEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match self.state {
             ThreadYieldState::Start => {
                 state.mark_thread_ready(thread::current().id());
                 Outcome::Yield(None)
             }
-            ThreadYieldState::Finish => {
-                Outcome::Success(())
-            }
+            ThreadYieldState::Finish => Outcome::Success(()),
         }
     }
 }
@@ -628,9 +637,7 @@ pub struct ThreadCancellableEvent {
 
 impl ThreadCancellableEvent {
     pub fn new(cancellable: bool) -> Self {
-        Self {
-            cancellable,
-        }
+        Self { cancellable }
     }
 }
 
@@ -638,10 +645,7 @@ impl Event for ThreadCancellableEvent {
     type Success = bool;
     type Error = ();
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let pthread = unsafe { libc::pthread_self() };
         let thread_info = state.local.pthreads.get_mut(&pthread).unwrap();
 
@@ -662,9 +666,7 @@ pub struct ThreadCancelTypeEvent {
 
 impl ThreadCancelTypeEvent {
     pub fn new(cancel_type: ThreadCancelType) -> Self {
-        Self {
-            cancel_type,
-        }
+        Self { cancel_type }
     }
 }
 
@@ -672,10 +674,7 @@ impl Event for ThreadCancelTypeEvent {
     type Success = ThreadCancelType;
     type Error = ();
 
-    fn run(
-        &mut self,
-        state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let pthread = unsafe { libc::pthread_self() };
         let thread_info = state.local.pthreads.get_mut(&pthread).unwrap();
 
@@ -692,11 +691,7 @@ impl Event for ThreadTestCancelEvent {
     type Success = ();
     type Error = ();
 
-    fn run(
-        &mut self,
-        _state: &mut FizzleState,
-    ) -> Outcome<Self::Success, Self::Error> {
-
+    fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         // Cancellation happens immediately in Fizzle, so this will always return
         Outcome::Success(())
     }

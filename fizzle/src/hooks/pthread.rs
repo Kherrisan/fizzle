@@ -1,10 +1,10 @@
-use std::{ptr, thread};
 use std::time::Duration;
+use std::{ptr, thread};
 
 use crate::errno::Errno;
 use crate::handlers::barrier::*;
-use crate::handlers::mutex::*;
 use crate::handlers::condvar::*;
+use crate::handlers::mutex::*;
 use crate::handlers::rwlock::*;
 use crate::handlers::spinlock::*;
 use crate::handlers::thread::*;
@@ -154,8 +154,6 @@ hook_macros::hook! {
         crate::strace!("pthread_cleanup_pop(execute={}) -> 0", execute);
     }
 }
-
-
 
 hook_macros::hook! {
     unsafe fn pthread_key_create(
@@ -400,7 +398,7 @@ hook_macros::hook! {
     unsafe fn pthread_testcancel(
     ) -> libc::c_int => fizzle_pthread_testcancel(ctx) {
         crate::strace!("pthread_testcancel() -> ...");
-        
+
         match Scheduler::handle_event(&mut ctx, ThreadTestCancelEvent) {
             Ok(()) => {
                 crate::strace!("pthread_testcancel() -> 0");
@@ -922,7 +920,7 @@ hook_macros::hook! {
 
         let (pshared, kind) = if attr.is_null() {
             crate::strace!("pthread_rwlock_init(rwlock={:?}, attr={{}}) -> ...", rwlock);
-            // Set default values         
+            // Set default values
             (false, RwLockKind::PreferReader)
         } else {
             let mut pshared: libc::c_int = 0;
@@ -1231,7 +1229,7 @@ hook_macros::hook! {
 
         let pshared = if attr.is_null() {
             crate::strace!("pthread_barrier_init(barrier={:?}, attr=NULL, count={}) -> ...", barrier, count);
-            // Set default values         
+            // Set default values
             false
 
         } else {
