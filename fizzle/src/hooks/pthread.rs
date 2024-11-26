@@ -1304,6 +1304,22 @@ hook_macros::hook! {
     }
 }
 
+hook_macros::hook! {
+    unsafe fn gettid(
+    ) -> libc::pid_t => fizzle_gettid(ctx) {
+
+        crate::strace!("gettid() -> ...");
+        match Scheduler::handle_event(&mut ctx, ThreadGetIdEvent) {
+            Ok(tid) => {
+                crate::strace!("gettid() -> {}", tid);
+                tid
+            },
+            Err(()) => unreachable!(),
+        }
+
+    }
+}
+
 // TODO: where should this go?
 hook_macros::hook! {
     unsafe fn setns(

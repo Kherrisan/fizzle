@@ -33,8 +33,6 @@ pub const FIZZLE_MAX_ANCILLARY: usize = 65536;
 pub const FIZZLE_MIN_CONNECTIONLESS: usize =
     65536 + mem::size_of::<libc::sockaddr_storage>() + FIZZLE_MAX_ANCILLARY;
 
-pub const FIZZLE_MAX_PROCESSES: usize = 128;
-
 pub const FIZZLE_MAX_EVENTFDS: usize = 128;
 pub const FIZZLE_MAX_THREADS: usize = 256;
 /// The maximum number of paths to files fizzle emulates.
@@ -65,3 +63,17 @@ pub const FIZZLE_EPHEMERAL_PORT_START: u16 = 32768;
 pub const FIZZLE_EPHEMERAL_PORT_END: u16 = 61000;
 
 pub const FIZZLE_MAX_PLUGIN_STREAMS: usize = 256;
+
+/// The maximum Process ID that may be used. Note that PIDs 0 and 1 are reserved, so the real
+/// maximum number of processes is 2 less than this.
+pub const FIZZLE_MAX_PROCESSES: usize = 128;
+/// The maximum number of threads in a parent process that can be waiting on a given child.
+pub const FIZZLE_MAX_WAITING_PARENTS: usize = 4;
+/// The maximum number of processes that have exited and are waiting to be reaped by a parent.
+pub const FIZZLE_MAX_DEAD_PROCESSES: usize = 16;
+/// The maximum number of process groups (`pgid`) that may be created within a fizzle context.
+pub const FIZZLE_MAX_PROCESS_GROUPS: usize = 16;
+/// The maximum number of processes that may be part of a process group.
+pub const FIZZLE_MAX_PROCESS_GROUP_SIZE: usize = 16;
+/// The maximum number of child processes a parent may have.
+pub const FIZZLE_MAX_CHILD_PROCESSES: usize = 16;

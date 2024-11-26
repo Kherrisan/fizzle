@@ -508,7 +508,7 @@ pub(crate) mod private {
     use crate::handlers::plugin_module::PluginId;
     use crate::handlers::polled::PolledId;
     use crate::handlers::poller::PollerId;
-    use crate::handlers::process::ProcessId;
+    use crate::handlers::process::{ProcessGroupId, ProcessId};
     use crate::handlers::semaphore::SemaphoreId;
     use crate::handlers::socket::SocketId;
     use std::mem;
@@ -539,12 +539,12 @@ pub(crate) mod private {
 
     impl InnerUsize for DescriptorId {
         fn to_usize(&self) -> usize {
-            // SAFETY: `BufferId` is a repr(transparent) usize
+            // SAFETY: `DescriptorId` is a repr(transparent) usize
             unsafe { mem::transmute_copy(self) }
         }
 
         fn from_usize(val: usize) -> Self {
-            // SAFETY: `BufferId` is a repr(transparent) usize
+            // SAFETY: `DescriptorId` is a repr(transparent) usize
             unsafe { mem::transmute(val) }
         }
     }
@@ -563,72 +563,72 @@ pub(crate) mod private {
 
     impl InnerUsize for EpollId {
         fn to_usize(&self) -> usize {
-            // SAFETY: `DirectoryId` is a repr(transparent) usize
+            // SAFETY: `EpollId` is a repr(transparent) usize
             unsafe { mem::transmute_copy(self) }
         }
 
         fn from_usize(val: usize) -> Self {
-            // SAFETY: `DirectoryId` is a repr(transparent) usize
+            // SAFETY: `EpollId` is a repr(transparent) usize
             unsafe { mem::transmute(val) }
         }
     }
 
     impl InnerUsize for EventfdId {
         fn to_usize(&self) -> usize {
-            // SAFETY: `DirectoryId` is a repr(transparent) usize
+            // SAFETY: `EventfdId` is a repr(transparent) usize
             unsafe { mem::transmute_copy(self) }
         }
 
         fn from_usize(val: usize) -> Self {
-            // SAFETY: `DirectoryId` is a repr(transparent) usize
+            // SAFETY: `EventfdId` is a repr(transparent) usize
             unsafe { mem::transmute(val) }
         }
     }
 
     impl InnerUsize for FileId {
         fn to_usize(&self) -> usize {
-            // SAFETY: `PluginEndpointId` is a repr(transparent) usize
+            // SAFETY: `FileId` is a repr(transparent) usize
             unsafe { mem::transmute_copy(self) }
         }
 
         fn from_usize(val: usize) -> Self {
-            // SAFETY: `PluginEndpointId` is a repr(transparent) usize
+            // SAFETY: `FileId` is a repr(transparent) usize
             unsafe { mem::transmute(val) }
         }
     }
 
     impl InnerUsize for FuzzEndpointId {
         fn to_usize(&self) -> usize {
-            // SAFETY: `PluginEndpointId` is a repr(transparent) usize
+            // SAFETY: `FuzzEndpointId` is a repr(transparent) usize
             unsafe { mem::transmute_copy(self) }
         }
 
         fn from_usize(val: usize) -> Self {
-            // SAFETY: `PluginEndpointId` is a repr(transparent) usize
+            // SAFETY: `FuzzEndpointId` is a repr(transparent) usize
             unsafe { mem::transmute(val) }
         }
     }
 
     impl InnerUsize for MessageQueueId {
         fn to_usize(&self) -> usize {
-            // SAFETY: `PluginEndpointId` is a repr(transparent) usize
+            // SAFETY: `MessageQueueId` is a repr(transparent) usize
             unsafe { mem::transmute_copy(self) }
         }
 
         fn from_usize(val: usize) -> Self {
-            // SAFETY: `PluginEndpointId` is a repr(transparent) usize
+            // SAFETY: `MessageQueueId` is a repr(transparent) usize
             unsafe { mem::transmute(val) }
         }
     }
 
     impl InnerUsize for PipeId {
         fn to_usize(&self) -> usize {
-            // SAFETY: `PluginEndpointId` is a repr(transparent) usize
+            // SAFETY: `PipeId` is a repr(transparent) usize
             unsafe { mem::transmute_copy(self) }
         }
 
         fn from_usize(val: usize) -> Self {
-            // SAFETY: `PluginEndpointId` is a repr(transparent) usize
+            // SAFETY: `PipeId` is a repr(transparent) usize
             unsafe { mem::transmute(val) }
         }
     }
@@ -647,48 +647,48 @@ pub(crate) mod private {
 
     impl InnerUsize for PluginId {
         fn to_usize(&self) -> usize {
-            // SAFETY: `PluginEndpointId` is a repr(transparent) usize
+            // SAFETY: `PluginId` is a repr(transparent) usize
             unsafe { mem::transmute_copy(self) }
         }
 
         fn from_usize(val: usize) -> Self {
-            // SAFETY: `PluginEndpointId` is a repr(transparent) usize
+            // SAFETY: `PluginId` is a repr(transparent) usize
             unsafe { mem::transmute(val) }
         }
     }
 
     impl InnerUsize for PolledId {
         fn to_usize(&self) -> usize {
-            // SAFETY: `BufferId` is a repr(transparent) usize
+            // SAFETY: `PolledId` is a repr(transparent) usize
             unsafe { mem::transmute_copy(self) }
         }
 
         fn from_usize(val: usize) -> Self {
-            // SAFETY: `BufferId` is a repr(transparent) usize
+            // SAFETY: `PolledId` is a repr(transparent) usize
             unsafe { mem::transmute(val) }
         }
     }
 
     impl InnerUsize for PollerId {
         fn to_usize(&self) -> usize {
-            // SAFETY: `BufferId` is a repr(transparent) usize
+            // SAFETY: `PollerId` is a repr(transparent) usize
             unsafe { mem::transmute_copy(self) }
         }
 
         fn from_usize(val: usize) -> Self {
-            // SAFETY: `BufferId` is a repr(transparent) usize
+            // SAFETY: `PollerId` is a repr(transparent) usize
             unsafe { mem::transmute(val) }
         }
     }
 
     impl InnerUsize for ProcessId {
         fn to_usize(&self) -> usize {
-            // SAFETY: `BufferId` is a repr(transparent) usize
+            // SAFETY: `ProcessId` is a repr(transparent) usize
             unsafe { mem::transmute_copy(self) }
         }
 
         fn from_usize(val: usize) -> Self {
-            // SAFETY: `BufferId` is a repr(transparent) usize
+            // SAFETY: `ProcessId` is a repr(transparent) usize
             unsafe { mem::transmute(val) }
         }
     }
@@ -713,6 +713,18 @@ pub(crate) mod private {
 
         fn from_usize(val: usize) -> Self {
             // SAFETY: `SocketId` is a repr(transparent) usize
+            unsafe { mem::transmute(val) }
+        }
+    }
+
+    impl InnerUsize for ProcessGroupId {
+        fn to_usize(&self) -> usize {
+            // SAFETY: `ProcessGroupId` is a repr(transparent) usize
+            unsafe { mem::transmute_copy(self) }
+        }
+
+        fn from_usize(val: usize) -> Self {
+            // SAFETY: `ProcessGroupId` is a repr(transparent) usize
             unsafe { mem::transmute(val) }
         }
     }

@@ -1,8 +1,11 @@
+use std::time::Duration;
 use std::{mem, thread};
 
+use crate::errno::Errno;
 use crate::handlers::polled::PolledInfo;
-use crate::handlers::signal::{SigDisposition, SignalSet};
+use crate::handlers::signal::*;
 use crate::hook_macros;
+use crate::scheduler::Scheduler;
 
 // TODO: SIGKILL and SIGSTOP need to be handled specially
 
@@ -20,80 +23,55 @@ hook_macros::hook! {
         sig: *mut libc::c_int
     ) -> libc::c_int => fizzle_sigwait(ctx) {
         let signal_set = SignalSet::from_sigset(*set);
-        let mut state = ctx.acquire();
 
-        let process_id = state.local.process_id;
-        let poller = state.new_poller();
+        crate::strace!("sigwait(set={:?}, sig={:?}) -> ...", signal_set, sig);
 
-        let signals = state.global.signals.get_mut(&process_id).unwrap();
-        let ready = signal_set.intersection(signals.raised);
+        match Scheduler::handle_event(&mut ctx, SignalWaitEvent::new(signal_set, None)) {
+            Ok(raised_info) => {
+                let siginfo = siginfo_t::from_raised(raised_info);
 
-        for flag in signal_set.iter() {
-            let signal_value = flag.lowest_signal_value();
-
-            let signals = state.global.signals.get_mut(&process_id).unwrap();
-
-            let polled = match signals.polled[signal_value as usize].clone() {
-                None if ready.contains(flag) => {
-                    // No pollers were waiting on the signal--immediately return
-                    signals.raised = signals.raised.difference(flag);
-                    *sig = signal_value;
-                    return 0
+                if let Some(sig_mut) = unsafe { sig.as_mut() } {
+                    *sig_mut = siginfo.si_signo;
                 }
-                None => {
-                    let polled = state.global.polled_events.allocate(PolledInfo::default()).unwrap();
-                    let signals = state.global.signals.get_mut(&process_id).unwrap();
-                    signals.polled[signal_value as usize].replace(polled.clone());
-                    polled
-                }
-                Some(polled) => polled,
-            };
 
-            if ready.contains(flag) && state.global.polled_events.get(&polled).unwrap().pollers.is_empty() {
-                // No other pollers were waiting on the signal--immediately return
-                let signals = state.global.signals.get_mut(&process_id).unwrap();
-                signals.raised = signals.raised.difference(flag);
-                *sig = signal_value;
-                return 0
-            }
-
-            state.register_poller(poller.clone(), polled);
+                crate::strace!("sigwait(set={:?}, sig={} ({:?})) -> 0", signal_set, siginfo.si_signo, sig);
+                0
+            },
+            Err(_) => unreachable!("sigwait() cannot return error"),
         }
-
-        drop(state);
-
-        // Wait for one of the signals to become available
-        poller.poll(&mut ctx);
-
-        let mut state = ctx.acquire();
-        state.delete_poller(poller);
-
-        let signals = state.global.signals.get_mut(&process_id).unwrap();
-        let ready = signal_set.intersection(signals.raised);
-        let first = ready.iter().next().unwrap(); // Polling returned, so there *must* be one ready
-
-        // Consume the selected signal
-        signals.raised = signals.raised.difference(first);
-        let signal_value = first.lowest_signal_value();
-        let signal_polled = signals.polled[signal_value as usize].clone().unwrap();
-
-        drop(state);
-
-        signal_polled.lower_polled(&mut ctx);
-
-        // Return the selected signal
-        *sig = signal_value;
-        0
     }
 }
 
 hook_macros::hook! {
     unsafe fn sigwaitinfo(
         set: *const libc::sigset_t,
-        info: *mut libc::siginfo_t
+        info: *mut siginfo_t
     ) -> libc::c_int => fizzle_sigwaitinfo(ctx) {
-        // TODO: not all of siginfo_t's fields are filled here...
+        let signal_set = SignalSet::from_sigset(*set);
 
+        crate::strace!("sigwaitinfo(set={:?}, info={:?}) -> ...", signal_set, info);
+
+        match Scheduler::handle_event(&mut ctx, SignalWaitEvent::new(signal_set, None)) {
+            Ok(raised_info) => {
+                let siginfo = siginfo_t::from_raised(raised_info);
+
+                let ret = siginfo.si_signo;
+                if let Some(siginfo_mut) = unsafe { info.as_mut() } {
+                    *siginfo_mut = siginfo;
+                }
+
+                crate::strace!("sigwaitinfo(set={:?}, info=({:?})) -> {}", signal_set, info, ret);
+                ret
+            },
+            Err(e) => {
+                crate::strace!("sigwaitinfo(set={:?}, info=({:?})) -> -1 ({})", signal_set, info, e);
+                e.set_errno();
+                -1
+            },
+        }
+
+
+        /*
         if !info.is_null() {
             libc::memset(info as *mut libc::c_void, 0, mem::size_of::<libc::siginfo_t>());
         }
@@ -104,13 +82,13 @@ hook_macros::hook! {
         let process_id = state.local.process_id;
         let poller = state.new_poller();
 
-        let signals = state.global.signals.get_mut(&process_id).unwrap();
+        let signals = state.global.processes.get_mut(&process_id).unwrap();
         let ready = signal_set.intersection(signals.raised);
 
         for flag in signal_set.iter() {
             let signal_value = flag.lowest_signal_value();
 
-            let signals = state.global.signals.get_mut(&process_id).unwrap();
+            let signals = state.global.processes.get_mut(&process_id).unwrap();
 
             let polled = match signals.polled[signal_value as usize].clone() {
                 None if ready.contains(flag) => {
@@ -125,7 +103,7 @@ hook_macros::hook! {
                 }
                 None => {
                     let polled = state.global.polled_events.allocate(PolledInfo::default()).unwrap();
-                    let signals = state.global.signals.get_mut(&process_id).unwrap();
+                    let signals = state.global.processes.get_mut(&process_id).unwrap();
                     signals.polled[signal_value as usize].replace(polled.clone());
                     polled
                 }
@@ -134,7 +112,7 @@ hook_macros::hook! {
 
             if ready.contains(flag) && state.global.polled_events.get(&polled).unwrap().pollers.is_empty() {
                 // No other pollers were waiting on the signal--immediately return
-                let signals = state.global.signals.get_mut(&process_id).unwrap();
+                let signals = state.global.processes.get_mut(&process_id).unwrap();
                 signals.raised = signals.raised.difference(flag);
 
                 if !info.is_null() {
@@ -155,7 +133,7 @@ hook_macros::hook! {
         let mut state = ctx.acquire();
         state.delete_poller(poller);
 
-        let signals = state.global.signals.get_mut(&process_id).unwrap();
+        let signals = state.global.processes.get_mut(&process_id).unwrap();
         let ready = signal_set.intersection(signals.raised);
         let first = ready.iter().next().unwrap(); // Polling returned, so there *must* be one ready
 
@@ -174,15 +152,52 @@ hook_macros::hook! {
         }
 
         return signal_value
+        */
     }
 }
 
 hook_macros::hook! {
     unsafe fn sigtimedwait(
         set: *const libc::sigset_t,
-        info: *mut libc::siginfo_t,
+        info: *mut siginfo_t,
         timeout: *const libc::timespec
     ) -> libc::c_int => fizzle_sigtimedwait(ctx) {
+        let signal_set = SignalSet::from_sigset(*set);
+        let timeout = match unsafe { timeout.as_ref() } {
+            Some(t) => {
+                if t.tv_sec < 0 || t.tv_nsec < 0 {
+                    crate::strace!("sigtimedwait(set={:?}, info={:?}, timeout={:?}) -> -1 (EINVAL)", signal_set, info, timeout);
+                    Errno::EINVAL.set_errno();
+                    return -1
+                }
+
+                Some(Duration::from_secs(t.tv_sec as u64) + Duration::from_nanos(t.tv_nsec as u64))
+            },
+            None => None,
+        };
+
+        crate::strace!("sigwaitinfo(set={:?}, info={:?}, timeout={:?}) -> ...", signal_set, info, timeout);
+
+        match Scheduler::handle_event(&mut ctx, SignalWaitEvent::new(signal_set, timeout)) {
+            Ok(raised_info) => {
+                let siginfo = siginfo_t::from_raised(raised_info);
+
+                let ret = siginfo.si_signo;
+                if let Some(siginfo_mut) = unsafe { info.as_mut() } {
+                    *siginfo_mut = siginfo;
+                }
+
+                crate::strace!("sigtimedwait(set={:?}, info=({:?}), timeout={:?}) -> {}", signal_set, info, timeout, ret);
+                ret
+            },
+            Err(e) => {
+                crate::strace!("sigtimedwait(set={:?}, info=({:?}), timeout={:?}) -> -1 ({})", signal_set, info, timeout, e);
+                e.set_errno();
+                -1
+            },
+        }
+
+        /*
         ctx.yield_thread();
         // TODO: not all of siginfo_t's fields are filled here...
 
@@ -196,13 +211,13 @@ hook_macros::hook! {
         let process_id = state.local.process_id;
         let poller_id = state.new_poller();
 
-        let signals = state.global.signals.get_mut(&process_id).unwrap();
+        let signals = state.global.processes.get_mut(&process_id).unwrap();
         let ready = signal_set.intersection(signals.raised);
 
         for flag in signal_set.iter() {
             let signal_value = flag.lowest_signal_value();
 
-            let signals = state.global.signals.get_mut(&process_id).unwrap();
+            let signals = state.global.processes.get_mut(&process_id).unwrap();
 
             let polled = match signals.polled[signal_value as usize].clone() {
                 None if ready.contains(flag) => {
@@ -217,7 +232,7 @@ hook_macros::hook! {
                 }
                 None => {
                     let polled = state.global.polled_events.allocate(PolledInfo::default()).unwrap();
-                    let signals = state.global.signals.get_mut(&process_id).unwrap();
+                    let signals = state.global.processes.get_mut(&process_id).unwrap();
                     signals.polled[signal_value as usize].replace(polled.clone());
                     polled
                 }
@@ -226,7 +241,7 @@ hook_macros::hook! {
 
             if ready.contains(flag) && state.global.polled_events.get(&polled).unwrap().pollers.is_empty() {
                 // No other pollers were waiting on the signal--immediately return
-                let signals = state.global.signals.get_mut(&process_id).unwrap();
+                let signals = state.global.processes.get_mut(&process_id).unwrap();
                 signals.raised = signals.raised.difference(flag);
 
                 if !info.is_null() {
@@ -254,7 +269,7 @@ hook_macros::hook! {
         let mut state = ctx.acquire();
         state.delete_poller(poller_id);
 
-        let signals = state.global.signals.get_mut(&process_id).unwrap();
+        let signals = state.global.processes.get_mut(&process_id).unwrap();
         let ready = signal_set.intersection(signals.raised);
         let first = ready.iter().next().unwrap(); // Polling returned, so there *must* be one ready
 
@@ -273,6 +288,7 @@ hook_macros::hook! {
         }
 
         return signal_value
+        */
     }
 }
 
@@ -315,6 +331,15 @@ hook_macros::hook! {
         _sig: libc::c_int
     ) -> libc::c_int => fizzle_kill(_ctx) {
         unimplemented!("kill()")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn killpg(
+        _pgrp: libc::c_int,
+        _sig: libc::c_int
+    ) -> libc::c_int => fizzle_killpg(_ctx) {
+        unimplemented!("killpg()")
     }
 }
 
@@ -383,7 +408,7 @@ hook_macros::hook! {
 
         let state = ctx.acquire();
         let process_id = state.local.process_id;
-        *set = state.global.signals.get(&process_id).unwrap().raised.to_sigset();
+        *set = state.global.processes.get(&process_id).unwrap().raised.to_sigset();
 
         0
     }
@@ -435,6 +460,16 @@ hook_macros::hook! {
         }
 
         0
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn sigqueue(
+        pid: libc::pid_t,
+        sig: libc::c_int,
+        value: sigval
+    ) -> libc::c_int => fizzle_sigqueue(ctx) {
+        todo!("sigqueue unimplemented")
     }
 }
 

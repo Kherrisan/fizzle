@@ -265,8 +265,8 @@ impl Event for ThreadCreateEvent {
 
                 // Initialize AFL (forkservers and multithreading don't play well)
                 #[cfg(feature = "afl")]
-                if !state.global.shared_mem_initialized {
-                    state.global.shared_mem_initialized = true;
+                if !state.global.afl_shmem_initialized {
+                    state.global.afl_shmem_initialized = true;
 
                     #[cfg(feature = "pcr")]
                     unsafe {
@@ -694,5 +694,20 @@ impl Event for ThreadTestCancelEvent {
     fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         // Cancellation happens immediately in Fizzle, so this will always return
         Outcome::Success(())
+    }
+}
+
+pub struct ThreadGetIdEvent;
+
+impl Event for ThreadGetIdEvent {
+    type Success = libc::pid_t;
+    type Error = ();
+
+    fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let mut hasher = ThreadHasher::new();
+        thread::current().id().hash(&mut hasher);
+        let tid = hasher.finish();
+
+        Outcome::Success(tid as i32)
     }
 }

@@ -2,20 +2,28 @@ use std::array;
 use std::ffi::CString;
 use std::{io::Error, mem::MaybeUninit, ptr, thread};
 
+use bitflags::bitflags;
+
 use fizzle_common::io::MAX_PATH_LEN;
 use fizzle_common::path::FilePath;
 
 use crate::arena::ArenaKey;
+use crate::constants::*;
 use crate::errno::Errno;
-use crate::scheduler::{DelegationSource, Event, Outcome};
+use crate::handlers::signal::SigDisposition;
+use crate::scheduler::{DelegationSource, Event, Outcome, TerminationMethod};
 use crate::semaphore::Semaphore;
-use crate::state::{fizzle_singleton, set_entered_handler, FizzleState};
+use crate::state::{fizzle_singleton, set_entered_handler, FizzleState, InheritedState, WorkerId};
 
 use super::descriptor::{DescriptorId, FdResource};
-use super::signal::ProcSigInfo;
+use super::signal::*;
 use super::thread::ThreadInfo;
 
+pub type AtExitFunction = unsafe extern "C" fn();
+pub type OnExitFunction = unsafe extern "C" fn(libc::c_int, *mut libc::c_void);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(transparent)]
 pub struct ProcessId(usize);
 
 impl From<ProcessId> for usize {
@@ -31,17 +39,72 @@ impl From<usize> for ProcessId {
 }
 
 impl ArenaKey for ProcessId {
-    type Value = ProcSigInfo;
+    type Value = ProcessInfo;
 }
 
 impl ProcessId {
+    /// The PID corresponding to the main process (2).
     pub fn main_process() -> Self {
-        Self(0)
+        // pid 0 and pid 1 are special, so we start with 2
+        Self(2)
+    }
+
+    /// The PID corresponding to the `init` process (1).
+    pub fn init_process() -> Self {
+        Self(1)
     }
 
     pub fn is_main_process(&self) -> bool {
-        self.0 == 0
+        self == &Self::main_process()
     }
+
+    pub fn next_id(&self) -> ProcessId {
+        ProcessId(self.0 + 1)
+    }
+
+    pub fn as_pid(&self) -> libc::pid_t {
+        self.0 as libc::pid_t
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct ProcessGroupId(usize);
+
+impl From<ProcessGroupId> for usize {
+    fn from(value: ProcessGroupId) -> Self {
+        value.0
+    }
+}
+
+impl From<usize> for ProcessGroupId {
+    fn from(value: usize) -> Self {
+        ProcessGroupId(value)
+    }
+}
+
+impl ArenaKey for ProcessGroupId {
+    type Value = heapless::FnvIndexSet<ProcessId, FIZZLE_MAX_PROCESS_GROUP_SIZE>;
+}
+
+#[derive(Clone, Debug)]
+pub struct ProcessInfo {
+    /// The process group ID corresponding to the given process.
+    pub pgid: ProcessGroupId,
+    /// The parent process ID corresponding to the given process.
+    pub ppid: ProcessId,
+    /*
+    /// Signals that have been raised for the process via `kill` (or some other natural event) but
+    /// that cannot be immediately handled as they are blocked.
+    pub raised_signals: RaisedSignalSet,
+    */
+    /// The handler to be run when the signal is received.
+    ///
+    /// According to `pthreads(7)`, POSIX.1 specifies that threads of a process should all share
+    /// signal disposition; this disposition is indicated by the `SigCallback` enum.
+    pub signal_handlers: SignalHandlers,
+    /// The set of child processes for the given process.
+    pub children: heapless::FnvIndexSet<ProcessId, FIZZLE_MAX_CHILD_PROCESSES>,
 }
 
 #[derive(Clone, Debug)]
@@ -102,8 +165,8 @@ impl Event for ProcessForkEvent {
             ProcessForkState::RunFork => {
                 // Initialize AFL (forkservers and multi-process applications don't play well)
                 #[cfg(feature = "afl")]
-                if !state.global.shared_mem_initialized {
-                    state.global.shared_mem_initialized = true;
+                if !state.global.afl_shmem_initialized {
+                    state.global.afl_shmem_initialized = true;
 
                     #[cfg(feature = "pcr")]
                     unsafe {
@@ -119,6 +182,16 @@ impl Event for ProcessForkEvent {
 
                 // The child process needs a unique identifier from the parent
                 let child_process_id = state.global.assign_process_id();
+                let parent_process_id = state.local.process_id;
+
+                state
+                    .global
+                    .processes
+                    .get_mut(&parent_process_id)
+                    .unwrap()
+                    .children
+                    .insert(child_process_id)
+                    .unwrap();
 
                 /*
                 // Generally, moving `KeyedArena`s is unsafe because `Rc<>` references rely on arenas
@@ -160,10 +233,10 @@ impl Event for ProcessForkEvent {
                         let mut ctx = unsafe { fizzle_singleton() };
                         let mut state = ctx.acquire();
 
-                        // Make our process ID unique
+                        // Assign the child a unique process ID
                         state.local.process_id = child_process_id;
 
-                        // Initialize this process's global lock
+                        // Initialize the child process's global lock
                         let sem_opt =
                             &mut state.global.process_locks[usize::from(child_process_id)];
                         unsafe {
@@ -174,7 +247,32 @@ impl Event for ProcessForkEvent {
                             Semaphore::initialize(uninit_sem, true, 0);
                         }
 
-                        state.local.plugins = None;
+                        let parent_process =
+                            state.global.processes.get(&parent_process_id).unwrap();
+                        let signal_handlers = parent_process.signal_handlers.clone();
+                        let pgid = parent_process.pgid;
+
+                        // Assign the parent's signal handlers to this process
+                        state.global.processes.allocate_with_key(
+                            child_process_id,
+                            ProcessInfo {
+                                children: heapless::FnvIndexSet::new(),
+                                pgid,
+                                ppid: parent_process_id,
+                                signal_handlers,
+                            },
+                        );
+
+                        state
+                            .global
+                            .process_groups
+                            .get_mut(&pgid)
+                            .unwrap()
+                            .insert(child_process_id)
+                            .unwrap();
+
+                        // Not a parent process
+                        state.local.main_state = None;
 
                         // `fork()` only copies the current thread
                         state.local.pthreads.clear();
@@ -183,6 +281,15 @@ impl Event for ProcessForkEvent {
                             ThreadInfo::new(thread::current().id(), false, true),
                         );
 
+                        // Remove any pending signals
+                        state
+                            .local
+                            .signals
+                            .get_mut(&thread::current().id())
+                            .unwrap()
+                            .raised = array::from_fn(|_| None);
+
+                        // Remove all pthread cleanup routines except for the current thread's
                         let cleanup = state
                             .local
                             .pthread_cleanup
@@ -197,6 +304,8 @@ impl Event for ProcessForkEvent {
                         // The current (forking) thread isn't terminating
                         state.local.terminated_threads.clear();
                         state.local.awaiting_thread_death.clear();
+
+                        // Upref the resources each file descriptor points towards
 
                         // TODO: upref the resources each file descriptor points towards
                         /*
@@ -322,6 +431,29 @@ impl Event for ProcessExecEvent {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         // TODO: cleanup here
 
+        let process_id = state.local.process_id;
+        let fds = state.local.fds.as_ref().clone();
+        let signal_handlers = state
+            .global
+            .processes
+            .get(&process_id)
+            .unwrap()
+            .signal_handlers
+            .clone();
+        let sigmask = state
+            .local
+            .signals
+            .get(&thread::current().id())
+            .unwrap()
+            .blocked;
+
+        state.global.inherited_state = Some(InheritedState {
+            process_id,
+            fds,
+            signal_handlers,
+            sigmask,
+        });
+
         let argp: [*const libc::c_char; 128] = array::from_fn(|i| {
             if i < self.args.len() {
                 self.args[i].as_ptr()
@@ -391,6 +523,7 @@ impl Event for ProcessExecEvent {
                 match state.local.fds.get(&descriptor) {
                     Some(fd_info) => {
                         let FdResource::File(file_id) = &fd_info.resource else {
+                            state.global.inherited_state = None;
                             return Outcome::Error(Errno::EINVAL);
                         };
 
@@ -412,21 +545,27 @@ impl Event for ProcessExecEvent {
                 }
             }
             ExecLocation::AtDirectory(fd, path) => {
-                todo!() // TODO: implement
+                todo!("execveat not implemented") // TODO: implement
             }
         }
+
+        state.global.inherited_state = None;
 
         Outcome::Error(Errno::get_errno())
     }
 }
 
 pub struct ProcessExitEvent {
+    status: libc::c_int,
     run_cleanup: bool,
 }
 
 impl ProcessExitEvent {
-    pub fn new(run_cleanup: bool) -> Self {
-        Self { run_cleanup }
+    pub fn new(status: libc::c_int, run_cleanup: bool) -> Self {
+        Self {
+            status,
+            run_cleanup,
+        }
     }
 }
 
@@ -435,6 +574,389 @@ impl Event for ProcessExitEvent {
     type Error = ();
 
     fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        Outcome::TerminateThread(TerminationMethod::ThreadExit(self.retval))
+        match self.run_cleanup {
+            true => Outcome::TerminateProcess(TerminationMethod::ProcessExit(self.status)),
+            false => {
+                Outcome::TerminateProcess(TerminationMethod::ProcessImmediateExit(self.status))
+            }
+        }
+    }
+}
+
+pub struct ProcessAtExitEvent {
+    handler: AtExitFunction,
+}
+
+impl ProcessAtExitEvent {
+    pub fn new(handler: AtExitFunction) -> Self {
+        Self { handler }
+    }
+}
+
+impl Event for ProcessAtExitEvent {
+    type Success = ();
+    type Error = ();
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        state.local.atexit_handlers.push(self.handler);
+        Outcome::Success(())
+    }
+}
+
+pub struct ProcessOnExitEvent {
+    handler: OnExitFunction,
+    arg: *mut libc::c_void,
+}
+
+impl ProcessOnExitEvent {
+    pub fn new(handler: OnExitFunction, arg: *mut libc::c_void) -> Self {
+        Self { handler, arg }
+    }
+}
+
+impl Event for ProcessOnExitEvent {
+    type Success = ();
+    type Error = ();
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        state.local.on_exit_handlers.push((self.handler, self.arg));
+        Outcome::Success(())
+    }
+}
+
+pub struct ProcessGetIdEvent;
+
+impl ProcessGetIdEvent {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Event for ProcessGetIdEvent {
+    type Success = libc::pid_t;
+    type Error = ();
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        Outcome::Success(state.local.process_id.as_pid())
+    }
+}
+
+pub struct ProcessGetParentIdEvent;
+
+impl ProcessGetParentIdEvent {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Event for ProcessGetParentIdEvent {
+    type Success = libc::pid_t;
+    type Error = ();
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let ppid = unsafe { libc::getppid() };
+
+        // Convert the OS's ppid to our masked version...
+        let parent_id = match state.global.pids.get(&ppid) {
+            Some(process_id) => *process_id,
+            // Parent was terminated (or this is the parent process)--return daemon ppid
+            // TODO: handle `prctl` PR_SET_CHILD_SUBREAPER
+            None => ProcessId::init_process(),
+        };
+
+        Outcome::Success(parent_id.as_pid())
+    }
+}
+
+pub struct ProcessGetGroupIdEvent {
+    pid: Option<ProcessId>,
+}
+
+impl ProcessGetGroupIdEvent {
+    pub fn new(pid: Option<ProcessId>) -> Self {
+        Self { pid }
+    }
+}
+
+impl Event for ProcessGetGroupIdEvent {
+    type Success = ProcessGroupId;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let process_id = match self.pid {
+            Some(pid) => pid,
+            None => state.local.process_id,
+        };
+
+        match state.global.processes.get(&process_id) {
+            Some(process_info) => Outcome::Success(process_info.pgid),
+            None => Outcome::Error(Errno::ESRCH),
+        }
+    }
+}
+
+pub struct ProcessSetGroupIdEvent {
+    pid: libc::pid_t,
+    pgid: libc::pid_t,
+}
+
+impl ProcessSetGroupIdEvent {
+    pub fn new(pid: libc::pid_t, pgid: libc::pid_t) -> Self {
+        Self { pid, pgid }
+    }
+}
+
+impl Event for ProcessSetGroupIdEvent {
+    type Success = ();
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let process_id = if self.pid == 0 {
+            state.local.process_id
+        } else {
+            ProcessId::from(self.pid as usize)
+        };
+
+        if self.pgid == 0 {
+            // Create a new process group out of the calling process
+            let group_id = ProcessGroupId::from(usize::from(state.local.process_id));
+            if state.global.process_groups.is_occupied(&group_id) {
+                state
+                    .global
+                    .process_groups
+                    .get_mut(&group_id)
+                    .unwrap()
+                    .insert(process_id)
+                    .unwrap();
+            } else {
+                state
+                    .global
+                    .process_groups
+                    .allocate_with_key(group_id, heapless::FnvIndexSet::new());
+            }
+
+            Outcome::Success(())
+        } else {
+            let process_group_id = ProcessGroupId::from(self.pgid as usize);
+
+            match state.global.processes.get_mut(&process_id) {
+                Some(process_info) => {
+                    process_info.pgid = process_group_id;
+                    Outcome::Success(())
+                }
+                None => Outcome::Error(Errno::ESRCH),
+            }
+        }
+    }
+}
+
+pub enum WaitType {
+    AllChildren,
+    Pid(ProcessId),
+    PidFd(DescriptorId),
+    Gid(ProcessGroupId),
+}
+
+bitflags! {
+    #[derive(Clone, Copy, Debug)]
+    pub struct WaitOptions: libc::c_int {
+        /// Return immediately if not child has exited.
+        const NO_HANG = libc::WNOHANG;
+        /// Return if a child has stopped, but is not traced via ptrace (`ptrace`d children always return).
+        const UNTRACED = libc::WUNTRACED;
+        /// Wait for (previously stopped) children that have been resumed.
+        const CONTINUED = libc::WCONTINUED;
+        /// Wait for children that have exited
+        const EXITED = libc::WEXITED;
+        /// Wait for children that have been stopped by delivery of a signal.
+        const STOPPED = libc::WSTOPPED;
+    }
+}
+
+pub enum ProcessWaitState {
+    Start,
+    Finish,
+}
+
+pub struct ProcessWaitEvent {
+    wait_type: WaitType,
+    options: WaitOptions,
+    state: ProcessWaitState,
+}
+
+impl ProcessWaitEvent {
+    pub fn new(wait_type: WaitType, options: WaitOptions) -> Self {
+        Self {
+            wait_type,
+            options,
+            state: ProcessWaitState::Start,
+        }
+    }
+}
+
+impl Event for ProcessWaitEvent {
+    type Success = Option<SigChildInfo>;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let process_id = state.local.process_id;
+
+        match self.state {
+            ProcessWaitState::Start => match self.wait_type {
+                WaitType::AllChildren => {
+                    let children: Vec<_> = state
+                        .global
+                        .processes
+                        .get(&process_id)
+                        .unwrap()
+                        .children
+                        .iter()
+                        .collect();
+                    if children.is_empty() {
+                        return Outcome::Success(None);
+                    }
+
+                    for child in children {
+                        state
+                            .global
+                            .awaiting_process_death
+                            .get_mut(&child)
+                            .unwrap()
+                            .insert(WorkerId::current(process_id))
+                            .unwrap();
+                    }
+
+                    self.state = ProcessWaitState::Finish;
+                    Outcome::Yield(None)
+                }
+                WaitType::Pid(child_process) => {
+                    if child_process.0 == 0 {
+                        return Outcome::Error(Errno::ESRCH);
+                    }
+
+                    // Check to see if the PID is a child of this process
+                    if !state
+                        .global
+                        .processes
+                        .get(&process_id)
+                        .unwrap()
+                        .children
+                        .contains(&child_process)
+                    {
+                        return Outcome::Error(Errno::ECHILD);
+                    }
+
+                    // Check to see if SIGCHLD is blocked in this process
+                    if state
+                        .global
+                        .processes
+                        .get(&process_id)
+                        .unwrap()
+                        .signal_handlers[libc::SIGCHLD as usize]
+                        == SigDisposition::Ignore
+                    {
+                        return Outcome::Error(Errno::ECHILD);
+                    }
+
+                    if self.options.intersects(
+                        WaitOptions::CONTINUED | WaitOptions::STOPPED | WaitOptions::UNTRACED,
+                    ) {
+                        unimplemented!("wait() on continued or stopped children");
+                    }
+
+                    if let Some(exited_info) = state.global.exited_processes.get(&child_process) {
+                        return Outcome::Success(Some(*exited_info));
+                    }
+
+                    if self.options.contains(WaitOptions::NO_HANG) {
+                        return Outcome::Success(None);
+                    }
+
+                    // Suspend execution until the child has exited
+                    state
+                        .global
+                        .awaiting_process_death
+                        .get_mut(&child_process)
+                        .unwrap()
+                        .insert(WorkerId::current(process_id))
+                        .unwrap();
+                    self.state = ProcessWaitState::Finish;
+                    Outcome::Yield(None)
+                }
+                WaitType::Gid(group_id) => {
+                    let mut children = Vec::new();
+
+                    let Some(group_info) = state.global.process_groups.get(&group_id) else {
+                        return Outcome::Success(None);
+                    };
+
+                    for child_process_id in group_info.iter() {
+                        if state
+                            .global
+                            .processes
+                            .get(&process_id)
+                            .unwrap()
+                            .children
+                            .contains(child_process_id)
+                        {
+                            children.push(child_process_id);
+                        }
+                    }
+
+                    if children.is_empty() {
+                        return Outcome::Success(None);
+                    }
+
+                    for child in children {
+                        state
+                            .global
+                            .awaiting_process_death
+                            .get_mut(&child)
+                            .unwrap()
+                            .insert(WorkerId::current(process_id))
+                            .unwrap();
+                    }
+
+                    self.state = ProcessWaitState::Finish;
+                    Outcome::Yield(None)
+                }
+                WaitType::PidFd(_) => todo!("pid fd not implemented"),
+            },
+            ProcessWaitState::Finish => {
+                let children: Vec<_> = state
+                    .global
+                    .processes
+                    .get(&process_id)
+                    .unwrap()
+                    .children
+                    .iter()
+                    .collect();
+
+                let mut awaiting = Vec::new();
+
+                let current_worker = WorkerId::current(process_id);
+                for child in children {
+                    if state
+                        .global
+                        .awaiting_process_death
+                        .get_mut(&child)
+                        .unwrap()
+                        .remove(&current_worker)
+                    {
+                        awaiting.push(*child);
+                    }
+                }
+
+                for child in awaiting {
+                    if let Some(proc_wait_info) = state.global.exited_processes.get(&child) {
+                        return Outcome::Success(Some(*proc_wait_info));
+                    }
+                }
+
+                unreachable!(
+                    "No child process was ready to be reaped, yet `waitpid()` was awakened"
+                );
+            }
+        }
     }
 }

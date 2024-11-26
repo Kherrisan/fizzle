@@ -196,6 +196,18 @@ hook_macros::hook! {
     }
 }
 
+// TODO: if a semaphore/mutex/futex times out, we need to take the worker out of the ready queue if it has been queued but isn't ready yet...?
+// Only if we handle timeouts in a more granular way...
+// Use a min-priority-queue with monotonically-increasing time
+// - When an item is pushed onto the queue, it includes a timestamp of the current time that determines its order
+// - Each time a thread is yielded, time increases by 20ms (or some arbitrary amount)
+// - Waits with timeout will push an item onto the queue with the current time plus whatever timeout was indicated
+// - When the next popped item from the work queue is greater than the current time, the time is progressed until it is equal.
+//
+// Rust's priority queue is implemented in such a way that it will not starve items of equal
+// priority. In other words, equal-priority items behave in a FIFO manner, thereby preserving
+// fairness.
+
 hook_macros::hook! {
     unsafe fn sem_timedwait(
         sem: *mut libc::sem_t,

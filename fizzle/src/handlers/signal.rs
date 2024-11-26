@@ -1,53 +1,453 @@
+use std::fmt::Debug;
 use std::mem::MaybeUninit;
+use std::time::Duration;
 use std::{array, mem, ptr, thread};
 
 use bitflags::bitflags;
 
-use crate::arena::Rc;
-use crate::handlers::polled::PolledId;
-use crate::state::FizzleSingleton;
+use crate::errno::Errno;
+use crate::scheduler::{Event, Outcome};
+use crate::state::{FizzleState, WorkerId};
 
 pub type SignalHandlers = [SigDisposition; 32];
+pub type RaisedSignalSet = [Option<RaisedSignalInfo>; 32];
+
+pub const SI_USER: libc::c_int = 0;
+pub const SI_QUEUE: libc::c_int = -1;
+pub const SI_TIMER: libc::c_int = -2;
+pub const SI_MESGQ: libc::c_int = -3;
+pub const SI_ASYNCIO: libc::c_int = -4;
+pub const SI_TKILL: libc::c_int = -6;
+
+pub const POLL_IN: libc::c_int = 1;
+pub const POLL_OUT: libc::c_int = 2;
+pub const POLL_MSG: libc::c_int = 3;
+pub const POLL_ERR: libc::c_int = 4;
+pub const POLL_PRI: libc::c_int = 5;
+pub const POLL_HUP: libc::c_int = 6;
+
+pub type SigHandler = unsafe extern "C" fn(libc::c_int);
+pub type SigAction = unsafe extern "C" fn(libc::c_int, *mut siginfo_t, *mut libc::c_void);
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+#[derive(Copy)]
+union sigval {
+    pub sigval_int: libc::c_int,
+    pub sigval_ptr: *mut libc::c_void,
+}
+
+impl Clone for sigval {
+    fn clone(&self) -> Self {
+        unsafe { mem::transmute_copy(self) }
+    }
+}
+
+impl Default for sigval {
+    fn default() -> Self {
+        Self {
+            sigval_ptr: ptr::null_mut(),
+        }
+    }
+}
+
+type T = libc::siginfo_t;
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+#[derive(Default)]
+pub struct siginfo_t {
+    pub si_signo: libc::c_int,
+    pub si_errno: libc::c_int,
+    pub si_code: libc::c_int,
+    pub _pad: [libc::c_int; 29],
+    _align: [u64; 0],
+}
+
+impl siginfo_t {
+    unsafe fn variant_kill(&mut self) -> &mut siginfo_kill {
+        &mut *(self as *mut siginfo_t as *mut siginfo_kill)
+    }
+
+    unsafe fn variant_sigqueue(&mut self) -> &mut siginfo_sigqueue {
+        &mut *(self as *mut siginfo_t as *mut siginfo_sigqueue)
+    }
+
+    unsafe fn variant_timer(&mut self) -> &mut siginfo_timer {
+        &mut *(self as *mut siginfo_t as *mut siginfo_timer)
+    }
+
+    unsafe fn variant_sigchld(&mut self) -> &mut sifields_sigchld {
+        &mut (*(self as *mut siginfo_t as *mut siginfo_f))
+            .sifields
+            .sigchld
+    }
+
+    unsafe fn variant_poll(&mut self) -> &mut siginfo_poll {
+        &mut *(self as *mut siginfo_t as *mut siginfo_poll)
+    }
+
+    pub fn from_raised(raised_info: RaisedSignalInfo) -> Self {
+        let mut siginfo = Self::default();
+
+        match raised_info {
+            RaisedSignalInfo::Kill(i) => {
+                let kill = unsafe { siginfo.variant_kill() };
+                kill.si_code = SI_USER;
+                kill.si_signo = i.signum;
+                kill.si_pid = i.pid;
+                kill.si_uid = i.uid;
+            }
+            RaisedSignalInfo::SigQueue(i) => {
+                let sigqueue = unsafe { siginfo.variant_sigqueue() };
+                sigqueue.si_code = SI_QUEUE;
+                sigqueue.si_signo = i.signum;
+                sigqueue.si_pid = i.pid;
+                sigqueue.si_uid = i.uid;
+                sigqueue.si_sigval = i.value;
+            }
+            RaisedSignalInfo::Timer(i) => {
+                let timer = unsafe { siginfo.variant_timer() };
+                timer.si_code = SI_TIMER;
+                timer.si_signo = i.signum;
+                timer.si_tid = i.timer_id;
+                timer.si_overrun = i.overrun;
+            }
+            RaisedSignalInfo::MessageQueue(i) => {
+                let queue = unsafe { siginfo.variant_sigqueue() };
+                queue.si_code = SI_MESGQ;
+                queue.si_signo = i.signum;
+                queue.si_pid = i.pid;
+                queue.si_uid = i.uid;
+                queue.si_sigval = i.value;
+            }
+            RaisedSignalInfo::Child(i) => {
+                siginfo.si_code = i.code.into();
+                siginfo.si_signo = libc::SIGCHLD;
+                let child = unsafe { siginfo.variant_sigchld() };
+                child.si_pid = i.pid;
+                child.si_uid = i.uid;
+                child.si_status = i.status;
+                // NOTE: stime, utime left unset here because the man page does not mention them
+            }
+            RaisedSignalInfo::Io(i) => {
+                let poll = unsafe { siginfo.variant_poll() };
+                poll.si_code = i.code.into();
+                poll.si_signo = libc::SIGIO;
+                poll.si_fd = i.fd;
+                poll.si_band = i.band;
+            }
+            RaisedSignalInfo::TKill(i) => {
+                let kill = unsafe { siginfo.variant_kill() };
+                kill.si_code = SI_TKILL;
+                kill.si_signo = i.signum;
+                kill.si_pid = i.pid;
+                kill.si_uid = i.uid;
+            }
+            RaisedSignalInfo::Aio(i) => {
+                siginfo.si_code = SI_ASYNCIO;
+                siginfo.si_signo = i.signum;
+                let sigqueue = unsafe { siginfo.variant_sigqueue() };
+                sigqueue.si_sigval = i.value;
+            }
+        }
+
+        siginfo
+    }
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct siginfo_kill {
+    pub si_signo: libc::c_int,
+    pub si_errno: libc::c_int,
+    pub si_code: libc::c_int,
+    pub si_pid: libc::pid_t,
+    pub si_uid: libc::uid_t,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct siginfo_sigqueue {
+    pub si_signo: libc::c_int,
+    pub si_errno: libc::c_int,
+    pub si_code: libc::c_int,
+    pub si_pid: libc::pid_t,
+    pub si_uid: libc::uid_t,
+    pub si_sigval: sigval,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct siginfo_timer {
+    pub si_signo: libc::c_int,
+    pub si_errno: libc::c_int,
+    pub si_code: libc::c_int,
+    pub si_tid: libc::pid_t,
+    pub si_overrun: libc::c_int,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct sifields_sigchld {
+    pub si_pid: libc::pid_t,
+    pub si_uid: libc::uid_t,
+    pub si_status: libc::c_int,
+    pub si_utime: libc::c_long,
+    pub si_stime: libc::c_long,
+}
+
+// Internal, for casts to access union fields. Note that some variants
+// of sifields start with a pointer, which makes the alignment of
+// sifields vary on 32-bit and 64-bit architectures.
+#[allow(non_camel_case_types)]
+#[repr(C)]
+struct siginfo_f {
+    _siginfo_base: [libc::c_int; 3],
+    sifields: sifields,
+}
+
+// Internal, for casts to access union fields
+#[repr(C)]
+union sifields {
+    _align_pointer: *mut libc::c_void,
+    sigchld: sifields_sigchld,
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct siginfo_poll {
+    pub si_signo: libc::c_int,
+    pub si_errno: libc::c_int,
+    pub si_code: libc::c_int,
+    pub si_band: libc::c_long,
+    pub si_fd: libc::c_int,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum RaisedSignalInfo {
+    Aio(SigAioInfo),
+    Kill(SigKillInfo),
+    SigQueue(SigQueueInfo),
+    Timer(SigTimerInfo),
+    MessageQueue(SigMqInfo),
+    Child(SigChildInfo),
+    Io(SigIoInfo),
+    TKill(SigKillInfo),
+}
+
+impl RaisedSignalInfo {
+    pub fn signum(&self) -> i32 {
+        match self {
+            RaisedSignalInfo::Aio(i) => i.signum,
+            RaisedSignalInfo::Kill(i) => i.signum,
+            RaisedSignalInfo::SigQueue(i) => i.signum,
+            RaisedSignalInfo::Timer(i) => i.signum,
+            RaisedSignalInfo::MessageQueue(i) => i.signum,
+            RaisedSignalInfo::Child(_) => libc::SIGCHLD,
+            RaisedSignalInfo::Io(_) => libc::SIGIO,
+            RaisedSignalInfo::TKill(i) => i.signum,
+        }
+    }
+
+    pub fn pid(&self) -> Option<libc::pid_t> {
+        match self {
+            RaisedSignalInfo::Aio(_) => None,
+            RaisedSignalInfo::Kill(i) => Some(i.pid),
+            RaisedSignalInfo::SigQueue(i) => Some(i.pid),
+            RaisedSignalInfo::Timer(_) => None,
+            RaisedSignalInfo::MessageQueue(i) => Some(i.pid),
+            RaisedSignalInfo::Child(i) => Some(i.pid),
+            RaisedSignalInfo::Io(_) => None,
+            RaisedSignalInfo::TKill(i) => Some(i.pid),
+        }
+    }
+
+    pub fn uid(&self) -> Option<libc::uid_t> {
+        match self {
+            RaisedSignalInfo::Aio(_) => None,
+            RaisedSignalInfo::Kill(i) => Some(i.uid),
+            RaisedSignalInfo::SigQueue(i) => Some(i.uid),
+            RaisedSignalInfo::Timer(_) => None,
+            RaisedSignalInfo::MessageQueue(i) => Some(i.uid),
+            RaisedSignalInfo::Child(i) => Some(i.uid),
+            RaisedSignalInfo::Io(_) => None,
+            RaisedSignalInfo::TKill(i) => Some(i.uid),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SigKillInfo {
+    pub signum: libc::c_int,
+    pub pid: libc::pid_t,
+    pub uid: libc::uid_t,
+}
+
+#[derive(Clone, Copy)]
+pub struct SigQueueInfo {
+    pub signum: libc::c_int,
+    pub pid: libc::pid_t,
+    pub uid: libc::uid_t,
+    pub value: sigval,
+}
+
+impl Debug for SigQueueInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SigQueueInfo")
+            .field("signum", &self.signum)
+            .field("pid", &self.pid)
+            .field("uid", &self.uid)
+            .field("value", &"<union>")
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SigTimerInfo {
+    pub signum: libc::c_int,
+    pub overrun: libc::c_int,
+    // The man pages say this is an internal ID used by the kernel and that it is not the
+    // same as the timer ID returned by `timer_create()`. We set it to the TimerId value.
+    pub timer_id: libc::c_int,
+}
+
+#[derive(Clone, Copy)]
+pub struct SigMqInfo {
+    pub signum: libc::c_int,
+    pub value: sigval,
+    pub pid: libc::pid_t,
+    pub uid: libc::uid_t,
+}
+
+impl Debug for SigMqInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SigMqInfo")
+            .field("signum", &self.signum)
+            .field("value", &"<union>")
+            .field("pid", &self.pid)
+            .field("uid", &self.uid)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SigChildInfo {
+    pub code: SigChildCode, // mapped from libc::c_int
+    pub pid: libc::pid_t,
+    pub uid: libc::uid_t,
+    pub status: libc::c_int,
+}
+
+#[derive(Clone, Copy)]
+pub struct SigAioInfo {
+    pub signum: libc::c_int,
+    pub value: sigval,
+}
+
+impl Debug for SigAioInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SigAioInfo")
+            .field("signum", &self.signum)
+            .field("value", &"<union>")
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SigChildCode {
+    Exited,
+    Killed,
+    Dumped,
+    Trapped,
+    Stopped,
+    Continued,
+}
+
+impl From<SigChildCode> for i32 {
+    fn from(value: SigChildCode) -> Self {
+        match value {
+            SigChildCode::Exited => libc::CLD_EXITED,
+            SigChildCode::Killed => libc::CLD_KILLED,
+            SigChildCode::Dumped => libc::CLD_DUMPED,
+            SigChildCode::Trapped => libc::CLD_TRAPPED,
+            SigChildCode::Stopped => libc::CLD_STOPPED,
+            SigChildCode::Continued => libc::CLD_CONTINUED,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SigIoInfo {
+    pub code: SigIoCode,
+    /// The `revents` filled in by `poll()`
+    pub band: libc::c_long,
+    pub fd: libc::c_int,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SigIoCode {
+    PollIn,
+    PollOut,
+    PollMsg,
+    PollErr,
+    PollPri,
+    PollHup,
+}
+
+impl From<SigIoCode> for i32 {
+    fn from(value: SigIoCode) -> Self {
+        match value {
+            SigIoCode::PollIn => POLL_IN,
+            SigIoCode::PollOut => POLL_OUT,
+            SigIoCode::PollMsg => POLL_MSG,
+            SigIoCode::PollErr => POLL_ERR,
+            SigIoCode::PollPri => POLL_PRI,
+            SigIoCode::PollHup => POLL_HUP,
+        }
+    }
+}
 
 bitflags! {
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct SignalSet: u32 {
-        const SIGHUP = 1 << 0;
-        const SIGINT = 1 << 1;
-        const SIGQUIT = 1 << 2;
-        const SIGILL = 1 << 3;
-        const SIGTRAP = 1 << 4;
-        const SIGABRT = 1 << 5;
-        const SIGIOT = 1 << 5;
-        const SIGBUS = 1 << 6;
-        const SIGFPE = 1 << 7;
-        const SIGKILL = 1 << 8;
-        const SIGUSR1 = 1 << 9;
-        const SIGSEGV = 1 << 10;
-        const SIGUSR2 = 1 << 11;
-        const SIGPIPE = 1 << 12;
-        const SIGALRM = 1 << 13;
-        const SIGTERM = 1 << 14;
+        const SIGHUP    = 1 << 0;
+        const SIGINT    = 1 << 1;
+        const SIGQUIT   = 1 << 2;
+        const SIGILL    = 1 << 3;
+        const SIGTRAP   = 1 << 4;
+        const SIGABRT   = 1 << 5;
+        const SIGIOT    = 1 << 5;
+        const SIGBUS    = 1 << 6;
+        const SIGFPE    = 1 << 7;
+        const SIGKILL   = 1 << 8;
+        const SIGUSR1   = 1 << 9;
+        const SIGSEGV   = 1 << 10;
+        const SIGUSR2   = 1 << 11;
+        const SIGPIPE   = 1 << 12;
+        const SIGALRM   = 1 << 13;
+        const SIGTERM   = 1 << 14;
         const SIGSTKFLT = 1 << 15;
-        const SIGCHLD = 1 << 16;
-        const SIGCONT = 1 << 17;
-        const SIGSTOP = 1 << 18;
-        const SIGTSTP = 1 << 19;
-        const SIGTTIN = 1 << 20;
-        const SIGTTOU = 1 << 21;
-        const SIGURG = 1 << 22;
-        const SIGXCPU = 1 << 23;
-        const SIGXFSZ = 1 << 24;
+        const SIGCHLD   = 1 << 16;
+        const SIGCONT   = 1 << 17;
+        const SIGSTOP   = 1 << 18;
+        const SIGTSTP   = 1 << 19;
+        const SIGTTIN   = 1 << 20;
+        const SIGTTOU   = 1 << 21;
+        const SIGURG    = 1 << 22;
+        const SIGXCPU   = 1 << 23;
+        const SIGXFSZ   = 1 << 24;
         const SIGVTALRM = 1 << 25;
-        const SIGGPROF = 1 << 26;
-        const SIGWINCH = 1 << 27;
-        const SIGIO = 1 << 28;
-        const SIGPOLL = 1 << 28;
-        const SIGLOST = 1 << 28;
-        const SIGPWR = 1 << 29;
-        const SIGSYS = 1 << 30;
+        const SIGGPROF  = 1 << 26;
+        const SIGWINCH  = 1 << 27;
+        const SIGIO     = 1 << 28;
+        const SIGPOLL   = 1 << 28;
+        const SIGLOST   = 1 << 28;
+        const SIGPWR    = 1 << 29;
+        const SIGSYS    = 1 << 30;
         const SIGUNUSED = 1 << 30;
-        const SIGRTMIN = 1 << 31;
+        const SIGRTMIN  = 1 << 31;
     }
 }
 
@@ -90,33 +490,6 @@ impl SignalSet {
     pub fn lowest_signal_value(&self) -> libc::c_int {
         (self.bits().count_zeros() + 1) as libc::c_int
     }
-
-    pub fn set_signal_handler(
-        &self,
-        ctx: &mut FizzleSingleton,
-        signal: libc::c_int,
-        handler: libc::sigaction,
-    ) {
-        let mut state = ctx.acquire();
-        let thread_id = thread::current().id();
-
-        let new_handler = match handler.sa_sigaction {
-            libc::SIG_DFL => SigDisposition::Default,
-            libc::SIG_IGN => SigDisposition::Ignore,
-            a if handler.sa_flags & libc::SA_SIGINFO > 0 => {
-                SigDisposition::Action(unsafe { mem::transmute(a) })
-            }
-            a => SigDisposition::Handler(unsafe { mem::transmute(a) }),
-        };
-
-        state.local.signals.get_mut(&thread_id).unwrap().handlers[signal as usize - 1] =
-            new_handler;
-        todo!()
-    }
-
-    pub fn get_signal_handler(&self, ctx: &mut FizzleSingleton) {
-        todo!()
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -128,33 +501,32 @@ pub enum SigDisposition {
     Action(SigAction),
 }
 
-pub type SigHandler = unsafe extern "C" fn(libc::c_int);
-pub type SigAction = unsafe extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void);
-
 #[derive(Clone, Debug)]
 pub struct ThreadSigInfo {
     /// Signals that have been specifically raised for the thread via `pthread_kill` but that cannot
     /// be immediately handled as they are blocked.
-    pub raised: SignalSet,
+    pub raised: RaisedSignalSet,
     /// Signals that have been masked for the given thread.
     ///
     /// Note that when `SigCallback::Ignore` is set, any blocked signals will be discarded.
     pub blocked: SignalSet,
+    /*
     /// Used when a `signalfd` is registered. This is an Option so that we don't pre-allocate a bunch
     /// of `PolledInfo` instances if we don't need them.
     ///
     /// signalfd's operate on the thread in which the fd is *read* (or polled)--not necessarily the
     /// thread in which the fd is created. These are often the same, but don't have to be.
     pub polled: Option<Rc<PolledId>>,
+    */
 }
 
 impl ThreadSigInfo {
     /// Inherits the set of blocked signals from another thread.
     pub fn inherit(sigmask: SignalSet) -> Self {
         Self {
-            raised: SignalSet::empty(), // Raised signals are not inherited
-            blocked: sigmask,           // Blocked signals are inherited
-            polled: None,
+            raised: array::from_fn(|_| None), // Raised signals are not inherited
+            blocked: sigmask,                 // Blocked signals are inherited
+                                              // polled: None,
         }
     }
 
@@ -165,37 +537,161 @@ impl ThreadSigInfo {
         };
 
         Self {
-            raised: SignalSet::empty(), // TODO: check all these
+            raised: array::from_fn(|_| None), // TODO: check all these
             blocked,
-            polled: None,
+            // polled: None,
         }
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct ProcSigInfo {
-    /// Signals that have been raised for the process via `kill` (or some other natural event) but
-    /// that cannot be immediately handled as they are blocked.
-    pub raised: SignalSet,
-    /// The handler to be run when the signal is received.
-    ///
-    // According to `pthreads(7)`, POSIX.1 specifies that threads of a process should all share
-    // signal disposition; this disposition is indicated by the `SigCallback` enum.
-    pub handlers: SignalHandlers,
-}
+pub struct SignalSetHandlerEvent {}
 
-impl ProcSigInfo {
-    pub fn inherit(handlers: SignalHandlers) -> Self {
-        Self {
-            raised: SignalSet::empty(),
-            handlers,
-        }
-    }
-
+impl SignalSetHandlerEvent {
     pub fn new() -> Self {
-        Self {
-            raised: SignalSet::empty(),
-            handlers: array::from_fn(|_| SigDisposition::Default),
+        Self {}
+    }
+}
+
+impl Event for SignalSetHandlerEvent {
+    type Success = ();
+    type Error = ();
+
+    fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        todo!()
+    }
+}
+
+pub struct SignalSendEvent {
+    signum: libc::c_int,
+    value: Option<sigval>,
+}
+
+impl SignalSendEvent {
+    pub fn new(signum: libc::c_int, value: Option<sigval>) -> Self {
+        Self { signum, value }
+    }
+}
+
+impl Event for SignalSendEvent {
+    type Success = ();
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let process_id = state.local.process_id;
+    }
+}
+
+pub struct SignalWaitEvent {
+    wait_set: SignalSet,
+    timeout: Option<Duration>,
+}
+
+impl SignalWaitEvent {
+    pub fn new(wait_set: SignalSet, timeout: Option<Duration>) -> Self {
+        Self { wait_set, timeout }
+    }
+}
+
+impl Event for SignalWaitEvent {
+    type Success = RaisedSignalInfo;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let process_id = state.local.process_id;
+        let worker_id = WorkerId::current(process_id);
+
+        // Are there any blocked signals for this thread?
+        let thread_signals = state
+            .local
+            .signals
+            .get_mut(&thread::current().id())
+            .unwrap();
+        let blocked_signals = thread_signals.blocked;
+        let raised_signals = &mut thread_signals.raised;
+
+        let interest_signals = self.wait_set.intersection(blocked_signals);
+
+        let mut ready = None;
+
+        for signal in interest_signals.iter() {
+            if let Some(r) = raised_signals[signal.lowest_signal_value() as usize].take() {
+                ready = Some(r);
+                break;
+            }
         }
+
+        if let Some(siginfo) = ready {
+            // yes--immediately use
+            return Outcome::Success(siginfo);
+        }
+        // No--check blocked signals for the process
+
+        for flag in signal_set.iter() {
+            let signal_value = flag.lowest_signal_value();
+
+            let signals = state.global.processes.get_mut(&process_id).unwrap();
+
+            let polled = match signals.polled[signal_value as usize].clone() {
+                None if ready.contains(flag) => {
+                    // No pollers were waiting on the signal--immediately return
+                    signals.raised = signals.raised.difference(flag);
+                    *sig = signal_value;
+                    return 0;
+                }
+                None => {
+                    let polled = state
+                        .global
+                        .polled_events
+                        .allocate(PolledInfo::default())
+                        .unwrap();
+                    let signals = state.global.processes.get_mut(&process_id).unwrap();
+                    signals.polled[signal_value as usize].replace(polled.clone());
+                    polled
+                }
+                Some(polled) => polled,
+            };
+
+            if ready.contains(flag)
+                && state
+                    .global
+                    .polled_events
+                    .get(&polled)
+                    .unwrap()
+                    .pollers
+                    .is_empty()
+            {
+                // No other pollers were waiting on the signal--immediately return
+                let signals = state.global.processes.get_mut(&process_id).unwrap();
+                signals.raised = signals.raised.difference(flag);
+                *sig = signal_value;
+                return 0;
+            }
+
+            state.register_poller(poller.clone(), polled);
+        }
+
+        drop(state);
+
+        // Wait for one of the signals to become available
+        poller.poll(&mut ctx);
+
+        let mut state = ctx.acquire();
+        state.delete_poller(poller);
+
+        let signals = state.global.processes.get_mut(&process_id).unwrap();
+        let ready = signal_set.intersection(signals.raised);
+        let first = ready.iter().next().unwrap(); // Polling returned, so there *must* be one ready
+
+        // Consume the selected signal
+        signals.raised = signals.raised.difference(first);
+        let signal_value = first.lowest_signal_value();
+        let signal_polled = signals.polled[signal_value as usize].clone().unwrap();
+
+        drop(state);
+
+        signal_polled.lower_polled(&mut ctx);
+
+        // Return the selected signal
+        *sig = signal_value;
     }
 }

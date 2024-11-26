@@ -41,10 +41,10 @@ use crate::handlers::plugin::{PluginEndpointId, PluginInfo};
 use crate::handlers::plugin_module::PluginId;
 use crate::handlers::polled::{PolledId, PolledInfo};
 use crate::handlers::poller::{PollerId, PollerInfo};
-use crate::handlers::process::{AtForkInfo, ProcessId};
-use crate::handlers::rwlock::{RwLockInfo, RwLockPtr};
-use crate::handlers::semaphore::{SemaphoreId, SemaphoreInfo, SemaphorePtr};
-use crate::handlers::signal::{ProcSigInfo, SignalHandlers, SignalSet, ThreadSigInfo};
+use crate::handlers::process::*;
+use crate::handlers::rwlock::*;
+use crate::handlers::semaphore::*;
+use crate::handlers::signal::*;
 use crate::handlers::socket::{
     LocalAddress, PendingInfo, PendingSocket, ServerSocket, SocketId, SocketInfo, SocketState,
     TransportLocationInfo,
@@ -343,9 +343,7 @@ impl FizzleState {
         self.initialize_local();
 
         if self.local.process_id.is_main_process() {
-            // Additionally initialize plugin state
-            // NOTE: must be done _after_ global/local state is initialized.
-            self.local.main_state = Some(MainProcessState::new());
+            self.initialize_main_process();
         }
     }
 
@@ -359,77 +357,101 @@ impl FizzleState {
         local.is_initialized = true;
 
         // Assign the process ID to be used for this process
-        let process_id = global.assign_process_id();
-        local.process_id = process_id;
 
-        // Insert the current (main) pthread into `pthreads`
-        local.pthreads.insert(
-            unsafe { libc::pthread_self() },
-            ThreadInfo::new(thread::current().id(), false, true),
-        );
+        if let Some(inherited_state) = global.inherited_state.take() {
+            local.process_id = inherited_state.process_id;
+            let process_info = global
+                .processes
+                .get_mut(&inherited_state.process_id)
+                .unwrap();
+            process_info.signal_handlers = array::from_fn(|_| SigDisposition::Default);
 
-        // Inherit signal handlers
-        if let Some(handlers) = global.inherited_handlers.take() {
-            global
-                .signals
-                .allocate_with_key(process_id, ProcSigInfo::inherit(handlers));
-        } else {
-            global
-                .signals
-                .allocate_with_key(process_id, ProcSigInfo::new());
-        }
-
-        // Inherit blocked sigmask
-        if let Some(sigmask) = global.inherited_sigmask.take() {
-            local
-                .signals
-                .insert(thread::current().id(), ThreadSigInfo::inherit(sigmask));
-        } else {
-            local
-                .signals
-                .insert(thread::current().id(), ThreadSigInfo::new(None));
-        }
-
-        // Inherit parent's file descriptors
-        if let Some(transfer_fds) = self.global.transfer_fds.take().map(Box::new) {
             // Generally, moving `KeyedArena`s is unsafe because `Rc<>` references rely on arenas
             // remaining in a fixed location in memory. However, `fds` never makes use of these
             // references, so this is safe to do.
-            self.local.fds = transfer_fds;
-            self.global.transfer_fds = None;
+            local.fds = Box::new(inherited_state.fds);
+
+            local.signals.insert(
+                thread::current().id(),
+                ThreadSigInfo {
+                    raised: array::from_fn(|_| None),
+                    blocked: inherited_state.sigmask,
+                },
+            );
         } else {
-            // Initialize parent's file descriptors
-            self.local
+            let process_id = global.assign_process_id();
+            local.process_id = process_id;
+
+            // Initialize this process's global lock
+            let sem_opt = &mut global.process_locks[usize::from(process_id)];
+            // TODO: this seems to behave safely, but check with Miri
+            unsafe {
+                let uninit_sem = (*(ptr::from_mut(sem_opt) as *mut Option<MaybeUninit<Semaphore>>))
+                    .insert(MaybeUninit::uninit());
+                Semaphore::initialize(uninit_sem, true, 0);
+            }
+
+            let pgid = ProcessGroupId::from(usize::from(process_id));
+
+            global.processes.allocate_with_key(
+                local.process_id,
+                ProcessInfo {
+                    pgid,
+                    ppid: ProcessId::init_process(),
+                    signal_handlers: array::from_fn(|_| SigDisposition::Default),
+                    children: FnvIndexSet::new(),
+                },
+            );
+
+            let mut process_groups = FnvIndexSet::new();
+            process_groups.insert(process_id).unwrap();
+            global
+                .process_groups
+                .allocate_with_key(pgid, process_groups)
+                .unwrap();
+
+            global
+                .awaiting_process_death
+                .insert(process_id, FnvIndexSet::new())
+                .unwrap();
+
+            // Initialize file descriptors
+            local
                 .fds
                 .allocate_with_key(
                     DescriptorId::from_raw_fd(0),
                     DescriptorInfo::new(FdResource::Stdin),
                 )
                 .unwrap();
-            self.local
+            local
                 .fds
                 .allocate_with_key(
                     DescriptorId::from_raw_fd(1),
                     DescriptorInfo::new(FdResource::Stdout),
                 )
                 .unwrap();
-            self.local
+            local
                 .fds
                 .allocate_with_key(
                     DescriptorId::from_raw_fd(2),
                     DescriptorInfo::new(FdResource::Stderr),
                 )
                 .unwrap();
+
+            local.signals.insert(
+                thread::current().id(),
+                ThreadSigInfo {
+                    raised: array::from_fn(|_| None),
+                    blocked: SignalSet::empty(),
+                },
+            );
         }
 
-        // Initialize this process's global lock
-        let sem_opt = &mut self.global.process_locks[usize::from(process_id)];
-        // TODO: this seems to behave safely, but check with Miri
-        unsafe {
-            let uninit_sem = (*(ptr::from_mut(sem_opt) as *mut Option<MaybeUninit<Semaphore>>))
-                .insert(MaybeUninit::uninit());
-            Semaphore::initialize(uninit_sem, true, 0);
-        }
+        // Insert the current (main) pthread into `pthreads`
+        local.pthreads.insert(
+            unsafe { libc::pthread_self() },
+            ThreadInfo::new(thread::current().id(), false, true),
+        );
     }
 
     /// Initializes global interprocess state.
@@ -439,16 +461,36 @@ impl FizzleState {
     fn initialize_global(&mut self) {
         assert!(!self.global.is_initialized);
         self.global.is_initialized = true;
+    }
 
-        // Initialize plugins for the main process
-        let mut plugins: Box<MaybeUninit<Plugins>> = Box::new(MaybeUninit::uninit());
-        // This needs to remain fixed in a location, so we use a Box with in-place initialization
-        unsafe { Plugins::initialize(plugins.as_mut_ptr()) };
-        self.local.plugins = Some(unsafe { plugins.assume_init() });
+    #[cold]
+    fn initialize_main_process(&mut self) {
+        let mut onstartup_commands = Vec::new();
+        let mut onready_commands = Vec::new();
 
-        // Initialize plugin endpoints
+        // Initialize immediate ("onstartup") commands
+        comptime::populate_onstartup_processes(&mut onstartup_commands);
+
+        // Initialize delayed ("onready") commands
+        comptime::populate_onready_processes(&mut onready_commands);
+
+        // Initialize plugins--these need to remain fixed in memory, so we use a Box with in-place initialization.
+        let mut plugins: Box<MaybeUninit<Plugins>> = Box::new_uninit();
         let mut endpoints = Vec::new();
-        comptime::populate_plugins(&mut endpoints, self.local.plugins.as_mut().unwrap());
+        unsafe {
+            Plugins::initialize(plugins.as_mut_ptr());
+
+            // Initialize plugin endpoints
+
+            comptime::populate_plugins(&mut endpoints, plugins.assume_init_mut());
+
+            self.local.main_state = Some(MainProcessState {
+                onstartup_commands,
+                onready_commands,
+                plugins: plugins.assume_init(),
+            });
+        }
+
         self.global.load_config_mappings(endpoints);
     }
 
@@ -540,28 +582,6 @@ impl FizzleState {
         }
     }
 
-    /*
-    // TODO: need to figure out where this fits...
-    pub fn copy_exec_fds(&mut self) {
-        let fds = self.global.transfer_fds.insert(self.local.fds.as_ref().clone());
-        let mut downref_keys = Vec::new();
-
-        for key in fds.keys() {
-            if let Some(DescriptorInfo {
-                close_on_exec: true,
-                ..
-            }) = fds.get(&key)
-            {
-                downref_keys.push(key);
-            }
-        }
-
-        for key in downref_keys {
-            fds.downref(&key);
-        }
-    }
-    */
-
     /// Adds a thread from the current process to the back of the `ready` queue.
     pub fn mark_thread_ready(&mut self, thread_id: ThreadId) {
         let process_id = self.local.process_id;
@@ -599,6 +619,14 @@ impl FizzleState {
     }
 }
 
+#[derive(Debug)]
+pub struct InheritedState {
+    pub fds: Descriptors,
+    pub process_id: ProcessId,
+    pub signal_handlers: SignalHandlers,
+    pub sigmask: SignalSet,
+}
+
 /// State specific to the first (root) process instantiated by Fizzle.
 pub struct MainProcessState {
     pub onstartup_commands: Vec<Command>,
@@ -616,30 +644,6 @@ impl Debug for MainProcessState {
     }
 }
 
-impl MainProcessState {
-    fn new() -> Self {
-        let mut onstartup_commands = Vec::new();
-        let mut onready_commands = Vec::new();
-
-        // Initialize immediate ("onstartup") commands
-        comptime::populate_onstartup_processes(&mut onstartup_commands);
-
-        // Initialize delayed ("onready") commands
-        comptime::populate_onready_processes(&mut onready_commands);
-
-        // Initialize plugins--these need to remain fixed in memory, so we use a Box with in-place initialization.
-        let mut plugins: Box<MaybeUninit<Plugins>> = Box::new_uninit();
-        unsafe {
-            Plugins::initialize(plugins.as_mut_ptr());
-            Self {
-                onstartup_commands,
-                onready_commands,
-                plugins: plugins.assume_init(),
-            }
-        }
-    }
-}
-
 pub struct ProcessLocalState {
     /// Indicates whether the given process-local state has completed initialization routines.
     ///
@@ -648,16 +652,13 @@ pub struct ProcessLocalState {
     pub is_initialized: bool,
     /// State associated with the main process (e.g. the first process instantiated with the Fizzle harness).
     pub main_state: Option<MainProcessState>,
+    /// See `atexit()`
+    pub atexit_handlers: Vec<AtExitFunction>,
+    /// See `on_exit()`
+    pub on_exit_handlers: Vec<(OnExitFunction, *mut libc::c_void)>,
     /// A thread that has received a cancellation request.
     pub cancelling: Option<ThreadId>,
-
     pub process_id: ProcessId,
-    /// Indicates that the thread being awoken should be immediately cancelled and delegate execution back to this thread.
-    /// Plugin modules for handling I/O.
-    ///
-    /// This field is only `Some` in the parent process; all other processes must delegate control
-    /// flow to it in order to handle plugin I/O.
-    pub plugins: Option<Box<Plugins>>,
     /// A supplamentary thread used to reap exiting threads.
     pub reaper: Option<ThreadId>,
     pub fds: Box<Descriptors>,
@@ -682,7 +683,6 @@ pub struct ProcessLocalState {
     >,
     pub futex_waiters: HashMap<FutexPtr, VecDeque<(u32, ThreadId)>, FxBuildHasher>,
     pub terminated_threads: HashSet<ThreadId, FxBuildHasher>,
-
     pub signals: HashMap<ThreadId, ThreadSigInfo, FxBuildHasher>,
     /// Indicates which thread(s) are awaiting the death of a specific thread (via pthread_join)
     pub awaiting_thread_death: HashMap<ThreadId, Vec<ThreadId>, FxBuildHasher>,
@@ -729,9 +729,10 @@ impl ProcessLocalState {
         Self {
             is_initialized: false,
             main_state: None,
+            atexit_handlers: Vec::new(),
+            on_exit_handlers: Vec::new(),
             cancelling: None,
             process_id: ProcessId::main_process(),
-            plugins: None,
             reaper: None,
             fds: Box::new(KeyedArena::new()),
             dirs: Default::default(),
@@ -761,30 +762,34 @@ impl ProcessLocalState {
 pub struct InterprocessState {
     /// Indicates whether the state has been properly initialized (not just instantiated).
     pub is_initialized: bool,
-
     /// The thread identifier to be executed by the waking process. This is `Some` if and only if
     /// a thread is currently about to be scheduled.
     pub waking_id: Option<ThreadId>,
     /// The thread/process identifier to be reaped. This is `Some` if and only if a thread/process
     /// is currently exiting.
     pub exiting_id: Option<WorkerId>,
-    /// The process ID to be passed through a call to one of the `exec*` family of functions.
-    ///
-    /// The pid of a process changes when `fork()` is called, but not when `exec*` is.
-    pub passthrough_id: Option<ProcessId>, // TODO: implement
-    /// The signal handlers that have been inherited from a parent process.
-    pub inherited_handlers: Option<SignalHandlers>,
-    /// The mask of blocked signals that have been inherited from a parent thread.
-    pub inherited_sigmask: Option<SignalSet>, // TODO: implement `exec()` passthrough of IGN, but not handlers
-
+    /// State passed between calls to the `exec()` family of functions
+    pub inherited_state: Option<InheritedState>,
     /// The thread/process identifier to be signalled with the given signal value. This is `Some`
     /// if and only if a thread is about to receive an outstanding signal.
-    pub signal: Option<(SignalDestination, i32)>,
+    pub signal: Option<(SignalDestination, RaisedSignalInfo)>,
+    /// Indicates which thread(s) are awaiting the death of a specific process (via `waitpid`)
+    pub awaiting_process_death: FnvIndexMap<
+        ProcessId,
+        FnvIndexSet<WorkerId, FIZZLE_MAX_WAITING_PARENTS>,
+        FIZZLE_MAX_DEAD_PROCESSES,
+    >,
+    /// Processes that have been exited.
+    pub exited_processes: FnvIndexMap<ProcessId, SigChildInfo, FIZZLE_MAX_DEAD_PROCESSES>,
     /// Signal dispositions, handlers and blocked incoming signals for each process.
-    pub signals: KeyedArena<ProcessId, ProcSigInfo, FIZZLE_MAX_PROCESSES>,
+    pub processes: KeyedArena<ProcessId, ProcessInfo, FIZZLE_MAX_PROCESSES>,
 
-    // /// The list of subprocess that are meant to be spawned once all available work has been completed.
-    pub plugin_worker: Option<WorkerId>,
+    pub process_groups: KeyedArena<
+        ProcessGroupId,
+        FnvIndexSet<ProcessId, FIZZLE_MAX_PROCESS_GROUP_SIZE>,
+        FIZZLE_MAX_PROCESS_GROUPS,
+    >,
+    /// The number of rounds to run fuzzing when executing in Persistent mode.
     pub persistent_rounds: usize,
     pub next_process_id: ProcessId,
     /// The next StreamId available to be assigned to an emulated stream.
@@ -792,10 +797,8 @@ pub struct InterprocessState {
     /// The next ephemeral port to be assigned to a socket.
     pub next_ephemeral_port: u16,
     pub process_locks: [Option<Semaphore>; FIZZLE_MAX_PROCESSES],
-    pub pids: FnvIndexMap<libc::pid_t, ProcessId, FIZZLE_MAX_PROCESSES>, // TODO: implement initialization and use of this
-    pub gids: FnvIndexMap<libc::gid_t, ProcessId, FIZZLE_MAX_PROCESSES>, // TODO: implement initialization and use of this
-    pub transfer_fds: Option<Descriptors>,
-    pub shared_mem_initialized: bool,
+    pub pids: FnvIndexMap<libc::pid_t, ProcessId, FIZZLE_MAX_PROCESSES>,
+    pub afl_shmem_initialized: bool,
     pub epolls: KeyedArena<EpollId, EpollInfo, FIZZLE_MAX_EPOLLS>,
     pub event_fds: KeyedArena<EventfdId, EventfdInfo, FIZZLE_MAX_EVENTFDS>,
     pub file_paths: FnvIndexMap<FilePath<MAX_PATH_LEN>, Rc<FileId>, FIZZLE_MAX_FILE_PATHS>,
@@ -837,25 +840,23 @@ impl InterprocessState {
 
             *ptr::addr_of_mut!((*state).waking_id) = None;
             *ptr::addr_of_mut!((*state).exiting_id) = None;
-            *ptr::addr_of_mut!((*state).passthrough_id) = None;
-            *ptr::addr_of_mut!((*state).inherited_handlers) = None;
-            *ptr::addr_of_mut!((*state).inherited_sigmask) = None;
+            *ptr::addr_of_mut!((*state).inherited_state) = None;
 
             *ptr::addr_of_mut!((*state).signal) = None;
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).signals));
+            *ptr::addr_of_mut!((*state).awaiting_process_death) = Default::default();
+            *ptr::addr_of_mut!((*state).exited_processes) = Default::default();
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).processes));
 
-            *ptr::addr_of_mut!((*state).plugin_worker) = None;
             *ptr::addr_of_mut!((*state).persistent_rounds) = FIZZLE_AFL_LOOP; // TODO: make configurable
-            *ptr::addr_of_mut!((*state).next_process_id) = ProcessId::from(0);
+            *ptr::addr_of_mut!((*state).next_process_id) = ProcessId::main_process();
             *ptr::addr_of_mut!((*state).next_stream_id) = StreamId::from(0);
             *ptr::addr_of_mut!((*state).next_ephemeral_port) = FIZZLE_EPHEMERAL_PORT_START;
             *ptr::addr_of_mut!((*state).process_locks) = array::from_fn(|_| None);
 
-            *ptr::addr_of_mut!((*state).pids) = FnvIndexMap::new();
-            *ptr::addr_of_mut!((*state).gids) = FnvIndexMap::new();
+            *ptr::addr_of_mut!((*state).pids) = Default::default();
 
-            *ptr::addr_of_mut!((*state).transfer_fds) = None;
-            *ptr::addr_of_mut!((*state).shared_mem_initialized) = false;
+            *ptr::addr_of_mut!((*state).afl_shmem_initialized) = false;
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).process_groups));
             KeyedArena::initialize(ptr::addr_of_mut!((*state).epolls));
             KeyedArena::initialize(ptr::addr_of_mut!((*state).event_fds));
             *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
@@ -1404,7 +1405,7 @@ impl InterprocessState {
     /// Assigns the next available process ID and increments it internally.
     pub fn assign_process_id(&mut self) -> ProcessId {
         let process_id = self.next_process_id;
-        self.next_process_id = ProcessId::from(usize::from(process_id) + 1);
+        self.next_process_id = process_id.next_id();
         process_id
     }
 
@@ -1440,10 +1441,20 @@ impl InterprocessState {
 }
 
 /// The unique identifying information for a given thread in a process.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct WorkerId {
     pub process_id: ProcessId,
     pub thread_id: ThreadId,
+}
+
+impl WorkerId {
+    /// Returns the current running worker.
+    pub fn current(process_id: ProcessId) -> Self {
+        Self {
+            process_id,
+            thread_id: thread::current().id(),
+        }
+    }
 }
 
 #[derive(Debug)]

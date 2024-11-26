@@ -11,6 +11,7 @@ use crate::constants::FIZZLE_MEMORY_ENV;
 use crate::errno::Errno;
 use crate::handlers::descriptor::DescriptorId;
 use crate::handlers::process::*;
+use crate::handlers::signal::{siginfo_t, RaisedSignalInfo, SigChildCode, SigChildInfo};
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
 use crate::state::fizzle_singleton;
@@ -442,11 +443,15 @@ hook_macros::hook! {
 
         let file_cstr = unsafe { CStr::from_ptr(pathname) };
 
+        crate::strace!("execveat(dirfd={}, pathname={:?}, args={:?}, env={:?}) -> ...", dirfd, file_cstr, args, env);
+
         if dirfd == libc::AT_FDCWD {
-            panic!("FD_ATCWD unimplemented"); // TODO: handle this edge case
+            unimplemented!("`execveat()` dirfd=FD_ATCWD"); // TODO: handle this edge case
         }
 
-        crate::strace!("execveat(dirfd={}, pathname={:?}, args={:?}, env={:?}) -> ...", dirfd, file_cstr, args, env);
+        if flags != 0 {
+            unimplemented!("`execveat()` AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW flags")
+        }
 
         let file = match FilePath::from_cstr(file_cstr) {
             Ok(f) => f,
@@ -583,38 +588,80 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn exit(status: libc::c_int) => fizzle_exit(ctx) {
-        log::warn!("exit called with status {}", status);
-        //if state.local.suspend_on_exit {
-            // TODO: clean up any polling contexts here so that this process never gets
-            // delegated to (other than for the purpose of running modules)
-
-            // Temporary hack: whenever processes get delegated to here, just pass back to
-            // another process (i.e. ignore inputs)
-        loop {
-            ctx.yield_thread()
-        }
+        crate::strace!("exit(status={}) -> !", status);
+        let _ = Scheduler::handle_event(&mut ctx, ProcessExitEvent::new(status, true));
+        panic!("exit() failed to exit")
     }
 }
 
 hook_macros::hook! {
     unsafe fn _exit(status: libc::c_int) => fizzle_exit2(ctx) {
-        log::warn!("_exit called with status {}", status);
-        loop {
-            ctx.yield_thread()
+        crate::strace!("_exit(status={}) -> !", status);
+        let _ = Scheduler::handle_event(&mut ctx, ProcessExitEvent::new(status, false));
+        panic!("_exit() failed to exit")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn atexit(cb: AtExitFunction) -> libc::c_int => fizzle_atexit(ctx) {
+        crate::strace!("atexit(cb={:?}) -> ...", cb);
+        match Scheduler::handle_event(&mut ctx, ProcessAtExitEvent::new(cb)) {
+            Ok(()) => {
+                crate::strace!("atexit(cb={:?}) -> 0", cb);
+                0
+            }
+            Err(()) => unreachable!(),
         }
     }
 }
 
-// We need this to ensure that our `atexit` hook is called first when FIZZLE_NOEXIT is set.
 hook_macros::hook! {
-    unsafe fn atexit(cb: extern "C" fn()) => fizzle_atexit(_ctx) {
-        hook_macros::real!(atexit)(cb)
+    unsafe fn on_exit(cb: OnExitFunction, arg: *mut libc::c_void) -> libc::c_int => fizzle_on_exit(ctx) {
+        crate::strace!("on_exit(cb={:?}, arg={:?}) -> ...", cb, arg);
+        match Scheduler::handle_event(&mut ctx, ProcessOnExitEvent::new(cb, arg)) {
+            Ok(()) => {
+                crate::strace!("on_exit(cb={:?}, arg={:?}) -> 0", cb, arg);
+                0
+            }
+            Err(()) => unreachable!(),
+        }
     }
 }
 
+// TODO: register *real* atexit handler to deal with the case where a process exits naturally
+
+// TODO: interpose c++ quick_exit and on_quick_exit functions
+
 hook_macros::hook! {
-    unsafe fn wait(_wstatus: *mut libc::c_int) -> libc::pid_t => fizzle_wait(_ctx) {
-        panic!("wait() unimplemented")
+    unsafe fn wait(wstatus: *mut libc::c_int) -> libc::pid_t => fizzle_wait(ctx) {
+        crate::strace!("wait(wstatus={:?}) -> ...", wstatus);
+        match Scheduler::handle_event(&mut ctx, ProcessWaitEvent::new(WaitType::AllChildren, WaitOptions::empty())) {
+            Ok(Some(wait_info)) => {
+                crate::strace!("wait(wstatus={:?}) -> {}", wstatus, wait_info.pid);
+
+                if !wstatus.is_null() {
+                    *wstatus = match wait_info.code {
+                        SigChildCode::Continued => 0xffff,
+                        SigChildCode::Exited => ((wait_info.status & 0xff) << 8) | 0x00,
+                        SigChildCode::Killed => wait_info.status & 0x7f,
+                        SigChildCode::Dumped => ((wait_info.status & 0xff) << 8) | 0x80,
+                        SigChildCode::Stopped => ((wait_info.status & 0xff) << 8) | 0x7f,
+                        SigChildCode::Trapped => ((wait_info.status & 0xff) << 8) | 0x7f, // Same as stopped (TODO: check)
+                    };
+                }
+
+                wait_info.pid
+            },
+            Ok(None) => {
+                crate::strace!("wait(wstatus={:?}) -> -1 (ECHILD)", wstatus);
+                Errno::ECHILD.set_errno();
+                -1
+            }
+            Err(e) => {
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
@@ -623,26 +670,91 @@ hook_macros::hook! {
         pid: libc::pid_t,
         wstatus: *mut libc::c_int,
         options: libc::c_int
-    ) -> libc::pid_t => fizzle_waitpid(_ctx) {
-        let no_hang = (options & libc::WNOHANG) > 0;
-        let _untraced = (options & libc::WUNTRACED) > 0;
-        let _continued = (options & libc::WCONTINUED) > 0;
+    ) -> libc::pid_t => fizzle_waitpid(ctx) {
+        let options = WaitOptions::from_bits_truncate(options & (libc::WNOHANG | libc::WUNTRACED | libc::WCONTINUED));
 
-        if no_hang {
-            return hook_macros::real!(waitpid)(pid, wstatus, options)
+        let wait_type = match pid {
+            ..=-2 => WaitType::Gid(ProcessGroupId::from(-pid as usize)),
+            -1 => WaitType::AllChildren,
+            0 => {
+                let pgid = Scheduler::handle_event(&mut ctx, ProcessGetGroupIdEvent::new(None)).unwrap();
+                WaitType::Gid(ProcessGroupId::from(usize::from(pgid)))
+            }
+            1.. => WaitType::Pid(ProcessId::from(pid as usize)),
+        };
+
+        crate::strace!("waitpid(pid={}, wstatus={:?}, options={:?}) -> ...", pid, wstatus, options);
+        match Scheduler::handle_event(&mut ctx, ProcessWaitEvent::new(wait_type, options)) {
+            Ok(Some(wait_info)) => {
+                crate::strace!("waitpid(pid={}, wstatus={:?}, options={:?}) -> {}", pid, wstatus, options, wait_info.pid);
+
+                if !wstatus.is_null() {
+                    *wstatus = match wait_info.code {
+                        SigChildCode::Continued => 0xffff,
+                        SigChildCode::Exited => ((wait_info.status & 0xff) << 8) | 0x00,
+                        SigChildCode::Killed => wait_info.status & 0x7f,
+                        SigChildCode::Dumped => ((wait_info.status & 0xff) << 8) | 0x80,
+                        SigChildCode::Stopped => ((wait_info.status & 0xff) << 8) | 0x7f,
+                        SigChildCode::Trapped => ((wait_info.status & 0xff) << 8) | 0x7f, // Same as stopped (TODO: check)
+                    };
+                }
+
+                wait_info.pid
+            },
+            Ok(None) => {
+                crate::strace!("waitpid(pid={}, wstatus={:?}, options={:?}) -> 0", pid, wstatus, options);
+                0
+            }
+            Err(e) => {
+                crate::strace!("waitpid(pid={}, wstatus={:?}, options={:?}) -> -1 ({})", pid, wstatus, options, e);
+                e.set_errno();
+                -1
+            }
         }
-        panic!("waitpid() unimplemented")
     }
 }
 
 hook_macros::hook! {
     unsafe fn waitid(
-        _idtype: libc::idtype_t,
-        _id: libc::id_t,
-        _infop: *mut libc::siginfo_t,
-        _options: libc::c_int
-    ) -> libc::c_int => fizzle_waitid(_ctx) {
-        panic!("waitid() unimplemented")
+        idtype: libc::idtype_t,
+        id: libc::id_t,
+        infop: *mut siginfo_t,
+        options: libc::c_int
+    ) -> libc::c_int => fizzle_waitid(ctx) {
+        let options = WaitOptions::from_bits_truncate(options);
+
+        let wait_type = match idtype {
+            libc::P_PID => WaitType::Pid(ProcessId::from(id as usize)),
+            libc::P_PIDFD => WaitType::PidFd(DescriptorId::from_raw_fd(id as i32)),
+            libc::P_PGID => WaitType::Gid(ProcessGroupId::from(id as usize)),
+            libc::P_ALL => WaitType::AllChildren,
+            _ => {
+                crate::strace!("waitid(idtype={}, id={}, infop={:?}, options={:?}) -> -1 (EINVAL)", idtype, id, infop, options);
+                return -1
+            }
+        };
+
+        crate::strace!("waitid(idtype={}, id={}, infop={:?}, options={:?}) -> ...", idtype, id, infop, options);
+        match Scheduler::handle_event(&mut ctx, ProcessWaitEvent::new(wait_type, options)) {
+            Ok(Some(wait_info)) => {
+                crate::strace!("waitid(idtype={}, id={}, infop={:?}, options={:?}) -> 0", idtype, id, infop, options);
+
+                if let Some(infop) = unsafe { infop.as_mut() } {
+                    *infop = siginfo_t::from_raised(RaisedSignalInfo::Child(wait_info));
+                }
+
+                0
+            },
+            Ok(None) => {
+                crate::strace!("waitid(idtype={}, id={}, infop={:?}, options={:?}) -> 0", idtype, id, infop, options);
+                0
+            }
+            Err(e) => {
+                crate::strace!("waitid(idtype={}, id={}, infop={:?}, options={:?}) -> -1 ({})", idtype, id, infop, options, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
@@ -654,7 +766,97 @@ pub unsafe extern "C" fn clone(
     arg: *mut libc::c_void,
     mut va_args: ...
 ) -> libc::c_int {
+    if crate::state::has_entered_handler() {
+        panic!("recursive calls to `clone()` not allowed");
+    }
+    crate::state::set_entered_handler(true);
+
     // Feels more like a thread initially...
     // But also kind of acts more like `fork()`
-    unimplemented!("clone")
+    unimplemented!("clone");
+
+    // crate::state::set_entered_handler(false);
 }
+
+hook_macros::hook! {
+    unsafe fn getpid() -> libc::pid_t => fizzle_getpid(ctx) {
+
+        crate::strace!("getpid() -> ...");
+        match Scheduler::handle_event(&mut ctx, ProcessGetIdEvent::new()) {
+            Ok(pid) => {
+                crate::strace!("getpid() -> {}", pid);
+                pid
+            },
+            Err(_) => unreachable!(),
+        }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn getppid() -> libc::pid_t => fizzle_getppid(ctx) {
+
+        crate::strace!("getppid() -> ...");
+        match Scheduler::handle_event(&mut ctx, ProcessGetParentIdEvent::new()) {
+            Ok(pid) => {
+                crate::strace!("getppid() -> {}", pid);
+                pid
+            },
+            Err(_) => unreachable!(),
+        }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn getpgid(pid: libc::pid_t) -> libc::pid_t => fizzle_getpgid(ctx) {
+
+        crate::strace!("getpgid(pid={}) -> ...", pid);
+        match Scheduler::handle_event(&mut ctx, ProcessGetGroupIdEvent::new(Some(ProcessId::from(pid as usize)))) {
+            Ok(pgid) => {
+                let pgid = usize::from(pgid) as libc::pid_t;
+                crate::strace!("getpgid(pid={}) -> {}", pid, pgid);
+                pgid
+            },
+            Err(e) => {
+                crate::strace!("getpgid(pid={}) -> -1 ({})", pid, e);
+                -1
+            },
+        }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn getpgrp() -> libc::pid_t => fizzle_getpgrp(ctx) {
+
+        crate::strace!("getpgrp() -> ...");
+        match Scheduler::handle_event(&mut ctx, ProcessGetGroupIdEvent::new(None)) {
+            Ok(pgid) => {
+                let pgid = usize::from(pgid) as libc::pid_t;
+                crate::strace!("getpgrp() -> {}", pgid);
+                pgid
+            },
+            Err(e) => {
+                crate::strace!("getpgrp() -> -1 ({})", e);
+                -1
+            },
+        }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn setpgid(pid: libc::pid_t, pgid: libc::pid_t) -> libc::c_int => fizzle_setpgid(ctx) {
+
+        crate::strace!("setpgid(pid={}, pgid={}) -> ...", pid, pgid);
+        match Scheduler::handle_event(&mut ctx, ProcessSetGroupIdEvent::new(pid, pgid)) {
+            Ok(()) => {
+                crate::strace!("setpgid(pid={}, pgid={}) -> 0", pid, pgid);
+                0
+            },
+            Err(e) => {
+                crate::strace!("setpgid(pid={}, pgid={}) -> -1 ({})", pid, pgid, e);
+                -1
+            },
+        }
+    }
+}
+
+// TODO: include pid_* functions here

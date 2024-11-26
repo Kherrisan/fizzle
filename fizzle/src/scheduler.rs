@@ -10,8 +10,11 @@ use crate::backend::{ConnectedBackend, PendingBackend};
 use crate::constants::{FIZZLE_MAX_FUZZ_ENDPOINTS, FIZZLE_MEMORY_ENV};
 use crate::handlers::mutex::MutexStatus;
 use crate::handlers::polled::PolledId;
-use crate::handlers::process::ProcessId;
-use crate::handlers::signal::{SigDisposition, SignalSet};
+use crate::handlers::process::*;
+use crate::handlers::signal::{
+    siginfo_t, RaisedSignalInfo, SigChildCode, SigChildInfo, SigDisposition, SignalSendEvent,
+    SignalSet,
+};
 use crate::handlers::socket::SocketState;
 use crate::plugins;
 use crate::state::{self, PerRoundClientBackend, PerRoundClientInfo, SignalDestination};
@@ -44,6 +47,8 @@ pub enum Outcome<S, E> {
     Pause(DelegationSource),
     /// Terminates the given thread's execution.
     TerminateThread(TerminationMethod),
+    /// Terminates the given process's execution.
+    TerminateProcess(TerminationMethod),
     // TODO: make this generic in the future.
     Execute(unsafe extern "C" fn()),
 }
@@ -124,6 +129,11 @@ impl Scheduler {
                     drop(state);
                     Scheduler::terminate_thread(ctx, method);
                 }
+                Outcome::TerminateProcess(method) => {
+                    drop(state);
+                    Scheduler::terminate_process(ctx, method)
+                }
+
                 Outcome::Execute(f) => {
                     drop(state);
                     Scheduler::run_outside_hook(ctx, || unsafe { f() });
@@ -287,8 +297,8 @@ impl Scheduler {
                         continue 'yielded;
                     }
                 }
-                DelegationState::HandleSignal(signal) => {
-                    Scheduler::handle_signal(ctx, signal);
+                DelegationState::HandleSignal(raised_info) => {
+                    Scheduler::handle_signal(ctx, raised_info);
                     delegation_state = DelegationState::RunNextWorker;
                     continue 'yielded;
                 }
@@ -314,33 +324,51 @@ impl Scheduler {
 
                 assert_eq!(thread_id, thread::current().id());
                 DelegationState::TerminateThread(TerminationMethod::Cancellation)
-            } else if let Some((dst, signal)) = state.global.signal.take() {
+            } else if let Some((dst, raised_info)) = state.global.signal.take() {
                 // ...because it has received a signal (e.g. from `kill()`, `pthread_kill()`)
 
                 match dst {
                     SignalDestination::Process(process_id) => {
+                        // The worker raising the signal should always yield to the appropriate process
                         assert_eq!(process_id, state.local.process_id);
 
                         // Assign one of the threads of this process to receive the signal
                         let mut chosen_thread = None;
                         for (thread_id, siginfo) in state.local.signals.iter_mut() {
-                            if !siginfo.blocked.contains(SignalSet::from_signum(signal)) {
+                            if !siginfo
+                                .blocked
+                                .contains(SignalSet::from_signum(raised_info.signum()))
+                            {
                                 chosen_thread = Some(*thread_id);
                             }
                         }
 
                         if let Some(chosen_thread) = chosen_thread {
-                            DelegationState::SignalToThread(chosen_thread, signal)
+                            // Now run that thread
+                            DelegationState::SignalToThread(chosen_thread, raised_info)
                         } else {
-                            // None of the threads were ready--mark the (blocked) signal as raised
-                            state.global.signals.get_mut(&process_id).unwrap().raised |=
-                                SignalSet::from_signum(signal);
-                            DelegationState::RunNextWorker
+                            // None of the threads were ready--assign the (blocked) signal to one of the threads
+                            'assigned: {
+                                let signum = raised_info.signum() as usize;
+                                for siginfo in state.local.signals.values_mut() {
+                                    if siginfo.raised[signum].is_none() {
+                                        siginfo.raised[signum] = Some(raised_info);
+                                        break 'assigned DelegationState::RunNextWorker;
+                                    }
+                                }
+
+                                log::warn!(
+                                    "Signal {} for {:?} was dropped",
+                                    raised_info.signum(),
+                                    process_id
+                                );
+                                DelegationState::RunNextWorker
+                            }
                         }
                     }
                     SignalDestination::Thread(thread_id) => {
                         assert_eq!(thread_id, thread::current().id());
-                        DelegationState::HandleSignal(signal)
+                        DelegationState::HandleSignal(raised_info)
                     }
                 }
             } else if let Some(_worker_id) = state.global.exiting_id.take() {
@@ -400,7 +428,13 @@ impl Scheduler {
             .collect();
         for module in modules {
             let (local, global) = state.split();
-            let plugin_module = local.plugins.as_mut().unwrap().get_mut(&module).unwrap();
+            let plugin_module = local
+                .main_state
+                .as_mut()
+                .unwrap()
+                .plugins
+                .get_mut(&module)
+                .unwrap();
             plugin_module.fuzz_round_start(global.fuzz_input.data());
         }
 
@@ -620,7 +654,12 @@ impl Scheduler {
             SignalDestination::Thread(_) => current_worker.process_id,
         };
 
-        let disposition = &state.global.signals.get(&process_id).unwrap().handlers[signal as usize];
+        let disposition = &state
+            .global
+            .processes
+            .get(&process_id)
+            .unwrap()
+            .signal_handlers[signal as usize];
         if disposition == &SigDisposition::Ignore {
             return; // Ignores the signal without saving it
         }
@@ -645,57 +684,74 @@ impl Scheduler {
         };
     }
 
-    fn handle_signal(ctx: &mut FizzleSingleton, signal: i32) {
+    fn handle_signal(ctx: &mut FizzleSingleton, raised_info: RaisedSignalInfo) {
         let mut state = ctx.acquire();
         let (local, global) = state.split();
         let thread_id = thread::current().id();
         let process_id = local.process_id;
 
+        let signum = raised_info.signum();
         let thread_siginfo = local.signals.get_mut(&thread_id).unwrap();
-        let proc_siginfo = global.signals.get_mut(&process_id).unwrap();
+        let proc_siginfo = global.processes.get_mut(&process_id).unwrap();
 
+        //
         match (
-            &proc_siginfo.handlers[signal as usize],
+            &proc_siginfo.signal_handlers[signum as usize],
             thread_siginfo
                 .blocked
-                .contains(SignalSet::from_signum(signal)),
+                .contains(SignalSet::from_signum(signum)),
         ) {
-            (_, true) => thread_siginfo.raised |= SignalSet::from_signum(signal),
-            (SigDisposition::Default, false) => match SignalSet::from_signum(signal) {
+            (_, true) => {
+                if thread_siginfo.raised[signum as usize].is_some() {
+                    // If there is already a pending signal, the incoming one is dropped
+                    log::warn!(
+                        "Signal {} for {:?}, {:?} dropped",
+                        signum,
+                        process_id,
+                        thread_id
+                    );
+                } else {
+                    thread_siginfo.raised[signum as usize].insert(raised_info);
+                    // TODO: trigger sigaction() here
+                }
+            }
+            (SigDisposition::Default, false) => match SignalSet::from_signum(signum) {
                 // Ignore the signal--do nothing
                 SignalSet::SIGCHLD | SignalSet::SIGURG | SignalSet::SIGWINCH => (),
                 // Unpause the process
                 SignalSet::SIGCONT => {
-                    unimplemented!("Need to implement SIGCONT");
+                    unimplemented!("`SIGCONT` signal");
                 }
                 // Stop the thread (process?)
                 SignalSet::SIGSTOP
                 | SignalSet::SIGTSTP
                 | SignalSet::SIGTTIN
                 | SignalSet::SIGTTOU => {
-                    unimplemented!("Need to implement SIGSTOP family of signals");
+                    unimplemented!("`SIGSTOP` family of signals");
                 }
                 _ => {
                     drop(state);
-                    Scheduler::terminate_process(ctx, TerminationMethod::Signal(signal))
+                    Scheduler::terminate_process(ctx, TerminationMethod::Signal(signum))
                 }
             },
             (SigDisposition::Handler(handler), false) => {
                 let handler = *handler;
                 drop(state);
                 Scheduler::run_outside_hook(ctx, || unsafe {
-                    handler(signal);
+                    handler(raised_info.signum());
                 });
             }
             (SigDisposition::Action(action), false) => {
                 let action = *action;
                 drop(state);
-                Scheduler::run_outside_hook(ctx, || {
-                    unsafe {
-                        // siginfo_t*, ucontext_t* cast to void*
-                        // TODO: provide siginfo and ucontext here
-                        action(signal, ptr::null_mut(), ptr::null_mut());
-                    }
+
+                let mut siginfo = siginfo_t::from_raised(raised_info);
+                Scheduler::run_outside_hook(ctx, || unsafe {
+                    action(
+                        raised_info.signum(),
+                        ptr::addr_of_mut!(siginfo),
+                        ptr::null_mut(),
+                    );
                 });
             }
             (SigDisposition::Ignore, _) => unreachable!(), // This should be handled in `send_signal()`
@@ -847,14 +903,10 @@ impl Scheduler {
         if let Some(awaiting_threads) = state.local.awaiting_thread_death.remove(&thread_id) {
             let process_id = state.local.process_id;
             for thread_id in awaiting_threads {
-                state
-                    .global
-                    .ready
-                    .push_back(ReadyInfo::Worker(WorkerId {
-                        process_id,
-                        thread_id,
-                    }))
-                    .unwrap();
+                state.global.mark_worker_ready(WorkerId {
+                    process_id,
+                    thread_id,
+                });
             }
         }
 
@@ -893,8 +945,8 @@ impl Scheduler {
                     unreachable!("`pthread_cancel` failed to kill current thread");
                 },
                 TerminationMethod::ThreadExit(retval) => unsafe { libc::pthread_exit(retval) },
-                TerminationMethod::Signal(signal) => unsafe {
-                    libc::pthread_kill(libc::pthread_self(), signal);
+                TerminationMethod::Signal(raised_info) => unsafe {
+                    libc::pthread_kill(libc::pthread_self(), raised_info.signum());
                     libc::sleep(1); // Acts as a backup cancellation point in case `pthread_kill` didn't work
                     unreachable!("`pthread_kill` failed to kill current thread");
                 },
@@ -916,25 +968,112 @@ impl Scheduler {
     fn terminate_process(ctx: &mut FizzleSingleton, method: TerminationMethod) -> ! {
         // TODO: remove all active file descriptors, handles from local state so they're freed from global
 
+        let on_exit_val = match method {
+            TerminationMethod::ThreadExit(_) => Some(0),
+            TerminationMethod::ProcessExit(val) => Some(val),
+            _ => None,
+        };
+
+        // handle registered `atexit()`/`on_exit()` functions
+        if let Some(on_exit_val) = on_exit_val {
+            let mut state = ctx.acquire();
+
+            let mut atexit_handlers = Vec::new();
+            let mut on_exit_handlers = Vec::new();
+            mem::swap(&mut atexit_handlers, &mut state.local.atexit_handlers);
+            mem::swap(&mut on_exit_handlers, &mut state.local.on_exit_handlers);
+            drop(state);
+
+            for handler in atexit_handlers {
+                Scheduler::run_outside_hook(ctx, || unsafe {
+                    handler();
+                });
+            }
+
+            for (handler, arg) in on_exit_handlers {
+                Scheduler::run_outside_hook(ctx, || unsafe {
+                    handler(on_exit_val, arg);
+                });
+            }
+        }
+
         // Clean up process state
-        let mut state = ctx.acquire();
+        let state = ctx.acquire();
         let process_id = state.local.process_id;
         assert!(
             !process_id.is_main_process(),
             "main process forcibly terminated"
         );
 
-        // Remove the PID of the current process
-        let (&pid, _) = state
+        let sigchild = match &method {
+            TerminationMethod::Cancellation | TerminationMethod::ThreadExit(_) => SigChildInfo {
+                code: SigChildCode::Exited,
+                pid: process_id.as_pid(),
+                uid: unsafe { libc::getuid() },
+                status: 0,
+            },
+            TerminationMethod::ProcessExit(val) | TerminationMethod::ProcessImmediateExit(val) => {
+                SigChildInfo {
+                    code: SigChildCode::Exited,
+                    pid: process_id.as_pid(),
+                    uid: unsafe { libc::getuid() },
+                    status: *val,
+                }
+            }
+            TerminationMethod::Signal(raised_info) => SigChildInfo {
+                code: SigChildCode::Killed,
+                pid: raised_info.pid().unwrap_or(process_id.as_pid()),
+                uid: raised_info.uid().unwrap_or(unsafe { libc::getuid() }),
+                status: raised_info.signum(),
+            },
+        };
+
+        let parent_id = state.global.processes.get(&process_id).unwrap().ppid;
+
+        drop(state);
+
+        // Send SIGCHLD
+        // NOTE: it is VERY IMPORTANT that this go towards the end of process termination.
+        if parent_id != ProcessId::init_process() {
+            Scheduler::handle_event(ctx, SignalSendEvent::new(libc::SIGCHLD, None)).unwrap();
+        }
+
+        let mut state = ctx.acquire();
+
+        // Mark this process as a zombie
+        // NOTE: it is VERY IMPORTANT that this block comes AFTER the SIGCHLD signal is sent.
+        // The reason for this is that `Scheduler::handle_event()` will pause the execution
+        // of this process to run signal handlers in the target process/thread of the signal.
+        // If userspace code access resources from this process, bad things could happen (?).
+        state
             .global
-            .pids
-            .iter()
-            .find(|(_, v)| **v == process_id)
+            .exited_processes
+            .insert(process_id, sigchild.clone())
             .unwrap();
+
+        // If a parent is awaiting this process's death, notify it
+        let awaiting = state
+            .global
+            .awaiting_process_death
+            .remove(&process_id)
+            .unwrap();
+        for awaiting_worker in &awaiting {
+            state.global.mark_worker_ready(*awaiting_worker);
+        }
+
+        let real_pid = state.global.processes.get(&process_id).unwrap().pid;
+
+        // DO NOT remove pid or ppid info--they will happen when the process is reaped
+        /*
+        // Remove the PID of the current process
         state.global.pids.remove(&pid);
 
-        // Remove process signals
-        state.global.signals.downref(&process_id);
+        // Remove process info
+        state.global.processes.downref(&process_id);
+        */
+
+        // TODO: if a parent dies before a child does, the child will never be reaped.
+        // Fix this...
 
         // Clean up this process's semaphore
         state.global.process_locks[usize::from(process_id)] = None;
@@ -959,7 +1098,7 @@ impl Scheduler {
             TerminationMethod::ProcessImmediateExit(retval) => unsafe { libc::_exit(retval) },
             TerminationMethod::Signal(signal) => unsafe {
                 // TODO: if SIGKILL (or any other signal that doesn't run `atexit()`), make sure our atexit handlers still work
-                libc::kill(pid, signal);
+                libc::kill(real_pid, signal.signum());
                 libc::sleep(1); // Acts as a backup cancellation point in case `pthread_kill` didn't work
                 panic!("`pthread_kill()` failed to kill current thread");
             },
@@ -1003,8 +1142,8 @@ pub enum DelegationState {
     RunProcess(ProcessId),
     RunPlugins,
     TerminateThread(TerminationMethod),
-    SignalToThread(ThreadId, i32),
-    HandleSignal(i32),
+    SignalToThread(ThreadId, RaisedSignalInfo),
+    HandleSignal(RaisedSignalInfo),
 }
 
 impl<'a> From<DelegationAction> for DelegationState {
@@ -1025,11 +1164,11 @@ pub enum DelegationSource {
     Process,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum TerminationMethod {
     Cancellation,
     ProcessExit(i32),
     ProcessImmediateExit(i32),
     ThreadExit(*mut libc::c_void),
-    Signal(i32),
+    Signal(RaisedSignalInfo),
 }
