@@ -4,6 +4,7 @@ use std::{ptr, thread};
 use crate::errno::Errno;
 use crate::handlers::barrier::*;
 use crate::handlers::condvar::*;
+use crate::handlers::id::ThreadGetIdEvent;
 use crate::handlers::mutex::*;
 use crate::handlers::rwlock::*;
 use crate::handlers::spinlock::*;
@@ -1311,6 +1312,7 @@ hook_macros::hook! {
         crate::strace!("gettid() -> ...");
         match Scheduler::handle_event(&mut ctx, ThreadGetIdEvent) {
             Ok(tid) => {
+                let tid = tid.as_id();
                 crate::strace!("gettid() -> {}", tid);
                 tid
             },

@@ -6,16 +6,18 @@ use bitflags::bitflags;
 
 use fizzle_common::io::MAX_PATH_LEN;
 use fizzle_common::path::FilePath;
+use heapless::IndexSet;
 
-use crate::arena::ArenaKey;
+use crate::arena::{ArenaKey, Rc};
 use crate::constants::*;
 use crate::errno::Errno;
 use crate::handlers::signal::SigDisposition;
 use crate::scheduler::{DelegationSource, Event, Outcome, TerminationMethod};
 use crate::semaphore::Semaphore;
-use crate::state::{fizzle_singleton, set_entered_handler, FizzleState, InheritedState, WorkerId};
+use crate::state::{fizzle_singleton, set_entered_handler, FizzleState, InheritedState};
 
 use super::descriptor::{DescriptorId, FdResource};
+use super::id::{WorkerId, WorkerInfo};
 use super::signal::*;
 use super::thread::ThreadInfo;
 
@@ -45,25 +47,11 @@ impl ArenaKey for ProcessId {
 impl ProcessId {
     /// The PID corresponding to the main process (2).
     pub fn main_process() -> Self {
-        // pid 0 and pid 1 are special, so we start with 2
-        Self(2)
-    }
-
-    /// The PID corresponding to the `init` process (1).
-    pub fn init_process() -> Self {
-        Self(1)
+        Self(0)
     }
 
     pub fn is_main_process(&self) -> bool {
         self == &Self::main_process()
-    }
-
-    pub fn next_id(&self) -> ProcessId {
-        ProcessId(self.0 + 1)
-    }
-
-    pub fn as_pid(&self) -> libc::pid_t {
-        self.0 as libc::pid_t
     }
 }
 
@@ -71,15 +59,18 @@ impl ProcessId {
 #[repr(transparent)]
 pub struct ProcessGroupId(usize);
 
-impl From<ProcessGroupId> for usize {
-    fn from(value: ProcessGroupId) -> Self {
-        value.0
+impl ProcessGroupId {
+    pub fn from_worker(worker_id: &WorkerId) -> Self {
+        Self(worker_id.as_id() as usize)
     }
-}
 
-impl From<usize> for ProcessGroupId {
-    fn from(value: usize) -> Self {
-        ProcessGroupId(value)
+    pub fn from_pgid(pgid: libc::c_int) -> Self {
+        assert!(pgid > 0);
+        Self(pgid as usize)
+    }
+
+    pub fn as_pgid(&self) -> libc::c_int {
+        self.0 as libc::c_int
     }
 }
 
@@ -89,10 +80,12 @@ impl ArenaKey for ProcessGroupId {
 
 #[derive(Clone, Debug)]
 pub struct ProcessInfo {
+    /// The PID of this process (e.g., the TID of the main thread).
+    pub pid: WorkerId,
+    /// The parent process ID corresponding to the given process.
+    pub ppid: WorkerId,
     /// The process group ID corresponding to the given process.
     pub pgid: ProcessGroupId,
-    /// The parent process ID corresponding to the given process.
-    pub ppid: ProcessId,
     /*
     /// Signals that have been raised for the process via `kill` (or some other natural event) but
     /// that cannot be immediately handled as they are blocked.
@@ -180,25 +173,7 @@ impl Event for ProcessForkEvent {
                     log::debug!("__afl_manual_init finished");
                 }
 
-                // The child process needs a unique identifier from the parent
-                let child_process_id = state.global.assign_process_id();
                 let parent_process_id = state.local.process_id;
-
-                state
-                    .global
-                    .processes
-                    .get_mut(&parent_process_id)
-                    .unwrap()
-                    .children
-                    .insert(child_process_id)
-                    .unwrap();
-
-                /*
-                // Generally, moving `KeyedArena`s is unsafe because `Rc<>` references rely on arenas
-                // remaining in a fixed location in memory. However, `fds` never makes use of these
-                // references, so this is safe to do.
-                state.global.transfer_fds = Some((*state.local.fds).clone());
-                */
 
                 // Run pthread_atfork child handlers (in FIFO order)
                 // SAFETY: this must run before `fork()` to uphold noalias
@@ -233,6 +208,57 @@ impl Event for ProcessForkEvent {
                         let mut ctx = unsafe { fizzle_singleton() };
                         let mut state = ctx.acquire();
 
+                        let parent_info = state.global.processes.get(&parent_process_id).unwrap();
+                        let ppid = parent_info.pid;
+                        let pgid = parent_info.pgid;
+                        let signal_handlers = parent_info.signal_handlers.clone();
+
+                        // Assign a pid to this process--use parent ProcessId TEMPORARILY until child id assigned
+                        let mut pid = state
+                            .global
+                            .ids
+                            .allocate(WorkerInfo::current(parent_process_id))
+                            .unwrap();
+                        Rc::upref(&mut pid);
+                        let pid = *pid;
+
+                        // The child process needs a unique identifier from the parent
+                        let mut child_process_id = state
+                            .global
+                            .processes
+                            .allocate(ProcessInfo {
+                                pid,
+                                ppid,
+                                pgid,
+                                signal_handlers,
+                                children: IndexSet::default(),
+                            })
+                            .unwrap();
+                        Rc::upref(&mut child_process_id);
+                        let child_process_id = *child_process_id;
+
+                        // Now fix the child ProcessId;
+                        state.global.ids.get_mut(&pid).unwrap().process_id = child_process_id;
+
+                        // Add the child process to the parent process's child list
+                        state
+                            .global
+                            .processes
+                            .get_mut(&parent_process_id)
+                            .unwrap()
+                            .children
+                            .insert(child_process_id)
+                            .unwrap();
+
+                        // Add the child process to the parent process's group
+                        state
+                            .global
+                            .process_groups
+                            .get_mut(&pgid)
+                            .unwrap()
+                            .insert(child_process_id)
+                            .unwrap();
+
                         // Assign the child a unique process ID
                         state.local.process_id = child_process_id;
 
@@ -247,31 +273,7 @@ impl Event for ProcessForkEvent {
                             Semaphore::initialize(uninit_sem, true, 0);
                         }
 
-                        let parent_process =
-                            state.global.processes.get(&parent_process_id).unwrap();
-                        let signal_handlers = parent_process.signal_handlers.clone();
-                        let pgid = parent_process.pgid;
-
-                        // Assign the parent's signal handlers to this process
-                        state.global.processes.allocate_with_key(
-                            child_process_id,
-                            ProcessInfo {
-                                children: heapless::FnvIndexSet::new(),
-                                pgid,
-                                ppid: parent_process_id,
-                                signal_handlers,
-                            },
-                        );
-
-                        state
-                            .global
-                            .process_groups
-                            .get_mut(&pgid)
-                            .unwrap()
-                            .insert(child_process_id)
-                            .unwrap();
-
-                        // Not a parent process
+                        // Remove any state from main process
                         state.local.main_state = None;
 
                         // `fork()` only copies the current thread
@@ -350,7 +352,7 @@ impl Event for ProcessForkEvent {
                             .collect();
                         state.local.atfork_handlers.clear();
 
-                        self.state = ProcessForkState::RunPostHandlers(child_handlers, pid);
+                        self.state = ProcessForkState::RunPostHandlers(child_handlers, pid.as_id());
                         Outcome::Continue
                     }
                     // The parent process pauses for the child to run
@@ -624,132 +626,6 @@ impl Event for ProcessOnExitEvent {
     }
 }
 
-pub struct ProcessGetIdEvent;
-
-impl ProcessGetIdEvent {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Event for ProcessGetIdEvent {
-    type Success = libc::pid_t;
-    type Error = ();
-
-    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        Outcome::Success(state.local.process_id.as_pid())
-    }
-}
-
-pub struct ProcessGetParentIdEvent;
-
-impl ProcessGetParentIdEvent {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Event for ProcessGetParentIdEvent {
-    type Success = libc::pid_t;
-    type Error = ();
-
-    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let ppid = unsafe { libc::getppid() };
-
-        // Convert the OS's ppid to our masked version...
-        let parent_id = match state.global.pids.get(&ppid) {
-            Some(process_id) => *process_id,
-            // Parent was terminated (or this is the parent process)--return daemon ppid
-            // TODO: handle `prctl` PR_SET_CHILD_SUBREAPER
-            None => ProcessId::init_process(),
-        };
-
-        Outcome::Success(parent_id.as_pid())
-    }
-}
-
-pub struct ProcessGetGroupIdEvent {
-    pid: Option<ProcessId>,
-}
-
-impl ProcessGetGroupIdEvent {
-    pub fn new(pid: Option<ProcessId>) -> Self {
-        Self { pid }
-    }
-}
-
-impl Event for ProcessGetGroupIdEvent {
-    type Success = ProcessGroupId;
-    type Error = Errno;
-
-    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let process_id = match self.pid {
-            Some(pid) => pid,
-            None => state.local.process_id,
-        };
-
-        match state.global.processes.get(&process_id) {
-            Some(process_info) => Outcome::Success(process_info.pgid),
-            None => Outcome::Error(Errno::ESRCH),
-        }
-    }
-}
-
-pub struct ProcessSetGroupIdEvent {
-    pid: libc::pid_t,
-    pgid: libc::pid_t,
-}
-
-impl ProcessSetGroupIdEvent {
-    pub fn new(pid: libc::pid_t, pgid: libc::pid_t) -> Self {
-        Self { pid, pgid }
-    }
-}
-
-impl Event for ProcessSetGroupIdEvent {
-    type Success = ();
-    type Error = Errno;
-
-    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let process_id = if self.pid == 0 {
-            state.local.process_id
-        } else {
-            ProcessId::from(self.pid as usize)
-        };
-
-        if self.pgid == 0 {
-            // Create a new process group out of the calling process
-            let group_id = ProcessGroupId::from(usize::from(state.local.process_id));
-            if state.global.process_groups.is_occupied(&group_id) {
-                state
-                    .global
-                    .process_groups
-                    .get_mut(&group_id)
-                    .unwrap()
-                    .insert(process_id)
-                    .unwrap();
-            } else {
-                state
-                    .global
-                    .process_groups
-                    .allocate_with_key(group_id, heapless::FnvIndexSet::new());
-            }
-
-            Outcome::Success(())
-        } else {
-            let process_group_id = ProcessGroupId::from(self.pgid as usize);
-
-            match state.global.processes.get_mut(&process_id) {
-                Some(process_info) => {
-                    process_info.pgid = process_group_id;
-                    Outcome::Success(())
-                }
-                None => Outcome::Error(Errno::ESRCH),
-            }
-        }
-    }
-}
-
 pub enum WaitType {
     AllChildren,
     Pid(ProcessId),
@@ -822,7 +698,7 @@ impl Event for ProcessWaitEvent {
                             .awaiting_process_death
                             .get_mut(&child)
                             .unwrap()
-                            .insert(WorkerId::current(process_id))
+                            .insert(WorkerInfo::current(process_id))
                             .unwrap();
                     }
 
@@ -878,7 +754,7 @@ impl Event for ProcessWaitEvent {
                         .awaiting_process_death
                         .get_mut(&child_process)
                         .unwrap()
-                        .insert(WorkerId::current(process_id))
+                        .insert(WorkerInfo::current(process_id))
                         .unwrap();
                     self.state = ProcessWaitState::Finish;
                     Outcome::Yield(None)
@@ -913,7 +789,7 @@ impl Event for ProcessWaitEvent {
                             .awaiting_process_death
                             .get_mut(&child)
                             .unwrap()
-                            .insert(WorkerId::current(process_id))
+                            .insert(WorkerInfo::current(process_id))
                             .unwrap();
                     }
 
@@ -934,7 +810,7 @@ impl Event for ProcessWaitEvent {
 
                 let mut awaiting = Vec::new();
 
-                let current_worker = WorkerId::current(process_id);
+                let current_worker = WorkerInfo::current(process_id);
                 for child in children {
                     if state
                         .global

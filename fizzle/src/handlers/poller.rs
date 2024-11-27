@@ -1,6 +1,6 @@
 use crate::arena::{ArenaKey, Rc};
 use crate::constants::FIZZLE_MAX_PER_POLLER_QUEUED_EVENTS;
-use crate::state::{FizzleSingleton, WorkerId};
+use crate::state::{FizzleSingleton, WorkerInfo};
 
 pub use private::PollerId;
 
@@ -17,7 +17,7 @@ mod private {
 // the PolledInfo will move all of its `pollers` into the ready queue (if they are not already there).
 #[derive(Debug)]
 pub struct PollerInfo {
-    pub worker_id: WorkerId,
+    pub worker_id: WorkerInfo,
     pub polled_events: heapless::Vec<Rc<PolledId>, FIZZLE_MAX_PER_POLLER_QUEUED_EVENTS>,
     /// Polled events that have been raised for the Poller prior to it being evaluated.
     ///

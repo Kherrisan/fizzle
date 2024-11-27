@@ -34,6 +34,7 @@ use crate::handlers::eventfd::{EventfdId, EventfdInfo};
 use crate::handlers::file::{FileId, FileInfo, FileObject, FilePtr};
 use crate::handlers::futex::FutexPtr;
 use crate::handlers::fuzz_endpoint::{FuzzEndpointId, FuzzEndpointInfo};
+use crate::handlers::id::{WorkerId, WorkerInfo};
 use crate::handlers::message_queue::{MessageQueueId, MessageQueueInfo};
 use crate::handlers::mutex::{MutexInfo, MutexPtr};
 use crate::handlers::pipe::{PipeId, PipeInfo};
@@ -176,13 +177,21 @@ impl FizzleSingleton {
     ///
     /// This access does not involve any atomic or locking operations.
     pub fn acquire(&mut self) -> RefMut<'_, FizzleState> {
-        FIZZLE_STATE.get_or_init(Self::instantiate).borrow_mut()
+        FIZZLE_STATE
+            .get_or_init(|| {
+                // Initialize the primary thread's lock
+                self.init_thread_lock();
+                Self::instantiate()
+            })
+            .borrow_mut()
     }
 
-    fn init_thread_lock(&mut self, thread_id: &ThreadId) {
+    pub fn init_thread_lock(&mut self) {
+        let thread_id = thread::current().id();
+
         let locks = THREAD_LOCKS
             .get_or_situate(|uninit| uninit.write(array::from_fn(|_| RefCell::new(None))));
-        let thread_idx = crate::handlers::thread::index_of_thread(thread_id);
+        let thread_idx = crate::handlers::thread::index_of_thread(&thread_id);
         let mut sem_opt = locks[thread_idx].borrow_mut();
         let sem_opt_deref = sem_opt.deref_mut();
 
@@ -210,21 +219,6 @@ impl FizzleSingleton {
 
         let thread_idx = crate::handlers::thread::index_of_thread(thread_id);
         locks[thread_idx].borrow()
-    }
-
-    pub fn init_new_thread(&mut self, sigmask: Option<SignalSet>, detached: bool) {
-        let thread_id = thread::current().id();
-        let mut state = self.acquire();
-        state.local.pthreads.insert(
-            unsafe { libc::pthread_self() },
-            ThreadInfo::new(thread_id, detached, false),
-        );
-        state
-            .local
-            .signals
-            .insert(thread_id, ThreadSigInfo::new(sigmask));
-        drop(state);
-        self.init_thread_lock(&thread::current().id());
     }
 }
 
@@ -357,29 +351,53 @@ impl FizzleState {
         local.is_initialized = true;
 
         // Assign the process ID to be used for this process
-
         if let Some(inherited_state) = global.inherited_state.take() {
-            local.process_id = inherited_state.process_id;
+            let process_id = inherited_state.process_id;
+            local.process_id = process_id;
+
             let process_info = global
                 .processes
                 .get_mut(&inherited_state.process_id)
                 .unwrap();
             process_info.signal_handlers = array::from_fn(|_| SigDisposition::Default);
 
+            // Refresh the current thread ID
+            let worker_id = global.processes.get(&process_id).unwrap().pid;
+            global.ids.get_mut(&worker_id).unwrap().thread_id = thread::current().id();
+
             // Generally, moving `KeyedArena`s is unsafe because `Rc<>` references rely on arenas
             // remaining in a fixed location in memory. However, `fds` never makes use of these
             // references, so this is safe to do.
             local.fds = Box::new(inherited_state.fds);
 
-            local.signals.insert(
-                thread::current().id(),
-                ThreadSigInfo {
-                    raised: array::from_fn(|_| None),
-                    blocked: inherited_state.sigmask,
-                },
-            );
+            self.initialize_thread(worker_id, Some(inherited_state.sigmask));
         } else {
-            let process_id = global.assign_process_id();
+            let mut worker_id = global
+                .ids
+                .allocate(WorkerInfo {
+                    process_id: ProcessId::main_process(), // Temporary
+                    thread_id: thread::current().id(),
+                })
+                .unwrap();
+            Rc::upref(&mut worker_id);
+            let worker_id = *worker_id;
+
+            let mut process_id = global
+                .processes
+                .allocate(ProcessInfo {
+                    pid: worker_id,
+                    pgid: ProcessGroupId::from_worker(&WorkerId::primary()),
+                    ppid: WorkerId::init_process(),
+                    signal_handlers: array::from_fn(|_| SigDisposition::Default),
+                    children: FnvIndexSet::new(),
+                })
+                .unwrap();
+            Rc::upref(&mut process_id);
+            let process_id = *process_id;
+
+            assert_eq!(process_id, ProcessId::main_process());
+            assert_eq!(worker_id, WorkerId::primary());
+
             local.process_id = process_id;
 
             // Initialize this process's global lock
@@ -391,17 +409,7 @@ impl FizzleState {
                 Semaphore::initialize(uninit_sem, true, 0);
             }
 
-            let pgid = ProcessGroupId::from(usize::from(process_id));
-
-            global.processes.allocate_with_key(
-                local.process_id,
-                ProcessInfo {
-                    pgid,
-                    ppid: ProcessId::init_process(),
-                    signal_handlers: array::from_fn(|_| SigDisposition::Default),
-                    children: FnvIndexSet::new(),
-                },
-            );
+            let pgid = global.processes.get(&process_id).unwrap().pgid;
 
             let mut process_groups = FnvIndexSet::new();
             process_groups.insert(process_id).unwrap();
@@ -438,20 +446,28 @@ impl FizzleState {
                 )
                 .unwrap();
 
-            local.signals.insert(
-                thread::current().id(),
-                ThreadSigInfo {
-                    raised: array::from_fn(|_| None),
-                    blocked: SignalSet::empty(),
-                },
-            );
+            self.initialize_thread(worker_id, None);
         }
+    }
 
+    pub fn initialize_thread(&mut self, tid: WorkerId, sigmask: Option<SignalSet>) {
         // Insert the current (main) pthread into `pthreads`
-        local.pthreads.insert(
+        self.local.pthreads.insert(
             unsafe { libc::pthread_self() },
             ThreadInfo::new(thread::current().id(), false, true),
         );
+
+        self.local.signals.insert(
+            thread::current().id(),
+            ThreadSigInfo {
+                raised: array::from_fn(|_| None),
+                blocked: sigmask.unwrap_or(SignalSet::empty()),
+                sigwait_set: SignalSet::empty(),
+                sigsuspend: false,
+            },
+        );
+
+        self.local.tids.insert(thread::current().id(), tid);
     }
 
     /// Initializes global interprocess state.
@@ -461,6 +477,24 @@ impl FizzleState {
     fn initialize_global(&mut self) {
         assert!(!self.global.is_initialized);
         self.global.is_initialized = true;
+
+        // 0 is an invalid PID/TID and therefore must not be assigned
+        self.global.ids.allocate_with_key(
+            WorkerId::from_id(0),
+            WorkerInfo {
+                process_id: ProcessId::from(usize::MAX),
+                thread_id: thread::current().id(),
+            },
+        );
+
+        // 1 is the PID for the `init` process
+        self.global.ids.allocate_with_key(
+            WorkerId::from_id(1),
+            WorkerInfo {
+                process_id: ProcessId::from(usize::MAX),
+                thread_id: thread::current().id(),
+            },
+        );
     }
 
     #[cold]
@@ -575,8 +609,8 @@ impl FizzleState {
         }
     }
 
-    pub fn current_worker_id(&mut self) -> WorkerId {
-        WorkerId {
+    pub fn current_worker_id(&mut self) -> WorkerInfo {
+        WorkerInfo {
             process_id: self.local.process_id,
             thread_id: thread::current().id(),
         }
@@ -587,7 +621,7 @@ impl FizzleState {
         let process_id = self.local.process_id;
         self.global
             .ready
-            .push_back(ReadyInfo::Worker(WorkerId {
+            .push_back(ReadyInfo::Worker(WorkerInfo {
                 process_id,
                 thread_id,
             }))
@@ -599,7 +633,7 @@ impl FizzleState {
         let process_id = self.local.process_id;
         self.global
             .delayed_ready
-            .push_back(ReadyInfo::Worker(WorkerId {
+            .push_back(ReadyInfo::Worker(WorkerInfo {
                 process_id,
                 thread_id,
             }))
@@ -611,7 +645,7 @@ impl FizzleState {
         let process_id = self.local.process_id;
         self.global
             .delayed_ready
-            .push_front(ReadyInfo::Worker(WorkerId {
+            .push_front(ReadyInfo::Worker(WorkerInfo {
                 process_id,
                 thread_id,
             }))
@@ -672,6 +706,7 @@ pub struct ProcessLocalState {
     pub rwlocks: HashMap<RwLockPtr, RwLockInfo, FxBuildHasher>,
     pub semaphores: HashMap<SemaphorePtr, SemaphoreInfo>,
     pub spinlocks: HashMap<SpinlockPtr, VecDeque<ThreadId>, FxBuildHasher>,
+    pub tids: HashMap<ThreadId, WorkerId>,
     pub pthreads: HashMap<libc::pthread_t, ThreadInfo, FxBuildHasher>,
     pub atfork_handlers: Vec<AtForkInfo>,
     pub pthread_cleanup: HashMap<ThreadId, VecDeque<PThreadRoutine>, FxBuildHasher>,
@@ -744,6 +779,7 @@ impl ProcessLocalState {
             rwlocks: HashMap::default(),
             semaphores: HashMap::default(),
             spinlocks: HashMap::default(),
+            tids: Default::default(),
             pthreads: HashMap::default(),
             atfork_handlers: Vec::default(),
             pthread_cleanup: HashMap::default(),
@@ -767,7 +803,7 @@ pub struct InterprocessState {
     pub waking_id: Option<ThreadId>,
     /// The thread/process identifier to be reaped. This is `Some` if and only if a thread/process
     /// is currently exiting.
-    pub exiting_id: Option<WorkerId>,
+    pub exiting_id: Option<WorkerInfo>,
     /// State passed between calls to the `exec()` family of functions
     pub inherited_state: Option<InheritedState>,
     /// The thread/process identifier to be signalled with the given signal value. This is `Some`
@@ -776,28 +812,29 @@ pub struct InterprocessState {
     /// Indicates which thread(s) are awaiting the death of a specific process (via `waitpid`)
     pub awaiting_process_death: FnvIndexMap<
         ProcessId,
-        FnvIndexSet<WorkerId, FIZZLE_MAX_WAITING_PARENTS>,
+        FnvIndexSet<WorkerInfo, FIZZLE_MAX_WAITING_PARENTS>,
         FIZZLE_MAX_DEAD_PROCESSES,
     >,
     /// Processes that have been exited.
     pub exited_processes: FnvIndexMap<ProcessId, SigChildInfo, FIZZLE_MAX_DEAD_PROCESSES>,
     /// Signal dispositions, handlers and blocked incoming signals for each process.
     pub processes: KeyedArena<ProcessId, ProcessInfo, FIZZLE_MAX_PROCESSES>,
-
+    /// Thread/process IDs.
+    pub ids: KeyedArena<WorkerId, WorkerInfo, FIZZLE_MAX_WORKERS>,
     pub process_groups: KeyedArena<
         ProcessGroupId,
         FnvIndexSet<ProcessId, FIZZLE_MAX_PROCESS_GROUP_SIZE>,
         FIZZLE_MAX_PROCESS_GROUPS,
     >,
+
     /// The number of rounds to run fuzzing when executing in Persistent mode.
     pub persistent_rounds: usize,
-    pub next_process_id: ProcessId,
     /// The next StreamId available to be assigned to an emulated stream.
     pub next_stream_id: StreamId,
     /// The next ephemeral port to be assigned to a socket.
     pub next_ephemeral_port: u16,
     pub process_locks: [Option<Semaphore>; FIZZLE_MAX_PROCESSES],
-    pub pids: FnvIndexMap<libc::pid_t, ProcessId, FIZZLE_MAX_PROCESSES>,
+    //    pub pids: FnvIndexMap<libc::pid_t, ProcessId, FIZZLE_MAX_PROCESSES>,
     pub afl_shmem_initialized: bool,
     pub epolls: KeyedArena<EpollId, EpollInfo, FIZZLE_MAX_EPOLLS>,
     pub event_fds: KeyedArena<EventfdId, EventfdInfo, FIZZLE_MAX_EVENTFDS>,
@@ -813,7 +850,7 @@ pub struct InterprocessState {
     pub sockets: KeyedArena<SocketId, SocketInfo, FIZZLE_MAX_SOCKETS>,
     pub buffers: KeyedArena<BufferId, Buffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
     pub stdio: StdioBackend,
-    // Polling infrastructure
+    /// Polling infrastructure
     pub plugins: KeyedArena<PluginEndpointId, PluginInfo, FIZZLE_MAX_PLUGIN_STREAMS>,
     pub polled_events: KeyedArena<PolledId, PolledInfo, FIZZLE_MAX_POLLED_EVENTS>,
     pub pollers: KeyedArena<PollerId, PollerInfo, FIZZLE_MAX_POLLERS>,
@@ -848,13 +885,11 @@ impl InterprocessState {
             KeyedArena::initialize(ptr::addr_of_mut!((*state).processes));
 
             *ptr::addr_of_mut!((*state).persistent_rounds) = FIZZLE_AFL_LOOP; // TODO: make configurable
-            *ptr::addr_of_mut!((*state).next_process_id) = ProcessId::main_process();
             *ptr::addr_of_mut!((*state).next_stream_id) = StreamId::from(0);
             *ptr::addr_of_mut!((*state).next_ephemeral_port) = FIZZLE_EPHEMERAL_PORT_START;
             *ptr::addr_of_mut!((*state).process_locks) = array::from_fn(|_| None);
 
-            *ptr::addr_of_mut!((*state).pids) = Default::default();
-
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).ids));
             *ptr::addr_of_mut!((*state).afl_shmem_initialized) = false;
             KeyedArena::initialize(ptr::addr_of_mut!((*state).process_groups));
             KeyedArena::initialize(ptr::addr_of_mut!((*state).epolls));
@@ -1402,15 +1437,8 @@ impl InterprocessState {
         }
     }
 
-    /// Assigns the next available process ID and increments it internally.
-    pub fn assign_process_id(&mut self) -> ProcessId {
-        let process_id = self.next_process_id;
-        self.next_process_id = process_id.next_id();
-        process_id
-    }
-
     /// Marks the given process/thread pair as having further work to execute.
-    pub fn mark_worker_ready(&mut self, worker_id: WorkerId) {
+    pub fn mark_worker_ready(&mut self, worker_id: WorkerInfo) {
         self.ready.push_back(ReadyInfo::Worker(worker_id)).unwrap();
     }
 
@@ -1440,23 +1468,6 @@ impl InterprocessState {
     }
 }
 
-/// The unique identifying information for a given thread in a process.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct WorkerId {
-    pub process_id: ProcessId,
-    pub thread_id: ThreadId,
-}
-
-impl WorkerId {
-    /// Returns the current running worker.
-    pub fn current(process_id: ProcessId) -> Self {
-        Self {
-            process_id,
-            thread_id: thread::current().id(),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct PerRoundClientInfo {
     pub source_address: TransportAddress,
@@ -1474,11 +1485,11 @@ pub enum PerRoundClientBackend {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReadyInfo {
     Poller(Rc<PollerId>),
-    Worker(WorkerId),
+    Worker(WorkerInfo),
 }
 
 #[derive(Clone, Debug)]
 pub enum SignalDestination {
-    Process(ProcessId),
-    Thread(ThreadId),
+    Process(WorkerId),
+    Thread(WorkerId),
 }

@@ -75,9 +75,10 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
 
         let plugin_module = state
             .local
-            .plugins
+            .main_state
             .as_mut()
             .unwrap()
+            .plugins
             .get_mut(&plugin_module_id)
             .unwrap();
 

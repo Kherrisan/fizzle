@@ -502,6 +502,7 @@ pub(crate) mod private {
     use crate::handlers::eventfd::EventfdId;
     use crate::handlers::file::FileId;
     use crate::handlers::fuzz_endpoint::FuzzEndpointId;
+    use crate::handlers::id::WorkerId;
     use crate::handlers::message_queue::MessageQueueId;
     use crate::handlers::pipe::PipeId;
     use crate::handlers::plugin::PluginEndpointId;
@@ -725,6 +726,18 @@ pub(crate) mod private {
 
         fn from_usize(val: usize) -> Self {
             // SAFETY: `ProcessGroupId` is a repr(transparent) usize
+            unsafe { mem::transmute(val) }
+        }
+    }
+
+    impl InnerUsize for WorkerId {
+        fn to_usize(&self) -> usize {
+            // SAFETY: `WorkerId` is a repr(transparent) usize
+            unsafe { mem::transmute_copy(self) }
+        }
+
+        fn from_usize(val: usize) -> Self {
+            // SAFETY: `WorkerId` is a repr(transparent) usize
             unsafe { mem::transmute(val) }
         }
     }

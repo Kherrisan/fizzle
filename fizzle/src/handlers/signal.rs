@@ -7,7 +7,10 @@ use bitflags::bitflags;
 
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
-use crate::state::{FizzleState, WorkerId};
+use crate::state::{FizzleState, SignalDestination};
+
+use super::id::{WorkerId, WorkerInfo};
+use super::process::ProcessGroupId;
 
 pub type SignalHandlers = [SigDisposition; 32];
 pub type RaisedSignalSet = [Option<RaisedSignalInfo>; 32];
@@ -32,7 +35,7 @@ pub type SigAction = unsafe extern "C" fn(libc::c_int, *mut siginfo_t, *mut libc
 #[allow(non_camel_case_types)]
 #[repr(C)]
 #[derive(Copy)]
-union sigval {
+pub union sigval {
     pub sigval_int: libc::c_int,
     pub sigval_ptr: *mut libc::c_void,
 }
@@ -510,14 +513,9 @@ pub struct ThreadSigInfo {
     ///
     /// Note that when `SigCallback::Ignore` is set, any blocked signals will be discarded.
     pub blocked: SignalSet,
-    /*
-    /// Used when a `signalfd` is registered. This is an Option so that we don't pre-allocate a bunch
-    /// of `PolledInfo` instances if we don't need them.
-    ///
-    /// signalfd's operate on the thread in which the fd is *read* (or polled)--not necessarily the
-    /// thread in which the fd is created. These are often the same, but don't have to be.
-    pub polled: Option<Rc<PolledId>>,
-    */
+    /// Indicates that the given thread is currently waiting on a blocked signal to become pending
+    pub sigwait_set: SignalSet,
+    pub sigsuspend: bool,
 }
 
 impl ThreadSigInfo {
@@ -526,7 +524,8 @@ impl ThreadSigInfo {
         Self {
             raised: array::from_fn(|_| None), // Raised signals are not inherited
             blocked: sigmask,                 // Blocked signals are inherited
-                                              // polled: None,
+            sigwait_set: SignalSet::empty(),
+            sigsuspend: false,
         }
     }
 
@@ -539,36 +538,78 @@ impl ThreadSigInfo {
         Self {
             raised: array::from_fn(|_| None), // TODO: check all these
             blocked,
-            // polled: None,
+            sigwait_set: SignalSet::empty(),
+            sigsuspend: false,
         }
     }
 }
 
-pub struct SignalSetHandlerEvent {}
+pub struct SignalSetHandlerEvent {
+    signum: libc::c_int,
+    disposition: Option<SigDisposition>,
+}
 
 impl SignalSetHandlerEvent {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(signum: libc::c_int, disposition: Option<SigDisposition>) -> Self {
+        Self {
+            signum,
+            disposition,
+        }
     }
 }
 
 impl Event for SignalSetHandlerEvent {
-    type Success = ();
+    type Success = SigDisposition;
     type Error = ();
 
-    fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        todo!()
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let process_id = state.local.process_id;
+        let handler = &mut state
+            .global
+            .processes
+            .get_mut(&process_id)
+            .unwrap()
+            .signal_handlers[self.signum as usize];
+
+        if let Some(mut tmp_handler) = self.disposition.clone() {
+            mem::swap(&mut tmp_handler, handler);
+            Outcome::Success(tmp_handler)
+        } else {
+            Outcome::Success(handler.clone())
+        }
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum SignalTarget {
+    Pid(WorkerId),
+    CallingProcessGroup,
+    AllPermissive,
+    Pgid(ProcessGroupId),
+    Thread(libc::pthread_t),
+    Tid(WorkerId, libc::pid_t),
+}
+
+pub enum SignalSendState {
+    Prepare,
+    SendSignals(Vec<SignalDestination>),
+}
+
 pub struct SignalSendEvent {
+    target: SignalTarget,
     signum: libc::c_int,
     value: Option<sigval>,
+    state: SignalSendState,
 }
 
 impl SignalSendEvent {
-    pub fn new(signum: libc::c_int, value: Option<sigval>) -> Self {
-        Self { signum, value }
+    pub fn new(target: SignalTarget, signum: libc::c_int, value: Option<sigval>) -> Self {
+        Self {
+            target,
+            signum,
+            value,
+            state: SignalSendState::Prepare,
+        }
     }
 }
 
@@ -577,18 +618,128 @@ impl Event for SignalSendEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let process_id = state.local.process_id;
+        match &mut self.state {
+            SignalSendState::Prepare => {
+                let mut destinations = Vec::new();
+
+                match self.target {
+                    SignalTarget::Pid(worker_id) => {
+                        if state.global.ids.get(&worker_id).is_none() {
+                            return Outcome::Error(Errno::ESRCH);
+                        }
+
+                        destinations.push(SignalDestination::Process(worker_id));
+                    }
+                    SignalTarget::CallingProcessGroup => {
+                        let process_id = state.local.process_id;
+                        let pgid = state.global.processes.get(&process_id).unwrap().pgid;
+
+                        let processes: Vec<_> = state
+                            .global
+                            .process_groups
+                            .get(&pgid)
+                            .unwrap()
+                            .iter()
+                            .collect();
+                        for process_id in processes {
+                            let pid = state.global.processes.get(&process_id).unwrap().pid;
+                            destinations.push(SignalDestination::Process(pid));
+                        }
+                    }
+                    SignalTarget::AllPermissive => {
+                        let processes: Vec<_> = state.global.processes.keys().collect();
+                        for process_id in processes {
+                            let pid = state.global.processes.get(&process_id).unwrap().pid;
+                            destinations.push(SignalDestination::Process(pid));
+                        }
+                    }
+                    SignalTarget::Pgid(pgid) => {
+                        let processes: Vec<_> = state
+                            .global
+                            .process_groups
+                            .get(&pgid)
+                            .unwrap()
+                            .iter()
+                            .collect();
+                        for process_id in processes {
+                            let pid = state.global.processes.get(&process_id).unwrap().pid;
+                            destinations.push(SignalDestination::Process(pid));
+                        }
+                    }
+                    SignalTarget::Tid(tid, _pid) => {
+                        let Some(_worker_info) = state.global.ids.get(&tid) else {
+                            return Outcome::Error(Errno::ESRCH);
+                        };
+
+                        // TODO: check to see if `tid` exists within `pid`
+
+                        destinations.push(SignalDestination::Thread(tid));
+                    }
+                    SignalTarget::Thread(pthread) => {
+                        let Some(t) = state.local.pthreads.get(&pthread) else {
+                            return Outcome::Error(Errno::EINVAL);
+                        };
+
+                        let tid = state.local.tids.get(&t.id).unwrap();
+
+                        let Some(_worker_info) = state.global.ids.get(&tid) else {
+                            return Outcome::Error(Errno::ESRCH);
+                        };
+
+                        // TODO: check to see if `tid` exists within `pid`
+
+                        destinations.push(SignalDestination::Thread(*tid));
+                    }
+                }
+
+                Outcome::Continue
+            }
+            SignalSendState::SendSignals(destinations) => {
+                let Some(destination) = destinations.pop() else {
+                    return Outcome::Success(());
+                };
+
+                let process_id = state.local.process_id;
+                let pid = state.global.processes.get(&process_id).unwrap().pid;
+
+                let raised_info = match self.value {
+                    Some(value) => RaisedSignalInfo::SigQueue(SigQueueInfo {
+                        signum: self.signum,
+                        pid: pid.as_id(),
+                        uid: unsafe { libc::getuid() },
+                        value,
+                    }),
+                    None => RaisedSignalInfo::Kill(SigKillInfo {
+                        signum: self.signum,
+                        pid: pid.as_id(),
+                        uid: unsafe { libc::getuid() },
+                    }),
+                };
+
+                Outcome::SendSignal(destination, raised_info)
+            }
+        }
     }
+}
+
+pub enum SignalWaitState {
+    Start,
+    Finish,
 }
 
 pub struct SignalWaitEvent {
     wait_set: SignalSet,
     timeout: Option<Duration>,
+    state: SignalWaitState,
 }
 
 impl SignalWaitEvent {
     pub fn new(wait_set: SignalSet, timeout: Option<Duration>) -> Self {
-        Self { wait_set, timeout }
+        Self {
+            wait_set,
+            timeout,
+            state: SignalWaitState::Start,
+        }
     }
 }
 
@@ -597,101 +748,220 @@ impl Event for SignalWaitEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let process_id = state.local.process_id;
-        let worker_id = WorkerId::current(process_id);
+        match self.state {
+            SignalWaitState::Start => {
+                let process_id = state.local.process_id;
+                let worker_id = WorkerInfo::current(process_id);
 
-        // Are there any blocked signals for this thread?
-        let thread_signals = state
+                // Are there any blocked signals for this thread?
+                let thread_signals = state
+                    .local
+                    .signals
+                    .get_mut(&thread::current().id())
+                    .unwrap();
+                let blocked_signals = thread_signals.blocked;
+                let raised_signals = &mut thread_signals.raised;
+
+                let interest_signals = self.wait_set.intersection(blocked_signals);
+
+                let mut ready = None;
+
+                for signal in interest_signals.iter() {
+                    if let Some(r) = raised_signals[signal.lowest_signal_value() as usize].take() {
+                        ready = Some(r);
+                        break;
+                    }
+                }
+
+                if let Some(raised_info) = ready {
+                    // yes--immediately use
+                    return Outcome::Success(raised_info);
+                }
+                // No--check blocked signals for the process
+
+                state
+                    .local
+                    .signals
+                    .get_mut(&worker_id.thread_id)
+                    .unwrap()
+                    .sigwait_set = self.wait_set;
+
+                self.state = SignalWaitState::Finish;
+                Outcome::Yield(self.timeout)
+            }
+            SignalWaitState::Finish => {
+                let siginfo = state
+                    .local
+                    .signals
+                    .get_mut(&thread::current().id())
+                    .unwrap();
+                siginfo.sigwait_set = SignalSet::empty();
+
+                for signal in self.wait_set {
+                    if let Some(raised_info) =
+                        siginfo.raised[signal.lowest_signal_value() as usize].take()
+                    {
+                        return Outcome::Success(raised_info);
+                    }
+                }
+
+                Outcome::Error(Errno::ETIMEDOUT)
+            }
+        }
+    }
+}
+
+pub struct SignalGetPendingEvent;
+
+impl Event for SignalGetPendingEvent {
+    type Success = SignalSet;
+    type Error = ();
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let mut set = SignalSet::empty();
+
+        for (idx, raised) in state
+            .local
+            .signals
+            .get(&thread::current().id())
+            .unwrap()
+            .raised
+            .iter()
+            .enumerate()
+        {
+            if raised.is_some() {
+                set |= SignalSet::from_bits_truncate(idx as u32);
+            }
+        }
+
+        Outcome::Success(set)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SigmaskOp {
+    Block,
+    Unblock,
+    Setmask,
+}
+
+pub struct SignalSetSigmaskEvent {
+    op: SigmaskOp,
+    mask: Option<SignalSet>,
+    old: Option<SignalSet>,
+}
+
+impl SignalSetSigmaskEvent {
+    pub fn new(op: SigmaskOp, mask: Option<SignalSet>) -> Self {
+        Self {
+            op,
+            mask,
+            old: None,
+        }
+    }
+}
+
+impl Event for SignalSetSigmaskEvent {
+    type Success = SignalSet;
+    type Error = ();
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let old = *self.old.get_or_insert(
+            state
+                .local
+                .signals
+                .get(&thread::current().id())
+                .unwrap()
+                .blocked,
+        );
+        let Some(mask) = self.mask else {
+            return Outcome::Success(old);
+        };
+
+        let (new, unblocked) = match self.op {
+            SigmaskOp::Block => (old | mask, SignalSet::empty()),
+            SigmaskOp::Setmask => (mask, old & !mask),
+            SigmaskOp::Unblock => (old & !mask, old & mask),
+        };
+
+        let pid = *state.local.tids.get(&thread::current().id()).unwrap();
+
+        let siginfo = state
             .local
             .signals
             .get_mut(&thread::current().id())
             .unwrap();
-        let blocked_signals = thread_signals.blocked;
-        let raised_signals = &mut thread_signals.raised;
-
-        let interest_signals = self.wait_set.intersection(blocked_signals);
-
-        let mut ready = None;
-
-        for signal in interest_signals.iter() {
-            if let Some(r) = raised_signals[signal.lowest_signal_value() as usize].take() {
-                ready = Some(r);
-                break;
-            }
-        }
-
-        if let Some(siginfo) = ready {
-            // yes--immediately use
-            return Outcome::Success(siginfo);
-        }
-        // No--check blocked signals for the process
-
-        for flag in signal_set.iter() {
-            let signal_value = flag.lowest_signal_value();
-
-            let signals = state.global.processes.get_mut(&process_id).unwrap();
-
-            let polled = match signals.polled[signal_value as usize].clone() {
-                None if ready.contains(flag) => {
-                    // No pollers were waiting on the signal--immediately return
-                    signals.raised = signals.raised.difference(flag);
-                    *sig = signal_value;
-                    return 0;
-                }
-                None => {
-                    let polled = state
-                        .global
-                        .polled_events
-                        .allocate(PolledInfo::default())
-                        .unwrap();
-                    let signals = state.global.processes.get_mut(&process_id).unwrap();
-                    signals.polled[signal_value as usize].replace(polled.clone());
-                    polled
-                }
-                Some(polled) => polled,
-            };
-
-            if ready.contains(flag)
-                && state
-                    .global
-                    .polled_events
-                    .get(&polled)
-                    .unwrap()
-                    .pollers
-                    .is_empty()
+        siginfo.blocked |= new; // Add newly blocked signals
+        for signal in unblocked {
+            siginfo.blocked -= signal; // Incrementally remove old signals, handling each if necessary
+            if let Some(raised_info) = siginfo.raised[signal.lowest_signal_value() as usize].take()
             {
-                // No other pollers were waiting on the signal--immediately return
-                let signals = state.global.processes.get_mut(&process_id).unwrap();
-                signals.raised = signals.raised.difference(flag);
-                *sig = signal_value;
-                return 0;
+                // This entire function runs for as many times as is needed to handle all signals
+                return Outcome::SendSignal(SignalDestination::Thread(pid), raised_info);
             }
-
-            state.register_poller(poller.clone(), polled);
         }
 
-        drop(state);
+        Outcome::Success(old)
+    }
+}
 
-        // Wait for one of the signals to become available
-        poller.poll(&mut ctx);
+pub enum SignalSuspendState {
+    Start,
+    Finish(SignalSet),
+}
 
-        let mut state = ctx.acquire();
-        state.delete_poller(poller);
+pub struct SignalSuspendEvent {
+    mask: SignalSet,
+    state: SignalSuspendState,
+}
 
-        let signals = state.global.processes.get_mut(&process_id).unwrap();
-        let ready = signal_set.intersection(signals.raised);
-        let first = ready.iter().next().unwrap(); // Polling returned, so there *must* be one ready
+impl SignalSuspendEvent {
+    pub fn new(mask: SignalSet) -> Self {
+        Self {
+            mask,
+            state: SignalSuspendState::Start,
+        }
+    }
+}
 
-        // Consume the selected signal
-        signals.raised = signals.raised.difference(first);
-        let signal_value = first.lowest_signal_value();
-        let signal_polled = signals.polled[signal_value as usize].clone().unwrap();
+impl Event for SignalSuspendEvent {
+    type Success = ();
+    type Error = Errno;
 
-        drop(state);
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let thread_id = thread::current().id();
 
-        signal_polled.lower_polled(&mut ctx);
+        match self.state {
+            SignalSuspendState::Start => {
+                let old = state.local.signals.get(&thread_id).unwrap().blocked;
+                self.state = SignalSuspendState::Finish(old);
 
-        // Return the selected signal
-        *sig = signal_value;
+                let unblocked = old & !self.mask;
+
+                let pid = *state.local.tids.get(&thread_id).unwrap();
+
+                let siginfo = state.local.signals.get_mut(&thread_id).unwrap();
+                for signal in unblocked {
+                    if let Some(raised_info) =
+                        siginfo.raised[signal.lowest_signal_value() as usize].take()
+                    {
+                        // This entire function runs for as many times as is needed to handle all signals
+                        return Outcome::SendSignal(SignalDestination::Thread(pid), raised_info);
+                    }
+                }
+
+                let signal_info = state.local.signals.get_mut(&thread_id).unwrap();
+                signal_info.blocked = self.mask;
+                signal_info.sigsuspend = true;
+                Outcome::Yield(None)
+            }
+            SignalSuspendState::Finish(old) => {
+                let signal_info = state.local.signals.get_mut(&thread_id).unwrap();
+                signal_info.blocked = old;
+                signal_info.sigsuspend = false;
+
+                Outcome::Error(Errno::EINTR)
+            }
+        }
     }
 }

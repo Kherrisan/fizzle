@@ -16,6 +16,7 @@ pub mod eventfd;
 pub mod file;
 pub mod futex;
 pub mod fuzz_endpoint;
+pub mod id;
 pub mod message_queue;
 pub mod mutex;
 pub mod pipe;

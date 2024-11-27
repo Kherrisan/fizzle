@@ -77,3 +77,6 @@ pub const FIZZLE_MAX_PROCESS_GROUPS: usize = 16;
 pub const FIZZLE_MAX_PROCESS_GROUP_SIZE: usize = 16;
 /// The maximum number of child processes a parent may have.
 pub const FIZZLE_MAX_CHILD_PROCESSES: usize = 16;
+
+/// The maximum number of threads/processes that may exist throughout the lifetime of the program
+pub const FIZZLE_MAX_WORKERS: usize = 4096;

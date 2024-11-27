@@ -8,12 +8,13 @@ use fizzle_common::path::SemaphorePath;
 use crate::arena::ArenaKey;
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
-use crate::state::{FizzleState, WorkerId};
+use crate::state::FizzleState;
 use crate::WaitDuration;
 
 pub use private::SemaphoreId;
 
 use super::file::AccessMode;
+use super::id::WorkerInfo;
 
 // This is to forbid access to the SocketId's inner `usize` field.
 mod private {
@@ -31,7 +32,7 @@ pub struct SemaphoreInfo {
     pub refs: usize,
     pub unlinked: bool,
     pub value: usize,
-    pub waiting: VecDeque<WorkerId>,
+    pub waiting: VecDeque<WorkerInfo>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

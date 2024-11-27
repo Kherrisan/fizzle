@@ -1,9 +1,9 @@
 # TODO
 
 ## Immediately Needed Features
-- Exit handling
+- Handling special signals (SIGCHLD for SIGSTOP, SIGIO for async io, SIGPIPE for pipes, getaddrinfo async signal)
+- signalfd
 - Refactoring of sockets
-- Signal handling/passing procedures between processes
 - C streams (FILE*) implementation
 
 ## On the Roadmap

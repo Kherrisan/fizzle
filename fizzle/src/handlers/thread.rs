@@ -8,7 +8,9 @@ use std::{ptr, thread};
 
 use fxhash::FxBuildHasher;
 
+use crate::arena::Rc;
 use crate::errno::Errno;
+use crate::handlers::id::WorkerInfo;
 use crate::scheduler::{DelegationSource, Event, Outcome, Scheduler, TerminationMethod};
 use crate::state::{self, FizzleState};
 
@@ -167,7 +169,20 @@ extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void {
 
     let wrapped_arg = unsafe { (arg as *mut PTCreateWrapper).as_mut().unwrap() };
 
-    ctx.init_new_thread(wrapped_arg.sigmask, wrapped_arg.detached);
+    ctx.init_thread_lock();
+    let mut state = ctx.acquire();
+    let process_id = state.local.process_id;
+
+    let mut tid = state
+        .global
+        .ids
+        .allocate(WorkerInfo::current(process_id))
+        .unwrap();
+    Rc::upref(&mut tid);
+    let tid = *tid;
+
+    state.initialize_thread(tid, wrapped_arg.sigmask);
+    drop(state);
 
     let res = Scheduler::run_outside_hook(&mut ctx, || unsafe {
         (wrapped_arg.wrapped_fn)(wrapped_arg.wrapped_arg)
@@ -694,20 +709,5 @@ impl Event for ThreadTestCancelEvent {
     fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         // Cancellation happens immediately in Fizzle, so this will always return
         Outcome::Success(())
-    }
-}
-
-pub struct ThreadGetIdEvent;
-
-impl Event for ThreadGetIdEvent {
-    type Success = libc::pid_t;
-    type Error = ();
-
-    fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let mut hasher = ThreadHasher::new();
-        thread::current().id().hash(&mut hasher);
-        let tid = hasher.finish();
-
-        Outcome::Success(tid as i32)
     }
 }

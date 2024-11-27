@@ -8,17 +8,15 @@ use heapless::FnvIndexSet;
 use crate::arena::Rc;
 use crate::backend::{ConnectedBackend, PendingBackend};
 use crate::constants::{FIZZLE_MAX_FUZZ_ENDPOINTS, FIZZLE_MEMORY_ENV};
+use crate::handlers::id::{WorkerId, WorkerInfo};
 use crate::handlers::mutex::MutexStatus;
 use crate::handlers::polled::PolledId;
 use crate::handlers::process::*;
-use crate::handlers::signal::{
-    siginfo_t, RaisedSignalInfo, SigChildCode, SigChildInfo, SigDisposition, SignalSendEvent,
-    SignalSet,
-};
+use crate::handlers::signal::*;
 use crate::handlers::socket::SocketState;
 use crate::plugins;
 use crate::state::{self, PerRoundClientBackend, PerRoundClientInfo, SignalDestination};
-use crate::state::{FizzleSingleton, FizzleState, ReadyInfo, WorkerId};
+use crate::state::{FizzleSingleton, FizzleState, ReadyInfo};
 
 // Input parameters are contained within the event
 pub trait Event {
@@ -49,8 +47,11 @@ pub enum Outcome<S, E> {
     TerminateThread(TerminationMethod),
     /// Terminates the given process's execution.
     TerminateProcess(TerminationMethod),
+    /// Executes the given method.
     // TODO: make this generic in the future.
     Execute(unsafe extern "C" fn()),
+    /// Send the given signal to the specified worker
+    SendSignal(SignalDestination, RaisedSignalInfo),
 }
 
 pub struct Scheduler;
@@ -91,7 +92,6 @@ impl Scheduler {
                 Outcome::Success(s) => return Ok(s),
                 Outcome::Error(e) => return Err(e),
                 Outcome::Continue => (),
-                // TODO: any other useful outcomes? Outcome::Cancel?
                 Outcome::Yield(None) => {
                     log::debug!("Thread being yielded");
                     drop(state);
@@ -133,10 +133,13 @@ impl Scheduler {
                     drop(state);
                     Scheduler::terminate_process(ctx, method)
                 }
-
                 Outcome::Execute(f) => {
                     drop(state);
                     Scheduler::run_outside_hook(ctx, || unsafe { f() });
+                }
+                Outcome::SendSignal(destination, raised_info) => {
+                    drop(state);
+                    Scheduler::send_signal(ctx, destination, raised_info);
                 }
             }
         }
@@ -284,11 +287,13 @@ impl Scheduler {
                 DelegationState::TerminateThread(method) => {
                     Scheduler::terminate_thread(ctx, method);
                 }
-                DelegationState::SignalToThread(thread_id, signal) => {
+                DelegationState::SignalToThread(worker_id, signal) => {
                     let mut state = ctx.acquire();
 
+                    let thread_id = state.global.ids.get(&worker_id).unwrap().thread_id;
+
                     if thread_id != thread::current().id() {
-                        state.global.signal = Some((SignalDestination::Thread(thread_id), signal));
+                        state.global.signal = Some((SignalDestination::Thread(worker_id), signal));
                         delegation_source = DelegationSource::Thread;
                         drop(state);
                         ctx.thread_lock(&thread_id).as_ref().unwrap().post();
@@ -315,7 +320,8 @@ impl Scheduler {
             // It may seem like a message channel of sorts would be better here than the semaphore
             // + shared memory fields that are currently used. The big issue is that threads of
             // one process are unaware of threads of another process (since thread info is in
-            // process-local state), so there's no clean way to execute this message channel.
+            // process-local state), so there's no clean way to execute this message channel
+            // between two threads in separate processes.
 
             // This process/thread has been awakened...
             let mut state = ctx.acquire();
@@ -326,49 +332,69 @@ impl Scheduler {
                 DelegationState::TerminateThread(TerminationMethod::Cancellation)
             } else if let Some((dst, raised_info)) = state.global.signal.take() {
                 // ...because it has received a signal (e.g. from `kill()`, `pthread_kill()`)
+                let signum = raised_info.signum();
 
                 match dst {
-                    SignalDestination::Process(process_id) => {
+                    SignalDestination::Process(worker_id) => {
                         // The worker raising the signal should always yield to the appropriate process
-                        assert_eq!(process_id, state.local.process_id);
+                        // assert_eq!(process_id, state.local.process_id);
 
                         // Assign one of the threads of this process to receive the signal
                         let mut chosen_thread = None;
                         for (thread_id, siginfo) in state.local.signals.iter_mut() {
-                            if !siginfo
-                                .blocked
-                                .contains(SignalSet::from_signum(raised_info.signum()))
-                            {
+                            if !siginfo.blocked.contains(SignalSet::from_signum(signum)) {
                                 chosen_thread = Some(*thread_id);
                             }
                         }
 
                         if let Some(chosen_thread) = chosen_thread {
+                            let tid = *state.local.tids.get(&chosen_thread).unwrap();
                             // Now run that thread
-                            DelegationState::SignalToThread(chosen_thread, raised_info)
+                            DelegationState::SignalToThread(tid, raised_info)
                         } else {
                             // None of the threads were ready--assign the (blocked) signal to one of the threads
                             'assigned: {
-                                let signum = raised_info.signum() as usize;
                                 for siginfo in state.local.signals.values_mut() {
-                                    if siginfo.raised[signum].is_none() {
-                                        siginfo.raised[signum] = Some(raised_info);
+                                    if siginfo.raised[signum as usize].is_none() {
+                                        siginfo.raised[signum as usize] = Some(raised_info);
                                         break 'assigned DelegationState::RunNextWorker;
                                     }
                                 }
 
                                 log::warn!(
-                                    "Signal {} for {:?} was dropped",
+                                    "Signal {} for PID {:?} was dropped",
                                     raised_info.signum(),
-                                    process_id
+                                    worker_id,
                                 );
                                 DelegationState::RunNextWorker
                             }
                         }
                     }
-                    SignalDestination::Thread(thread_id) => {
-                        assert_eq!(thread_id, thread::current().id());
-                        DelegationState::HandleSignal(raised_info)
+                    SignalDestination::Thread(worker_id) => {
+                        let worker_info = *state.global.ids.get(&worker_id).unwrap();
+                        // The worker raising the signal should always yield to the appropriate process
+                        debug_assert_eq!(worker_info.process_id, state.local.process_id);
+
+                        let siginfo = state.local.signals.get_mut(&worker_info.thread_id).unwrap();
+
+                        if siginfo.blocked.contains(SignalSet::from_signum(signum)) {
+                            // The signal was blocked--store it (if there's room)
+                            if siginfo.raised[signum as usize].is_none() {
+                                siginfo.raised[signum as usize] = Some(raised_info);
+                            } else {
+                                log::warn!(
+                                    "Signal {} for TID {:?} was dropped",
+                                    raised_info.signum(),
+                                    worker_id,
+                                );
+                            }
+
+                            DelegationState::RunNextWorker
+                        } else if worker_info.thread_id != thread::current().id() {
+                            DelegationState::SignalToThread(worker_id, raised_info)
+                        } else {
+                            DelegationState::HandleSignal(raised_info)
+                        }
                     }
                 }
             } else if let Some(_worker_id) = state.global.exiting_id.take() {
@@ -639,49 +665,50 @@ impl Scheduler {
         Scheduler::yield_worker(ctx, DelegationAction::RunThread(thread_id));
     }
 
-    // TODO: implement this outside of Scheduler
-    /// Sends a signal to each process (within the Fizzle harness) that is a member of `group`.
-    fn send_group_signal(_ctx: &mut FizzleSingleton, _group: libc::gid_t, _signal: i32) {
-        todo!()
-    }
+    fn send_signal(
+        ctx: &mut FizzleSingleton,
+        dst: SignalDestination,
+        raised_info: RaisedSignalInfo,
+    ) {
+        let signum = raised_info.signum();
 
-    fn send_signal(ctx: &mut FizzleSingleton, dst: SignalDestination, signal: i32) {
         // Save the current worker
         let mut state = ctx.acquire();
         let current_worker = state.current_worker_id();
-        let process_id = match dst {
+        let worker_id = match dst {
             SignalDestination::Process(p) => p,
-            SignalDestination::Thread(_) => current_worker.process_id,
+            SignalDestination::Thread(p) => p,
         };
+
+        let dst_process = state.global.ids.get(&worker_id).unwrap().process_id;
+        let dst_thread = state.global.ids.get(&worker_id).unwrap().thread_id;
 
         let disposition = &state
             .global
             .processes
-            .get(&process_id)
+            .get(&dst_process)
             .unwrap()
-            .signal_handlers[signal as usize];
-        if disposition == &SigDisposition::Ignore {
+            .signal_handlers[signum as usize];
+        if let SigDisposition::Ignore = disposition {
             return; // Ignores the signal without saving it
         }
 
+        // Once the signal has been received and handled, keep running the worker that sent it
         state
             .global
             .ready
             .push_front(ReadyInfo::Worker(current_worker));
 
         // Add the signal to the global state
-        assert!(state.global.signal.replace((dst.clone(), signal)).is_none());
+        assert!(state.global.signal.replace((dst, raised_info)).is_none());
         drop(state);
 
         // TODO: delegate to process/thread signal is being sent to
-        match dst {
-            SignalDestination::Process(p) => {
-                Scheduler::yield_worker(ctx, DelegationAction::RunProcess(p))
-            }
-            SignalDestination::Thread(t) => {
-                Scheduler::yield_worker(ctx, DelegationAction::RunThread(t))
-            }
-        };
+        if dst_process == current_worker.process_id {
+            Scheduler::yield_worker(ctx, DelegationAction::RunThread(dst_thread))
+        } else {
+            Scheduler::yield_worker(ctx, DelegationAction::RunProcess(dst_process))
+        }
     }
 
     fn handle_signal(ctx: &mut FizzleSingleton, raised_info: RaisedSignalInfo) {
@@ -694,7 +721,6 @@ impl Scheduler {
         let thread_siginfo = local.signals.get_mut(&thread_id).unwrap();
         let proc_siginfo = global.processes.get_mut(&process_id).unwrap();
 
-        //
         match (
             &proc_siginfo.signal_handlers[signum as usize],
             thread_siginfo
@@ -712,30 +738,52 @@ impl Scheduler {
                     );
                 } else {
                     thread_siginfo.raised[signum as usize].insert(raised_info);
-                    // TODO: trigger sigaction() here
+                    if thread_siginfo
+                        .sigwait_set
+                        .contains(SignalSet::from_signum(signum))
+                    {
+                        // A sigwait signal has become pending--awaken the waiting thread
+                        thread_siginfo.sigwait_set = SignalSet::empty();
+                        state.mark_thread_ready(thread_id);
+                    }
                 }
             }
-            (SigDisposition::Default, false) => match SignalSet::from_signum(signum) {
-                // Ignore the signal--do nothing
-                SignalSet::SIGCHLD | SignalSet::SIGURG | SignalSet::SIGWINCH => (),
-                // Unpause the process
-                SignalSet::SIGCONT => {
-                    unimplemented!("`SIGCONT` signal");
+            (SigDisposition::Default, false) => {
+                if thread_siginfo.sigsuspend {
+                    // Any call to `sigsuspend()` should return for this process
+                    thread_siginfo.sigsuspend = false;
+                    state.mark_thread_ready(thread_id);
                 }
-                // Stop the thread (process?)
-                SignalSet::SIGSTOP
-                | SignalSet::SIGTSTP
-                | SignalSet::SIGTTIN
-                | SignalSet::SIGTTOU => {
-                    unimplemented!("`SIGSTOP` family of signals");
+
+                match SignalSet::from_signum(signum) {
+                    // Ignore the signal--do nothing
+                    SignalSet::SIGCHLD | SignalSet::SIGURG | SignalSet::SIGWINCH => (),
+                    // Unpause the process
+                    SignalSet::SIGCONT => {
+                        unimplemented!("`SIGCONT` signal");
+                    }
+                    // Stop the thread (process?)
+                    SignalSet::SIGSTOP
+                    | SignalSet::SIGTSTP
+                    | SignalSet::SIGTTIN
+                    | SignalSet::SIGTTOU => {
+                        unimplemented!("`SIGSTOP` family of signals");
+                    }
+                    _ => {
+                        drop(state);
+                        Scheduler::terminate_process(ctx, TerminationMethod::Signal(raised_info))
+                    }
                 }
-                _ => {
-                    drop(state);
-                    Scheduler::terminate_process(ctx, TerminationMethod::Signal(signum))
-                }
-            },
+            }
             (SigDisposition::Handler(handler), false) => {
                 let handler = *handler;
+
+                if thread_siginfo.sigsuspend {
+                    // Any call to `sigsuspend()` should return for this process
+                    thread_siginfo.sigsuspend = false;
+                    state.mark_thread_ready(thread_id);
+                }
+
                 drop(state);
                 Scheduler::run_outside_hook(ctx, || unsafe {
                     handler(raised_info.signum());
@@ -743,6 +791,13 @@ impl Scheduler {
             }
             (SigDisposition::Action(action), false) => {
                 let action = *action;
+
+                if thread_siginfo.sigsuspend {
+                    // Any call to `sigsuspend()` should return for this process
+                    thread_siginfo.sigsuspend = false;
+                    state.mark_thread_ready(thread_id);
+                }
+
                 drop(state);
 
                 let mut siginfo = siginfo_t::from_raised(raised_info);
@@ -785,7 +840,7 @@ impl Scheduler {
     /// Fetches the next available worker with a completed task from Fizzle's state.
     ///
     /// If no workers are ready, this function will return `None`.
-    fn next_ready_worker(state: &mut FizzleState) -> Option<WorkerId> {
+    fn next_ready_worker(state: &mut FizzleState) -> Option<WorkerInfo> {
         while let Some(item) = state.global.ready.pop_front() {
             match item {
                 ReadyInfo::Worker(worker_id) => return Some(worker_id),
@@ -903,7 +958,7 @@ impl Scheduler {
         if let Some(awaiting_threads) = state.local.awaiting_thread_death.remove(&thread_id) {
             let process_id = state.local.process_id;
             for thread_id in awaiting_threads {
-                state.global.mark_worker_ready(WorkerId {
+                state.global.mark_worker_ready(WorkerInfo {
                     process_id,
                     thread_id,
                 });
@@ -1005,24 +1060,26 @@ impl Scheduler {
             "main process forcibly terminated"
         );
 
+        let pid = state.global.processes.get(&process_id).unwrap().pid.as_id();
+
         let sigchild = match &method {
             TerminationMethod::Cancellation | TerminationMethod::ThreadExit(_) => SigChildInfo {
                 code: SigChildCode::Exited,
-                pid: process_id.as_pid(),
+                pid,
                 uid: unsafe { libc::getuid() },
                 status: 0,
             },
             TerminationMethod::ProcessExit(val) | TerminationMethod::ProcessImmediateExit(val) => {
                 SigChildInfo {
                     code: SigChildCode::Exited,
-                    pid: process_id.as_pid(),
+                    pid,
                     uid: unsafe { libc::getuid() },
                     status: *val,
                 }
             }
             TerminationMethod::Signal(raised_info) => SigChildInfo {
                 code: SigChildCode::Killed,
-                pid: raised_info.pid().unwrap_or(process_id.as_pid()),
+                pid: raised_info.pid().unwrap_or(pid),
                 uid: raised_info.uid().unwrap_or(unsafe { libc::getuid() }),
                 status: raised_info.signum(),
             },
@@ -1032,10 +1089,14 @@ impl Scheduler {
 
         drop(state);
 
-        // Send SIGCHLD
+        // Send SIGCHLD to parent process
         // NOTE: it is VERY IMPORTANT that this go towards the end of process termination.
-        if parent_id != ProcessId::init_process() {
-            Scheduler::handle_event(ctx, SignalSendEvent::new(libc::SIGCHLD, None)).unwrap();
+        if parent_id != WorkerId::init_process() {
+            Scheduler::handle_event(
+                ctx,
+                SignalSendEvent::new(SignalTarget::Pid(parent_id), libc::SIGCHLD, None),
+            )
+            .unwrap();
         }
 
         let mut state = ctx.acquire();
@@ -1057,11 +1118,9 @@ impl Scheduler {
             .awaiting_process_death
             .remove(&process_id)
             .unwrap();
-        for awaiting_worker in &awaiting {
+        for awaiting_worker in awaiting.iter() {
             state.global.mark_worker_ready(*awaiting_worker);
         }
-
-        let real_pid = state.global.processes.get(&process_id).unwrap().pid;
 
         // DO NOT remove pid or ppid info--they will happen when the process is reaped
         /*
@@ -1098,7 +1157,7 @@ impl Scheduler {
             TerminationMethod::ProcessImmediateExit(retval) => unsafe { libc::_exit(retval) },
             TerminationMethod::Signal(signal) => unsafe {
                 // TODO: if SIGKILL (or any other signal that doesn't run `atexit()`), make sure our atexit handlers still work
-                libc::kill(real_pid, signal.signum());
+                libc::kill(libc::getpid(), signal.signum());
                 libc::sleep(1); // Acts as a backup cancellation point in case `pthread_kill` didn't work
                 panic!("`pthread_kill()` failed to kill current thread");
             },
@@ -1142,7 +1201,7 @@ pub enum DelegationState {
     RunProcess(ProcessId),
     RunPlugins,
     TerminateThread(TerminationMethod),
-    SignalToThread(ThreadId, RaisedSignalInfo),
+    SignalToThread(WorkerId, RaisedSignalInfo),
     HandleSignal(RaisedSignalInfo),
 }
 

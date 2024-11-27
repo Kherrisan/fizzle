@@ -10,8 +10,9 @@ use fizzle_common::path::FilePath;
 use crate::constants::FIZZLE_MEMORY_ENV;
 use crate::errno::Errno;
 use crate::handlers::descriptor::DescriptorId;
+use crate::handlers::id::*;
 use crate::handlers::process::*;
-use crate::handlers::signal::{siginfo_t, RaisedSignalInfo, SigChildCode, SigChildInfo};
+use crate::handlers::signal::*;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
 use crate::state::fizzle_singleton;
@@ -674,11 +675,11 @@ hook_macros::hook! {
         let options = WaitOptions::from_bits_truncate(options & (libc::WNOHANG | libc::WUNTRACED | libc::WCONTINUED));
 
         let wait_type = match pid {
-            ..=-2 => WaitType::Gid(ProcessGroupId::from(-pid as usize)),
+            ..=-2 => WaitType::Gid(ProcessGroupId::from_pgid(-pid)),
             -1 => WaitType::AllChildren,
             0 => {
                 let pgid = Scheduler::handle_event(&mut ctx, ProcessGetGroupIdEvent::new(None)).unwrap();
-                WaitType::Gid(ProcessGroupId::from(usize::from(pgid)))
+                WaitType::Gid(pgid)
             }
             1.. => WaitType::Pid(ProcessId::from(pid as usize)),
         };
@@ -726,7 +727,7 @@ hook_macros::hook! {
         let wait_type = match idtype {
             libc::P_PID => WaitType::Pid(ProcessId::from(id as usize)),
             libc::P_PIDFD => WaitType::PidFd(DescriptorId::from_raw_fd(id as i32)),
-            libc::P_PGID => WaitType::Gid(ProcessGroupId::from(id as usize)),
+            libc::P_PGID => WaitType::Gid(ProcessGroupId::from_pgid(id as i32)),
             libc::P_ALL => WaitType::AllChildren,
             _ => {
                 crate::strace!("waitid(idtype={}, id={}, infop={:?}, options={:?}) -> -1 (EINVAL)", idtype, id, infop, options);
@@ -808,18 +809,23 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn getpgid(pid: libc::pid_t) -> libc::pid_t => fizzle_getpgid(ctx) {
+        let worker_id = match pid {
+            ..=-1 => {
+                Errno::EINVAL.set_errno();
+                return -1
+            }
+            0 => None,
+            1.. => Some(WorkerId::from_id(pid)),
+        };
 
         crate::strace!("getpgid(pid={}) -> ...", pid);
-        match Scheduler::handle_event(&mut ctx, ProcessGetGroupIdEvent::new(Some(ProcessId::from(pid as usize)))) {
+        match Scheduler::handle_event(&mut ctx, ProcessGetGroupIdEvent::new(worker_id)) {
             Ok(pgid) => {
-                let pgid = usize::from(pgid) as libc::pid_t;
+                let pgid = pgid.as_pgid();
                 crate::strace!("getpgid(pid={}) -> {}", pid, pgid);
                 pgid
             },
-            Err(e) => {
-                crate::strace!("getpgid(pid={}) -> -1 ({})", pid, e);
-                -1
-            },
+            Err(_) => unreachable!(),
         }
     }
 }
@@ -830,23 +836,28 @@ hook_macros::hook! {
         crate::strace!("getpgrp() -> ...");
         match Scheduler::handle_event(&mut ctx, ProcessGetGroupIdEvent::new(None)) {
             Ok(pgid) => {
-                let pgid = usize::from(pgid) as libc::pid_t;
+                let pgid = pgid.as_pgid();
                 crate::strace!("getpgrp() -> {}", pgid);
                 pgid
             },
-            Err(e) => {
-                crate::strace!("getpgrp() -> -1 ({})", e);
-                -1
-            },
+            Err(_) => unreachable!()
         }
     }
 }
 
 hook_macros::hook! {
     unsafe fn setpgid(pid: libc::pid_t, pgid: libc::pid_t) -> libc::c_int => fizzle_setpgid(ctx) {
+        let worker_id = match pid {
+            ..=-1 => {
+                Errno::EINVAL.set_errno();
+                return -1
+            }
+            0 => None,
+            1.. => Some(WorkerId::from_id(pid)),
+        };
 
         crate::strace!("setpgid(pid={}, pgid={}) -> ...", pid, pgid);
-        match Scheduler::handle_event(&mut ctx, ProcessSetGroupIdEvent::new(pid, pgid)) {
+        match Scheduler::handle_event(&mut ctx, ProcessSetGroupIdEvent::new(worker_id, ProcessGroupId::from_pgid(pgid))) {
             Ok(()) => {
                 crate::strace!("setpgid(pid={}, pgid={}) -> 0", pid, pgid);
                 0
