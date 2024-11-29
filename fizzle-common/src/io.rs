@@ -2,9 +2,9 @@ use core::slice;
 use std::ffi::CStr;
 // `SocketAddr` does not use heap allocations, so it's safe for this type.
 use std::fmt::Display;
+use std::mem;
 use std::mem::MaybeUninit;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
-use std::{cmp, mem};
 
 use crate::{path::FilePath, storage::Buffer};
 
@@ -14,9 +14,16 @@ pub const MAX_UNIX_PATH_LEN: usize = 108;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SockAddr {
+    /// An IPv4 socket address
     Ipv4(SocketAddrV4),
+    /// An IPv6 socket address
     Ipv6(SocketAddrV6),
+    /// A Unix socket address
     Unix(SocketAddrUnix),
+    /*
+    /// An AF_UNSPEC address
+    Unspec,
+    */
 }
 
 impl Display for SockAddr {
@@ -25,11 +32,20 @@ impl Display for SockAddr {
             Self::Ipv4(v4_addr) => v4_addr.fmt(f),
             Self::Ipv6(v6_addr) => v6_addr.fmt(f),
             Self::Unix(un_addr) => un_addr.fmt(f),
+            // Self::Unspec => "<AF_UNSPEC>".fmt(f),
         }
     }
 }
 
 impl SockAddr {
+    pub fn family(&self) -> AddressFamily {
+        match self {
+            SockAddr::Ipv4(_) => AddressFamily::Ipv4,
+            SockAddr::Ipv6(_) => AddressFamily::Ipv6,
+            SockAddr::Unix(_) => AddressFamily::Unix,
+        }
+    }
+
     pub fn decode(addr_bytes: &[u8]) -> Result<Self, SockAddrError> {
         let sa_family = u16::from_be_bytes(
             addr_bytes
@@ -139,7 +155,7 @@ impl SockAddr {
                     dst.write(*src);
                 }
 
-                cmp::min(addr_bytes.len(), mem::size_of_val(&sockaddr_in))
+                mem::size_of_val(&sockaddr_in)
             }
             SockAddr::Ipv6(v6_addr) => {
                 let sockaddr_in6 = libc::sockaddr_in6 {
@@ -152,7 +168,7 @@ impl SockAddr {
                     sin6_scope_id: v6_addr.scope_id(),
                 };
 
-                // SAFETY: u8 never should have alignment issues, so this should turn &sockaddr_in to &[u8]
+                // SAFETY: u8 never should have alignment issues, so this should turn &sockaddr_in6 to &[u8]
                 let sockaddr_in6_bytes: &[u8] =
                     unsafe { slice::from_ref(&sockaddr_in6).align_to().1 };
                 assert!(
@@ -164,7 +180,7 @@ impl SockAddr {
                     dst.write(*src);
                 }
 
-                cmp::min(addr_bytes.len(), mem::size_of_val(&sockaddr_in6))
+                mem::size_of_val(&sockaddr_in6)
             }
             SockAddr::Unix(unix_addr) => match unix_addr {
                 SocketAddrUnix::Abstract(unix_abstract) => {
@@ -181,7 +197,7 @@ impl SockAddr {
                         *dst = *src as i8;
                     }
 
-                    // SAFETY: u8 never should have alignment issues, so this should turn &sockaddr_in to &[u8]
+                    // SAFETY: u8 never should have alignment issues, so this should turn &sockaddr_un to &[u8]
                     let sockaddr_un_bytes: &[u8] =
                         unsafe { slice::from_ref(&sockaddr_un).align_to().1 };
                     assert!(
@@ -197,7 +213,7 @@ impl SockAddr {
                         dst.write(*src);
                     }
 
-                    cmp::min(addr_bytes.len(), addrlen)
+                    addrlen
                 }
                 SocketAddrUnix::Pathname(unix_path) => {
                     let mut sockaddr_un = libc::sockaddr_un {
@@ -209,7 +225,7 @@ impl SockAddr {
                         *dst = *src as i8;
                     }
 
-                    // SAFETY: u8 never should have alignment issues, so this should turn &sockaddr_in to &[u8]
+                    // SAFETY: u8 never should have alignment issues, so this should turn &sockaddr_un to &[u8]
                     let sockaddr_un_bytes: &[u8] =
                         unsafe { slice::from_ref(&sockaddr_un).align_to().1 };
                     assert!(
@@ -224,7 +240,7 @@ impl SockAddr {
                         dst.write(*src);
                     }
 
-                    cmp::min(addr_bytes.len(), addrlen)
+                    addrlen
                 }
                 SocketAddrUnix::Unnamed => {
                     let sun_family = libc::AF_UNIX as u16;
@@ -233,7 +249,7 @@ impl SockAddr {
                         dst.write(src);
                     }
 
-                    cmp::min(addr_bytes.len(), mem::size_of_val(&sun_family))
+                    mem::size_of_val(&sun_family)
                 }
             },
         }
@@ -398,6 +414,25 @@ impl TransportAddress {
 
     pub fn addr(&self) -> &SockAddr {
         &self.sockaddr
+    }
+
+    pub fn wildcard(&self) -> Option<TransportAddress> {
+        match &self.sockaddr {
+            SockAddr::Ipv4(v4_addr) => Some(TransportAddress {
+                sockaddr: SockAddr::Ipv4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, v4_addr.port())),
+                protocol: self.protocol,
+            }),
+            SockAddr::Ipv6(v6_addr) => Some(TransportAddress {
+                sockaddr: SockAddr::Ipv6(SocketAddrV6::new(
+                    Ipv6Addr::UNSPECIFIED,
+                    v6_addr.port(),
+                    v6_addr.flowinfo(),
+                    v6_addr.scope_id(),
+                )),
+                protocol: self.protocol,
+            }),
+            SockAddr::Unix(_) => None,
+        }
     }
 }
 

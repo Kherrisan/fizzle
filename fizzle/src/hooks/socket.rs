@@ -3,18 +3,16 @@
 //!
 
 use std::mem::MaybeUninit;
-use std::{mem, ptr, slice};
+use std::{cmp, mem, ptr, slice};
 
-use crate::backend::{ConnectionlessBackend, RegularConnectionless};
 use crate::constants::FIZZLE_BUFFER_LENGTH;
-use crate::handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource};
-use crate::handlers::polled::PolledInfo;
-use crate::handlers::socket::{ConnectionlessSocket, SocketState, UnassociatedSocket};
-use crate::handlers::FfiOutput;
+use crate::errno::Errno;
+use crate::handlers::descriptor::{DescriptorId, FdResource};
+use crate::handlers::socket::*;
 use crate::hook_macros;
+use crate::scheduler::Scheduler;
 
 use fizzle_common::io::{AddressFamily, SockAddr, SocketType, TransportProtocol};
-use fizzle_common::storage::Buffer;
 
 hook_macros::hook! {
     unsafe fn socket(
@@ -22,86 +20,119 @@ hook_macros::hook! {
         socktype: libc::c_int,
         protocol: libc::c_int
     ) -> libc::c_int => fizzle_socket(ctx) {
-        let mut state = ctx.acquire();
+
+        crate::strace!("socket(domain={}, socktype={}, protocol={}) -> ...", domain, socktype, protocol);
 
         let nonblocking = (socktype & libc::SOCK_NONBLOCK) != 0;
-        let close_on_exec = (socktype & libc::SOCK_CLOEXEC) != 0;
+        let cloexec = (socktype & libc::SOCK_CLOEXEC) != 0;
         let socktype = socktype & !(libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC);
 
-        let family = match domain {
+        let domain = match domain {
             libc::AF_INET => AddressFamily::Ipv4,
             libc::AF_INET6 => AddressFamily::Ipv6,
             libc::AF_UNIX => AddressFamily::Unix,
-            _ => panic!("unsupported socket domain {}", domain),
+            _ => unimplemented!("unsupported socket domain {}", domain),
         };
 
         let socket_type = match socktype {
             libc::SOCK_STREAM => SocketType::Stream,
             libc::SOCK_SEQPACKET => SocketType::SeqPacket,
             libc::SOCK_DGRAM => SocketType::Datagram,
-            _ => panic!("unsupported socket type {}", socktype),
+            _ => unimplemented!("unsupported socket type {}", socktype),
         };
 
-        let transport_protocol = match (family, protocol) {
+        let protocol = match (domain, protocol) {
             (AddressFamily::Ipv4 | AddressFamily::Ipv6, 0 | libc::IPPROTO_TCP) => TransportProtocol::Tcp,
             (AddressFamily::Ipv4 | AddressFamily::Ipv6, libc::IPPROTO_UDP) => TransportProtocol::Udp,
             (AddressFamily::Ipv4 | AddressFamily::Ipv6, libc::IPPROTO_SCTP) => TransportProtocol::Sctp,
             (AddressFamily::Unix, 0) => TransportProtocol::Unix,
-            _ => panic!("unrecognized socket family/protocol pair {}, {}", family, protocol),
+            _ => unimplemented!("unsupported socket domain/protocol pair {}, {}", domain, protocol),
         };
 
-        let fd = hook_macros::real!(socket)(domain, socktype, protocol);
-
-        if fd < 0 {
-            crate::strace!("socket(domain={}, socktype={}, protocol={}) -> -1 ({})", family, socket_type, transport_protocol, crate::errno_str());
-            return fd
-        }
-
-        let socket_id = match socket_type {
-            SocketType::SeqPacket | SocketType::Stream => state.global.sockets.allocate(SocketState::Unassociated(
-                UnassociatedSocket::new(family, socket_type, transport_protocol))
-            ).unwrap(),
-            SocketType::Datagram => {
-                let local_addr = state.global.ephemeral_address(family, transport_protocol);
-                let recv_buf = state.global.buffers.allocate(Buffer::new()).unwrap();
-                let read_polled = state.global.polled_events.allocate(PolledInfo::new()).unwrap();
-                let write_polled = state.global.polled_events.allocate(PolledInfo::new_raised()).unwrap();
-
-                state.global.sockets.allocate(SocketState::Connectionless(ConnectionlessSocket {
-                    backend: ConnectionlessBackend::Peered(RegularConnectionless {
-                        recv_buf,
-                        read_polled,
-                        write_polled,
-                    }),
-                    local_addr,
-                    rem_addr: None,
-                    reuse_port: false,
-                })).unwrap()
-            }
-        };
-
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
-        state.local.fds.allocate_with_key(descriptor_id, DescriptorInfo {
-            close_on_exec,
+        let socket_create_event = SocketCreateEvent {
+            domain,
+            socket_type,
+            protocol,
             nonblocking,
-            is_passthrough: false,
-            resource: FdResource::Socket(socket_id)
-        }).unwrap();
+            cloexec
+        };
 
-        crate::strace!("socket(domain={}, socktype={}, protocol={}) -> 0", family, socket_type, transport_protocol);
-
-        fd
+        match Scheduler::handle_event(&mut ctx, socket_create_event) {
+            Ok(descriptor_id) => {
+                let fd = descriptor_id.as_raw_fd();
+                crate::strace!("socket(domain={}, socktype={}, protocol={}) -> {}", domain, socktype, protocol, fd);
+                fd
+            },
+            Err(()) => unreachable!(),
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn socketpair(
-        _domain: libc::c_int,
-        _ty: libc::c_int,
-        _protocol: libc::c_int,
-        _sv: *mut [libc::c_int; 2]
-    ) => fizzle_clearerr(_ctx) {
-        unimplemented!("socketpair()")
+        domain: libc::c_int,
+        ty: libc::c_int,
+        protocol: libc::c_int,
+        sv: *mut [libc::c_int; 2]
+    ) -> libc::c_int => fizzle_clearerr(ctx) {
+
+        let Some(sv) = sv.as_mut() else {
+            Errno::EINVAL.set_errno();
+            return -1
+        };
+
+        crate::strace!("socketpair(domain={}, ty={}, protocol={}, sv={:?}) -> ...", domain, ty, protocol, sv);
+
+        let nonblocking = (ty & libc::SOCK_NONBLOCK) != 0;
+        let cloexec = (ty & libc::SOCK_CLOEXEC) != 0;
+        let socktype = ty & !(libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC);
+
+        let domain = match domain {
+            libc::AF_INET => AddressFamily::Ipv4,
+            libc::AF_INET6 => AddressFamily::Ipv6,
+            libc::AF_UNIX => AddressFamily::Unix,
+            _ => unimplemented!("unsupported socket domain {}", domain),
+        };
+
+        let socket_type = match socktype {
+            libc::SOCK_STREAM => SocketType::Stream,
+            libc::SOCK_SEQPACKET => SocketType::SeqPacket,
+            libc::SOCK_DGRAM => SocketType::Datagram,
+            _ => unimplemented!("unsupported socket type {}", socktype),
+        };
+
+        let protocol = match (domain, protocol) {
+            (AddressFamily::Ipv4 | AddressFamily::Ipv6, 0 | libc::IPPROTO_TCP) => TransportProtocol::Tcp,
+            (AddressFamily::Ipv4 | AddressFamily::Ipv6, libc::IPPROTO_UDP) => TransportProtocol::Udp,
+            (AddressFamily::Ipv4 | AddressFamily::Ipv6, libc::IPPROTO_SCTP) => TransportProtocol::Sctp,
+            (AddressFamily::Unix, 0) => TransportProtocol::Unix,
+            _ => unimplemented!("unsupported socket domain/protocol pair {}, {}", domain, protocol),
+        };
+
+        // TODO: add support for AF_TIPC
+        if domain != AddressFamily::Unix {
+            Errno::EAFNOSUPPORT.set_errno();
+            return -1
+        }
+
+        let socket_create_event = SocketCreatePairEvent {
+            domain,
+            socket_type,
+            protocol,
+            nonblocking,
+            cloexec
+        };
+
+        match Scheduler::handle_event(&mut ctx, socket_create_event) {
+            Ok((descriptor1, descriptor2)) => {
+                sv[0] = descriptor1.as_raw_fd();
+                sv[1] = descriptor2.as_raw_fd();
+
+                crate::strace!("socketpair(domain={}, socktype={}, protocol={}, sv={:?}) -> {}", domain, socktype, protocol, sv, 0);
+                0
+            },
+            Err(()) => unreachable!(),
+        }
     }
 }
 
@@ -111,32 +142,28 @@ hook_macros::hook! {
         addr: *const libc::sockaddr,
         addrlen: libc::socklen_t
     ) -> libc::c_int => fizzle_bind(ctx) {
-        let state = ctx.acquire();
-
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
-        let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
-            *libc::__errno_location() = libc::EBADF;
-            return -1
-        };
-
-        let FdResource::Socket(socket_id) = fd_info.resource.clone() else {
-            *libc::__errno_location() = libc::ENOTSOCK;
-            return -1
-        };
-
         // SAFETY: caller ensures addr points to a valid buffer of `adderlen` bytes.
         let addr_bytes = slice::from_raw_parts(addr as *const u8, addrlen as usize);
 
-        let Ok(addr) = SockAddr::decode(addr_bytes) else {
-            *libc::__errno_location() = libc::EINVAL;
+        let Ok(sockaddr) = SockAddr::decode(addr_bytes) else {
+            crate::strace!("bind(fd={}, addr={:?}, addrlen={} ({:?})) -> -1 (EINVAL)", fd, addr, addrlen, addr_bytes);
+            Errno::EINVAL.set_errno();
             return -1
         };
 
-        drop(state);
+        crate::strace!("bind(fd={}, addr={:?}, addrlen={} ({:?})) -> ...", fd, addr, addrlen, sockaddr);
 
-        let res = socket_id.bind(&mut ctx, addr.clone());
-        crate::strace!("bind(fd={}, addr={}) -> {}", fd, &addr, res.display());
-        res.out()
+        match Scheduler::handle_event(&mut ctx, SocketBindEvent::new(DescriptorId::from_raw_fd(fd), sockaddr.clone())) {
+            Ok(()) => {
+                crate::strace!("bind(fd={}, addr={:?}, addrlen={} ({:?})) -> 0", fd, addr, addrlen, sockaddr);
+                0
+            },
+            Err(e) => {
+                crate::strace!("bind(fd={}, addr={:?}, addrlen={} ({:?})) -> 0", fd, addr, addrlen, sockaddr);
+                e.set_errno();
+                -1
+            },
+        }
     }
 }
 
@@ -145,24 +172,21 @@ hook_macros::hook! {
         fd: libc::c_int,
         backlog: libc::c_int
     ) -> libc::c_int => fizzle_listen(ctx) {
-        let state = ctx.acquire();
-
         let descriptor_id = DescriptorId::from_raw_fd(fd);
-        let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
-            *libc::__errno_location() = libc::EBADF;
-            return -1
-        };
 
-        let FdResource::Socket(socket_id) = fd_info.resource.clone() else {
-            *libc::__errno_location() = libc::ENOTSOCK;
-            return -1
-        };
+        crate::strace!("listen(fd={}, backlog={}) -> ...", fd, backlog);
 
-        drop(state);
-
-        let res = socket_id.listen(&mut ctx);
-        crate::strace!("listen(fd={}, backlog={}) -> {}", fd, backlog, res.display());
-        res.out()
+        match Scheduler::handle_event(&mut ctx, SocketListenEvent::new(descriptor_id, backlog)) {
+            Ok(()) => {
+                crate::strace!("listen(fd={}, backlog={}) -> 0", fd, backlog);
+                0
+            },
+            Err(e) => {
+                crate::strace!("listen(fd={}, backlog={}) -> -1 ({})", fd, backlog, e);
+                e.set_errno();
+                -1
+            },
+        }
     }
 }
 
@@ -172,38 +196,29 @@ hook_macros::hook! {
         addr: *const libc::sockaddr,
         addrlen: libc::socklen_t
     ) -> libc::c_int => fizzle_connect(ctx) {
-        let state = ctx.acquire();
-
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
-        let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
-            *libc::__errno_location() = libc::EBADF;
-            return -1
-        };
-
-        let nonblocking = fd_info.nonblocking;
-
-        let FdResource::Socket(socket_id) = fd_info.resource.clone() else {
-            *libc::__errno_location() = libc::ENOTSOCK;
-            return -1
-        };
-
         // SAFETY: caller ensures addr points to a valid buffer of `adderlen` bytes.
         let addr_bytes = slice::from_raw_parts(addr as *const u8, addrlen as usize);
+        let descriptor_id = DescriptorId::from_raw_fd(fd);
 
-        let Ok(rem_addr) = SockAddr::decode(addr_bytes) else {
-            *libc::__errno_location() = libc::EINVAL;
+        let Ok(sockaddr) = SockAddr::decode(addr_bytes) else {
+            crate::strace!("connect(fd={}, addr={:?}, addrlen={} ({:?})) -> -1 (EINVAL)", fd, addr, addrlen, addr_bytes);
+            Errno::EINVAL.set_errno();
             return -1
         };
 
-        drop(state);
+        crate::strace!("connect(fd={}, addr={:?}, addrlen={} ({:?})) -> ...", fd, addr, addrlen, sockaddr);
 
-        if nonblocking {
-            crate::strace!("connect(fd={}, rem_addr={}) -> ...", fd, rem_addr);
+        match Scheduler::handle_event(&mut ctx, SocketConnectEvent::new(descriptor_id, sockaddr.clone())) {
+            Ok(()) => {
+                crate::strace!("connect(fd={}, addr={:?}, addrlen={} ({:?})) -> 0", fd, addr, addrlen, sockaddr);
+                0
+            },
+            Err(e) => {
+                crate::strace!("connect(fd={}, addr={:?}, addrlen={} ({:?})) -> -1 ({})", fd, addr, addrlen, sockaddr, e);
+                e.set_errno();
+                -1
+            },
         }
-
-        let res = socket_id.connect(&mut ctx, rem_addr.clone(), nonblocking);
-        crate::strace!("connect(fd={}, rem_addr={}) -> {}", fd, rem_addr, res.display());
-        res.out()
     }
 }
 
@@ -212,9 +227,34 @@ hook_macros::hook! {
         fd: libc::c_int,
         addr: *mut libc::sockaddr,
         addrlen: *mut libc::socklen_t
-    ) -> libc::c_int => fizzle_accept(_ctx) {
-        crate::strace!("accept -> accept4");
-        fizzle_accept4(fd, addr, addrlen, 0)
+    ) -> libc::c_int => fizzle_accept(ctx) {
+        let descriptor_id = DescriptorId::from_raw_fd(fd);
+
+        crate::strace!("accept(fd={}, addr={:?}, addrlen={:?}) -> ...", fd, addr, addrlen);
+
+        match Scheduler::handle_event(&mut ctx, SocketAcceptEvent::new(descriptor_id, false, false)) {
+            Ok((descriptor_id, accept_addr)) => {
+                let accept_fd = descriptor_id.as_raw_fd();
+
+                if !addr.is_null() && !addrlen.is_null() {
+                    // SAFETY: caller ensures addr points to a valid buffer of `adderlen` bytes.
+                    let addr_bytes = slice::from_raw_parts_mut(addr as *mut MaybeUninit<u8>, addrlen as usize);
+                    *addrlen = accept_addr.encode(addr_bytes) as u32;
+
+                    crate::strace!("accept(fd={}, addr={:?}, addrlen={:?} ({})) -> {}", fd, addr, addrlen, accept_addr, accept_fd);
+
+                } else {
+                    crate::strace!("accept(fd={}, addr={:?}, addrlen={:?}) -> {}", fd, addr, addrlen, accept_fd);
+                }
+
+                accept_fd
+            },
+            Err(e) => {
+                crate::strace!("connect(fd={}, addr={:?}, addrlen={:?}) -> -1 ({})", fd, addr, addrlen, e);
+                e.set_errno();
+                -1
+            },
+        }
     }
 }
 
@@ -225,40 +265,48 @@ hook_macros::hook! {
         addrlen: *mut libc::socklen_t,
         flags: libc::c_int
     ) -> libc::c_int => fizzle_accept4(ctx) {
-        let state = ctx.acquire();
-
         let descriptor_id = DescriptorId::from_raw_fd(fd);
-        let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
-            *libc::__errno_location() = libc::EBADF;
+        let nonblocking = flags & libc::SOCK_NONBLOCK > 0;
+        let cloexec = flags & libc::SOCK_CLOEXEC > 0;
+
+        if flags & !(libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC) > 0 {
+            crate::strace!("accept(fd={}, addr={:?}, addrlen={:?}, flags={}) -> -1 (EINVAL)", fd, addr, addrlen, flags);
+            Errno::EINVAL.set_errno();
             return -1
-        };
-
-        let nonblocking = fd_info.nonblocking | (flags & libc::O_NONBLOCK > 0);
-        let close_on_exec = flags & libc::O_CLOEXEC > 0;
-
-        let FdResource::Socket(server_id) = fd_info.resource.clone() else {
-            *libc::__errno_location() = libc::ENOTSOCK;
-            return -1
-        };
-
-        drop(state);
-        let res = server_id.accept(&mut ctx, nonblocking, close_on_exec);
-        crate::strace!("accept4(fd={}, flags={}) -> {}", fd, match (nonblocking, close_on_exec) {
-            (false, false) => "0",
-            (false, true) => "O_CLOEXEC",
-            (true, false) => "O_NONBLOCK",
-            (true, true) => "O_NONBLOCK | O_CLOEXEC",
-        }, res.display());
-
-        if !addr.is_null() && !addrlen.is_null() {
-            if let Ok((_, conn_addr)) = res.as_ref() {
-                log::info!("accepted connection from address {}", conn_addr);
-                let addr_bytes = slice::from_raw_parts_mut(addr as *mut MaybeUninit<u8>, *addrlen as usize);
-                *addrlen = conn_addr.encode(addr_bytes) as libc::socklen_t;
-            }
         }
 
-        res.out()
+        let flags_fmt = match (nonblocking, cloexec) {
+            (false, false) => "0",
+            (false, true) => "SOCK_CLOEXEC",
+            (true, false) => "SOCK_NONBLOCK",
+            (true, true) => "SOCK_NONBLOCK|SOCK_CLOEXEC",
+        };
+
+        crate::strace!("accept(fd={}, addr={:?}, addrlen={:?}, flags={}) -> ...", fd, addr, addrlen, flags_fmt);
+
+        match Scheduler::handle_event(&mut ctx, SocketAcceptEvent::new(descriptor_id, false, false)) {
+            Ok((descriptor_id, accept_addr)) => {
+                let accept_fd = descriptor_id.as_raw_fd();
+
+                if !addr.is_null() && !addrlen.is_null() {
+                    // SAFETY: caller ensures addr points to a valid buffer of `adderlen` bytes.
+                    let addr_bytes = slice::from_raw_parts_mut(addr as *mut MaybeUninit<u8>, addrlen as usize);
+                    *addrlen = accept_addr.encode(addr_bytes) as u32;
+
+                    crate::strace!("accept(fd={}, addr={:?}, addrlen={:?} ({}), flags={}) -> {}", fd, addr, addrlen, accept_addr, flags_fmt, accept_fd);
+
+                } else {
+                    crate::strace!("accept(fd={}, addr={:?}, addrlen={:?}, flags={}) -> {}", fd, addr, addrlen, flags_fmt, accept_fd);
+                }
+
+                accept_fd
+            },
+            Err(e) => {
+                crate::strace!("connect(fd={}, addr={:?}, addrlen={:?}, flags={}) -> -1 ({})", fd, addr, addrlen, flags_fmt, e);
+                e.set_errno();
+                -1
+            },
+        }
     }
 }
 
@@ -268,31 +316,46 @@ hook_macros::hook! {
         addr: *mut libc::sockaddr,
         addrlen: *mut libc::socklen_t
     ) -> libc::c_int => fizzle_getsockname(ctx) {
-        let state = ctx.acquire();
-
         let descriptor_id = DescriptorId::from_raw_fd(sockfd);
-        let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
-            *libc::__errno_location() = libc::EBADF;
-            return -1
-        };
 
-        let FdResource::Socket(socket_id) = fd_info.resource.clone() else {
-            *libc::__errno_location() = libc::ENOTSOCK;
-            return -1
-        };
+        crate::strace!("getsockname(sockfd={}, addr={:?}, addrlen={:?}) -> ...", sockfd, addr, addrlen);
 
-        drop(state);
+        match Scheduler::handle_event(&mut ctx, SocketGetNameEvent::new(descriptor_id)) {
+            Ok(socket_addr) => {
 
-        let res = socket_id.socket_name(&mut ctx);
-        crate::strace!("getsockname(fd={}) -> {}", sockfd, res.display());
+                if !addr.is_null() && !addrlen.is_null() {
+                    // SAFETY: caller ensures addr points to a valid buffer of `adderlen` bytes.
+                    let addr_bytes = slice::from_raw_parts_mut(addr as *mut MaybeUninit<u8>, addrlen as usize);
 
-        if let Ok(sockname) = res.as_ref() {
-            log::debug!("getsockname() mapped fd {} to address {}", sockfd, sockname);
-            let addr_bytes = slice::from_raw_parts_mut(addr as *mut MaybeUninit<u8>, *addrlen as usize);
-            *addrlen = sockname.encode(addr_bytes) as libc::socklen_t;
+                    match socket_addr {
+                        Ok(sockaddr) => {
+                            crate::strace!("getsockname(sockfd={}, addr={:?}, addrlen={:?} ({:?})) -> 0", sockfd, addr, addrlen, sockaddr);
+                            *addrlen = sockaddr.encode(addr_bytes) as u32;
+                        }
+                        Err(family) => {
+                            crate::strace!("getsockname(sockfd={}, addr={:?}, addrlen={:?} (<unbound>)) -> 0", sockfd, addr, addrlen);
+                            addr_bytes.fill(MaybeUninit::new(0));
+
+                            let family_bytes = (match family {
+                                AddressFamily::Ipv4 => libc::AF_INET,
+                                AddressFamily::Ipv6 => libc::AF_INET6,
+                                AddressFamily::Unix => libc::AF_UNIX,
+                            } as u16).to_be_bytes().map(|i| MaybeUninit::new(i));
+
+                            let family_bytelen = cmp::min(family_bytes.len(), addr_bytes.len());
+                            addr_bytes[..family_bytelen].copy_from_slice(&family_bytes);
+                        }
+                    }
+                }
+
+                0
+            },
+            Err(e) => {
+                crate::strace!("getsockname(sockfd={}, addr={:?}, addrlen={:?}) -> 0", sockfd, addr, addrlen);
+                e.set_errno();
+                -1
+            },
         }
-
-        res.out()
     }
 }
 

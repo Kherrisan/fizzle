@@ -1395,6 +1395,7 @@ impl InterprocessState {
             .unwrap()
     }
 
+    /// Assigns the next available ephemeral address.
     pub fn ephemeral_address(
         &mut self,
         family: AddressFamily,
@@ -1411,6 +1412,7 @@ impl InterprocessState {
                 } else {
                     self.next_ephemeral_port += 1;
                 }
+                // TODO: use an address other than 127.0.0.1 or ::1?
                 TransportAddress::new_inet(
                     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), port)),
                     protocol,
