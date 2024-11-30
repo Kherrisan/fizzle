@@ -516,6 +516,7 @@ pub struct ThreadSigInfo {
     /// Indicates that the given thread is currently waiting on a blocked signal to become pending
     pub sigwait_set: SignalSet,
     pub sigsuspend: bool,
+    pub interrupted: bool,
 }
 
 impl ThreadSigInfo {
@@ -526,6 +527,7 @@ impl ThreadSigInfo {
             blocked: sigmask,                 // Blocked signals are inherited
             sigwait_set: SignalSet::empty(),
             sigsuspend: false,
+            interrupted: false,
         }
     }
 
@@ -540,6 +542,7 @@ impl ThreadSigInfo {
             blocked,
             sigwait_set: SignalSet::empty(),
             sigsuspend: false,
+            interrupted: false,
         }
     }
 }

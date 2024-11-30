@@ -536,7 +536,7 @@ impl FizzleState {
     }
 
     /// Indicates whether the given polled event is ready to be acted on.
-    pub fn polled_is_ready(&mut self, polled_id: &Rc<PolledId>) -> bool {
+    pub fn polled_is_ready(&self, polled_id: &Rc<PolledId>) -> bool {
         let polled = self.global.polled_events.get(polled_id).unwrap();
         polled.event_raised
     }

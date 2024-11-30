@@ -5,16 +5,34 @@ use crate::hook_macros;
 use crate::scheduler::Scheduler;
 
 hook_macros::hook! {
+    unsafe fn pause() -> libc::c_int => fizzle_pause(ctx) {
+        crate::strace!("pause() -> ...");
+        match Scheduler::handle_event(&mut ctx, SleepEvent::new(None)) {
+            Ok(()) => unreachable!(),
+            Err(e) => {
+                crate::strace!("pause() -> -1 ({})", e);
+                e.set_errno();
+                -1
+            },
+        }
+    }
+}
+
+hook_macros::hook! {
     unsafe fn sleep(
         seconds: libc::c_uint
     ) -> libc::c_uint => fizzle_sleep(ctx) {
         crate::strace!("sleep(seconds={}) -> ...", seconds);
-        match Scheduler::handle_event(&mut ctx, SleepEvent::new(Duration::from_secs(seconds as u64))) {
+        match Scheduler::handle_event(&mut ctx, SleepEvent::new(Some(Duration::from_secs(seconds as u64)))) {
             Ok(()) => {
                 crate::strace!("sleep(seconds={}) -> 0", seconds);
                 0
             },
-            Err(()) => unreachable!(),
+            Err(e) => {
+                crate::strace!("sleep(seconds={}) -> -1 ({})", seconds, e);
+                e.set_errno();
+                seconds // TODO: should be number of seconds left to sleep
+            },
         }
     }
 }
@@ -24,12 +42,16 @@ hook_macros::hook! {
         usec: libc::useconds_t
     ) -> libc::c_int => fizzle_usleep(ctx) {
         crate::strace!("usleep(usec={}) -> ...", usec);
-        match Scheduler::handle_event(&mut ctx, SleepEvent::new(Duration::from_micros(usec as u64))) {
+        match Scheduler::handle_event(&mut ctx, SleepEvent::new(Some(Duration::from_micros(usec as u64)))) {
             Ok(()) => {
                 crate::strace!("usleep(usec={}) -> 0", usec);
                 0
             },
-            Err(()) => unreachable!(),
+            Err(e) => {
+                crate::strace!("usleep(usec={}) -> -1 ({})", usec, e);
+                e.set_errno();
+                -1
+            },
         }
     }
 }
@@ -46,15 +68,19 @@ hook_macros::hook! {
 
         crate::strace!("nanosleep(req={}.{}, rem={:?}) -> ...", sec, nsec, rem);
 
-        match Scheduler::handle_event(&mut ctx, SleepEvent::new(duration)) {
+        match Scheduler::handle_event(&mut ctx, SleepEvent::new(Some(duration))) {
             Ok(()) => {
                 if !rem.is_null() {
                     *rem = libc::timespec { tv_sec: 0, tv_nsec: 0 };
                 }
-                crate::strace!("nanosleep(req={}.{}, rem={:?}) -> 0", sec, nsec, rem);
+                crate::strace!("nanosleep(req={:?}, rem={:?}) -> 0", duration, rem);
                 0
             },
-            Err(()) => unreachable!(),
+            Err(e) => {
+                crate::strace!("nanosleep(req={:?}, rem={:?}) -> -1 ({})", duration, rem, e);
+                e.set_errno();
+                -1
+            },
         }
     }
 }

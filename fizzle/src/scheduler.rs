@@ -752,6 +752,7 @@ impl Scheduler {
                 if thread_siginfo.sigsuspend {
                     // Any call to `sigsuspend()` should return for this process
                     thread_siginfo.sigsuspend = false;
+                    thread_siginfo.interrupted = true;
                     state.mark_thread_ready(thread_id);
                 }
 

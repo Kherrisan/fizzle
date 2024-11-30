@@ -4,13 +4,16 @@ use crate::backend::{
     RegularConnectionless, ServerBackend, StandardFeedback,
 };
 use crate::constants::{
-    FIZZLE_EPHEMERAL_PORT_END, FIZZLE_MAX_REUSEPORT, FIZZLE_MIN_CONNECTIONLESS, FIZZLE_SOMAXCONN,
+    FIZZLE_BUFFER_LENGTH, FIZZLE_EPHEMERAL_PORT_END, FIZZLE_MAX_REUSEPORT,
+    FIZZLE_MIN_CONNECTIONLESS, FIZZLE_SOMAXCONN,
 };
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::{FizzleSingleton, FizzleState};
+use std::mem::MaybeUninit;
 use std::os::fd::RawFd;
-use std::{cmp, mem};
+use std::time::Duration;
+use std::{cmp, mem, slice};
 
 use fizzle_common::io::{AddressFamily, SockAddr, SocketType, TransportAddress, TransportProtocol};
 use fizzle_common::storage::Buffer;
@@ -113,14 +116,14 @@ pub enum SocketState {
 
 #[derive(Debug)]
 pub struct ConnectionlessSocket {
-    pub reuse_port: bool,
     pub backend: ConnectionlessBackend,
     pub rem_addr: Option<TransportAddress>,
+    pub reuse_port: bool,
 }
 
 #[derive(Debug)]
 pub struct UnassociatedSocket {
-    pub reuse_port: bool,
+    reuse_port: bool,
 }
 
 #[derive(Debug)]
@@ -909,12 +912,12 @@ impl Event for SocketCreateEvent {
                             .unwrap();
 
                         SocketState::Connectionless(ConnectionlessSocket {
+                            reuse_port: false,
                             backend: ConnectionlessBackend::Peered(RegularConnectionless {
                                 recv_buf,
                                 read_polled,
                                 write_polled,
                             }),
-                            reuse_port: false,
                             rem_addr: None,
                         })
                     }
@@ -1003,12 +1006,12 @@ impl Event for SocketCreatePairEvent {
                         })
                     }
                     SocketType::Datagram => SocketState::Connectionless(ConnectionlessSocket {
+                        reuse_port: false,
                         backend: ConnectionlessBackend::Peered(RegularConnectionless {
                             recv_buf: recv_buf1,
                             read_polled: read_polled1,
                             write_polled: write_polled1,
                         }),
-                        reuse_port: false,
                         rem_addr: Some(addr2.clone()),
                     }),
                 },
@@ -1037,12 +1040,12 @@ impl Event for SocketCreatePairEvent {
                         })
                     }
                     SocketType::Datagram => SocketState::Connectionless(ConnectionlessSocket {
+                        reuse_port: false,
                         backend: ConnectionlessBackend::Peered(RegularConnectionless {
                             recv_buf: recv_buf2,
                             read_polled: read_polled2,
                             write_polled: write_polled2,
                         }),
-                        reuse_port: false,
                         rem_addr: Some(addr1.clone()),
                     }),
                 },
@@ -1879,6 +1882,779 @@ impl Event for SocketGetNameEvent {
         };
 
         Outcome::Success(sockaddr)
+    }
+}
+
+#[repr(C)]
+struct SctpRtoInfo {
+    pub srto_assoc_id: libc::sctp_assoc_t,
+    pub srto_initial: u32,
+    pub srto_max: u32,
+    pub srto_min: u32,
+}
+
+#[repr(C)]
+pub struct SctpGetaddrs {
+    pub assoc_id: libc::sctp_assoc_t, // input
+    pub addr_num: i32,                // output
+    pub addrs: *mut u8,               // output, variable size
+}
+
+#[repr(packed)]
+pub struct SctpPeerAddrParams {
+    pub spp_assoc_id: libc::sctp_assoc_t,
+    pub spp_address: libc::sockaddr_storage,
+    pub spp_hbinterval: u32,
+    pub spp_pathmaxrxt: u16,
+    pub spp_pathmtu: u32,
+    pub spp_sackdelay: u32,
+    pub spp_flags: u32,
+    pub spp_ipv6_flowlabel: u32,
+    pub spp_dscp: u8,
+}
+
+#[repr(C)]
+pub struct SctpAssocParams {
+    pub sasoc_assoc_id: libc::sctp_assoc_t,
+    pub sasoc_asocmaxrxt: u16,
+    pub sasoc_peer_rwnd: u32,
+    pub sasoc_local_rwnd: u32,
+    pub sasoc_cookie_life: u32,
+}
+
+#[repr(C)]
+pub struct SctpInitMsg {
+    pub sinit_num_ostreams: u16,
+    pub sinit_max_instreams: u16,
+    pub sinit_max_attempts: u16,
+    pub sinit_max_init_timeo: u16,
+}
+
+#[repr(C)]
+pub struct SctpEventSubscribe {
+    pub sctp_data_io_event: u8,
+    pub sctp_association_event: u8,
+    pub sctp_address_event: u8,
+    pub sctp_send_failure_event: u8,
+    pub sctp_peer_error_event: u8,
+    pub sctp_shutdown_event: u8,
+    pub sctp_partial_delivery_event: u8,
+    pub sctp_adaptation_layer_event: u8,
+    pub sctp_authentication_event: u8,
+    pub sctp_sender_dry_event: u8,
+    pub sctp_stream_reset_event: u8,
+    pub sctp_assoc_reset_event: u8,
+    pub sctp_stream_change_event: u8,
+    pub sctp_send_failure_event_event: u8,
+}
+
+pub const SOL_SCTP: i32 = 132;
+pub const SCTP_SOCKOPT_BINDX_ADD: i32 = 100;
+pub const SCTP_SOCKOPT_BINDX_REM: i32 = 101;
+// const SCTP_SOCKOPT_PEELOFF: i32 = 102;
+
+pub const SCTP_SOCKOPT_CONNECTX_OLD: i32 = 107;
+pub const SCTP_GET_PEER_ADDRS: i32 = 108;
+pub const SCTP_GET_LOCAL_ADDRS: i32 = 109;
+pub const SCTP_SOCKOPT_CONNECTX: i32 = 110;
+pub const SCTP_SOCKOPT_CONNECTX3: i32 = 111;
+pub const SCTP_GET_ASSOC_STATS: i32 = 112;
+pub const SCTP_PR_SUPPORTED: i32 = 113;
+
+#[derive(Clone, Copy, Debug)]
+pub enum OptLevel {
+    Socket,
+    Ip,
+    Ipv6,
+    Sctp,
+    Tcp,
+}
+
+pub enum SocketOption {
+    SocketIsListening(bool),
+    SocketDontRoute(bool),
+    SocketDomain(AddressFamily),
+    SocketError(libc::c_int),
+    SocketKeepalive(bool),
+    SocketLinger(Option<u32>),
+    SocketOobInline(bool),
+    SocketZeroCopy(bool),
+    SocketPriority(u32),
+    SocketProtocol(TransportProtocol),
+    SocketRecvBuffer(u32),
+    SocketSendLowWatermark(u32),
+    SocketRecvLowWatermark(u32),
+    SocketReuseAddr(bool),
+    SocketReusePort(bool),
+    IpOptions(Vec<u8>),
+    Ipv6Only(bool),
+    SctpRtoInfo(SctpRtoInfo),
+    SctpGetLocalAddrs(Vec<u8>),
+    SctpInitMsg(SctpInitMsg),
+    SctpNoDelay(bool),
+    SctpAutoClose(bool),
+    SctpDisableFragments(bool),
+    SctpPeerAddrParams(SctpPeerAddrParams),
+    SctpEvents(SctpEventSubscribe),
+    SctpWantMappedV4Addr(bool),
+    SctpFragmentInterleave(bool),
+    SctpMaxSegment(u32),
+    SctpAssocInfo(SctpAssocParams),
+    TcpUserTimeout(Duration),
+    TcpNoDelay(bool),
+    TcpMss(u32),
+}
+
+impl SocketOption {
+    pub fn encode(&self, out: &mut [MaybeUninit<u8>]) -> usize {
+        match self {
+            Self::IpOptions(v) | Self::SctpGetLocalAddrs(v) => {
+                for (dst, src) in out.iter_mut().zip(v) {
+                    dst.write(*src);
+                }
+
+                v.len()
+            }
+            Self::TcpUserTimeout(d) => {
+                let millis: libc::c_int = d.as_millis().try_into().unwrap();
+                let millis_bytes = millis.to_be_bytes();
+
+                for (dst, src) in out.iter_mut().zip(millis_bytes) {
+                    dst.write(src);
+                }
+
+                mem::size_of_val(&millis)
+            }
+            Self::TcpNoDelay(b)
+            | Self::SocketIsListening(b)
+            | Self::SocketDontRoute(b)
+            | Self::SocketKeepalive(b)
+            | Self::SocketOobInline(b)
+            | Self::SocketZeroCopy(b)
+            | Self::SocketReuseAddr(b)
+            | Self::SocketReusePort(b)
+            | Self::SctpNoDelay(b)
+            | Self::SctpAutoClose(b)
+            | Self::SctpDisableFragments(b)
+            | Self::SctpWantMappedV4Addr(b)
+            | Self::SctpFragmentInterleave(b)
+            | Self::Ipv6Only(b) => {
+                let flag: libc::c_int = match b {
+                    true => 1,
+                    false => 0,
+                };
+
+                let flag_bytes = flag.to_be_bytes();
+
+                for (dst, src) in out.iter_mut().zip(flag_bytes) {
+                    dst.write(src);
+                }
+
+                mem::size_of_val(&flag)
+            }
+            Self::TcpMss(u)
+            | Self::SocketPriority(u)
+            | Self::SocketRecvBuffer(u)
+            | Self::SocketSendLowWatermark(u)
+            | Self::SocketRecvLowWatermark(u)
+            | Self::SctpMaxSegment(u) => {
+                let i: libc::c_int = (*u).try_into().unwrap();
+                let i_bytes = i.to_be_bytes();
+
+                for (dst, src) in out.iter_mut().zip(i_bytes) {
+                    dst.write(src);
+                }
+
+                mem::size_of_val(&i)
+            }
+            Self::SocketDomain(f) => {
+                let domain = match f {
+                    AddressFamily::Ipv4 => libc::AF_INET,
+                    AddressFamily::Ipv6 => libc::AF_INET6,
+                    AddressFamily::Unix => libc::AF_UNIX,
+                };
+
+                let domain_bytes = domain.to_be_bytes();
+
+                for (dst, src) in out.iter_mut().zip(domain_bytes) {
+                    dst.write(src);
+                }
+
+                mem::size_of_val(&domain)
+            }
+            Self::SocketError(error) => {
+                let error_bytes = error.to_be_bytes();
+
+                for (dst, src) in out.iter_mut().zip(error_bytes) {
+                    dst.write(src);
+                }
+
+                mem::size_of_val(&error)
+            }
+            Self::SocketLinger(l) => {
+                let linger = match *l {
+                    None => libc::linger {
+                        l_linger: 0,
+                        l_onoff: 0,
+                    },
+                    Some(t) => libc::linger {
+                        l_linger: t.try_into().unwrap(),
+                        l_onoff: 1,
+                    },
+                };
+
+                // SAFETY: u8 never should have alignment issues, so this should turn &linger to &[u8]
+                let linger_bytes: &[u8] = unsafe { slice::from_ref(&linger).align_to().1 };
+                assert!(
+                    linger_bytes.len() == mem::size_of_val(&linger),
+                    "align_to() failed to convert `libc::linger` to bytes"
+                );
+
+                for (dst, src) in out.iter_mut().zip(linger_bytes) {
+                    dst.write(*src);
+                }
+
+                linger_bytes.len()
+            }
+            Self::SocketProtocol(p) => {
+                let p_int: libc::c_int = match p {
+                    TransportProtocol::Tcp => libc::IPPROTO_TCP, // TODO: what if this is zero?
+                    TransportProtocol::Udp => libc::IPPROTO_UDP,
+                    TransportProtocol::Sctp => libc::IPPROTO_SCTP,
+                    TransportProtocol::Unix => 0,
+                };
+
+                let p_bytes = p_int.to_be_bytes();
+
+                for (dst, src) in out.iter_mut().zip(p_bytes) {
+                    dst.write(src);
+                }
+
+                p_bytes.len()
+            }
+            Self::SctpRtoInfo(rto_info) => {
+                // SAFETY: u8 never should have alignment issues, so this should turn &rto_info to &[u8]
+                let rto_info_bytes: &[u8] = unsafe { slice::from_ref(&rto_info).align_to().1 };
+                assert!(
+                    rto_info_bytes.len() == mem::size_of_val(&rto_info),
+                    "align_to() failed to convert `SctpRtoInfo` to bytes"
+                );
+
+                for (dst, src) in out.iter_mut().zip(rto_info_bytes) {
+                    dst.write(*src);
+                }
+
+                rto_info_bytes.len()
+            }
+            Self::SctpInitMsg(init_msg) => {
+                // SAFETY: u8 never should have alignment issues, so this should turn &SctpInitMsg to &[u8]
+                let init_msg_bytes: &[u8] = unsafe { slice::from_ref(&init_msg).align_to().1 };
+                assert!(
+                    init_msg_bytes.len() == mem::size_of_val(&init_msg),
+                    "align_to() failed to convert `SctpInitMsg` to bytes"
+                );
+
+                for (dst, src) in out.iter_mut().zip(init_msg_bytes) {
+                    dst.write(*src);
+                }
+
+                init_msg_bytes.len()
+            }
+            Self::SctpPeerAddrParams(addr_params) => {
+                // SAFETY: u8 never should have alignment issues, so this should turn &SctpPeerAddrParams to &[u8]
+                let addr_param_bytes: &[u8] = unsafe { slice::from_ref(&addr_params).align_to().1 };
+                assert!(
+                    addr_param_bytes.len() == mem::size_of_val(&addr_params),
+                    "align_to() failed to convert `SctpPeerAddrParams` to bytes"
+                );
+
+                for (dst, src) in out.iter_mut().zip(addr_param_bytes) {
+                    dst.write(*src);
+                }
+
+                addr_param_bytes.len()
+            }
+            Self::SctpEvents(events_subscribe) => {
+                // SAFETY: u8 never should have alignment issues, so this should turn &SctpPeerAddrParams to &[u8]
+                let events_subscribe_bytes: &[u8] =
+                    unsafe { slice::from_ref(&events_subscribe).align_to().1 };
+                assert!(
+                    events_subscribe_bytes.len() == mem::size_of_val(&events_subscribe_bytes),
+                    "align_to() failed to convert `SctpEventSubscribe` to bytes"
+                );
+
+                for (dst, src) in out.iter_mut().zip(events_subscribe_bytes) {
+                    dst.write(*src);
+                }
+
+                events_subscribe_bytes.len()
+            }
+            Self::SctpAssocInfo(assoc_params) => {
+                // SAFETY: u8 never should have alignment issues, so this should turn &SctpPeerAddrParams to &[u8]
+                let assoc_params_bytes: &[u8] =
+                    unsafe { slice::from_ref(&assoc_params).align_to().1 };
+                assert!(
+                    assoc_params_bytes.len() == mem::size_of_val(&assoc_params_bytes),
+                    "align_to() failed to convert `SctpAssocParams` to bytes"
+                );
+
+                for (dst, src) in out.iter_mut().zip(assoc_params_bytes) {
+                    dst.write(*src);
+                }
+
+                assoc_params_bytes.len()
+            }
+        }
+    }
+}
+
+pub enum OptInput {
+    None,
+    SctpAssocId(libc::sctp_assoc_t),
+    SctpPeerAddrParams(libc::sctp_assoc_t, libc::sockaddr_storage),
+}
+
+pub struct SocketGetOptionEvent {
+    descriptor_id: DescriptorId,
+    optlevel: OptLevel,
+    optname: libc::c_int,
+    input: OptInput,
+}
+
+impl SocketGetOptionEvent {
+    pub fn new(
+        descriptor_id: DescriptorId,
+        optlevel: OptLevel,
+        optname: libc::c_int,
+        input: OptInput,
+    ) -> Self {
+        Self {
+            descriptor_id,
+            optlevel,
+            optname,
+            input,
+        }
+    }
+}
+
+impl Event for SocketGetOptionEvent {
+    type Success = SocketOption;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let Some(fd_info) = state.local.fds.get(&self.descriptor_id) else {
+            return Outcome::Error(Errno::EBADF);
+        };
+
+        let FdResource::Socket(socket_id) = fd_info.resource.clone() else {
+            return Outcome::Error(Errno::ENOTSOCK);
+        };
+
+        let socket_info = state.global.sockets.get(&socket_id).unwrap();
+        let family = socket_info.local_addr.family();
+        let protocol = socket_info.protocol;
+
+        match (self.optlevel, family, protocol) {
+            (OptLevel::Socket, _, _) => (),
+            (OptLevel::Ip, AddressFamily::Ipv4, _) => (),
+            (OptLevel::Ip, _, _) => return Outcome::Error(Errno::ENOPROTOOPT),
+            (OptLevel::Ipv6, AddressFamily::Ipv6, _) => (),
+            (OptLevel::Ipv6, _, _) => return Outcome::Error(Errno::ENOPROTOOPT),
+            (OptLevel::Sctp, _, TransportProtocol::Sctp) => (),
+            (OptLevel::Sctp, _, _) => return Outcome::Error(Errno::ENOPROTOOPT),
+            (OptLevel::Tcp, _, TransportProtocol::Tcp) => (),
+            (OptLevel::Tcp, _, _) => return Outcome::Error(Errno::ENOPROTOOPT),
+        }
+
+        match (self.optlevel, self.optname) {
+            (OptLevel::Socket, libc::SO_ACCEPTCONN) => Outcome::Success(
+                if let SocketState::Server(_) = &state.global.sockets.get(&socket_id).unwrap().state
+                {
+                    SocketOption::SocketIsListening(true)
+                } else {
+                    SocketOption::SocketIsListening(false)
+                },
+            ),
+            (
+                OptLevel::Socket,
+                libc::SO_ATTACH_FILTER
+                | libc::SO_LOCK_FILTER
+                | libc::SO_DETACH_FILTER
+                | libc::SO_ATTACH_BPF
+                | libc::SO_ATTACH_REUSEPORT_CBPF
+                | libc::SO_ATTACH_REUSEPORT_EBPF,
+            ) => {
+                // TODO: implement BPF filtering emulation
+                Outcome::Error(Errno::EINVAL)
+            }
+            (OptLevel::Socket, libc::SO_BINDTODEVICE | libc::SO_BROADCAST | libc::SO_DEBUG) => {
+                // TODO: implement BPF filtering emulation
+                Outcome::Error(Errno::EINVAL)
+            }
+            (OptLevel::Socket, libc::SO_DONTROUTE) => {
+                // TODO: implement assignment of this flag
+                Outcome::Success(SocketOption::SocketDontRoute(true))
+            }
+            (OptLevel::Socket, libc::SO_DOMAIN) => Outcome::Success(SocketOption::SocketDomain(
+                state
+                    .global
+                    .sockets
+                    .get(&socket_id)
+                    .unwrap()
+                    .local_addr
+                    .family(),
+            )),
+            (OptLevel::Socket, libc::SO_ERROR) => {
+                // TODO: pass errors raised during polling here
+                Outcome::Success(SocketOption::SocketError(0))
+            }
+            (OptLevel::Socket, libc::SO_KEEPALIVE) => {
+                // TODO: implement assignment of this flag
+                Outcome::Success(SocketOption::SocketKeepalive(false))
+            }
+            (OptLevel::Socket, libc::SO_LINGER) => {
+                // TODO: implement assignment of this flag
+                Outcome::Success(SocketOption::SocketLinger(Some(15)))
+            }
+            (OptLevel::Socket, libc::SO_OOBINLINE) => {
+                // TODO: implement
+                Outcome::Success(SocketOption::SocketOobInline(true))
+            }
+            (OptLevel::Socket, libc::SO_ZEROCOPY) => {
+                // TODO: implement
+                Outcome::Success(SocketOption::SocketZeroCopy(true))
+            }
+            (OptLevel::Socket, libc::SO_PRIORITY) => {
+                // TODO: implement
+                Outcome::Success(SocketOption::SocketPriority(6))
+            }
+            (OptLevel::Socket, libc::SO_PROTOCOL) => {
+                Outcome::Success(SocketOption::SocketProtocol(
+                    state.global.sockets.get(&socket_id).unwrap().protocol,
+                ))
+            }
+            (OptLevel::Socket, libc::SO_RCVBUF) => {
+                // TODO: implement
+                Outcome::Success(SocketOption::SocketRecvBuffer(FIZZLE_BUFFER_LENGTH as u32))
+            }
+            (OptLevel::Socket, libc::SO_SNDLOWAT) => {
+                // TODO: implement low watermarks for send, recv, poll
+                log::error!("unimplemented socket option SO_SNDLOWAT for SOL_SOCKET");
+                Outcome::Error(Errno::EINVAL)
+            }
+            (OptLevel::Socket, libc::SO_RCVLOWAT) => {
+                // TODO: implement low/high watermarks for send, recv, poll
+                log::error!("unimplemented socket option SO_RCVLOWAT for SOL_SOCKET");
+                Outcome::Error(Errno::EINVAL)
+            }
+            (OptLevel::Socket, libc::SO_SNDTIMEO) => {
+                // TODO: implement send timeout for send, recv
+                log::error!("unimplemented socket option SO_SNDTIMEO for SOL_SOCKET");
+                Outcome::Error(Errno::EINVAL)
+            }
+            (OptLevel::Socket, libc::SO_RCVTIMEO) => {
+                // TODO: implement send timeout for send, recv, connect, accept
+                log::error!("unimplemented socket option SO_RCVTIMEO for SOL_SOCKET");
+                Outcome::Error(Errno::EINVAL)
+            }
+            (OptLevel::Socket, libc::SO_REUSEADDR) => {
+                // TODO: implement
+                Outcome::Success(SocketOption::SocketReuseAddr(true))
+            }
+            (OptLevel::Socket, libc::SO_REUSEPORT) => {
+                let socket_info = state.global.sockets.get(&socket_id).unwrap();
+
+                Outcome::Success(SocketOption::SocketReusePort(match &socket_info.state {
+                    SocketState::Connectionless(connectionless_socket) => {
+                        connectionless_socket.reuse_port
+                    }
+                    SocketState::Unassociated(unassociated_socket) => {
+                        unassociated_socket.reuse_port
+                    }
+                    _ => {
+                        let transport_addr = get_or_assign_local(socket_id, state);
+                        state
+                            .global
+                            .socket_locations
+                            .get(&transport_addr)
+                            .unwrap()
+                            .reuse_port
+                    }
+                }))
+            }
+            // TODO: implement SO_RXQ_OVFL, SO_TIMESTAMP, when implementing `cmsg`s
+            (OptLevel::Socket, _) => {
+                log::error!("unrecognized socket option {} for SOL_SOCKET", self.optname);
+                panic!("unrecognized SOL_SOCKET sockopt {}", self.optname)
+            }
+            (OptLevel::Ip, libc::IP_OPTIONS) => {
+                // TODO: implement assigning IP options to sockets
+                Outcome::Success(SocketOption::IpOptions(Vec::new()))
+            }
+            (OptLevel::Ip, _) => {
+                log::error!("unrecognized socket option for SOL_IP: {}", self.optname);
+                panic!("unrecognized SOL_IP sockopt {}", self.optname)
+            }
+            (OptLevel::Ipv6, libc::IPV6_V6ONLY) => {
+                // TODO: implement
+                Outcome::Success(SocketOption::Ipv6Only(true))
+            }
+            (OptLevel::Ipv6, _) => {
+                log::error!("unrecognized socket option for SOL_IP6: {}", self.optname);
+                panic!("unrecognized SOL_IP6 sockopt {}", self.optname)
+            }
+            (OptLevel::Sctp, libc::SCTP_RTOINFO) => {
+                let OptInput::SctpAssocId(assoc_id) = self.input else {
+                    unreachable!()
+                };
+
+                // TODO: implement
+                // based on default values for Debian 12/Linux 6.X
+                Outcome::Success(SocketOption::SctpRtoInfo(SctpRtoInfo {
+                    srto_assoc_id: assoc_id,
+                    srto_initial: 3000,
+                    srto_max: 60000,
+                    srto_min: 1000,
+                }))
+            }
+            (OptLevel::Sctp, SCTP_GET_LOCAL_ADDRS) => {
+                // TODO: implement
+                Outcome::Success(SocketOption::SctpGetLocalAddrs(Vec::new()))
+            }
+            (OptLevel::Sctp, libc::SCTP_INITMSG) => {
+                // TODO: implement
+                Outcome::Success(SocketOption::SctpInitMsg(SctpInitMsg {
+                    sinit_num_ostreams: 10,
+                    sinit_max_instreams: 10,
+                    sinit_max_attempts: 8,
+                    sinit_max_init_timeo: 60000,
+                }))
+            }
+            (OptLevel::Sctp, libc::SCTP_NODELAY) => {
+                // TODO: implement
+                Outcome::Success(SocketOption::SctpNoDelay(true))
+            }
+            (OptLevel::Sctp, libc::SCTP_AUTOCLOSE) => {
+                // TODO: implement
+                Outcome::Success(SocketOption::SctpAutoClose(false))
+            }
+            (OptLevel::Sctp, libc::SCTP_SET_PEER_PRIMARY_ADDR) => Outcome::Error(Errno::EINVAL),
+            (OptLevel::Sctp, libc::SCTP_PRIMARY_ADDR) => Outcome::Error(Errno::EINVAL),
+            (OptLevel::Sctp, libc::SCTP_DISABLE_FRAGMENTS) => {
+                Outcome::Success(SocketOption::SctpDisableFragments(false))
+            }
+            (OptLevel::Sctp, libc::SCTP_PEER_ADDR_PARAMS) => {
+                let OptInput::SctpPeerAddrParams(assoc_id, addr) = self.input else {
+                    unreachable!()
+                };
+
+                // TODO: implement
+                Outcome::Success(SocketOption::SctpPeerAddrParams(SctpPeerAddrParams {
+                    spp_assoc_id: assoc_id,
+                    spp_address: addr,
+                    spp_hbinterval: 30000,
+                    spp_pathmaxrxt: 5,
+                    spp_pathmtu: 1260,
+                    spp_sackdelay: 200,
+                    spp_flags: 1 | (1 << 3) | (1 << 5),
+                    spp_ipv6_flowlabel: 0,
+                    spp_dscp: 0,
+                }))
+            }
+            (OptLevel::Sctp, libc::SCTP_DEFAULT_SEND_PARAM) => {
+                // TODO: implement
+                Outcome::Error(Errno::EINVAL)
+            }
+            (OptLevel::Sctp, libc::SCTP_EVENTS) => {
+                // TODO: implement
+                Outcome::Success(SocketOption::SctpEvents(SctpEventSubscribe {
+                    sctp_data_io_event: 0,
+                    sctp_association_event: 0,
+                    sctp_address_event: 0,
+                    sctp_send_failure_event: 0,
+                    sctp_peer_error_event: 0,
+                    sctp_shutdown_event: 0,
+                    sctp_partial_delivery_event: 0,
+                    sctp_adaptation_layer_event: 0,
+                    sctp_authentication_event: 0,
+                    sctp_sender_dry_event: 0,
+                    sctp_stream_reset_event: 0,
+                    sctp_assoc_reset_event: 0,
+                    sctp_stream_change_event: 0,
+                    sctp_send_failure_event_event: 0,
+                }))
+            }
+            (OptLevel::Sctp, libc::SCTP_I_WANT_MAPPED_V4_ADDR) => {
+                // TODO: implement
+                Outcome::Success(SocketOption::SctpWantMappedV4Addr(false))
+            }
+            (OptLevel::Sctp, libc::SCTP_FRAGMENT_INTERLEAVE) => {
+                // TODO: implement
+                Outcome::Success(SocketOption::SctpFragmentInterleave(false))
+            }
+            (OptLevel::Sctp, libc::SCTP_MAXSEG) => {
+                // TODO: implement
+                Outcome::Success(SocketOption::SctpMaxSegment(0))
+            }
+            (OptLevel::Sctp, libc::SCTP_ASSOCINFO) => {
+                let OptInput::SctpAssocId(assoc_id) = self.input else {
+                    unreachable!()
+                };
+
+                // TODO: implement
+                Outcome::Success(SocketOption::SctpAssocInfo(SctpAssocParams {
+                    sasoc_assoc_id: assoc_id,
+                    sasoc_asocmaxrxt: 10,
+                    sasoc_peer_rwnd: 1,
+                    sasoc_local_rwnd: 1,
+                    sasoc_cookie_life: 60000,
+                }))
+            }
+            (OptLevel::Sctp, libc::SCTP_STATUS) => {
+                // TODO: implement
+                Outcome::Error(Errno::EINVAL)
+            }
+            (OptLevel::Sctp, libc::SCTP_GET_PEER_ADDR_INFO) => {
+                // TODO: implement
+                Outcome::Error(Errno::EINVAL)
+            }
+            (OptLevel::Sctp, SCTP_GET_ASSOC_STATS) => {
+                // TODO: implement
+                Outcome::Error(Errno::EINVAL)
+            }
+            (OptLevel::Sctp, _) => {
+                log::error!("unrecognized socket option for SOL_SCTP: {}", self.optname);
+                panic!("unrecognized SOL_SCTP sockopt {}", self.optname)
+            }
+            (OptLevel::Tcp, libc::TCP_USER_TIMEOUT) => {
+                // TODO: implement assigning (and enforcing) timeout on sockets
+                Outcome::Success(SocketOption::TcpUserTimeout(Duration::from_millis(20000)))
+            }
+            (OptLevel::Tcp, libc::TCP_NODELAY) => {
+                // TODO: implement assigning nodelay on sockets
+                Outcome::Success(SocketOption::TcpNoDelay(true))
+            }
+            (OptLevel::Tcp, libc::TCP_MAXSEG) => {
+                // TODO: implement assigning MSS on sockets
+                Outcome::Success(SocketOption::TcpMss(1220))
+            }
+            (OptLevel::Tcp, _) => {
+                log::error!("unrecognized socket option for SOL_TCP: {}", self.optname);
+                panic!("unrecognized SOL_TCP sockopt {}", self.optname)
+            }
+        }
+    }
+}
+
+pub struct SocketSetOptionEvent {
+    descriptor_id: DescriptorId,
+    option: SocketOption,
+}
+
+impl SocketSetOptionEvent {
+    pub fn new(descriptor_id: DescriptorId, option: SocketOption) -> Self {
+        Self {
+            descriptor_id,
+            option,
+        }
+    }
+}
+
+impl Event for SocketSetOptionEvent {
+    type Success = ();
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let Some(fd_info) = state.local.fds.get(&self.descriptor_id) else {
+            return Outcome::Error(Errno::EBADF);
+        };
+
+        let FdResource::Socket(socket_id) = fd_info.resource.clone() else {
+            return Outcome::Error(Errno::ENOTSOCK);
+        };
+
+        match &self.option {
+            SocketOption::SocketIsListening(_)
+            | SocketOption::SocketDomain(_)
+            | SocketOption::SocketError(_)
+            | SocketOption::SocketProtocol(_)
+            | SocketOption::SctpGetLocalAddrs(_) => Outcome::Error(Errno::ENOPROTOOPT),
+            // TODO: implement
+            SocketOption::SocketDontRoute(_b) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::SocketKeepalive(_b) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::SocketLinger(_t) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::SocketOobInline(_b) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::SocketZeroCopy(_b) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::SocketPriority(_u) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::SocketRecvBuffer(_) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::SocketSendLowWatermark(_) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::SocketRecvLowWatermark(_) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::SocketReuseAddr(_) => Outcome::Success(()),
+            SocketOption::SocketReusePort(reuse) => {
+                let socket_info = state.global.sockets.get_mut(&socket_id).unwrap();
+
+                match &mut socket_info.state {
+                    SocketState::Connectionless(connectionless_socket) => {
+                        connectionless_socket.reuse_port = *reuse
+                    }
+                    SocketState::Unassociated(unassociated_socket) => {
+                        unassociated_socket.reuse_port = *reuse
+                    }
+                    _ => {
+                        let transport_addr = get_or_assign_local(socket_id, state);
+                        state
+                            .global
+                            .socket_locations
+                            .get_mut(&transport_addr)
+                            .unwrap()
+                            .reuse_port = *reuse;
+                    }
+                }
+
+                Outcome::Success(())
+            }
+            // TODO: implement
+            SocketOption::IpOptions(_vec) => Outcome::Success(()),
+            // TODO: implement, especially for binding rules
+            SocketOption::Ipv6Only(_) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::SctpRtoInfo(_info) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::SctpInitMsg(_) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::SctpNoDelay(_) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::SctpAutoClose(_) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::SctpDisableFragments(_) => todo!(),
+            // TODO: implement
+            SocketOption::SctpPeerAddrParams(_params) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::SctpEvents(_subscribe) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::SctpWantMappedV4Addr(_) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::SctpFragmentInterleave(_) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::SctpMaxSegment(_) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::SctpAssocInfo(_params) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::TcpUserTimeout(_duration) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::TcpNoDelay(_) => Outcome::Success(()),
+            // TODO: implement
+            SocketOption::TcpMss(_) => Outcome::Success(()),
+        }
     }
 }
 
