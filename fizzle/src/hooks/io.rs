@@ -1,8 +1,11 @@
-use std::ptr;
+use std::io::{IoSlice, IoSliceMut};
+use std::mem::MaybeUninit;
+use std::{ptr, slice};
 
-use crate::handlers::descriptor::{DescriptorId, DescriptorInfo};
-use crate::handlers::{FfiOutput, IoVec, IoVecOut, MsgFlags, MsgHdrOut, MsgHdrRef};
+use crate::errno::Errno;
+use crate::handlers::descriptor::*;
 use crate::hook_macros;
+use crate::scheduler::Scheduler;
 
 hook_macros::hook! {
     unsafe fn write(
@@ -10,38 +13,25 @@ hook_macros::hook! {
         buf: *const libc::c_void,
         len: libc::size_t
     ) -> libc::ssize_t => fizzle_write(ctx) {
-        let state = ctx.acquire();
-
         let descriptor_id = DescriptorId::from_raw_fd(fd);
 
-        if let Some(DescriptorInfo { is_passthrough: true, .. }) = state.local.fds.get(&descriptor_id) {
-            let res = libc::write(fd, buf, len);
-            crate::strace!("write(fd={}, buf={:?}, len={}) -> {} (errno {})", fd, buf, len, res, *libc::__errno_location());
-            return res
-        };
-
-        let mut iovec = IoVec {
-            iov_base: buf as *mut libc::c_void,
-            iov_len: len,
-        };
-
-        let mut msg = MsgHdrRef {
-            msg_name: ptr::null_mut(),
-            msg_namelen: 0,
-            msg_iov: ptr::addr_of_mut!(iovec),
-            msg_iovlen: 1,
-            msg_control: ptr::null_mut(),
-            msg_controllen: 0,
-            msg_flags: MsgFlags::empty(),
-        };
-
-        drop(state);
-
         crate::strace!("write(fd={}, buf={:?}, len={}) -> ...", fd, buf, len);
-        let res = descriptor_id.write(&mut ctx, &mut msg);
-        crate::strace!("write(fd={}, buf={:?}, len={}) -> {}", fd, buf, len, res.display());
 
-        res.out()
+        let s = slice::from_raw_parts(buf as *const u8, len);
+        let mut iov = IoSlice::new(s);
+        let write_data = WriteData::Basic(slice::from_mut(&mut iov));
+
+        match Scheduler::handle_event(&mut ctx, DescriptorWriteEvent::new(descriptor_id, write_data)) {
+            Ok(amount) => {
+                crate::strace!("write(fd={}, buf={:?}, len={}) -> {}", fd, buf, len, amount);
+                amount as libc::ssize_t
+            }
+            Err(e) => {
+                crate::strace!("write(fd={}, buf={:?}, len={}) -> -1 ({})", fd, buf, len, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
@@ -52,38 +42,46 @@ hook_macros::hook! {
         len: libc::size_t,
         flags: libc::c_int
     ) -> libc::ssize_t => fizzle_send(ctx) {
-        let state = ctx.acquire();
-
         let descriptor_id = DescriptorId::from_raw_fd(fd);
 
-        if let Some(DescriptorInfo { is_passthrough: true, .. }) = state.local.fds.get(&descriptor_id) {
-            let res = libc::send(fd, buf, len, flags);
-            crate::strace!("send(fd={}, buf={:?}, len={}, flags={}) -> {} (errno {})", fd, buf, len, flags, res, *libc::__errno_location());
-            return res
-        };
-
-        let mut iovec = IoVec {
-            iov_base: buf as *mut libc::c_void,
-            iov_len: len,
-        };
-
-        let mut msg = MsgHdrRef {
-            msg_name: ptr::null_mut(),
-            msg_namelen: 0,
-            msg_iov: ptr::addr_of_mut!(iovec),
-            msg_iovlen: 1,
-            msg_control: ptr::null_mut(),
-            msg_controllen: 0,
-            msg_flags: MsgFlags::from_bits(flags).unwrap(),
-        };
-
-        drop(state);
-
         crate::strace!("send(fd={}, buf={:?}, len={}, flags={}) -> ...", fd, buf, len, flags);
-        let res = descriptor_id.write(&mut ctx, &mut msg);
-        crate::strace!("send(fd={}, buf={:?}, len={}, flags={}) -> {}", fd, buf, len, flags, res.display());
 
-        res.out()
+        let s = slice::from_raw_parts(buf as *const u8, len);
+        let iov = IoSlice::new(s);
+
+        let Some(write_flags) = SocketFlags::from_bits(flags) else {
+            log::error!("unrecognized flags in `send()`: {}", flags);
+            Errno::EINVAL.set_errno();
+            return -1
+        };
+
+        let mut buflen = 0;
+
+        let mut data = SocketWriteData {
+            buf: slice::from_ref(&iov),
+            buflen: &mut buflen,
+            addr_bytes: &[],
+            control_info: &[],
+            msg_flags: SocketMsgFlags::empty(),
+        };
+
+        let write_data = WriteData::Socket(
+            slice::from_mut(&mut data),
+            write_flags,
+        );
+
+        match Scheduler::handle_event(&mut ctx, DescriptorWriteEvent::new(descriptor_id, write_data)) {
+            Ok(msg_cnt) => {
+                debug_assert!(msg_cnt <= 1);
+                crate::strace!("send(fd={}, buf={:?}, len={}, flags={:?}) -> {}", fd, buf, len, write_flags, buflen);
+                buflen as libc::ssize_t
+            }
+            Err(e) => {
+                crate::strace!("send(fd={}, buf={:?}, len={}, flags={:?}) -> -1 ({})", fd, buf, len, write_flags, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
@@ -96,38 +94,52 @@ hook_macros::hook! {
         dest_addr: *const libc::sockaddr,
         addrlen: libc::socklen_t
     ) -> libc::ssize_t => fizzle_sendto(ctx) {
-        let state = ctx.acquire();
-
         let descriptor_id = DescriptorId::from_raw_fd(fd);
 
-        if let Some(DescriptorInfo { is_passthrough: true, .. }) = state.local.fds.get(&descriptor_id) {
-            let res = libc::sendto(fd, buf, len, flags, dest_addr, addrlen);
-            crate::strace!("sendto(fd={}, buf={:?}, len={}, flags={}, dest_addr={:?}, addrlen={}) -> {} (errno {})", fd, buf, len, flags, dest_addr, addrlen, res, *libc::__errno_location());
-            return res
-        };
-
-        let mut iovec = IoVec {
-            iov_base: buf as *mut libc::c_void,
-            iov_len: len,
-        };
-
-        let mut msg = MsgHdrRef {
-            msg_name: dest_addr as *mut libc::c_void,
-            msg_namelen: addrlen,
-            msg_iov: ptr::addr_of_mut!(iovec),
-            msg_iovlen: 1,
-            msg_control: ptr::null_mut(),
-            msg_controllen: 0,
-            msg_flags: MsgFlags::from_bits(flags).unwrap(),
-        };
-
-        drop(state);
-
         crate::strace!("sendto(fd={}, buf={:?}, len={}, flags={}, dest_addr={:?}, addrlen={}) -> ...", fd, buf, len, flags, dest_addr, addrlen);
-        let res = descriptor_id.write(&mut ctx, &mut msg);
-        crate::strace!("sendto(fd={}, buf={:?}, len={}, flags={}, dest_addr={:?}, addrlen={}) -> {}", fd, buf, len, flags, dest_addr, addrlen, res.display());
 
-        res.out()
+        let s = slice::from_raw_parts(buf.cast::<u8>(), len);
+        let iov = IoSlice::new(s);
+
+        let Some(write_flags) = SocketFlags::from_bits(flags) else {
+            log::error!("unrecognized flags in `sendto()`: {}", flags);
+            Errno::EINVAL.set_errno();
+            return -1
+        };
+
+        let addr_bytes = if dest_addr.is_null() {
+            &[]
+        } else {
+            slice::from_raw_parts(dest_addr.cast::<u8>(), addrlen as usize)
+        };
+
+        let mut buflen = 0;
+
+        let mut data = SocketWriteData {
+            buf: slice::from_ref(&iov),
+            buflen: &mut buflen,
+            addr_bytes,
+            control_info: &mut [],
+            msg_flags: SocketMsgFlags::empty(),
+        };
+
+        let write_data = WriteData::Socket(
+            slice::from_mut(&mut data),
+            write_flags,
+        );
+
+        match Scheduler::handle_event(&mut ctx, DescriptorWriteEvent::new(descriptor_id, write_data)) {
+            Ok(msg_cnt) => {
+                debug_assert!(msg_cnt <= 1);
+                crate::strace!("sendto(fd={}, buf={:?}, len={}, flags={:?}, src_addr={:?}, addrlen={:?}) -> {}", fd, buf, len, write_flags, dest_addr, addrlen, buflen);
+                buflen as libc::ssize_t
+            }
+            Err(e) => {
+                crate::strace!("sendto(fd={}, buf={:?}, len={}, flags={:?}, src_addr={:?}, addrlen={:?}) -> -1 ({})", fd, buf, len, write_flags, dest_addr, addrlen, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
@@ -137,26 +149,57 @@ hook_macros::hook! {
         msg: *const libc::msghdr,
         flags: libc::c_int
     ) -> libc::ssize_t => fizzle_sendmsg(ctx) {
-        let state = ctx.acquire();
-
         let descriptor_id = DescriptorId::from_raw_fd(fd);
 
-        if let Some(DescriptorInfo { is_passthrough: true, .. }) = state.local.fds.get(&descriptor_id) {
-            let res = libc::sendmsg(fd, msg, flags);
-            crate::strace!("sendmsg(fd={}, msg={:?}, flags={}) -> {} (errno {})", fd, msg, flags, res, *libc::__errno_location());
-            return res
+        crate::strace!("sendmsg(fd={}, msg={:?}, flags={}) -> ...", fd, msg, flags);
+
+        let iov_slice = slice::from_raw_parts((*msg).msg_iov.cast::<IoSlice<'_>>(), (*msg).msg_iovlen);
+
+        let Some(write_flags) = SocketFlags::from_bits(flags) else {
+            log::error!("unrecognized flags in `recvmsg()`: {}", flags);
+            Errno::EINVAL.set_errno();
+            return -1
         };
 
-        let msg_mut = &mut *(msg as *mut MsgHdrRef);
-        msg_mut.msg_flags = MsgFlags::from_bits(flags).unwrap();
+        let addr_bytes = if (*msg).msg_name.is_null() {
+            &[]
+        } else {
+            slice::from_raw_parts((*msg).msg_name.cast::<u8>(), (*msg).msg_namelen as usize)
+        };
 
-        drop(state);
+        let Some(msg_flags) = SocketMsgFlags::from_bits((*msg).msg_flags) else {
+            log::error!("unrecognized flags in `sendmsg()` msghdr: {}", flags);
+            Errno::EINVAL.set_errno();
+            return -1
+        };
 
-        crate::strace!("sendmsg(fd={}, msg={:?}, flags={}) -> ...", fd, msg, flags);
-        let res = descriptor_id.write(&mut ctx, msg_mut);
-        crate::strace!("sendmsg(fd={}, msg={:?}, flags={}) -> {}", fd, msg, flags, res.display());
+        let mut buflen = 0;
 
-        res.out()
+        let mut data = SocketWriteData {
+            addr_bytes,
+            buf: iov_slice,
+            buflen: &mut buflen,
+            msg_flags,
+            control_info: &mut [],
+        };
+
+        let write_data = WriteData::Socket(
+            slice::from_mut(&mut data),
+            write_flags,
+        );
+
+        match Scheduler::handle_event(&mut ctx, DescriptorWriteEvent::new(descriptor_id, write_data)) {
+            Ok(msg_cnt) => {
+                debug_assert!(msg_cnt <= 1);
+                crate::strace!("sendmsg(fd={}, msg={:?}, flags={}) -> {}", fd, msg, flags, buflen);
+                buflen as libc::ssize_t
+            }
+            Err(e) => {
+                crate::strace!("sendmsg(fd={}, msg={:?}, flags={}) -> -1 ({})", fd, msg, flags, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
@@ -167,35 +210,65 @@ hook_macros::hook! {
         vlen: libc::c_uint,
         flags: libc::c_int
     ) -> libc::c_int => fizzle_sendmmsg(ctx) {
-        let state = ctx.acquire();
-
         let descriptor_id = DescriptorId::from_raw_fd(fd);
 
-        if let Some(DescriptorInfo { is_passthrough: true, .. }) = state.local.fds.get(&descriptor_id) {
-            let res = libc::sendmmsg(fd, msgvec, vlen, flags);
-            crate::strace!("sendmmsg(fd={}, msgvec={:?}, vlen={}, flags={}) -> {} (errno {})", fd, msgvec, vlen, flags, res, *libc::__errno_location());
-            return res
-        };
+        crate::strace!("sendmmsg(fd={}, msgvec={:?}, vlen={}, flags={}) -> ...", fd, msgvec, vlen, flags);
 
-        if vlen == 0 {
-            return 0
+        let msg_slice = slice::from_raw_parts_mut(msgvec, vlen as usize);
+
+        let mut msgs = Vec::new();
+        for msg in msg_slice {
+            let iov_slice = slice::from_raw_parts((*msg).msg_hdr.msg_iov.cast::<IoSlice<'_>>(), (*msg).msg_hdr.msg_iovlen);
+            let addr_bytes = if (*msg).msg_hdr.msg_name.is_null() {
+                &[]
+            } else {
+                slice::from_raw_parts((*msg).msg_hdr.msg_name.cast::<u8>(), (*msg).msg_hdr.msg_namelen as usize)
+            };
+
+            let control_info = if (*msg).msg_hdr.msg_control.is_null() {
+                &[]
+            } else {
+                slice::from_raw_parts((*msg).msg_hdr.msg_control.cast::<u8>(), (*msg).msg_hdr.msg_controllen)
+            };
+
+            let Some(msg_flags) = SocketMsgFlags::from_bits((*msg).msg_hdr.msg_flags) else {
+                log::error!("unrecognized flags in `sendmsg()` msghdr: {}", flags);
+                Errno::EINVAL.set_errno();
+                return -1
+            };
+
+            let buflen = &mut (*msg).msg_len;
+
+            msgs.push(SocketWriteData {
+                addr_bytes,
+                buf: iov_slice,
+                buflen,
+                control_info,
+                msg_flags,
+            });
         }
 
-        let msg = &mut *(ptr::addr_of_mut!((*msgvec).msg_hdr) as *mut MsgHdrRef);
-        msg.msg_flags = MsgFlags::from_bits(flags).unwrap();
-        let msg_len = &mut *(ptr::addr_of_mut!((*msgvec).msg_len));
+        let Some(write_flags) = SocketFlags::from_bits(flags) else {
+            log::error!("unrecognized flags in `sendmmsg()`: {}", flags);
+            Errno::EINVAL.set_errno();
+            return -1
+        };
 
-        drop(state);
+        let write_data = WriteData::Socket(
+            msgs.as_mut_slice(),
+            write_flags,
+        );
 
-        crate::strace!("sendmmsg(fd={}, msgvec={:?}, vlen={}, flags={}) -> ...", fd, msgvec, vlen, flags);
-        let res = descriptor_id.write(&mut ctx, msg);
-        crate::strace!("sendmmsg(fd={}, msgvec={:?}, vlen={}, flags={}) -> {}", fd, msgvec, vlen, flags, res.display());
-
-        if res.out() >= 0 {
-            *msg_len = res.out() as u32;
-            1
-        } else {
-            -1
+        match Scheduler::handle_event(&mut ctx, DescriptorWriteEvent::new(descriptor_id, write_data)) {
+            Ok(amount) => {
+                crate::strace!("sendmmsg(fd={}, msgvec={:?}, vlen={}, flags={}) -> {}", fd, msgvec, vlen, flags, amount);
+                amount as i32
+            }
+            Err(e) => {
+                crate::strace!("sendmmsg(fd={}, msgvec={:?}, vlen={}, flags={}) -> -1 ({})", fd, msgvec, vlen, flags, e);
+                e.set_errno();
+                -1
+            }
         }
     }
 }
@@ -206,38 +279,25 @@ hook_macros::hook! {
         buf: *mut libc::c_void,
         len: libc::size_t
     ) -> libc::ssize_t => fizzle_read(ctx) {
-        let state = ctx.acquire();
-
         let descriptor_id = DescriptorId::from_raw_fd(fd);
 
-        if let Some(DescriptorInfo { is_passthrough: true, .. }) = state.local.fds.get(&descriptor_id) {
-            let res = libc::read(fd, buf, len);
-            crate::strace!("recv(fd={}, buf={:?}, len={}) -> {} (errno {})", fd, buf, len, res, *libc::__errno_location());
-            return res
-        };
-
-        let mut iovec = IoVecOut {
-            iov_base: buf,
-            iov_len: len,
-        };
-
-        let mut msg = MsgHdrOut {
-            msg_name: ptr::null_mut(),
-            msg_namelen: 0,
-            msg_iov: ptr::addr_of_mut!(iovec),
-            msg_iovlen: 1,
-            msg_control: ptr::null_mut(),
-            msg_controllen: 0,
-            msg_flags: MsgFlags::empty(),
-        };
-
-        drop(state);
-
         crate::strace!("read(fd={}, buf={:?}, len={}) -> ...", fd, buf, len);
-        let res = descriptor_id.read(&mut ctx, &mut msg);
-        crate::strace!("read(fd={}, buf={:?}, len={}) -> {}", fd, buf, len, res.display());
 
-        res.out()
+        let s = slice::from_raw_parts_mut(buf as *mut u8, len);
+        let mut iov = IoSliceMut::new(s);
+        let read_data = ReadData::Basic(slice::from_mut(&mut iov));
+
+        match Scheduler::handle_event(&mut ctx, DescriptorReadEvent::new(descriptor_id, read_data)) {
+            Ok(amount) => {
+                crate::strace!("read(fd={}, buf={:?}, len={}) -> {}", fd, buf, len, amount);
+                amount as libc::ssize_t
+            }
+            Err(e) => {
+                crate::strace!("read(fd={}, buf={:?}, len={}) -> -1 ({})", fd, buf, len, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
@@ -248,38 +308,51 @@ hook_macros::hook! {
         len: libc::size_t,
         flags: libc::c_int
     ) -> libc::ssize_t => fizzle_recv(ctx) {
-        let state = ctx.acquire();
-
         let descriptor_id = DescriptorId::from_raw_fd(fd);
 
-        if let Some(DescriptorInfo { is_passthrough: true, .. }) = state.local.fds.get(&descriptor_id) {
-            let res = libc::recv(fd, buf, len, flags);
-            crate::strace!("recv(fd={}, buf={:?}, len={}, flags={}) -> {} (errno {})", fd, buf, len, flags, res, *libc::__errno_location());
-            return res
+        crate::strace!("recv(fd={}, buf={:?}, len={}, flags={}) -> ...", fd, buf, len, flags);
+
+        let s = slice::from_raw_parts_mut(buf as *mut u8, len);
+        let mut iov = IoSliceMut::new(s);
+
+        let Some(read_flags) = SocketFlags::from_bits(flags) else {
+            log::error!("unrecognized flags in `recv()`: {}", flags);
+            Errno::EINVAL.set_errno();
+            return -1
         };
 
-        let mut iovec = IoVecOut {
-            iov_base: buf,
-            iov_len: len,
+        let mut addrlen = 0;
+        let mut msg_flags = SocketMsgFlags::empty();
+        let mut buflen = 0;
+        let mut control_len = 0;
+
+        let mut data = SocketReadData {
+            buf: slice::from_mut(&mut iov),
+            buflen: &mut buflen,
+            addr_bytes: &mut [],
+            addrlen: &mut addrlen,
+            control_info: &mut [],
+            control_len: &mut control_len,
+            msg_flags: &mut msg_flags,
         };
 
-        let mut msg = MsgHdrOut {
-            msg_name: ptr::null_mut(),
-            msg_namelen: 0,
-            msg_iov: ptr::addr_of_mut!(iovec),
-            msg_iovlen: 1,
-            msg_control: ptr::null_mut(),
-            msg_controllen: 0,
-            msg_flags: MsgFlags::from_bits(flags).unwrap(),
-        };
+        let read_data = ReadData::Socket(
+            slice::from_mut(&mut data),
+            read_flags,
+        );
 
-        drop(state);
-
-        crate::strace!("recv(fd={}, buf={:?}, len={}, flags={:?}) -> ...", fd, buf, len, msg.flags_mut());
-        let res = descriptor_id.read(&mut ctx, &mut msg);
-        crate::strace!("recv(fd={}, buf={:?}, len={}, flags={:?}) -> {}", fd, buf, len, msg.flags_mut(), res.display());
-
-        res.out()
+        match Scheduler::handle_event(&mut ctx, DescriptorReadEvent::new(descriptor_id, read_data)) {
+            Ok(msg_cnt) => {
+                debug_assert!(msg_cnt <= 1);
+                crate::strace!("recv(fd={}, buf={:?}, len={}, flags={:?}) -> {}", fd, buf, len, read_flags, buflen);
+                buflen as libc::ssize_t
+            }
+            Err(e) => {
+                crate::strace!("recv(fd={}, buf={:?}, len={}, flags={:?}) -> -1 ({})", fd, buf, len, read_flags, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
@@ -292,58 +365,58 @@ hook_macros::hook! {
         src_addr: *mut libc::sockaddr,
         addrlen: *mut libc::socklen_t
     ) -> libc::ssize_t => fizzle_recvfrom(ctx) {
-        let state = ctx.acquire();
-
         let descriptor_id = DescriptorId::from_raw_fd(fd);
 
-        if let Some(DescriptorInfo { is_passthrough: true, .. }) = state.local.fds.get(&descriptor_id) {
-            let res = libc::recvfrom(fd, buf, len, flags, src_addr, addrlen);
-            crate::strace!("recvfrom(fd={}, buf={:?}, len={}, flags={}, src_addr={:?}, addrlen={:?}) -> {} (errno {})", fd, buf, len, flags, src_addr, addrlen, res, *libc::__errno_location());
-            return res
+        crate::strace!("recvfrom(fd={}, buf={:?}, len={}, flags={}, src_addr={:?}, addrlen={:?}) -> ...", fd, buf, len, flags, src_addr, addrlen);
+
+        let s = slice::from_raw_parts_mut(buf.cast::<u8>(), len);
+        let mut iov = IoSliceMut::new(s);
+
+        let Some(read_flags) = SocketFlags::from_bits(flags) else {
+            log::error!("unrecognized flags in `recvfrom()`: {}", flags);
+            Errno::EINVAL.set_errno();
+            return -1
         };
 
-        let mut iovec = IoVecOut {
-            iov_base: buf,
-            iov_len: len,
+        let addr_bytes = if src_addr.is_null() || addrlen.is_null() {
+            &mut []
+        } else {
+            slice::from_raw_parts_mut(src_addr.cast::<MaybeUninit<u8>>(), *addrlen as usize)
         };
 
-        let mut msg = MsgHdrOut {
-            msg_name: src_addr as *mut libc::c_void,
-            msg_namelen: if addrlen.is_null() { 0 } else { *addrlen },
-            msg_iov: ptr::addr_of_mut!(iovec),
-            msg_iovlen: 1,
-            msg_control: ptr::null_mut(),
-            msg_controllen: 0,
-            msg_flags: MsgFlags::from_bits(flags).unwrap()
+        let mut msg_flags = SocketMsgFlags::empty();
+        let mut buflen = 0;
+        let mut control_len = 0;
+
+        let mut data = SocketReadData {
+            buf: slice::from_mut(&mut iov),
+            buflen: &mut buflen,
+            addr_bytes,
+            addrlen: &mut *addrlen,
+            control_info: &mut [],
+            control_len: &mut control_len,
+            msg_flags: &mut msg_flags,
         };
 
-        drop(state);
+        let read_data = ReadData::Socket(
+            slice::from_mut(&mut data),
+            read_flags,
+        );
 
-        crate::strace!("recvfrom(fd={}, buf={:?}, len={}, flags={:?}, addr={:?}) -> ...", fd, buf, len, msg.flags_mut(), src_addr);
-        let res = descriptor_id.read(&mut ctx, &mut msg);
-        crate::strace!("recvfrom(fd={}, buf={:?}, len={}, flags={:?}, addr={:?}) -> {}", fd, buf, len, msg.flags_mut(), src_addr, res.display());
-
-        if res.is_ok() && !addrlen.is_null()  {
-            *addrlen = msg.msg_namelen;
+        match Scheduler::handle_event(&mut ctx, DescriptorReadEvent::new(descriptor_id, read_data)) {
+            Ok(msg_cnt) => {
+                debug_assert!(msg_cnt <= 1);
+                crate::strace!("recvfrom(fd={}, buf={:?}, len={}, flags={:?}, src_addr={:?}, addrlen={:?}) -> {}", fd, buf, len, read_flags, src_addr, addrlen, buflen);
+                buflen as libc::ssize_t
+            }
+            Err(e) => {
+                crate::strace!("recvfrom(fd={}, buf={:?}, len={}, flags={:?}, src_addr={:?}, addrlen={:?}) -> -1 ({})", fd, buf, len, read_flags, src_addr, addrlen, e);
+                e.set_errno();
+                -1
+            }
         }
-
-        res.out()
     }
 }
-
-/*
-#[repr(C)]
-#[derive(Clone, Copy)]
-#[allow(non_camel_case_types)]
-struct sctp_shutdown_event {
-    spc_type: u16,
-    spc_flags: u16,
-    spc_length: u32,
-    sse_assoc_id: libc::sctp_assoc_t,
-}
-
-const SCTP_SHUTDOWN_EVENT: u16 = (1 << 15) + 5;
-*/
 
 hook_macros::hook! {
     unsafe fn recvmsg(
@@ -351,26 +424,57 @@ hook_macros::hook! {
         msg: *mut libc::msghdr,
         flags: libc::c_int
     ) -> libc::ssize_t => fizzle_recvmsg(ctx) {
-        let state = ctx.acquire();
-
         let descriptor_id = DescriptorId::from_raw_fd(fd);
 
-        if let Some(DescriptorInfo { is_passthrough: true, .. }) = state.local.fds.get(&descriptor_id) {
-            let res = libc::recvmsg(fd, msg, flags);
-            crate::strace!("recvmsg(fd={}, msg={:?}, flags={}) -> {} (errno {})", fd, msg, flags, res, *libc::__errno_location());
-            return res
+        crate::strace!("recvmsg(fd={}, msg={:?}, flags={}) -> ...", fd, msg, flags);
+
+        let iov_slice = slice::from_raw_parts_mut((*msg).msg_iov.cast::<IoSliceMut<'_>>(), (*msg).msg_iovlen);
+
+        let Some(read_flags) = SocketFlags::from_bits(flags) else {
+            log::error!("unrecognized flags in `recvmsg()`: {}", flags);
+            Errno::EINVAL.set_errno();
+            return -1
         };
 
-        let msg_out = &mut *(msg as *mut MsgHdrOut);
-        *msg_out.flags_mut() = MsgFlags::from_bits(flags).unwrap();
+        let addr_bytes = if (*msg).msg_name.is_null() {
+            &mut []
+        } else {
+            slice::from_raw_parts_mut((*msg).msg_name.cast::<MaybeUninit<u8>>(), (*msg).msg_namelen as usize)
+        };
 
-        drop(state);
+        let msg_flags = &mut *(ptr::addr_of_mut!((*msg).msg_flags).cast::<SocketMsgFlags>());
 
-        crate::strace!("recvmsg(fd={}, msg={:?}, flags={:?}) -> ...", fd, msg, msg_out.flags_mut());
-        let res = descriptor_id.read(&mut ctx, msg_out);
-        crate::strace!("recvmsg(fd={}, msg={:?}, flags={:?}) -> {}", fd, msg, msg_out.flags_mut(), res.display());
+        let addrlen = &mut (*msg).msg_namelen;
+        let mut buflen = 0;
+        let control_len = &mut (*msg).msg_controllen;
 
-        res.out()
+        let mut data = SocketReadData {
+            addr_bytes,
+            addrlen,
+            buf: iov_slice,
+            buflen: &mut buflen,
+            msg_flags,
+            control_info: &mut [],
+            control_len,
+        };
+
+        let read_data = ReadData::Socket(
+            slice::from_mut(&mut data),
+            read_flags,
+        );
+
+        match Scheduler::handle_event(&mut ctx, DescriptorReadEvent::new(descriptor_id, read_data)) {
+            Ok(msg_cnt) => {
+                debug_assert!(msg_cnt <= 1);
+                crate::strace!("recvmsg(fd={}, msg={:?}, flags={}) -> {}", fd, msg, flags, buflen);
+                buflen as libc::ssize_t
+            }
+            Err(e) => {
+                crate::strace!("recvmsg(fd={}, msg={:?}, flags={}) -> -1 ({})", fd, msg, flags, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
@@ -382,50 +486,93 @@ hook_macros::hook! {
         flags: libc::c_int,
         timeout: *mut libc::timespec
     ) -> libc::c_int => fizzle_recvmmsg(ctx) {
-        let state = ctx.acquire();
-
-        // TODO: account for timeout
-        // NOTE: recvmmsg currently only receives one message at a time
-
         let descriptor_id = DescriptorId::from_raw_fd(fd);
 
-        if let Some(DescriptorInfo { is_passthrough: true, .. }) = state.local.fds.get(&descriptor_id) {
-            let res = libc::recvmmsg(fd, msgvec, vlen, flags, timeout);
-            crate::strace!("recvmmsg(fd={}, msgvec={:?}, vlen={}, flags={}, timeout={:?}) -> {} (errno {})", fd, msgvec, vlen, flags, timeout, res, *libc::__errno_location());
-            return res
-        };
+        crate::strace!("recvmmsg(fd={}, msgvec={:?}, vlen={}, flags={}, timeout={:?}) -> ...", fd, msgvec, vlen, flags, timeout);
 
-        if vlen <= 0 {
-            crate::strace!("recvmmsg(fd={}, msgvec={:?}, vlen={}, flags={}, timeout={:?}) -> 0 (empty msgvec)", fd, msgvec, vlen, flags, timeout);
-            return 0
+        let msg_slice = slice::from_raw_parts_mut(msgvec, vlen as usize);
+
+        let mut msgs = Vec::new();
+        for msg in msg_slice {
+            let iov_slice = slice::from_raw_parts_mut((*msg).msg_hdr.msg_iov.cast::<IoSliceMut<'_>>(), (*msg).msg_hdr.msg_iovlen);
+            let addr_bytes = if (*msg).msg_hdr.msg_name.is_null() {
+                &mut []
+            } else {
+                slice::from_raw_parts_mut((*msg).msg_hdr.msg_name.cast::<MaybeUninit<u8>>(), (*msg).msg_hdr.msg_namelen as usize)
+            };
+            let addrlen = &mut (*msg).msg_hdr.msg_namelen;
+
+            let control_info = if (*msg).msg_hdr.msg_control.is_null() {
+                &mut []
+            } else {
+                slice::from_raw_parts_mut((*msg).msg_hdr.msg_control.cast::<MaybeUninit<u8>>(), (*msg).msg_hdr.msg_controllen)
+            };
+
+            let control_len = &mut (*msg).msg_hdr.msg_controllen;
+
+            let msg_flags = &mut *(ptr::addr_of_mut!((*msg).msg_hdr.msg_flags).cast::<SocketMsgFlags>());
+            let buflen = &mut (*msg).msg_len;
+
+            msgs.push(SocketReadData {
+                addr_bytes,
+                addrlen,
+                buf: iov_slice,
+                buflen,
+                control_info,
+                control_len,
+                msg_flags,
+            });
         }
 
-        let msg = &mut *(ptr::addr_of_mut!((*msgvec).msg_hdr) as *mut MsgHdrOut);
-        msg.msg_flags = MsgFlags::from_bits(flags).unwrap();
-        let msg_len = &mut *(ptr::addr_of_mut!((*msgvec).msg_len));
+        let Some(read_flags) = SocketFlags::from_bits(flags) else {
+            log::error!("unrecognized flags in `recvmmsg()`: {}", flags);
+            Errno::EINVAL.set_errno();
+            return -1
+        };
 
-        drop(state);
+        let read_data = ReadData::Socket(
+            msgs.as_mut_slice(),
+            read_flags,
+        );
 
-        crate::strace!("recvmmsg(fd={}, msgvec={:?}, vlen={}, flags={}, timeout={:?}) -> ...", fd, msgvec, vlen, flags, timeout);
-        let res = descriptor_id.read(&mut ctx, msg);
-        crate::strace!("recvmmsg(fd={}, msgvec={:?}, vlen={}, flags={}, timeout={:?}) -> {}", fd, msgvec, vlen, flags, timeout, res.display());
-
-        if res.out() >= 0 {
-            *msg_len = res.out() as u32;
-            1
-        } else {
-            -1
+        match Scheduler::handle_event(&mut ctx, DescriptorReadEvent::new(descriptor_id, read_data)) {
+            Ok(amount) => {
+                crate::strace!("recvmmsg(fd={}, msgvec={:?}, vlen={}, flags={}, timeout={:?}) -> {}", fd, msgvec, vlen, flags, timeout, amount);
+                amount as i32
+            }
+            Err(e) => {
+                crate::strace!("recvmmsg(fd={}, msgvec={:?}, vlen={}, flags={}, timeout={:?}) -> -1 ({})", fd, msgvec, vlen, flags, timeout, e);
+                e.set_errno();
+                -1
+            }
         }
     }
 }
 
 hook_macros::hook! {
     unsafe fn readv(
-        _fd: libc::c_int,
-        _iov: *const libc::iovec,
-        _iovcnt: libc::c_int
-    ) -> libc::ssize_t => fizzle_readv(_ctx) {
-        unimplemented!("readv()")
+        fd: libc::c_int,
+        iov: *mut libc::iovec, // NOTE: the definition has this as *const
+        iovcnt: libc::c_int
+    ) -> libc::ssize_t => fizzle_readv(ctx) {
+        let descriptor_id = DescriptorId::from_raw_fd(fd);
+
+        crate::strace!("readv(fd={}, iov={:?}, iovcnt={}) -> ...", fd, iov, iovcnt);
+
+        let iov_slice = slice::from_raw_parts_mut(iov.cast::<IoSliceMut<'_>>(), iovcnt as usize);
+        let read_data = ReadData::Basic(iov_slice);
+
+        match Scheduler::handle_event(&mut ctx, DescriptorReadEvent::new(descriptor_id, read_data)) {
+            Ok(amount) => {
+                crate::strace!("readv(fd={}, iov={:?}, iovcnt={}) -> {}", fd, iov, iovcnt, amount);
+                amount as libc::ssize_t
+            }
+            Err(e) => {
+                crate::strace!("readv(fd={}, iov={:?}, iovcnt={}) -> -1 ({})", fd, iov, iovcnt, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
@@ -435,33 +582,24 @@ hook_macros::hook! {
         iov: *const libc::iovec,
         iovcnt: libc::c_int
     ) -> libc::ssize_t => fizzle_writev(ctx) {
-        let state = ctx.acquire();
-
         let descriptor_id = DescriptorId::from_raw_fd(fd);
 
-        if let Some(DescriptorInfo { is_passthrough: true, .. }) = state.local.fds.get(&descriptor_id) {
-            let res = libc::writev(fd, iov, iovcnt);
-            crate::strace!("writev(fd={}, iov={:?}, iovcnt={}) -> {} (errno {})", fd, iov, iovcnt, res, *libc::__errno_location());
-            return res
-        };
-
-        let msg = MsgHdrRef {
-            msg_name: ptr::null_mut(),
-            msg_namelen: 0,
-            msg_iov: iov as *mut IoVec,
-            msg_iovlen: iovcnt as usize,
-            msg_control: ptr::null_mut(),
-            msg_controllen: 0,
-            msg_flags: MsgFlags::empty()
-        };
-
-        drop(state);
-
         crate::strace!("writev(fd={}, iov={:?}, iovcnt={}) -> ...", fd, iov, iovcnt);
-        let res = descriptor_id.write(&mut ctx, &msg);
-        crate::strace!("writev(fd={}, iov={:?}, iovcnt={}) -> {}", fd, iov, iovcnt, res.display());
 
-        res.out()
+        let iov_slice = slice::from_raw_parts(iov.cast::<IoSlice<'_>>(), iovcnt as usize);
+        let write_data = WriteData::Basic(iov_slice);
+
+        match Scheduler::handle_event(&mut ctx, DescriptorWriteEvent::new(descriptor_id, write_data)) {
+            Ok(amount) => {
+                crate::strace!("writev(fd={}, iov={:?}, iovcnt={}) -> {}", fd, iov, iovcnt, amount);
+                amount as libc::ssize_t
+            }
+            Err(e) => {
+                crate::strace!("writev(fd={}, iov={:?}, iovcnt={}) -> -1 ({})", fd, iov, iovcnt, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
@@ -472,17 +610,30 @@ hook_macros::hook! {
         count: libc::size_t,
         offset: libc::off_t
     ) -> libc::ssize_t => fizzle_pread(ctx) {
-        let state = ctx.acquire();
-
         let descriptor_id = DescriptorId::from_raw_fd(fd);
 
-        if let Some(DescriptorInfo { is_passthrough: true, .. }) = state.local.fds.get(&descriptor_id) {
-            let res = libc::pread(fd, buf, count, offset);
-            crate::strace!("pread(fd={}, buf={:?}, cnt={}, offset={}) -> {} (errno {})", fd, buf, count, offset, res, *libc::__errno_location());
-            return res
-        };
+        crate::strace!("pread(fd={}, buf={:?}, count={}, offset={}) -> ...", fd, buf, count, offset);
 
-        unimplemented!("pread()")
+        let s = slice::from_raw_parts_mut(buf as *mut u8, count);
+        let mut iov = IoSliceMut::new(s);
+
+        let read_data = ReadData::File(FileReadData {
+            buf: slice::from_mut(&mut iov),
+            offset: Some(offset),
+            flags: FileFlags::empty(),
+        });
+
+        match Scheduler::handle_event(&mut ctx, DescriptorReadEvent::new(descriptor_id, read_data)) {
+            Ok(amount) => {
+                crate::strace!("pread(fd={}, buf={:?}, count={}, offset={}) -> {}", fd, buf, count, offset, amount);
+                amount as libc::ssize_t
+            }
+            Err(e) => {
+                crate::strace!("pread(fd={}, buf={:?}, count={}, offset={}) -> {}", fd, buf, count, offset, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
@@ -493,38 +644,62 @@ hook_macros::hook! {
         count: libc::size_t,
         offset: libc::off_t
     ) -> libc::ssize_t => fizzle_pwrite(ctx) {
-        let state = ctx.acquire();
-
         let descriptor_id = DescriptorId::from_raw_fd(fd);
 
-        if let Some(DescriptorInfo { is_passthrough: true, .. }) = state.local.fds.get(&descriptor_id) {
-            let res = libc::pwrite(fd, buf, count, offset);
-            crate::strace!("pwrite(fd={}, buf={:?}, count={}, offset={}) -> {} (errno {})", fd, buf, count, offset, res, *libc::__errno_location());
-            return res
-        };
+        crate::strace!("pwrite(fd={}, buf={:?}, count={}, offset={}) -> ...", fd, buf, count, offset);
 
-        unimplemented!("pwrite()")
+        let s = slice::from_raw_parts(buf.cast::<u8>(), count);
+        let iov = IoSlice::new(s);
+
+        let write_data = WriteData::File(FileWriteData {
+            buf: slice::from_ref(&iov),
+            offset: Some(offset),
+            flags: FileFlags::empty(),
+        });
+
+        match Scheduler::handle_event(&mut ctx, DescriptorWriteEvent::new(descriptor_id, write_data)) {
+            Ok(amount) => {
+                crate::strace!("pwrite(fd={}, buf={:?}, count={}, offset={}) -> {}", fd, buf, count, offset, amount);
+                amount as libc::ssize_t
+            }
+            Err(e) => {
+                crate::strace!("pwrite(fd={}, buf={:?}, count={}, offset={}) -> {}", fd, buf, count, offset, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn preadv(
         fd: libc::c_int,
-        iov: *const libc::iovec,
+        iov: *mut libc::iovec,
         iovcnt: libc::c_int,
         offset: libc::off_t
     ) -> libc::ssize_t => fizzle_preadv(ctx) {
-        let state = ctx.acquire();
-
         let descriptor_id = DescriptorId::from_raw_fd(fd);
 
-        if let Some(DescriptorInfo { is_passthrough: true, .. }) = state.local.fds.get(&descriptor_id) {
-            let res = libc::preadv(fd, iov, iovcnt, offset);
-            crate::strace!("preadv(fd={}, iov={:?}, iovcnt={}, offset={}) -> {} (errno {})", fd, iov, iovcnt, offset, res, *libc::__errno_location());
-            return res
-        };
+        crate::strace!("preadv(fd={}, iov={:?}, iovcnt={}, offset={}) -> ...", fd, iov, iovcnt, offset);
 
-        unimplemented!("preadv()")
+        let iov_slice = slice::from_raw_parts_mut(iov.cast::<IoSliceMut<'_>>(), iovcnt as usize);
+        let read_data = ReadData::File(FileReadData {
+            buf: iov_slice,
+            offset: Some(offset),
+            flags: FileFlags::empty(),
+        });
+
+        match Scheduler::handle_event(&mut ctx, DescriptorReadEvent::new(descriptor_id, read_data)) {
+            Ok(amount) => {
+                crate::strace!("preadv(fd={}, iov={:?}, iovcnt={}, offset={}) -> {}", fd, iov, iovcnt, offset, amount);
+                amount as libc::ssize_t
+            }
+            Err(e) => {
+                crate::strace!("preadv(fd={}, iov={:?}, iovcnt={}, offset={}) -> {}", fd, iov, iovcnt, offset, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
@@ -535,39 +710,66 @@ hook_macros::hook! {
         iovcnt: libc::c_int,
         offset: libc::off_t
     ) -> libc::ssize_t => fizzle_pwritev(ctx) {
-        let state = ctx.acquire();
-
         let descriptor_id = DescriptorId::from_raw_fd(fd);
 
-        if let Some(DescriptorInfo { is_passthrough: true, .. }) = state.local.fds.get(&descriptor_id) {
-            let res = libc::pwritev(fd, iov, iovcnt, offset);
-            crate::strace!("pwritev(fd={}, iov={:?}, iovcnt={}, offset={}) -> {} (errno {})", fd, iov, iovcnt, offset, res, *libc::__errno_location());
-            return res
-        };
+        crate::strace!("pwritev(fd={}, iov={:?}, iovcnt={}, offset={}) -> ...", fd, iov, iovcnt, offset);
 
-        unimplemented!("pwritev()")
+        let iov_slice = slice::from_raw_parts(iov.cast::<IoSlice<'_>>(), iovcnt as usize);
+        let write_data = WriteData::File(FileWriteData {
+            buf: iov_slice,
+            offset: Some(offset),
+            flags: FileFlags::empty(),
+        });
+
+        match Scheduler::handle_event(&mut ctx, DescriptorWriteEvent::new(descriptor_id, write_data)) {
+            Ok(amount) => {
+                crate::strace!("pwritev(fd={}, iov={:?}, iovcnt={}, offset={}) -> {}", fd, iov, iovcnt, offset, amount);
+                amount as libc::ssize_t
+            }
+            Err(e) => {
+                crate::strace!("pwritev(fd={}, iov={:?}, iovcnt={}, offset={}) -> {}", fd, iov, iovcnt, offset, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn preadv2(
         fd: libc::c_int,
-        iov: *const libc::iovec,
+        iov: *mut libc::iovec,
         iovcnt: libc::c_int,
         offset: libc::off_t,
         flags: libc::c_int
     ) -> libc::ssize_t => fizzle_preadv2(ctx) {
-        let state = ctx.acquire();
-
         let descriptor_id = DescriptorId::from_raw_fd(fd);
 
-        if let Some(DescriptorInfo { is_passthrough: true, .. }) = state.local.fds.get(&descriptor_id) {
-            let res = libc::preadv2(fd, iov, iovcnt, offset, flags);
-            crate::strace!("preadv2(fd={}, iov={:?}, iovcnt={}, offset={}, flags={}) -> {} (errno {})", fd, iov, iovcnt, offset, flags, res, *libc::__errno_location());
-            return res
+        crate::strace!("preadv2(fd={}, iov={:?}, iovcnt={}, offset={}, flags={}) -> ...", fd, iov, iovcnt, offset, flags);
+
+        let iov_slice = slice::from_raw_parts_mut(iov.cast::<IoSliceMut<'_>>(), iovcnt as usize);
+        let Some(file_flags) = FileFlags::from_bits(flags) else {
+            Errno::EINVAL.set_errno();
+            return -1
         };
 
-        unimplemented!("preadv2()")
+        let read_data = ReadData::File(FileReadData {
+            buf: iov_slice,
+            offset: Some(offset),
+            flags: file_flags,
+        });
+
+        match Scheduler::handle_event(&mut ctx, DescriptorReadEvent::new(descriptor_id, read_data)) {
+            Ok(amount) => {
+                crate::strace!("preadv2(fd={}, iov={:?}, iovcnt={}, offset={}, flags={:?}) -> {}", fd, iov, iovcnt, offset, file_flags, amount);
+                amount as libc::ssize_t
+            }
+            Err(e) => {
+                crate::strace!("preadv2(fd={}, iov={:?}, iovcnt={}, offset={}, flags={:?}) -> {}", fd, iov, iovcnt, offset, file_flags, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
@@ -579,17 +781,33 @@ hook_macros::hook! {
         offset: libc::off_t,
         flags: libc::c_int
     ) -> libc::ssize_t => fizzle_pwritev2(ctx) {
-        let state = ctx.acquire();
-
         let descriptor_id = DescriptorId::from_raw_fd(fd);
 
-        if let Some(DescriptorInfo { is_passthrough: true, .. }) = state.local.fds.get(&descriptor_id) {
-            let res = libc::pwritev(fd, iov, iovcnt, offset);
-            crate::strace!("pwritev2(fd={}, iov={:?}, iovcnt={}, offset={}, flags={}) -> {} (errno {})", fd, iov, iovcnt, offset, flags, res, *libc::__errno_location());
-            return res
+        crate::strace!("pwritev2(fd={}, iov={:?}, iovcnt={}, offset={}, flags={}) -> ...", fd, iov, iovcnt, offset, flags);
+
+        let iov_slice = slice::from_raw_parts(iov.cast::<IoSlice<'_>>(), iovcnt as usize);
+        let Some(file_flags) = FileFlags::from_bits(flags) else {
+            Errno::EINVAL.set_errno();
+            return -1
         };
 
-        unimplemented!("pwritev2()")
+        let write_data = WriteData::File(FileWriteData {
+            buf: iov_slice,
+            offset: Some(offset),
+            flags: file_flags,
+        });
+
+        match Scheduler::handle_event(&mut ctx, DescriptorWriteEvent::new(descriptor_id, write_data)) {
+            Ok(amount) => {
+                crate::strace!("pwritev2(fd={}, iov={:?}, iovcnt={}, offset={}, flags={:?}) -> {}", fd, iov, iovcnt, offset, amount, flags);
+                amount as libc::ssize_t
+            }
+            Err(e) => {
+                crate::strace!("pwritev2(fd={}, iov={:?}, iovcnt={}, offset={}, flags={:?}) -> {}", fd, iov, iovcnt, offset, e, flags);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 

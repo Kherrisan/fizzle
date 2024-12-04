@@ -21,7 +21,7 @@ use heapless::{Deque, Entry};
 pub use private::SocketId;
 
 use super::buffer::BufferId;
-use super::descriptor::{DescriptorError, DescriptorId, DescriptorInfo, FdResource};
+use super::descriptor::*;
 use super::fuzz_endpoint::FuzzEndpointInfo;
 use super::polled::{PolledId, PolledInfo};
 use super::poller::PollerId;
@@ -164,326 +164,6 @@ impl Rc<SocketId> {
         msg: &mut MsgHdrOut,
         nonblocking: bool,
     ) -> Result<usize, SocketError> {
-        let mut state = ctx.acquire();
-
-        match state.global.sockets.get(self).unwrap() {
-            SocketState::Connectionless(conn) => {
-                let read_polled: Option<Rc<PolledId>>;
-                let write_polled: Rc<PolledId>;
-                let buffer_id: Rc<BufferId>;
-
-                match &conn.backend {
-                    ConnectionlessBackend::Peered(regular) => {
-                        read_polled = Some(regular.read_polled.clone());
-                        write_polled = regular.write_polled.clone();
-                        buffer_id = regular.recv_buf.clone();
-                    }
-                    /*
-                    ConnectionlessBackend::Feedback(feedback) => {
-                        read_polled = Some(feedback.read_polled.clone());
-                        write_polled = feedback.write_polled.clone();
-                        buffer_id = feedback.buf.clone();
-                    }
-                    ConnectionlessBackend::Plugin(plugin_id) => {
-                        let plugin_info = state.global.plugins.get(plugin_id).unwrap();
-
-                        read_polled = None;
-                        write_polled = plugin_info.write_polled.clone();
-                        buffer_id = plugin_info.write_buf.clone();
-                    }
-                    ConnectionlessBackend::Sink => return Ok(0),
-                    ConnectionlessBackend::NullSink => {
-                        let mut total_read = 0;
-                        for iovec in msg.vdata_mut() {
-                            for b in iovec.data_mut() {
-                                b.write(0);
-                            }
-                            total_read += iovec.data_mut().len();
-                        }
-
-                        return Ok(total_read)
-                    }
-                    ConnectionlessBackend::Fuzz(fuzz_endpoint_id) => {
-                        let fuzz_endpoint_id = fuzz_endpoint_id.clone();
-                        let FuzzEndpointInfo { mut read_idx, read_polled } = state.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().clone();
-
-                        let polled_is_ready = state.polled_is_ready(&read_polled);
-                        drop(state);
-
-                        if !polled_is_ready {
-                            ctx.poll_until_ready(read_polled.clone());
-                        }
-
-                        let mut state = ctx.acquire();
-
-                        let buf = state.global.fuzz_input.data();
-                        let buflen = buf.len();
-
-                        let mut total_read = 0;
-                        for iovec in msg.vdata_mut() {
-                            if buf[read_idx..].is_empty() {
-                                break
-                            }
-
-                            let data_len = cmp::min(buf.len(), iovec.data_mut().len());
-                            init_from_slice(&mut iovec.data_mut()[..data_len], &buf[read_idx..read_idx + data_len]);
-                            read_idx += data_len;
-                            total_read += data_len;
-                        }
-
-                        let fuzz_endpoint = state.global.fuzz_endpoints.get_mut(&fuzz_endpoint_id).unwrap();
-                        fuzz_endpoint.read_idx = read_idx;
-                        if fuzz_endpoint.read_idx == buflen {
-                            state.lower_polled(&read_polled);
-                        }
-
-                        // special case here--we need to make up endpoint info to be fuzzing from.
-                        msg.set_ancillary_len(0);
-                        let addr_bytes = msg.addr_bytes();
-
-
-                        return Ok(total_read)
-                    },
-                    */
-                    _ => unreachable!(),
-                }
-
-                if let Some(read_polled) = read_polled.as_ref() {
-                    let polled_is_ready = state.polled_is_ready(&read_polled);
-                    drop(state);
-
-                    if !polled_is_ready {
-                        if nonblocking {
-                            return Err(SocketError::WouldBlock);
-                        } else {
-                            ctx.poll_until_ready(write_polled.clone());
-                        }
-                    }
-                } else {
-                    drop(state);
-                }
-
-                let mut state = ctx.acquire();
-
-                let read_buffer = state.global.buffers.get_mut(&buffer_id).unwrap();
-                let total_read = super::read_datagram(msg, read_buffer).unwrap();
-
-                let available = read_buffer.write_available();
-                let buffer_empty = read_buffer.is_empty();
-
-                if available >= FIZZLE_MIN_CONNECTIONLESS {
-                    state.raise_polled(&write_polled);
-                }
-
-                if buffer_empty {
-                    if let Some(read_polled) = read_polled {
-                        state.lower_polled(&read_polled);
-                    }
-                }
-
-                Ok(total_read)
-            }
-            SocketState::Connected(conn) => {
-                let read_polled: Rc<PolledId>;
-                let write_polled: Rc<PolledId>;
-                let buffer_id: Rc<BufferId>;
-
-                let peer_closed = conn.peer_closed;
-
-                let rem_sockaddr = conn.rem_addr.addr().clone();
-
-                match &conn.backend {
-                    ConnectedBackend::Passthrough => unreachable!(),
-                    ConnectedBackend::Peered(regular) => {
-                        read_polled = regular.read_polled.clone();
-                        write_polled = regular.write_polled.clone();
-                        buffer_id = regular.recv_buf.clone();
-
-                        let polled_is_ready = state.polled_is_ready(&read_polled);
-                        drop(state);
-
-                        if !polled_is_ready {
-                            if peer_closed {
-                                return Ok(0);
-                            }
-                            if nonblocking {
-                                return Err(SocketError::WouldBlock);
-                            } else {
-                                ctx.poll_until_ready(write_polled.clone());
-                            }
-                        }
-
-                        let state = ctx.acquire();
-
-                        let Some(SocketState::Connected(ConnectedSocket {
-                            peer_closed: false,
-                            ..
-                        })) = state.global.sockets.get(self)
-                        else {
-                            return Ok(0); // The connection was shut down while we were polling on it
-                        };
-
-                        drop(state);
-                    }
-                    ConnectedBackend::Feedback(feedback) => {
-                        read_polled = feedback.read_polled.clone();
-                        write_polled = feedback.write_polled.clone();
-                        buffer_id = feedback.buf.clone();
-
-                        let polled_is_ready = state.polled_is_ready(&read_polled);
-                        drop(state);
-
-                        if !polled_is_ready {
-                            if peer_closed {
-                                return Ok(0);
-                            }
-                            if nonblocking {
-                                return Err(SocketError::WouldBlock);
-                            } else {
-                                ctx.poll_until_ready(write_polled.clone());
-                            }
-                        }
-
-                        let state = ctx.acquire();
-
-                        // We need to verify that this connection has not shut down before writing to the same buffer_id
-                        let Some(SocketState::Connected(ConnectedSocket {
-                            peer_closed: false,
-                            ..
-                        })) = state.global.sockets.get(self)
-                        else {
-                            return Ok(0);
-                        };
-
-                        drop(state);
-                    }
-                    ConnectedBackend::Plugin(plugin_id) => {
-                        let plugin_info = state.global.plugins.get(plugin_id).unwrap();
-
-                        read_polled = plugin_info.read_polled.clone();
-                        write_polled = plugin_info.write_polled.clone();
-                        buffer_id = plugin_info.write_buf.clone();
-
-                        let polled_is_ready = state.polled_is_ready(&read_polled);
-                        drop(state);
-
-                        if !polled_is_ready {
-                            if peer_closed {
-                                return Ok(0);
-                            }
-                            if nonblocking {
-                                return Err(SocketError::WouldBlock);
-                            } else {
-                                ctx.poll_until_ready(write_polled.clone());
-                            }
-                        }
-
-                        let state = ctx.acquire();
-
-                        // We need to verify that this connection has not shut down before writing to the same buffer_id
-                        let Some(SocketState::Connected(ConnectedSocket {
-                            peer_closed: false,
-                            ..
-                        })) = state.global.sockets.get(self)
-                        else {
-                            return Ok(0);
-                        };
-
-                        drop(state);
-                    }
-                    ConnectedBackend::Sink => return Ok(0),
-                    ConnectedBackend::NullSink => {
-                        let mut total_read = 0;
-                        for iovec in msg.vdata_mut() {
-                            for b in iovec.data_mut() {
-                                b.write(0);
-                            }
-                            total_read += iovec.data_mut().len();
-                        }
-
-                        return Ok(total_read);
-                    }
-                    ConnectedBackend::Fuzz(fuzz_endpoint_id) => {
-                        let fuzz_endpoint_id = fuzz_endpoint_id.clone();
-                        let FuzzEndpointInfo {
-                            mut read_idx,
-                            read_polled,
-                        } = state
-                            .global
-                            .fuzz_endpoints
-                            .get(&fuzz_endpoint_id)
-                            .unwrap()
-                            .clone();
-
-                        let polled_is_ready = state.polled_is_ready(&read_polled);
-                        drop(state);
-
-                        if !polled_is_ready {
-                            if peer_closed {
-                                return Ok(0);
-                            }
-
-                            if nonblocking {
-                                return Err(SocketError::WouldBlock);
-                            } else {
-                                ctx.poll_until_ready(read_polled.clone());
-                            }
-                        }
-
-                        let mut state = ctx.acquire();
-
-                        let buf = state.global.fuzz_input.data();
-                        let buflen = buf.len();
-
-                        let mut total_read = 0;
-                        for iovec in msg.vdata_mut() {
-                            if buf[read_idx..].is_empty() {
-                                break;
-                            }
-
-                            let data_len = cmp::min(buf.len(), iovec.data_mut().len());
-                            init_from_slice(
-                                &mut iovec.data_mut()[..data_len],
-                                &buf[read_idx..read_idx + data_len],
-                            );
-                            read_idx += data_len;
-                            total_read += data_len;
-                        }
-
-                        let fuzz_endpoint = state
-                            .global
-                            .fuzz_endpoints
-                            .get_mut(&fuzz_endpoint_id)
-                            .unwrap();
-                        fuzz_endpoint.read_idx = read_idx;
-                        if fuzz_endpoint.read_idx == buflen {
-                            state.lower_polled(&read_polled);
-                        }
-
-                        msg.set_ancillary_len(0);
-                        let addrlen = rem_sockaddr.encode(msg.addr_bytes()) as u32;
-                        msg.set_addrlen(addrlen);
-
-                        return Ok(total_read);
-                    }
-                }
-
-                let mut state = ctx.acquire();
-
-                let read_buffer = state.global.buffers.get_mut(&buffer_id).unwrap();
-                let total_read = super::read_stream(msg, read_buffer.data());
-                read_buffer.did_read(total_read);
-
-                if read_buffer.is_empty() {
-                    state.lower_polled(&read_polled);
-                }
-
-                state.raise_polled(&write_polled);
-
-                Ok(total_read)
-            }
-            _ => Err(SocketError::InvalidState),
-        }
     }
 
     pub fn write(
@@ -2722,5 +2402,381 @@ fn get_or_assign_local(socket_id: Rc<SocketId>, state: &mut FizzleState) -> Tran
                 log::warn!("ephemeral address assignment {} failed (already bound)--retrying with new address...", addr);
             }
         }
+    }
+}
+
+pub enum SocketReadState {
+    Start,
+    Finish(Option<Rc<PollerId>>),
+}
+
+pub struct SocketReadEvent<'a> {
+    socket: Rc<SocketId>,
+    nonblocking: bool,
+    data: ReadData<'a>,
+    state: SocketReadState,
+}
+
+impl<'a> SocketReadEvent<'a> {
+    #[inline]
+    pub fn new(socket: Rc<SocketId>, nonblocking: bool, data: ReadData<'a>) -> Self {
+        Self {
+            socket,
+            nonblocking,
+            data,
+            state: SocketReadState::Start,
+        }
+    }
+}
+
+impl Event for SocketReadEvent<'_> {
+    type Success = usize;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let socket_id = self.socket.clone();
+        let socket_info = state.global.sockets.get(&socket_id).unwrap();
+
+        match (&self.state, &socket_info.state, &mut self.data) {
+            (SocketReadState::Start, SocketState::Connectionless(conn), _) => {
+                let read_polled: Option<Rc<PolledId>>;
+                let write_polled: Rc<PolledId>;
+                let buffer_id: Rc<BufferId>;
+
+                match &conn.backend {
+                    ConnectionlessBackend::Peered(regular) => {
+                        read_polled = Some(regular.read_polled.clone());
+                        write_polled = regular.write_polled.clone();
+                        buffer_id = regular.recv_buf.clone();
+                    }
+                    /*
+                    ConnectionlessBackend::Feedback(feedback) => {
+                        read_polled = Some(feedback.read_polled.clone());
+                        write_polled = feedback.write_polled.clone();
+                        buffer_id = feedback.buf.clone();
+                    }
+                    ConnectionlessBackend::Plugin(plugin_id) => {
+                        let plugin_info = state.global.plugins.get(plugin_id).unwrap();
+
+                        read_polled = None;
+                        write_polled = plugin_info.write_polled.clone();
+                        buffer_id = plugin_info.write_buf.clone();
+                    }
+                    ConnectionlessBackend::Sink => return Ok(0),
+                    ConnectionlessBackend::NullSink => {
+                        let mut total_read = 0;
+                        for iovec in msg.vdata_mut() {
+                            for b in iovec.data_mut() {
+                                b.write(0);
+                            }
+                            total_read += iovec.data_mut().len();
+                        }
+
+                        return Ok(total_read)
+                    }
+                    ConnectionlessBackend::Fuzz(fuzz_endpoint_id) => {
+                        let fuzz_endpoint_id = fuzz_endpoint_id.clone();
+                        let FuzzEndpointInfo { mut read_idx, read_polled } = state.global.fuzz_endpoints.get(&fuzz_endpoint_id).unwrap().clone();
+
+                        let polled_is_ready = state.polled_is_ready(&read_polled);
+                        drop(state);
+
+                        if !polled_is_ready {
+                            ctx.poll_until_ready(read_polled.clone());
+                        }
+
+                        let mut state = ctx.acquire();
+
+                        let buf = state.global.fuzz_input.data();
+                        let buflen = buf.len();
+
+                        let mut total_read = 0;
+                        for iovec in msg.vdata_mut() {
+                            if buf[read_idx..].is_empty() {
+                                break
+                            }
+
+                            let data_len = cmp::min(buf.len(), iovec.data_mut().len());
+                            init_from_slice(&mut iovec.data_mut()[..data_len], &buf[read_idx..read_idx + data_len]);
+                            read_idx += data_len;
+                            total_read += data_len;
+                        }
+
+                        let fuzz_endpoint = state.global.fuzz_endpoints.get_mut(&fuzz_endpoint_id).unwrap();
+                        fuzz_endpoint.read_idx = read_idx;
+                        if fuzz_endpoint.read_idx == buflen {
+                            state.lower_polled(&read_polled);
+                        }
+
+                        // special case here--we need to make up endpoint info to be fuzzing from.
+                        msg.set_ancillary_len(0);
+                        let addr_bytes = msg.addr_bytes();
+
+
+                        return Ok(total_read)
+                    },
+                    */
+                    _ => unreachable!(),
+                }
+
+                if let Some(read_polled) = read_polled.as_ref() {
+                    if state.polled_is_ready(&read_polled) {
+                        self.state = SocketReadState::Finish(None);
+                        Outcome::Continue
+                    } else if self.nonblocking {
+                        Outcome::Error(Errno::EAGAIN)
+                    } else {
+                        let poller_id = state.new_poller();
+                        state.register_poller(poller_id.clone(), read_polled.clone());
+
+                        self.state = SocketReadState::Finish(Some(poller_id));
+                        Outcome::Yield(None)
+                    }
+                } else {
+                    self.state = SocketReadState::Finish(None);
+                    Outcome::Continue
+                }
+            }
+            (SocketReadState::Finish(poller_id), SocketState::Connectionless(conn), _) => {
+                let read_buffer = state.global.buffers.get_mut(&buffer_id).unwrap();
+                let total_read = super::read_datagram(msg, read_buffer).unwrap();
+
+                let available = read_buffer.write_available();
+                let buffer_empty = read_buffer.is_empty();
+
+                if available >= FIZZLE_MIN_CONNECTIONLESS {
+                    state.raise_polled(&write_polled);
+                }
+
+                if buffer_empty {
+                    if let Some(read_polled) = read_polled {
+                        state.lower_polled(&read_polled);
+                    }
+                }
+
+                Ok(total_read)
+            }
+            SocketState::Connected(conn) => {
+                let read_polled: Rc<PolledId>;
+                let write_polled: Rc<PolledId>;
+                let buffer_id: Rc<BufferId>;
+
+                let peer_closed = conn.peer_closed;
+
+                let rem_sockaddr = conn.rem_addr.addr().clone();
+
+                match &conn.backend {
+                    ConnectedBackend::Passthrough => unreachable!(),
+                    ConnectedBackend::Peered(regular) => {
+                        read_polled = regular.read_polled.clone();
+                        write_polled = regular.write_polled.clone();
+                        buffer_id = regular.recv_buf.clone();
+
+                        let polled_is_ready = state.polled_is_ready(&read_polled);
+                        drop(state);
+
+                        if !polled_is_ready {
+                            if peer_closed {
+                                return Ok(0);
+                            }
+                            if nonblocking {
+                                return Err(SocketError::WouldBlock);
+                            } else {
+                                ctx.poll_until_ready(write_polled.clone());
+                            }
+                        }
+
+                        let state = ctx.acquire();
+
+                        let Some(SocketState::Connected(ConnectedSocket {
+                            peer_closed: false,
+                            ..
+                        })) = state.global.sockets.get(self)
+                        else {
+                            return Ok(0); // The connection was shut down while we were polling on it
+                        };
+
+                        drop(state);
+                    }
+                    ConnectedBackend::Feedback(feedback) => {
+                        read_polled = feedback.read_polled.clone();
+                        write_polled = feedback.write_polled.clone();
+                        buffer_id = feedback.buf.clone();
+
+                        let polled_is_ready = state.polled_is_ready(&read_polled);
+                        drop(state);
+
+                        if !polled_is_ready {
+                            if peer_closed {
+                                return Ok(0);
+                            }
+                            if nonblocking {
+                                return Err(SocketError::WouldBlock);
+                            } else {
+                                ctx.poll_until_ready(write_polled.clone());
+                            }
+                        }
+
+                        let state = ctx.acquire();
+
+                        // We need to verify that this connection has not shut down before writing to the same buffer_id
+                        let Some(SocketState::Connected(ConnectedSocket {
+                            peer_closed: false,
+                            ..
+                        })) = state.global.sockets.get(self)
+                        else {
+                            return Ok(0);
+                        };
+
+                        drop(state);
+                    }
+                    ConnectedBackend::Plugin(plugin_id) => {
+                        let plugin_info = state.global.plugins.get(plugin_id).unwrap();
+
+                        read_polled = plugin_info.read_polled.clone();
+                        write_polled = plugin_info.write_polled.clone();
+                        buffer_id = plugin_info.write_buf.clone();
+
+                        let polled_is_ready = state.polled_is_ready(&read_polled);
+                        drop(state);
+
+                        if !polled_is_ready {
+                            if peer_closed {
+                                return Ok(0);
+                            }
+                            if nonblocking {
+                                return Err(SocketError::WouldBlock);
+                            } else {
+                                ctx.poll_until_ready(write_polled.clone());
+                            }
+                        }
+
+                        let state = ctx.acquire();
+
+                        // We need to verify that this connection has not shut down before writing to the same buffer_id
+                        let Some(SocketState::Connected(ConnectedSocket {
+                            peer_closed: false,
+                            ..
+                        })) = state.global.sockets.get(self)
+                        else {
+                            return Ok(0);
+                        };
+
+                        drop(state);
+                    }
+                    ConnectedBackend::Sink => return Ok(0),
+                    ConnectedBackend::NullSink => {
+                        let mut total_read = 0;
+                        for iovec in msg.vdata_mut() {
+                            for b in iovec.data_mut() {
+                                b.write(0);
+                            }
+                            total_read += iovec.data_mut().len();
+                        }
+
+                        return Ok(total_read);
+                    }
+                    ConnectedBackend::Fuzz(fuzz_endpoint_id) => {
+                        let fuzz_endpoint_id = fuzz_endpoint_id.clone();
+                        let FuzzEndpointInfo {
+                            mut read_idx,
+                            read_polled,
+                        } = state
+                            .global
+                            .fuzz_endpoints
+                            .get(&fuzz_endpoint_id)
+                            .unwrap()
+                            .clone();
+
+                        let polled_is_ready = state.polled_is_ready(&read_polled);
+                        drop(state);
+
+                        if !polled_is_ready {
+                            if peer_closed {
+                                return Ok(0);
+                            }
+
+                            if nonblocking {
+                                return Err(SocketError::WouldBlock);
+                            } else {
+                                ctx.poll_until_ready(read_polled.clone());
+                            }
+                        }
+
+                        let mut state = ctx.acquire();
+
+                        let buf = state.global.fuzz_input.data();
+                        let buflen = buf.len();
+
+                        let mut total_read = 0;
+                        for iovec in msg.vdata_mut() {
+                            if buf[read_idx..].is_empty() {
+                                break;
+                            }
+
+                            let data_len = cmp::min(buf.len(), iovec.data_mut().len());
+                            init_from_slice(
+                                &mut iovec.data_mut()[..data_len],
+                                &buf[read_idx..read_idx + data_len],
+                            );
+                            read_idx += data_len;
+                            total_read += data_len;
+                        }
+
+                        let fuzz_endpoint = state
+                            .global
+                            .fuzz_endpoints
+                            .get_mut(&fuzz_endpoint_id)
+                            .unwrap();
+                        fuzz_endpoint.read_idx = read_idx;
+                        if fuzz_endpoint.read_idx == buflen {
+                            state.lower_polled(&read_polled);
+                        }
+
+                        msg.set_ancillary_len(0);
+                        let addrlen = rem_sockaddr.encode(msg.addr_bytes()) as u32;
+                        msg.set_addrlen(addrlen);
+
+                        return Ok(total_read);
+                    }
+                }
+
+                let mut state = ctx.acquire();
+
+                let read_buffer = state.global.buffers.get_mut(&buffer_id).unwrap();
+                let total_read = super::read_stream(msg, read_buffer.data());
+                read_buffer.did_read(total_read);
+
+                if read_buffer.is_empty() {
+                    state.lower_polled(&read_polled);
+                }
+
+                state.raise_polled(&write_polled);
+
+                Ok(total_read)
+            }
+            _ => Err(SocketError::InvalidState),
+        }
+    }
+}
+
+pub struct SocketWriteEvent<'a> {
+    fd: DescriptorId,
+    data: WriteData<'a>,
+}
+
+impl<'a> SocketWriteEvent<'a> {
+    #[inline]
+    pub fn new(fd: DescriptorId, data: WriteData<'a>) -> Self {
+        Self { fd, data }
+    }
+}
+
+impl Event for SocketWriteEvent<'_> {
+    type Success = usize;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        todo!()
     }
 }

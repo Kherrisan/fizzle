@@ -35,7 +35,7 @@ use crate::handlers::file::{FileId, FileInfo, FileObject, FilePtr};
 use crate::handlers::futex::FutexPtr;
 use crate::handlers::fuzz_endpoint::{FuzzEndpointId, FuzzEndpointInfo};
 use crate::handlers::id::{WorkerId, WorkerInfo};
-use crate::handlers::message_queue::{MessageQueueId, MessageQueueInfo};
+use crate::handlers::mq::{MqId, MqInfo};
 use crate::handlers::mutex::{MutexInfo, MutexPtr};
 use crate::handlers::pipe::{PipeId, PipeInfo};
 use crate::handlers::plugin::{PluginEndpointId, PluginInfo};
@@ -462,6 +462,7 @@ impl FizzleState {
             ThreadSigInfo {
                 raised: array::from_fn(|_| None),
                 blocked: sigmask.unwrap_or(SignalSet::empty()),
+                interrupted: false,
                 sigwait_set: SignalSet::empty(),
                 sigsuspend: false,
             },
@@ -835,6 +836,8 @@ pub struct InterprocessState {
     pub next_ephemeral_port: u16,
     pub process_locks: [Option<Semaphore>; FIZZLE_MAX_PROCESSES],
     //    pub pids: FnvIndexMap<libc::pid_t, ProcessId, FIZZLE_MAX_PROCESSES>,
+    /// If true, stderr is silently dropped; otherwise it is printed.
+    pub mask_stderr: bool,
     pub afl_shmem_initialized: bool,
     pub epolls: KeyedArena<EpollId, EpollInfo, FIZZLE_MAX_EPOLLS>,
     pub event_fds: KeyedArena<EventfdId, EventfdInfo, FIZZLE_MAX_EVENTFDS>,
@@ -843,7 +846,7 @@ pub struct InterprocessState {
     pub sem_paths: FnvIndexMap<SemaphorePath, Rc<SemaphoreId>, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub semaphores: KeyedArena<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub pipes: KeyedArena<PipeId, PipeInfo, FIZZLE_MAX_PIPES>,
-    pub message_queues: KeyedArena<MessageQueueId, MessageQueueInfo, FIZZLE_MAX_MESSAGE_QUEUES>,
+    pub message_queues: KeyedArena<MqId, MqInfo, FIZZLE_MAX_MESSAGE_QUEUES>,
     // TODO: SO_REUSEPORT breaks this...
     pub socket_locations:
         FnvIndexMap<TransportAddress, TransportLocationInfo, FIZZLE_MAX_SOCKADDRS>,
@@ -879,6 +882,7 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).exiting_id) = None;
             *ptr::addr_of_mut!((*state).inherited_state) = None;
 
+            *ptr::addr_of_mut!((*state).mask_stderr) = false;
             *ptr::addr_of_mut!((*state).signal) = None;
             *ptr::addr_of_mut!((*state).awaiting_process_death) = Default::default();
             *ptr::addr_of_mut!((*state).exited_processes) = Default::default();
@@ -961,43 +965,66 @@ impl InterprocessState {
                         let file_id = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => self
                                 .files
-                                .allocate(FileBackend::Feedback(StandardFeedback {
-                                    buf: self.buffers.allocate(Buffer::new()).unwrap(),
-                                    read_polled: self
-                                        .polled_events
-                                        .allocate(PolledInfo::new())
-                                        .unwrap(),
-                                    write_polled: self
-                                        .polled_events
-                                        .allocate(PolledInfo::new_raised())
-                                        .unwrap(),
-                                }))
+                                .allocate(FileInfo {
+                                    path: path.clone(),
+                                    backend: FileBackend::Feedback(StandardFeedback {
+                                        buf: self.buffers.allocate(Buffer::new()).unwrap(),
+                                        read_polled: self
+                                            .polled_events
+                                            .allocate(PolledInfo::new())
+                                            .unwrap(),
+                                        write_polled: self
+                                            .polled_events
+                                            .allocate(PolledInfo::new_raised())
+                                            .unwrap(),
+                                    }),
+                                })
                                 .unwrap(),
                             IoEmulationType::Plugin(module_id) => {
                                 let backend = FileBackend::Plugin(self.add_plugin(
                                     endpoint.endpoint_variant.clone(),
                                     module_id.clone(),
                                 ));
-                                self.files.allocate(backend).unwrap()
+                                self.files
+                                    .allocate(FileInfo {
+                                        path: path.clone(),
+                                        backend,
+                                    })
+                                    .unwrap()
                             }
-                            IoEmulationType::Sink => {
-                                self.files.allocate(FileBackend::Sink).unwrap()
-                            }
-                            IoEmulationType::NullSink => {
-                                self.files.allocate(FileBackend::NullSink).unwrap()
-                            }
+                            IoEmulationType::Sink => self
+                                .files
+                                .allocate(FileInfo {
+                                    path: path.clone(),
+                                    backend: FileBackend::Sink,
+                                })
+                                .unwrap(),
+                            IoEmulationType::NullSink => self
+                                .files
+                                .allocate(FileInfo {
+                                    path: path.clone(),
+                                    backend: FileBackend::NullSink,
+                                })
+                                .unwrap(),
                             IoEmulationType::Fuzz => {
                                 let fuzz_endpoint_id = self.add_fuzz_endpoint();
                                 let file_id = self
                                     .files
-                                    .allocate(FileBackend::Fuzz(fuzz_endpoint_id))
+                                    .allocate(FileInfo {
+                                        path: path.clone(),
+                                        backend: FileBackend::Fuzz(fuzz_endpoint_id),
+                                    })
                                     .unwrap();
 
                                 file_id
                             }
-                            IoEmulationType::Passthrough => {
-                                self.files.allocate(FileBackend::Passthrough).unwrap()
-                            }
+                            IoEmulationType::Passthrough => self
+                                .files
+                                .allocate(FileInfo {
+                                    path: path.clone(),
+                                    backend: FileBackend::Passthrough,
+                                })
+                                .unwrap(),
                         };
 
                         self.file_paths.insert(path, file_id).unwrap();
@@ -1458,11 +1485,14 @@ impl InterprocessState {
                     .unwrap();
                 let file_id = self
                     .files
-                    .allocate(FileBackend::Feedback(StandardFeedback {
-                        buf,
-                        read_polled,
-                        write_polled,
-                    }))
+                    .allocate(FileInfo {
+                        path,
+                        backend: FileBackend::Feedback(StandardFeedback {
+                            buf,
+                            read_polled,
+                            write_polled,
+                        }),
+                    })
                     .unwrap();
                 Ok(file_id)
             }

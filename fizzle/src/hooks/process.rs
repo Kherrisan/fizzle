@@ -761,11 +761,11 @@ hook_macros::hook! {
 
 #[no_mangle]
 pub unsafe extern "C" fn clone(
-    f: CloneFunction,
-    stack: *mut libc::c_void,
-    flags: libc::c_int,
-    arg: *mut libc::c_void,
-    mut va_args: ...
+    _f: CloneFunction,
+    _stack: *mut libc::c_void,
+    _flags: libc::c_int,
+    _arg: *mut libc::c_void,
+    mut _va_args: ...
 ) -> libc::c_int {
     if crate::state::has_entered_handler() {
         panic!("recursive calls to `clone()` not allowed");

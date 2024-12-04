@@ -1,12 +1,9 @@
-use crate::arena::ArenaKey;
 use crate::errno::Errno;
-use crate::scheduler::{Event, Outcome};
+use crate::scheduler::Event;
 use crate::state::FizzleState;
+use crate::{arena::ArenaKey, scheduler::Outcome};
 
-use fizzle_common::io::MAX_PATH_LEN;
-use fizzle_common::path::FilePath;
-
-pub use private::DirectoryId;
+pub use private::MqId;
 
 use super::descriptor::{DescriptorId, ReadData, WriteData};
 
@@ -14,51 +11,54 @@ use super::descriptor::{DescriptorId, ReadData, WriteData};
 mod private {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     #[repr(transparent)]
-    pub struct DirectoryId(usize);
+    pub struct MqId(usize);
 }
 
-impl ArenaKey for DirectoryId {
-    type Value = FilePath<MAX_PATH_LEN>;
+#[derive(Debug)]
+pub struct MqInfo {}
+
+impl ArenaKey for MqId {
+    type Value = MqInfo;
 }
 
-pub struct DirectoryReadEvent<'a> {
+pub struct MqReadEvent<'a> {
     fd: DescriptorId,
     data: ReadData<'a>,
 }
 
-impl<'a> DirectoryReadEvent<'a> {
+impl<'a> MqReadEvent<'a> {
     #[inline]
     pub fn new(fd: DescriptorId, data: ReadData<'a>) -> Self {
         Self { fd, data }
     }
 }
 
-impl Event for DirectoryReadEvent<'_> {
+impl Event for MqReadEvent<'_> {
     type Success = usize;
     type Error = Errno;
 
     fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        unimplemented!("read() operation unsupported for directories")
+        todo!()
     }
 }
 
-pub struct DirectoryWriteEvent<'a> {
+pub struct MqWriteEvent<'a> {
     fd: DescriptorId,
     data: WriteData<'a>,
 }
 
-impl<'a> DirectoryWriteEvent<'a> {
+impl<'a> MqWriteEvent<'a> {
     #[inline]
     pub fn new(fd: DescriptorId, data: WriteData<'a>) -> Self {
         Self { fd, data }
     }
 }
 
-impl Event for DirectoryWriteEvent<'_> {
+impl Event for MqWriteEvent<'_> {
     type Success = usize;
     type Error = Errno;
 
     fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        unimplemented!("write() operation unsupported for directories")
+        todo!()
     }
 }

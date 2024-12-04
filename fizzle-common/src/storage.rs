@@ -108,6 +108,10 @@ impl<const N: usize> Buffer<N> {
         N - self.data_end
     }
 
+    pub fn remaining_len(&self) -> usize {
+        self.data.len() - self.data_end
+    }
+
     pub fn remaining_mut(&mut self) -> &mut [MaybeUninit<u8>] {
         &mut self.data[self.data_end..]
     }

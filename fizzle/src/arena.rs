@@ -503,7 +503,7 @@ pub(crate) mod private {
     use crate::handlers::file::FileId;
     use crate::handlers::fuzz_endpoint::FuzzEndpointId;
     use crate::handlers::id::WorkerId;
-    use crate::handlers::message_queue::MessageQueueId;
+    use crate::handlers::mq::MqId;
     use crate::handlers::pipe::PipeId;
     use crate::handlers::plugin::PluginEndpointId;
     use crate::handlers::plugin_module::PluginId;
@@ -610,7 +610,7 @@ pub(crate) mod private {
         }
     }
 
-    impl InnerUsize for MessageQueueId {
+    impl InnerUsize for MqId {
         fn to_usize(&self) -> usize {
             // SAFETY: `MessageQueueId` is a repr(transparent) usize
             unsafe { mem::transmute_copy(self) }

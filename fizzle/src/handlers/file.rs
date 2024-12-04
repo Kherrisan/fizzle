@@ -10,9 +10,11 @@ use fizzle_common::storage::Buffer;
 use crate::arena::ArenaKey;
 use crate::backend::FileBackend;
 use crate::constants::FIZZLE_FOPEN_BUFSIZE;
-use crate::state::FizzleSingleton;
+use crate::errno::Errno;
+use crate::scheduler::{Event, Outcome};
+use crate::state::{FizzleSingleton, FizzleState};
 
-use super::descriptor::DescriptorId;
+use super::descriptor::{DescriptorId, ReadData, WriteData};
 use super::fuzz_endpoint::FuzzEndpointInfo;
 use super::{init_from_slice, MsgHdr, MsgHdrOut};
 
@@ -340,5 +342,47 @@ impl FileObject {
             read_buf: Buffer::new(),
             write_buf: Buffer::new(),
         }
+    }
+}
+
+pub struct FileReadEvent<'a> {
+    fd: DescriptorId,
+    data: ReadData<'a>,
+}
+
+impl<'a> FileReadEvent<'a> {
+    #[inline]
+    pub fn new(fd: DescriptorId, data: ReadData<'a>) -> Self {
+        Self { fd, data }
+    }
+}
+
+impl Event for FileReadEvent<'_> {
+    type Success = usize;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        todo!()
+    }
+}
+
+pub struct FileWriteEvent<'a> {
+    fd: DescriptorId,
+    data: WriteData<'a>,
+}
+
+impl<'a> FileWriteEvent<'a> {
+    #[inline]
+    pub fn new(fd: DescriptorId, data: WriteData<'a>) -> Self {
+        Self { fd, data }
+    }
+}
+
+impl Event for FileWriteEvent<'_> {
+    type Success = usize;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        todo!()
     }
 }

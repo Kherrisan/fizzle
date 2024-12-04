@@ -546,7 +546,7 @@ impl Event for ProcessExecEvent {
                     },
                 }
             }
-            ExecLocation::AtDirectory(fd, path) => {
+            ExecLocation::AtDirectory(_fd, _path) => {
                 todo!("execveat not implemented") // TODO: implement
             }
         }

@@ -1,7 +1,10 @@
-use super::descriptor::DescriptorId;
+use super::descriptor::{DescriptorId, ReadData, WriteData};
 use super::polled::PolledId;
 use crate::arena::{ArenaKey, Rc};
 use crate::constants::FIZZLE_MAX_EPOLL_FDS;
+use crate::errno::Errno;
+use crate::scheduler::{Event, Outcome};
+use crate::state::FizzleState;
 
 use heapless::FnvIndexMap;
 
@@ -48,4 +51,46 @@ impl ArenaKey for EpollId {
     type Value = EpollInfo;
 }
 
-impl EpollId {}
+pub struct EpollReadEvent<'a> {
+    fd: DescriptorId,
+    data: ReadData<'a>,
+}
+
+impl<'a> EpollReadEvent<'a> {
+    #[inline]
+    pub fn new(fd: DescriptorId, data: ReadData<'a>) -> Self {
+        Self { fd, data }
+    }
+}
+
+impl Event for EpollReadEvent<'_> {
+    type Success = usize;
+    type Error = Errno;
+
+    fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        log::error!("read() called directly on epoll socket");
+        Outcome::Error(Errno::EBADF)
+    }
+}
+
+pub struct EpollWriteEvent<'a> {
+    fd: DescriptorId,
+    data: WriteData<'a>,
+}
+
+impl<'a> EpollWriteEvent<'a> {
+    #[inline]
+    pub fn new(fd: DescriptorId, data: WriteData<'a>) -> Self {
+        Self { fd, data }
+    }
+}
+
+impl Event for EpollWriteEvent<'_> {
+    type Success = usize;
+    type Error = Errno;
+
+    fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        log::error!("write() called directly on epoll socket");
+        Outcome::Error(Errno::EBADF)
+    }
+}

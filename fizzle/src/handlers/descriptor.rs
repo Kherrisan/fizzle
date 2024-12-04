@@ -1,21 +1,24 @@
 use std::cmp;
+use std::io::{IoSlice, IoSliceMut};
+use std::mem::MaybeUninit;
 use std::os::fd::RawFd;
 
-use super::directory::DirectoryId;
-use super::epoll::EpollId;
-use super::eventfd::EventfdId;
-use super::file::FileId;
+use super::directory::*;
+use super::epoll::*;
+use super::eventfd::*;
+use super::file::*;
 use super::fuzz_endpoint::FuzzEndpointInfo;
-use super::message_queue::MessageQueueId;
-use super::pipe::PipeId;
-use super::socket::{LocalAddress, SocketId, SocketState};
-use super::{init_from_slice, FfiOutput, MsgFlags, MsgHdr, MsgHdrOut};
+use super::mq::*;
+use super::pipe::*;
+use super::poller::PollerId;
+use super::socket::*;
 use crate::arena::{ArenaKey, Rc};
 use crate::backend::{ConnectedBackend, StdioBackend};
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
-use crate::state::{FizzleSingleton, FizzleState};
+use crate::state::FizzleState;
 
+use bitflags::bitflags;
 use fizzle_common::io::TransportAddress;
 pub use private::DescriptorId;
 
@@ -73,7 +76,7 @@ pub enum FdResource {
     File(Rc<FileId>),
     /// Cross-process message queues.
     #[allow(unused)]
-    MessageQueue(Rc<MessageQueueId>),
+    MessageQueue(Rc<MqId>),
     /// Anonymous pipes, such as those created with `pipe()`.
     Pipe(Rc<PipeId>),
     /// The standard input of the parent process (which may be inherited by children).
@@ -88,404 +91,6 @@ pub enum FdResource {
 
 impl ArenaKey for DescriptorId {
     type Value = DescriptorInfo;
-}
-
-impl DescriptorId {
-    pub fn write(
-        &self,
-        ctx: &mut FizzleSingleton,
-        msg: &impl MsgHdr,
-    ) -> Result<usize, DescriptorError> {
-        let state = ctx.acquire();
-
-        let Some(fd_info) = state.local.fds.get(self) else {
-            return Err(DescriptorError::BadFd);
-        };
-
-        let nonblocking = fd_info.nonblocking || msg.flags().contains(MsgFlags::DONTWAIT);
-        let resource = fd_info.resource.clone();
-        drop(state);
-
-        match resource {
-            FdResource::Directory(_) => unimplemented!(),
-            FdResource::Epoll(_) => unimplemented!(),
-            FdResource::EventFd(eventfd_id) => eventfd_id
-                .write(ctx, msg, nonblocking)
-                .map_err(|e| e.into()),
-            FdResource::File(file_id) => file_id.write(ctx, msg).map_err(|e| e.into()),
-            FdResource::MessageQueue(_) => todo!(),
-            FdResource::Pipe(pipe_id) => pipe_id.write(ctx, msg, nonblocking).map_err(|e| e.into()),
-            FdResource::Socket(socket_id) => {
-                socket_id.write(ctx, msg, nonblocking).map_err(|e| e.into())
-            }
-            FdResource::Stdin | FdResource::Stdout => {
-                let state = ctx.acquire();
-                // Writing to `stdin` is equivalent to writing to `stdout` in most scenarios
-
-                let total_len = msg.vdata().iter().map(|v| v.data().len()).sum();
-
-                match &state.global.stdio {
-                    StdioBackend::Passthrough | StdioBackend::Peered(_) => unreachable!(),
-                    StdioBackend::Feedback(feedback) => {
-                        let buffer_id = feedback.buf.clone();
-                        let write_polled = feedback.write_polled.clone();
-                        let read_polled = feedback.read_polled.clone();
-
-                        let event_raised = state
-                            .global
-                            .polled_events
-                            .get(&write_polled)
-                            .unwrap()
-                            .event_raised;
-                        drop(state);
-
-                        if !event_raised {
-                            if nonblocking {
-                                return Err(DescriptorError::WouldBlock);
-                            } else {
-                                ctx.poll_until_ready(write_polled.clone());
-                            }
-                        }
-
-                        let mut state = ctx.acquire();
-
-                        let buf = state.global.buffers.get_mut(&buffer_id).unwrap();
-                        let mut total_written = 0;
-                        for iovec in msg.vdata() {
-                            if buf.is_full() {
-                                break;
-                            }
-                            total_written += buf.write(iovec.data());
-                        }
-
-                        if buf.is_full() {
-                            state.lower_polled(&write_polled);
-                        }
-                        state.raise_polled(&read_polled);
-
-                        Ok(total_written)
-                    }
-                    StdioBackend::Plugin(plugin_id) => {
-                        let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
-                        let buffer_id = plugin_info.write_buf.clone();
-                        let write_polled = plugin_info.write_polled.clone();
-
-                        let event_raised = state
-                            .global
-                            .polled_events
-                            .get(&write_polled)
-                            .unwrap()
-                            .event_raised;
-                        drop(state);
-
-                        if !event_raised {
-                            if nonblocking {
-                                return Err(DescriptorError::WouldBlock);
-                            } else {
-                                ctx.poll_until_ready(write_polled.clone());
-                            }
-                        }
-
-                        let mut state = ctx.acquire();
-
-                        let buf = state.global.buffers.get_mut(&buffer_id).unwrap();
-                        let mut total_written = 0;
-                        for iovec in msg.vdata() {
-                            if buf.is_full() {
-                                break;
-                            }
-                            total_written += buf.write(iovec.data());
-                        }
-
-                        Ok(total_written)
-                    }
-                    StdioBackend::Sink => Ok(total_len),
-                    StdioBackend::NullSink => Ok(total_len),
-                    StdioBackend::Fuzz(_) => Ok(total_len),
-                }
-            }
-            FdResource::Stderr => {
-                let res = unsafe {
-                    libc::writev(
-                        2,
-                        msg.vdata().as_ptr() as *const libc::iovec,
-                        msg.vdata().len() as i32,
-                    )
-                };
-                match res {
-                    0.. => Ok(res as usize),
-                    _ => Err(DescriptorError::Passthrough),
-                }
-            }
-        }
-    }
-
-    pub fn read(
-        &self,
-        ctx: &mut FizzleSingleton,
-        msg: &mut MsgHdrOut,
-    ) -> Result<usize, DescriptorError> {
-        let state = ctx.acquire();
-
-        let Some(fd_info) = state.local.fds.get(self) else {
-            return Err(DescriptorError::BadFd);
-        };
-
-        let nonblocking = fd_info.nonblocking || msg.flags_mut().contains(MsgFlags::DONTWAIT);
-        let resource = fd_info.resource.clone();
-        drop(state);
-
-        match resource {
-            FdResource::Directory(_) => unimplemented!(),
-            FdResource::Epoll(_) => unimplemented!(),
-            FdResource::EventFd(eventfd_id) => {
-                eventfd_id.read(ctx, msg, nonblocking).map_err(|e| e.into())
-            }
-            FdResource::File(file_id) => file_id.read(ctx, msg).map_err(|e| e.into()),
-            FdResource::MessageQueue(_) => todo!(),
-            FdResource::Pipe(pipe_id) => pipe_id.read(ctx, msg, nonblocking).map_err(|e| e.into()),
-            FdResource::Socket(socket_id) => {
-                socket_id.read(ctx, msg, nonblocking).map_err(|e| e.into())
-            }
-            FdResource::Stdin | FdResource::Stdout | FdResource::Stderr => {
-                let mut state = ctx.acquire();
-
-                match &state.global.stdio {
-                    StdioBackend::Passthrough | StdioBackend::Peered(_) => unreachable!(),
-                    StdioBackend::Feedback(feedback) => {
-                        let buffer_id = feedback.buf.clone();
-                        let read_polled = feedback.read_polled.clone();
-                        let write_polled = feedback.write_polled.clone();
-                        let event_raised = state
-                            .global
-                            .polled_events
-                            .get(&read_polled)
-                            .unwrap()
-                            .event_raised;
-
-                        drop(state);
-
-                        if !event_raised {
-                            if nonblocking {
-                                return Err(DescriptorError::WouldBlock);
-                            } else {
-                                ctx.poll_until_ready(read_polled.clone());
-                            }
-                        }
-
-                        let mut state = ctx.acquire();
-
-                        let buf = state.global.buffers.get_mut(&buffer_id).unwrap();
-                        let mut total_read = 0;
-
-                        for iovec in msg.vdata_mut() {
-                            if buf.is_empty() {
-                                break;
-                            }
-
-                            let data_len = cmp::min(buf.len(), iovec.data_mut().len());
-                            init_from_slice(
-                                &mut iovec.data_mut()[..data_len],
-                                &buf.data()[..data_len],
-                            );
-                            buf.did_read(data_len);
-                            total_read += data_len;
-                        }
-
-                        if buf.is_empty() {
-                            state.lower_polled(&read_polled);
-                        }
-                        state.raise_polled(&write_polled);
-
-                        Ok(total_read)
-                    }
-                    StdioBackend::Plugin(plugin_id) => {
-                        let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
-                        let buffer_id = plugin_info.write_buf.clone();
-                        let read_polled = plugin_info.read_polled.clone();
-                        let event_raised = state
-                            .global
-                            .polled_events
-                            .get(&read_polled)
-                            .unwrap()
-                            .event_raised;
-
-                        drop(state);
-
-                        if !event_raised {
-                            if nonblocking {
-                                return Err(DescriptorError::WouldBlock);
-                            } else {
-                                ctx.poll_until_ready(read_polled.clone());
-                            }
-                        }
-
-                        let mut state = ctx.acquire();
-
-                        let buf = state.global.buffers.get_mut(&buffer_id).unwrap();
-                        let mut total_read = 0;
-
-                        for iovec in msg.vdata_mut() {
-                            if buf.is_empty() {
-                                break;
-                            }
-
-                            let data_len = cmp::min(buf.len(), iovec.data_mut().len());
-                            init_from_slice(
-                                &mut iovec.data_mut()[..data_len],
-                                &buf.data()[..data_len],
-                            );
-                            buf.did_read(data_len);
-                            total_read += data_len;
-                        }
-
-                        if buf.is_empty() {
-                            state.lower_polled(&read_polled);
-                        }
-
-                        Ok(total_read)
-                    }
-                    StdioBackend::Sink => Ok(0),
-                    StdioBackend::NullSink => {
-                        let mut total_read = 0;
-                        for iovec in msg.vdata_mut() {
-                            for b in iovec.data_mut() {
-                                b.write(0);
-                            }
-                            total_read += iovec.data_mut().len();
-                        }
-
-                        Ok(total_read)
-                    }
-                    StdioBackend::Fuzz(fuzz_endpoint_id) => {
-                        let fuzz_endpoint_id = fuzz_endpoint_id.clone();
-                        let FuzzEndpointInfo {
-                            mut read_idx,
-                            read_polled,
-                        } = state
-                            .global
-                            .fuzz_endpoints
-                            .get(&fuzz_endpoint_id)
-                            .unwrap()
-                            .clone();
-
-                        let polled_is_ready = state.polled_is_ready(&read_polled);
-                        drop(state);
-
-                        if !polled_is_ready {
-                            if nonblocking {
-                                return Err(DescriptorError::WouldBlock);
-                            } else {
-                                ctx.poll_until_ready(read_polled.clone());
-                            }
-                        }
-
-                        let mut state = ctx.acquire();
-
-                        let buf = state.global.fuzz_input.data();
-                        let buflen = buf.len();
-
-                        let mut total_read = 0;
-                        for iovec in msg.vdata_mut() {
-                            if buf[read_idx..].is_empty() {
-                                break;
-                            }
-
-                            let data_len = cmp::min(buf.len(), iovec.data_mut().len());
-                            init_from_slice(
-                                &mut iovec.data_mut()[..data_len],
-                                &buf[read_idx..read_idx + data_len],
-                            );
-                            read_idx += data_len;
-                            total_read += data_len;
-                        }
-
-                        let fuzz_endpoint = state
-                            .global
-                            .fuzz_endpoints
-                            .get_mut(&fuzz_endpoint_id)
-                            .unwrap();
-                        fuzz_endpoint.read_idx = read_idx;
-                        if fuzz_endpoint.read_idx == buflen {
-                            state.lower_polled(&read_polled);
-                        }
-
-                        Ok(total_read)
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum DescriptorError {
-    /// A non-blocking operation on the given descriptor would cause it to block.
-    WouldBlock,
-    /// The given file descriptor was not found in the Fizzle state.
-    BadFd,
-    /// The given file descriptor was not a socket.
-    NotSocket,
-    /// The operation passed to the given descriptor had invalid inputs.
-    InvalidInput,
-    /// A descriptor did not have an active connection.
-    NotConnected,
-    /// A descriptor already had an active connection.
-    IsConnected,
-    /// A supplied address was already bound to.
-    AddressInUse,
-    /// An attempted connection failed due to the endpoint not listening.
-    ConnectionRefused,
-    /// An initiated connection has not yet completed.
-    ConnectInProgress,
-    /// The write end of a pipe has closed.
-    PipeClosed,
-    /// An error supplied by a libc call.
-    Passthrough,
-}
-
-impl FfiOutput for Result<usize, DescriptorError> {
-    type OutputType = libc::ssize_t;
-
-    fn out(&self) -> Self::OutputType {
-        match self {
-            Ok(i) => {
-                Self::set_errno(0);
-                return *i as libc::ssize_t;
-            }
-            Err(DescriptorError::WouldBlock) => Self::set_errno(libc::EAGAIN),
-            Err(DescriptorError::BadFd) => Self::set_errno(libc::EBADFD),
-            Err(DescriptorError::NotSocket) => Self::set_errno(libc::ENOTSOCK),
-            Err(DescriptorError::InvalidInput) => Self::set_errno(libc::EINVAL),
-            Err(DescriptorError::NotConnected) => Self::set_errno(libc::ENOTCONN),
-            Err(DescriptorError::IsConnected) => Self::set_errno(libc::EISCONN),
-            Err(DescriptorError::AddressInUse) => Self::set_errno(libc::EADDRINUSE),
-            Err(DescriptorError::ConnectionRefused) => Self::set_errno(libc::ECONNREFUSED),
-            Err(DescriptorError::ConnectInProgress) => Self::set_errno(libc::EINPROGRESS),
-            Err(DescriptorError::PipeClosed) => Self::set_errno(libc::EPIPE),
-            Err(DescriptorError::Passthrough) => (),
-        }
-
-        -1
-    }
-
-    fn display(&self) -> &'static str {
-        match self {
-            Ok(0) => "0",
-            Ok(_) => ">0",
-            Err(DescriptorError::WouldBlock) => "-1 (EAGAIN)",
-            Err(DescriptorError::BadFd) => "-1 (EBADFD)",
-            Err(DescriptorError::NotSocket) => "-1 (ENOTSOCK)",
-            Err(DescriptorError::InvalidInput) => "-1 (EINVAL)",
-            Err(DescriptorError::NotConnected) => "-1 (ENOTCONN)",
-            Err(DescriptorError::IsConnected) => "-1 (EISCONN)",
-            Err(DescriptorError::AddressInUse) => "-1 (EADDRINUSE)",
-            Err(DescriptorError::ConnectionRefused) => "-1 (ECONNREFUSED)",
-            Err(DescriptorError::ConnectInProgress) => "-1 (EINPROGRESS)",
-            Err(DescriptorError::PipeClosed) => "-1 (EPIPE)",
-            Err(DescriptorError::Passthrough) => "-1 (passthrough error)",
-        }
-    }
 }
 
 pub struct DescriptorCloseEvent {
@@ -617,5 +222,694 @@ impl Event for DescriptorDuplicateEvent {
             .unwrap();
 
         Outcome::Success(new_fd.as_raw_fd())
+    }
+}
+
+pub enum ReadData<'a> {
+    Basic(&'a mut [IoSliceMut<'a>]),
+    File(FileReadData<'a>),
+    Socket(&'a mut [SocketReadData<'a>], SocketFlags),
+}
+
+pub struct FileReadData<'a> {
+    pub buf: &'a mut [IoSliceMut<'a>],
+    /// Offset from `pread()` family of functions
+    pub offset: Option<libc::off_t>,
+    pub flags: FileFlags,
+}
+
+bitflags! {
+    #[derive(Clone, Copy, Debug)]
+    pub struct FileFlags: libc::c_int {
+        const DSYNC = libc::RWF_DSYNC;
+        const HIPRI = libc::RWF_HIPRI;
+        const SYNC = libc::RWF_SYNC;
+        const NOWAIT = libc::RWF_NOWAIT;
+        const APPEND = libc::RWF_APPEND;
+    }
+}
+
+pub struct SocketReadData<'a> {
+    pub addr_bytes: &'a mut [MaybeUninit<u8>],
+    pub addrlen: &'a mut libc::socklen_t,
+    pub buf: &'a mut [IoSliceMut<'a>],
+    pub buflen: &'a mut u32,
+    pub control_info: &'a mut [MaybeUninit<u8>],
+    pub control_len: &'a mut usize,
+    pub msg_flags: &'a mut SocketMsgFlags,
+}
+
+bitflags! {
+    #[derive(Clone, Copy, Debug)]
+    pub struct SocketFlags: libc::c_int {
+        const CMSG_CLOEXEC = libc::MSG_CMSG_CLOEXEC;
+        const TRUNC = libc::MSG_TRUNC;
+        const OOB = libc::MSG_OOB;
+        const ERRQUEUE = libc::MSG_ERRQUEUE;
+        const DONTWAIT = libc::MSG_DONTWAIT;
+        const PEEK = libc::MSG_PEEK;
+        const WAITALL = libc::MSG_WAITALL;
+    }
+}
+
+bitflags! {
+    #[derive(Clone, Copy, Debug)]
+    pub struct SocketMsgFlags: libc::c_int {
+        const EOR = libc::MSG_EOR;
+        const TRUNC = libc::MSG_TRUNC;
+        const CTRUNC = libc::MSG_CTRUNC;
+        const OOB = libc::MSG_OOB;
+        const ERRQUEUE = libc::MSG_ERRQUEUE;
+    }
+}
+
+enum DescriptorReadState<'a> {
+    Start,
+    Directory(DirectoryReadEvent<'a>),
+    Epoll(EpollReadEvent<'a>),
+    Eventfd(EventfdReadEvent<'a>),
+    Socket(SocketReadEvent<'a>),
+    File(FileReadEvent<'a>),
+    Mq(MqReadEvent<'a>),
+    Pipe(PipeReadEvent<'a>),
+    Stdin(StdinReadEvent<'a>),
+}
+
+pub struct DescriptorReadEvent<'a> {
+    fd: DescriptorId,
+    data: Option<ReadData<'a>>,
+    state: DescriptorReadState<'a>,
+}
+
+impl<'a> DescriptorReadEvent<'a> {
+    #[inline]
+    pub fn new(fd: DescriptorId, data: ReadData<'a>) -> Self {
+        Self {
+            fd,
+            data: Some(data),
+            state: DescriptorReadState::Start,
+        }
+    }
+}
+
+impl Event for DescriptorReadEvent<'_> {
+    type Success = usize;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        match &mut self.state {
+            DescriptorReadState::Start => {
+                let Some(fd_info) = state.local.fds.get(&self.fd) else {
+                    return Outcome::Error(Errno::EBADF);
+                };
+
+                match &fd_info.resource {
+                    FdResource::Directory(_) => {
+                        self.state = DescriptorReadState::Directory(DirectoryReadEvent::new(
+                            self.fd,
+                            self.data.take().unwrap(),
+                        ));
+                    }
+                    FdResource::Epoll(_) => {
+                        self.state = DescriptorReadState::Epoll(EpollReadEvent::new(
+                            self.fd,
+                            self.data.take().unwrap(),
+                        ));
+                    }
+                    FdResource::EventFd(eventfd_id) => {
+                        self.state = DescriptorReadState::Eventfd(EventfdReadEvent::new(
+                            eventfd_id.clone(),
+                            fd_info.nonblocking,
+                            self.data.take().unwrap(),
+                        ));
+                    }
+                    FdResource::File(_) => {
+                        self.state = DescriptorReadState::File(FileReadEvent::new(
+                            self.fd,
+                            self.data.take().unwrap(),
+                        ));
+                    }
+                    FdResource::MessageQueue(_) => {
+                        self.state = DescriptorReadState::Mq(MqReadEvent::new(
+                            self.fd,
+                            self.data.take().unwrap(),
+                        ));
+                    }
+                    FdResource::Pipe(pipe_id) => {
+                        self.state = DescriptorReadState::Pipe(PipeReadEvent::new(
+                            pipe_id.clone(),
+                            fd_info.nonblocking,
+                            self.data.take().unwrap(),
+                        ));
+                    }
+                    FdResource::Stdin | FdResource::Stdout | FdResource::Stderr => {
+                        // Reading from stdout, stderr is equivalent to reading from stdin
+                        self.state = DescriptorReadState::Stdin(StdinReadEvent::new(
+                            self.fd,
+                            self.data.take().unwrap(),
+                        ));
+                    }
+                    FdResource::Socket(socket_id) => {
+                        self.state = DescriptorReadState::Socket(SocketReadEvent::new(
+                            socket_id.clone(),
+                            fd_info.nonblocking,
+                            self.data.take().unwrap(),
+                        ));
+                    }
+                }
+                Outcome::Continue
+            }
+            DescriptorReadState::Directory(e) => e.run(state),
+            DescriptorReadState::Epoll(e) => e.run(state),
+            DescriptorReadState::Eventfd(e) => e.run(state),
+            DescriptorReadState::Socket(e) => e.run(state),
+            DescriptorReadState::File(e) => e.run(state),
+            DescriptorReadState::Mq(e) => e.run(state),
+            DescriptorReadState::Pipe(e) => e.run(state),
+            DescriptorReadState::Stdin(e) => e.run(state),
+        }
+    }
+}
+
+pub enum StdinReadState {
+    Start,
+    Finish(Option<Rc<PollerId>>),
+}
+
+pub struct StdinReadEvent<'a> {
+    fd: DescriptorId,
+    data: ReadData<'a>,
+    state: StdinReadState,
+}
+
+impl<'a> StdinReadEvent<'a> {
+    #[inline]
+    pub fn new(fd: DescriptorId, data: ReadData<'a>) -> Self {
+        Self {
+            fd,
+            data,
+            state: StdinReadState::Start,
+        }
+    }
+}
+
+impl Event for StdinReadEvent<'_> {
+    type Success = usize;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let nonblocking = state.local.fds.get(&self.fd).unwrap().nonblocking;
+
+        let ReadData::Basic(iovec) = &mut self.data else {
+            unreachable!(
+                "internal error--buffer other than ReadData::Basic passed to StdinReadEent"
+            );
+        };
+
+        match (&self.state, state.global.stdio.clone()) {
+            (_, StdioBackend::Passthrough | StdioBackend::Peered(_)) => unreachable!(),
+            (StdinReadState::Start, StdioBackend::Feedback(feedback)) => {
+                let read_polled = feedback.read_polled.clone();
+
+                if state.polled_is_ready(&read_polled) {
+                    self.state = StdinReadState::Finish(None);
+                    Outcome::Continue
+                } else if nonblocking {
+                    Outcome::Error(Errno::EAGAIN)
+                } else {
+                    let poller_id = state.new_poller();
+                    state.register_poller(poller_id.clone(), read_polled);
+
+                    self.state = StdinReadState::Finish(Some(poller_id));
+                    Outcome::Yield(None)
+                }
+            }
+            (StdinReadState::Finish(poller_id), StdioBackend::Feedback(feedback)) => {
+                if let Some(poller_id) = poller_id {
+                    state.delete_poller(poller_id.clone());
+                }
+
+                let read_polled = feedback.read_polled.clone();
+                let write_polled = feedback.write_polled.clone();
+
+                let buffer_id = feedback.buf.clone();
+
+                let buf = state.global.buffers.get_mut(&buffer_id).unwrap();
+                let mut total_read = 0;
+
+                for slice in iovec.iter_mut() {
+                    if buf.is_empty() {
+                        break;
+                    }
+
+                    let data_len = cmp::min(buf.len(), slice.len());
+                    slice[..data_len].copy_from_slice(&buf.data()[..data_len]);
+
+                    buf.did_read(data_len);
+                    total_read += data_len;
+                }
+
+                if buf.is_empty() {
+                    state.lower_polled(&read_polled);
+                }
+                state.raise_polled(&write_polled);
+
+                Outcome::Success(total_read)
+            }
+            (StdinReadState::Start, StdioBackend::Plugin(plugin_id)) => {
+                let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
+                let read_polled = plugin_info.read_polled.clone();
+
+                if state.polled_is_ready(&read_polled) {
+                    self.state = StdinReadState::Finish(None);
+                    Outcome::Continue
+                } else if nonblocking {
+                    Outcome::Error(Errno::EAGAIN)
+                } else {
+                    let poller_id = state.new_poller();
+                    state.register_poller(poller_id.clone(), read_polled);
+
+                    self.state = StdinReadState::Finish(Some(poller_id));
+                    Outcome::Yield(None)
+                }
+            }
+            (StdinReadState::Finish(poller_id), StdioBackend::Plugin(plugin_id)) => {
+                if let Some(poller_id) = poller_id {
+                    state.delete_poller(poller_id.clone());
+                }
+
+                let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
+                let buffer_id = plugin_info.write_buf.clone();
+                let read_polled = plugin_info.read_polled.clone();
+
+                let buf = state.global.buffers.get_mut(&buffer_id).unwrap();
+                let mut total_read = 0;
+
+                for slice in iovec.iter_mut() {
+                    if buf.is_empty() {
+                        break;
+                    }
+
+                    let data_len = cmp::min(buf.len(), slice.len());
+                    slice[..data_len].copy_from_slice(&buf.data()[..data_len]);
+
+                    buf.did_read(data_len);
+                    total_read += data_len;
+                }
+
+                if buf.is_empty() {
+                    state.lower_polled(&read_polled);
+                }
+
+                Outcome::Success(total_read)
+            }
+            (_, StdioBackend::Sink) => Outcome::Success(0),
+            (_, StdioBackend::NullSink) => {
+                let mut total_read = 0;
+                for slice in iovec.iter_mut() {
+                    for b in slice.iter_mut() {
+                        *b = 0;
+                    }
+                    total_read += slice.len();
+                }
+
+                Outcome::Success(total_read)
+            }
+            (StdinReadState::Start, StdioBackend::Fuzz(fuzz_endpoint_id)) => {
+                let FuzzEndpointInfo { read_polled, .. } = state
+                    .global
+                    .fuzz_endpoints
+                    .get(&fuzz_endpoint_id)
+                    .unwrap()
+                    .clone();
+
+                if state.polled_is_ready(&read_polled) {
+                    self.state = StdinReadState::Finish(None);
+                    Outcome::Continue
+                } else if nonblocking {
+                    Outcome::Error(Errno::EAGAIN)
+                } else {
+                    let poller_id = state.new_poller();
+                    state.register_poller(poller_id.clone(), read_polled);
+
+                    self.state = StdinReadState::Finish(Some(poller_id));
+                    Outcome::Yield(None)
+                }
+            }
+            (StdinReadState::Finish(poller_id), StdioBackend::Fuzz(fuzz_endpoint_id)) => {
+                if let Some(poller_id) = poller_id {
+                    state.delete_poller(poller_id.clone());
+                }
+
+                let FuzzEndpointInfo {
+                    mut read_idx,
+                    read_polled,
+                } = state
+                    .global
+                    .fuzz_endpoints
+                    .get(&fuzz_endpoint_id)
+                    .unwrap()
+                    .clone();
+
+                let buf = state.global.fuzz_input.data();
+                let buflen = buf.len();
+
+                let mut total_read = 0;
+                for slice in iovec.iter_mut() {
+                    if buf[read_idx..].is_empty() {
+                        break;
+                    }
+
+                    let data_len = cmp::min(buf.len(), slice.len());
+                    slice[..data_len].copy_from_slice(&buf[read_idx..read_idx + data_len]);
+
+                    read_idx += data_len;
+                    total_read += data_len;
+                }
+
+                let fuzz_endpoint = state
+                    .global
+                    .fuzz_endpoints
+                    .get_mut(&fuzz_endpoint_id)
+                    .unwrap();
+                fuzz_endpoint.read_idx = read_idx;
+                if fuzz_endpoint.read_idx == buflen {
+                    state.lower_polled(&read_polled);
+                }
+
+                Outcome::Success(total_read)
+            }
+        }
+    }
+}
+
+pub enum WriteData<'a> {
+    Basic(&'a [IoSlice<'a>]),
+    File(FileWriteData<'a>),
+    Socket(&'a [SocketWriteData<'a>], SocketFlags),
+}
+
+pub struct FileWriteData<'a> {
+    pub buf: &'a [IoSlice<'a>],
+    /// Offset from `pread()` family of functions
+    pub offset: Option<libc::off_t>,
+    pub flags: FileFlags,
+}
+
+pub struct SocketWriteData<'a> {
+    pub addr_bytes: &'a [u8],
+    pub buf: &'a [IoSlice<'a>],
+    pub buflen: &'a mut u32,
+    pub control_info: &'a [u8],
+    pub msg_flags: SocketMsgFlags,
+}
+
+enum DescriptorWriteState<'a> {
+    Start,
+    Directory(DirectoryWriteEvent<'a>),
+    Epoll(EpollWriteEvent<'a>),
+    Eventfd(EventfdWriteEvent<'a>),
+    Socket(SocketWriteEvent<'a>),
+    File(FileWriteEvent<'a>),
+    Mq(MqWriteEvent<'a>),
+    Pipe(PipeWriteEvent<'a>),
+    Stdout(StdoutWriteEvent<'a>),
+}
+
+pub struct DescriptorWriteEvent<'a> {
+    fd: DescriptorId,
+    data: Option<WriteData<'a>>,
+    state: DescriptorWriteState<'a>,
+}
+
+impl<'a> DescriptorWriteEvent<'a> {
+    #[inline]
+    pub fn new(fd: DescriptorId, data: WriteData<'a>) -> Self {
+        Self {
+            fd,
+            data: Some(data),
+            state: DescriptorWriteState::Start,
+        }
+    }
+}
+
+impl Event for DescriptorWriteEvent<'_> {
+    type Success = usize;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        match &mut self.state {
+            DescriptorWriteState::Start => {
+                let Some(fd_info) = state.local.fds.get(&self.fd) else {
+                    return Outcome::Error(Errno::EBADF);
+                };
+
+                match &fd_info.resource {
+                    FdResource::Directory(_) => {
+                        self.state = DescriptorWriteState::Directory(DirectoryWriteEvent::new(
+                            self.fd,
+                            self.data.take().unwrap(),
+                        ));
+                    }
+                    FdResource::Epoll(_) => {
+                        self.state = DescriptorWriteState::Epoll(EpollWriteEvent::new(
+                            self.fd,
+                            self.data.take().unwrap(),
+                        ));
+                    }
+                    FdResource::EventFd(eventfd_id) => {
+                        self.state = DescriptorWriteState::Eventfd(EventfdWriteEvent::new(
+                            eventfd_id.clone(),
+                            fd_info.nonblocking,
+                            self.data.take().unwrap(),
+                        ));
+                    }
+                    FdResource::File(_) => {
+                        self.state = DescriptorWriteState::File(FileWriteEvent::new(
+                            self.fd,
+                            self.data.take().unwrap(),
+                        ));
+                    }
+                    FdResource::MessageQueue(_) => {
+                        self.state = DescriptorWriteState::Mq(MqWriteEvent::new(
+                            self.fd,
+                            self.data.take().unwrap(),
+                        ));
+                    }
+                    FdResource::Pipe(pipe_id) => {
+                        self.state = DescriptorWriteState::Pipe(PipeWriteEvent::new(
+                            pipe_id.clone(),
+                            fd_info.nonblocking,
+                            self.data.take().unwrap(),
+                        ));
+                    }
+                    FdResource::Stdin | FdResource::Stdout => {
+                        // Writing to stdin is equivalent to writing to stdout
+                        self.state = DescriptorWriteState::Stdout(StdoutWriteEvent::new(
+                            self.fd,
+                            self.data.take().unwrap(),
+                        ));
+                    }
+                    FdResource::Stderr => {
+                        self.state = DescriptorWriteState::Stdout(StdoutWriteEvent::new(
+                            self.fd,
+                            self.data.take().unwrap(),
+                        ));
+                    }
+                    FdResource::Socket(_) => {
+                        self.state = DescriptorWriteState::Socket(SocketWriteEvent::new(
+                            self.fd,
+                            self.data.take().unwrap(),
+                        ));
+                    }
+                }
+                Outcome::Continue
+            }
+            DescriptorWriteState::Directory(e) => e.run(state),
+            DescriptorWriteState::Epoll(e) => e.run(state),
+            DescriptorWriteState::Eventfd(e) => e.run(state),
+            DescriptorWriteState::Socket(e) => e.run(state),
+            DescriptorWriteState::File(e) => e.run(state),
+            DescriptorWriteState::Mq(e) => e.run(state),
+            DescriptorWriteState::Pipe(e) => e.run(state),
+            DescriptorWriteState::Stdout(e) => e.run(state),
+        }
+    }
+}
+
+pub enum StdoutWriteState {
+    Start,
+    Finish(Option<Rc<PollerId>>),
+}
+
+pub struct StdoutWriteEvent<'a> {
+    fd: DescriptorId,
+    data: WriteData<'a>,
+    state: StdoutWriteState,
+}
+
+impl<'a> StdoutWriteEvent<'a> {
+    #[inline]
+    pub fn new(fd: DescriptorId, data: WriteData<'a>) -> Self {
+        Self {
+            fd,
+            data,
+            state: StdoutWriteState::Start,
+        }
+    }
+}
+
+impl Event for StdoutWriteEvent<'_> {
+    type Success = usize;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let nonblocking = state.local.fds.get(&self.fd).unwrap().nonblocking;
+
+        let WriteData::Basic(iovec) = self.data else {
+            unreachable!(
+                "internal error--buffer other than WriteData::Basic passed to StdoutWriteEent"
+            );
+        };
+
+        match (&self.state, state.global.stdio.clone()) {
+            (_, StdioBackend::Passthrough | StdioBackend::Peered(_)) => unreachable!(),
+            (StdoutWriteState::Start, crate::backend::IoBackend::Feedback(feedback)) => {
+                let write_polled = feedback.write_polled.clone();
+
+                if state.polled_is_ready(&write_polled) {
+                    self.state = StdoutWriteState::Finish(None);
+                    Outcome::Continue
+                } else if nonblocking {
+                    Outcome::Error(Errno::EAGAIN)
+                } else {
+                    let poller_id = state.new_poller();
+                    state.register_poller(poller_id.clone(), write_polled);
+
+                    self.state = StdoutWriteState::Finish(Some(poller_id));
+                    Outcome::Yield(None)
+                }
+            }
+            (StdoutWriteState::Finish(poller_id), StdioBackend::Feedback(feedback)) => {
+                if let Some(poller_id) = poller_id {
+                    state.delete_poller(poller_id.clone());
+                }
+
+                let buffer_id = feedback.buf.clone();
+                let write_polled = feedback.write_polled.clone();
+                let read_polled = feedback.read_polled.clone();
+
+                let buf = state.global.buffers.get_mut(&buffer_id).unwrap();
+                let mut total_written = 0;
+                for slice in iovec {
+                    if buf.is_full() {
+                        break;
+                    }
+                    total_written += buf.write(slice);
+                }
+
+                if buf.is_full() {
+                    state.lower_polled(&write_polled);
+                }
+                state.raise_polled(&read_polled);
+
+                Outcome::Success(total_written)
+            }
+            (StdoutWriteState::Start, StdioBackend::Plugin(plugin_id)) => {
+                let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
+                let write_polled = plugin_info.write_polled.clone();
+
+                if state.polled_is_ready(&write_polled) {
+                    self.state = StdoutWriteState::Finish(None);
+                    Outcome::Continue
+                } else if nonblocking {
+                    Outcome::Error(Errno::EAGAIN)
+                } else {
+                    let poller_id = state.new_poller();
+                    state.register_poller(poller_id.clone(), write_polled);
+
+                    self.state = StdoutWriteState::Finish(Some(poller_id));
+                    Outcome::Yield(None)
+                }
+            }
+            (StdoutWriteState::Finish(poller_id), StdioBackend::Plugin(plugin_id)) => {
+                if let Some(poller_id) = poller_id {
+                    state.delete_poller(poller_id.clone());
+                }
+
+                let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
+                let buffer_id = plugin_info.write_buf.clone();
+                let buf = state.global.buffers.get_mut(&buffer_id).unwrap();
+                let mut total_written = 0;
+                for slice in iovec {
+                    if buf.is_full() {
+                        break;
+                    }
+                    total_written += buf.write(slice);
+                }
+
+                Outcome::Success(total_written)
+            }
+            (_, StdioBackend::Sink) => {
+                let total_len = iovec.iter().map(|s| s.len()).sum();
+                Outcome::Success(total_len)
+            }
+            (_, StdioBackend::NullSink) => {
+                let total_len = iovec.iter().map(|s| s.len()).sum();
+                Outcome::Success(total_len)
+            }
+            (_, StdioBackend::Fuzz(_)) => {
+                let total_len = iovec.iter().map(|s| s.len()).sum();
+                Outcome::Success(total_len)
+            }
+        }
+    }
+}
+
+pub enum StderrWriteState {
+    Start,
+    Finish(Option<Rc<PollerId>>),
+}
+
+pub struct StderrWriteEvent<'a> {
+    fd: DescriptorId,
+    data: WriteData<'a>,
+    state: StderrWriteState,
+}
+
+impl<'a> StderrWriteEvent<'a> {
+    #[inline]
+    pub fn new(fd: DescriptorId, data: WriteData<'a>) -> Self {
+        Self {
+            fd,
+            data,
+            state: StderrWriteState::Start,
+        }
+    }
+}
+
+impl Event for StderrWriteEvent<'_> {
+    type Success = usize;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let WriteData::Basic(iovec) = self.data else {
+            unreachable!(
+                "internal error--buffer other than WriteData::Basic passed to StderrWriteEent"
+            );
+        };
+
+        if state.global.mask_stderr {
+            let total = iovec.iter().map(|s| s.len()).sum();
+            Outcome::Success(total)
+        } else {
+            let res = unsafe {
+                libc::writev(2, iovec.as_ptr() as *const libc::iovec, iovec.len() as i32)
+            };
+            match res {
+                0.. => Outcome::Success(res as usize),
+                _ => Outcome::Error(Errno::get_errno()),
+            }
+        }
     }
 }
