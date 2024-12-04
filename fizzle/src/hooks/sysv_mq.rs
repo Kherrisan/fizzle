@@ -35,8 +35,9 @@ hook_macros::hook! {
         _msqid: libc::c_int,
         _msgp: *const libc::c_void,
         _msgsz: libc::size_t,
+        _msgtyp: libc::c_long,
         _msgflg: libc::c_int
-    ) -> libc::c_int => fizzle_msgsnd(_ctx) {
-        unimplemented!("msgsnd")
+    ) -> libc::c_int => fizzle_msgrcv(_ctx) {
+        unimplemented!("msgrcv")
     }
 }
