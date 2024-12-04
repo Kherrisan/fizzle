@@ -45,34 +45,3 @@ impl PolledInfo {
 impl ArenaKey for PolledId {
     type Value = PolledInfo;
 }
-
-impl PolledId {
-    /// Marks the given polled event as ready.
-    ///
-    /// If not already raised, this method will push_back a poller waiting on this polled event
-    /// (if such a poller exists).
-    pub fn raise_polled(&self, ctx: &mut FizzleSingleton) {
-        let mut state = ctx.acquire();
-        let polled = state.global.polled_events.get_mut(self).unwrap();
-        if !polled.event_raised {
-            polled.event_raised = true;
-            let pollers = polled.pollers.clone();
-            for poller in pollers {
-                if !state.global.pollers.get(&poller).unwrap().in_raised_queue() {
-                    state
-                        .global
-                        .ready
-                        .push_back(ReadyInfo::Poller(poller))
-                        .unwrap();
-                }
-            }
-        }
-    }
-
-    pub fn lower_polled(&self, ctx: &mut FizzleSingleton) {
-        let mut state = ctx.acquire();
-        let polled = state.global.polled_events.get_mut(self).unwrap();
-        debug_assert!(polled.event_raised);
-        polled.event_raised = false;
-    }
-}

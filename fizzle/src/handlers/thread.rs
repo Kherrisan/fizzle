@@ -711,3 +711,48 @@ impl Event for ThreadTestCancelEvent {
         Outcome::Success(())
     }
 }
+
+pub struct ThreadSetSpecificEvent {
+    key: libc::pthread_key_t,
+    pointer: *mut libc::c_void,
+}
+
+impl ThreadSetSpecificEvent {
+    pub fn new(key: libc::pthread_key_t, pointer: *mut libc::c_void) -> Self {
+        Self {
+            key,
+            pointer,
+        }
+    }
+}
+
+impl Event for ThreadSetSpecificEvent {
+    type Success = ();
+    type Error = ();
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        state.local.pthread_key_values.get_mut(&self.key).unwrap().insert(thread::current().id(), self.pointer);
+        Outcome::Success(())
+    }
+}
+
+pub struct ThreadGetSpecificEvent {
+    key: libc::pthread_key_t,
+}
+
+impl ThreadGetSpecificEvent {
+    pub fn new(key: libc::pthread_key_t) -> Self {
+        Self {
+            key,
+        }
+    }
+}
+
+impl Event for ThreadGetSpecificEvent {
+    type Success = *mut libc::c_void;
+    type Error = ();
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        Outcome::Success(*state.local.pthread_key_values.get_mut(&key).unwrap().get_mut(&thread::current().id()).unwrap_or(&mut ptr::null_mut()))
+    }
+}

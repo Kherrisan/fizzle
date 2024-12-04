@@ -1,5 +1,5 @@
 use std::time::Duration;
-use std::{ptr, thread};
+use std::ptr;
 
 use crate::errno::Errno;
 use crate::handlers::barrier::*;
@@ -202,9 +202,15 @@ hook_macros::hook! {
         key: libc::pthread_key_t,
         pointer: *mut libc::c_void // NOTE: this is actually `*const libc::c_void` in the function definition.
     ) -> libc::c_int => fizzle_pthread_key_setspecific(ctx) {
-        let mut state = ctx.acquire();
-        state.local.pthread_key_values.get_mut(&key).unwrap().insert(thread::current().id(), pointer);
-        0
+        crate::strace!("pthread_setspecific(key={:?}, pointer={:?}) -> ...", key, pointer);
+
+        match Scheduler::handle_event(&mut ctx, ThreadSetSpecificEvent::new(key, pointer)) {
+            Ok(()) => {
+                crate::strace!("pthread_setspecific(key={:?}, pointer={:?}) -> 0", key, pointer);
+                0
+            },
+            Err(()) => unreachable!(),
+        }
     }
 }
 
@@ -212,8 +218,15 @@ hook_macros::hook! {
     unsafe fn pthread_getspecific(
         key: libc::pthread_key_t
     ) -> *mut libc::c_void => fizzle_pthread_key_getspecific(ctx) {
-        let mut state = ctx.acquire();
-        *state.local.pthread_key_values.get_mut(&key).unwrap().get_mut(&thread::current().id()).unwrap_or(&mut ptr::null_mut())
+        crate::strace!("pthread_getspecific(key={:?}) -> ...", key);
+
+        match Scheduler::handle_event(&mut ctx, ThreadGetSpecificEvent::new(key)) {
+            Ok(pointer) => {
+                crate::strace!("pthread_getspecific(key={:?}) -> {:?}", key, pointer);
+                pointer
+            },
+            Err(()) => unreachable!(),
+        }
     }
 }
 
