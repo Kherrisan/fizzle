@@ -719,10 +719,7 @@ pub struct ThreadSetSpecificEvent {
 
 impl ThreadSetSpecificEvent {
     pub fn new(key: libc::pthread_key_t, pointer: *mut libc::c_void) -> Self {
-        Self {
-            key,
-            pointer,
-        }
+        Self { key, pointer }
     }
 }
 
@@ -731,7 +728,12 @@ impl Event for ThreadSetSpecificEvent {
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        state.local.pthread_key_values.get_mut(&self.key).unwrap().insert(thread::current().id(), self.pointer);
+        state
+            .local
+            .pthread_key_values
+            .get_mut(&self.key)
+            .unwrap()
+            .insert(thread::current().id(), self.pointer);
         Outcome::Success(())
     }
 }
@@ -742,9 +744,7 @@ pub struct ThreadGetSpecificEvent {
 
 impl ThreadGetSpecificEvent {
     pub fn new(key: libc::pthread_key_t) -> Self {
-        Self {
-            key,
-        }
+        Self { key }
     }
 }
 
@@ -753,6 +753,14 @@ impl Event for ThreadGetSpecificEvent {
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        Outcome::Success(*state.local.pthread_key_values.get_mut(&key).unwrap().get_mut(&thread::current().id()).unwrap_or(&mut ptr::null_mut()))
+        Outcome::Success(
+            *state
+                .local
+                .pthread_key_values
+                .get_mut(&self.key)
+                .unwrap()
+                .get_mut(&thread::current().id())
+                .unwrap_or(&mut ptr::null_mut()),
+        )
     }
 }

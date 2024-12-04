@@ -1,5 +1,5 @@
-use std::time::Duration;
 use std::ptr;
+use std::time::Duration;
 
 use crate::errno::Errno;
 use crate::handlers::barrier::*;

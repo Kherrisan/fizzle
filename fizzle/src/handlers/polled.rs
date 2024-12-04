@@ -1,6 +1,5 @@
 use crate::arena::{ArenaKey, Rc};
 use crate::constants::FIZZLE_MAX_PER_EVENT_QUEUED_POLLERS;
-use crate::state::{FizzleSingleton, ReadyInfo};
 
 use super::poller::PollerId;
 
