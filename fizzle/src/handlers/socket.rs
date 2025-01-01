@@ -25,7 +25,7 @@ use super::descriptor::*;
 use super::fuzz_endpoint::FuzzEndpointInfo;
 use super::polled::{PolledId, PolledInfo};
 use super::poller::PollerId;
-use super::{init_from_slice, FfiOutput, MsgHdr, MsgHdrOut};
+use super::{init_from_slice, FfiOutput, MsgHdr};
 
 // This is to forbid access to the SocketId's inner `usize` field.
 mod private {
@@ -158,14 +158,6 @@ impl ArenaKey for SocketId {
 }
 
 impl Rc<SocketId> {
-    pub fn read(
-        &self,
-        ctx: &mut FizzleSingleton,
-        msg: &mut MsgHdrOut,
-        nonblocking: bool,
-    ) -> Result<usize, SocketError> {
-    }
-
     pub fn write(
         &self,
         ctx: &mut FizzleSingleton,

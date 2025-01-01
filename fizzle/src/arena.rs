@@ -500,7 +500,7 @@ pub(crate) mod private {
     use crate::handlers::directory::DirectoryId;
     use crate::handlers::epoll::EpollId;
     use crate::handlers::eventfd::EventfdId;
-    use crate::handlers::file::FileId;
+    use crate::handlers::file::{CowId, FileId};
     use crate::handlers::fuzz_endpoint::FuzzEndpointId;
     use crate::handlers::id::WorkerId;
     use crate::handlers::mq::MqId;
@@ -534,6 +534,18 @@ pub(crate) mod private {
 
         fn from_usize(val: usize) -> Self {
             // SAFETY: `BufferId` is a repr(transparent) usize
+            unsafe { mem::transmute(val) }
+        }
+    }
+
+    impl InnerUsize for CowId {
+        fn to_usize(&self) -> usize {
+            // SAFETY: `CowId` is a repr(transparent) usize
+            unsafe { mem::transmute_copy(self) }
+        }
+
+        fn from_usize(val: usize) -> Self {
+            // SAFETY: `CowId` is a repr(transparent) usize
             unsafe { mem::transmute(val) }
         }
     }

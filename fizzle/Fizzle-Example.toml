@@ -1,0 +1,45 @@
+
+# Specify any additional processes that need to run alongside the fuzzing target.
+# This is optional--only multi-process systems really need this option.
+[[process]]
+# `path` - the filepath of the binary
+path = "/bin/bash"
+# `args` - arguments to be passed to the binary
+args = ["-e", "-h"]
+# `when` - indicates when the process should be run (relative to the main process).
+# Can be equal to `onstartup` (as soon as the main process is instantiated) or `onready` (once the
+# main process has no more work to do).
+when = "onstartup"
+
+# The "io" table lists I/O endpoints and corresponding actions that should be taken for each.
+# For sockets, use `xxx-client` to fuzz a network server and `xxx-server` to fuzz a network client.
+[io]
+# A socket-based I/O endpoint takes the form `<protocol>:<address>`
+# A file-based I/O endpoint takes the form `file:<filepath>`
+# `stdio` is a special I/O endpoint for stdin
+
+# The right hand of the equals indicates the kind of action to be taken at the endpoint. Actions include:
+# `fuzz` - The specified I/O endpoint should receive fuzzing input directly.
+# `sink` - The I/O endpoint will receive arbitrary bytes and emit no bytes
+# `nullsink` - The I/O endpoint will receive arbitrary bytes and emit an endless stream of null bytes (like /dev/null)
+# `feedback` - The I/O endpoint will return back whatever it receives.
+"sctp-client:127.0.0.2:36412" = "fuzz"
+# stdio = "fuzz" # Consume all input, produce fuzzing data as output
+"file:/dev/null" = "nullsink" # Consume all input, produce repeating 0s
+
+# For Magma only
+"tcp-server:192.168.61.132:3868" = "sink"
+
+# If you want to specify a plugin that handles I/O in a custom way, this is the syntax:
+[io."tcp-client:127.0.0.2:36412"]
+# `method` - should always be "plugin"
+method = "plugin"
+# `when` - indicates whether the connection is persistent throughout the lifetime of the application (`startup`)
+# or reset at each fuzzing round (`perround`). Note that `fuzz` I/O endpoints default to `perround`.
+when = "perround"
+# `module` - indicates the Rust crate that will be used to handle custom I/O parsing
+module = "fizzle-plugin-fuzz-s1ap"
+# `plugin` - the name of the struct within the module that is used for the plugin (must implement the `Plugin` trait).
+plugin = "S1apFuzzClient"
+# Specifies the number of concurrent connections to establish. This should normally be set to 1.
+streams = 1

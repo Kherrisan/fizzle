@@ -1,3 +1,4 @@
+use std::os::fd::RawFd;
 use std::process::Command;
 use std::thread::ThreadId;
 use std::time::Duration;
@@ -8,6 +9,7 @@ use heapless::FnvIndexSet;
 use crate::arena::Rc;
 use crate::backend::{ConnectedBackend, PendingBackend};
 use crate::constants::{FIZZLE_MAX_FUZZ_ENDPOINTS, FIZZLE_MEMORY_ENV};
+use crate::handlers::file::CowId;
 use crate::handlers::id::{WorkerId, WorkerInfo};
 use crate::handlers::mutex::MutexStatus;
 use crate::handlers::polled::PolledId;
@@ -52,6 +54,10 @@ pub enum Outcome<S, E> {
     Execute(unsafe extern "C" fn()),
     /// Send the given signal to the specified worker
     SendSignal(SignalDestination, RaisedSignalInfo),
+    /// Create a copy-on-write (CoW) file with contents taken from the (optional) file descriptor.
+    CreateCow(Option<RawFd>),
+    /// Migrate the CoW file descriptor to the calling process.
+    MigrateCow(CowId),
 }
 
 pub struct Scheduler;

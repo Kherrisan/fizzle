@@ -114,7 +114,7 @@ impl<'de> de::Visitor<'de> for IoEndpointVisitor {
     type Value = IoEndpoint;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a location of form of \"<uri>:<addr>\" or \"stdio\"")
+        formatter.write_str("a location of form of \"file:<filepath>\", \"<uri>:<addr>\" or \"stdio\"")
     }
 
     fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>

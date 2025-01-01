@@ -103,6 +103,10 @@ impl<const N: usize> FilePath<N> {
         Self::from_raw_bytes(path.to_bytes())
     }
 
+    pub fn as_cstr(&self) -> &CStr {
+        CStr::from_bytes_with_nul(self.buf.data()).unwrap()
+    }
+
     /// Note that this should not include any null terminating character.
     pub fn from_raw_bytes(path: &[u8]) -> Result<Self, PathError> {
         if path.len() > 255 || path.is_empty() {

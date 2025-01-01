@@ -2,11 +2,13 @@ use std::ffi::CStr;
 
 use fizzle_common::path::FilePath;
 
-use crate::{
-    backend::FileBackend,
-    handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource},
-    hook_macros,
-};
+use crate::backend::FileBackend;
+use crate::errno::Errno;
+use crate::handlers::descriptor::*;
+use crate::handlers::file::*;
+use crate::hook_macros;
+use crate::scheduler::Scheduler;
+use crate::strace;
 
 hook_macros::hook! {
     unsafe fn lseek(
@@ -36,10 +38,12 @@ hook_macros::hook! {
         flags: libc::c_int,
         mode: libc::mode_t
     ) -> libc::c_int => fizzle_open(ctx) {
-        let mut state = ctx.acquire();
-
-        let close_on_exec = (flags & libc::O_CLOEXEC) != 0;
-        // TODO: file locking is not yet supported here...
+        let Some(open_flags) = FileOpenFlags::from_bits(flags) else {
+            log::warn!("unrecognized flags in `open()`");
+            strace!("open(pathname={:?}, flags={}) -> -1 (EINVAL)", pathname, flags);
+            Errno::EINVAL.set_errno();
+            return -1
+        };
 
         // TODO: track atime
 
@@ -48,86 +52,31 @@ hook_macros::hook! {
         // TODO: what about O_TRUNC?
 
         let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
-            log::debug!("malformed or oversized filepath passed to `open`");
-            *libc::__errno_location() = libc::EINVAL;
+            log::warn!("malformed or oversized filepath passed to `open()`");
+            strace!("open(pathname={:?}, flags={:?}) -> -1 (EINVAL)", pathname, open_flags);
+            Errno::EINVAL.set_errno();
             return -1
         };
 
-        let path = if relative_path.is_absolute() {
-            relative_path
+        let mode = if open_flags.contains(FileOpenFlags::CREATE) {
+            // TODO: just ignores unrecognized open flag bits--correct??
+            Some(AccessMode::from_bits_truncate(mode))
         } else {
-            let Ok(path) = state.local.working_directory.clone().concat(&relative_path) else {
-                log::debug!("oversized total filepath length in `open`");
-                *libc::__errno_location() = libc::EINVAL;
-                return -1
-            };
-            path
+            None
         };
 
-        // Files are drawn from the underlying filesystem by default.
-        // A user may configure certain file paths to be mapped to virtual files.
-        // Likewise, files created during the lifetime of fizzle are stored virtually.
+        crate::strace!("open(pathname={:?}, flags={:?}, mode={:?}) -> ...", relative_path, open_flags, mode);
 
-        if (flags & libc::O_CREAT) != 0 {
-            // TODO: we ignore open mode here
-
-            let file_id = match state.global.create_file(path) {
-                Ok(file_id) => file_id,
-                Err(_) if (flags & libc::O_EXCL) != 0 => {
-                    *libc::__errno_location() = libc::EEXIST;
-                    return -1
-                }
-                Err(file_id) => file_id,
-            };
-
-            let fd = crate::create_descriptor();
-
-            state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
-                close_on_exec,
-                nonblocking: false,
-                is_passthrough: false,
-                resource: FdResource::File(file_id)
-            }).unwrap();
-
-            fd
-
-        } else if (flags & libc::O_PATH) != 0 {
-            // TODO: what about O_CREAT here?
-            let fd = hook_macros::real!(open)(pathname, flags, mode);
-            let dir_id = state.local.dirs.allocate(path).unwrap();
-            state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
-                close_on_exec,
-                nonblocking: false,
-                is_passthrough: true,
-                resource: FdResource::Directory(dir_id)
-            }).unwrap();
-
-            fd
-
-        } else if let Some(file_id) = state.global.file_paths.get(&path).cloned() {
-            let fd = crate::create_descriptor();
-            state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
-                close_on_exec,
-                nonblocking: false,
-                is_passthrough: true,
-                resource: FdResource::File(file_id),
-            }).unwrap();
-            fd
-
-        } else {
-            let fd = hook_macros::real!(open)(pathname, flags, mode);
-            if fd >= 0 {
-                let file_id = state.global.files.allocate(FileBackend::Passthrough).unwrap();
-
-                state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
-                    close_on_exec: false,
-                    nonblocking: false,
-                    is_passthrough: true,
-                    resource: FdResource::File(file_id),
-                }).unwrap();
+        match Scheduler::handle_event(&mut ctx, FileOpenEvent::new(relative_path.clone(), open_flags, mode)) {
+            Ok(fd) => {
+                crate::strace!("open(pathname={:?}, flags={:?}, mode={:?}) -> {}", relative_path, open_flags, mode, fd);
+                fd
+            },
+            Err(e) => {
+                crate::strace!("open(pathname={:?}, flags={:?}, mode={:?}) -> -1 ({})", relative_path, open_flags, mode, e);
+                e.set_errno();
+                -1
             }
-
-            fd
         }
     }
 }
@@ -136,42 +85,46 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn creat(
         pathname: *const libc::c_char,
-        _mode: libc::mode_t
+        mode: libc::mode_t
     ) -> libc::c_int => fizzle_creat(ctx) {
-        let mut state = ctx.acquire();
+        let open_flags = FileOpenFlags::CREATE | FileOpenFlags::TRUNC | FileOpenFlags::WRITEONLY;
+
+        // TODO: track atime
+
+        // TODO: deal with terminals
+
+        // TODO: what about O_TRUNC?
 
         let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
-            *libc::__errno_location() = libc::EINVAL;
+            log::warn!("malformed or oversized filepath passed to `open()`");
+            strace!("open(pathname={:?}, flags={:?}) -> -1 (EINVAL)", pathname, open_flags);
+            Errno::EINVAL.set_errno();
             return -1
         };
 
-        let path = if relative_path.is_absolute() {
-            relative_path
+        let mode = if open_flags.contains(FileOpenFlags::CREATE) {
+            // TODO: just ignores unrecognized open flag bits--correct??
+            Some(AccessMode::from_bits_truncate(mode))
         } else {
-            let Ok(path) = state.local.working_directory.clone().concat(&relative_path) else {
-                *libc::__errno_location() = libc::EINVAL;
-                return -1
-            };
-            path
+            None
         };
 
-        // TODO: we ignore open mode here
+        crate::strace!("open(pathname={:?}, flags={:?}, mode={:?}) -> ...", relative_path, open_flags, mode);
 
-        let file_id = match state.global.create_file(path) {
-            Ok(file_id) => file_id, // New file
-            Err(file_id) => file_id, // Existing file
-        };
-
-        let fd = crate::create_descriptor();
-
-        state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
-            close_on_exec: false,
-            nonblocking: false,
-            is_passthrough: false,
-            resource: FdResource::File(file_id)
-        }).unwrap();
-
-        fd
+        match Scheduler::handle_event(&mut ctx, FileOpenEvent::new(relative_path.clone(), open_flags, mode)) {
+            Ok(fd) => {
+                crate::strace!("open(pathname={:?}, flags={:?}, mode={:?}) -> {}", relative_path, open_flags, mode, fd);
+                fd
+            },
+            Err(e) => {
+                crate::strace!("open(pathname={:?}, flags={:?}, mode={:?}) -> -1 ({})", relative_path, open_flags, mode, e);
+                e.set_errno();
+                -1
+            }
+        }
+    
+    
+    
     }
 }
 

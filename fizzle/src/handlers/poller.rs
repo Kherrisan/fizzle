@@ -3,7 +3,7 @@ use std::os::fd::RawFd;
 use std::time::Duration;
 
 use crate::arena::{ArenaKey, Rc};
-use crate::backend::{ConnectedBackend, ConnectionlessBackend, FileBackend, StdioBackend};
+use crate::backend::{ConnectedBackend, ConnectionlessBackend, StdioBackend};
 use crate::constants::FIZZLE_MAX_PER_POLLER_QUEUED_EVENTS;
 use crate::errno::Errno;
 use crate::handlers::epoll::{EpollDirection, EpollInterest};
@@ -1083,7 +1083,9 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                 .clone(),
         ),
         FdResource::Directory(_) => PolledStatus::NotPollable,
-        FdResource::File(file_id) => match &state.global.files.get(&file_id).unwrap().backend {
+        FdResource::File(_file_id) => PolledStatus::ImmediatelyPollable, // Polling a file is not generally supported
+        /*
+        match &state.global.files.get(&file_id).unwrap().backend {
             FileBackend::Passthrough => PolledStatus::ImmediatelyPollable,
             FileBackend::Peered(_) => unreachable!(),
             FileBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.read_polled.clone()),
@@ -1108,6 +1110,7 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                     .clone(),
             ),
         },
+        */
         FdResource::MessageQueue(_) => todo!(),
         FdResource::Pipe(pipe_id) => PolledStatus::Pollable(
             state
@@ -1231,7 +1234,9 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                 .clone(),
         ),
         FdResource::Directory(_) => PolledStatus::NotPollable,
-        FdResource::File(file_id) => match &state.global.files.get(&file_id).unwrap().backend {
+        FdResource::File(_file_id) => PolledStatus::ImmediatelyPollable,
+        /*
+        match &state.global.files.get(&file_id).unwrap().backend {
             FileBackend::Passthrough | FileBackend::Peered(_) => unreachable!(),
             FileBackend::Feedback(feedback) => {
                 PolledStatus::Pollable(feedback.write_polled.clone())
@@ -1249,6 +1254,7 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
             FileBackend::NullSink => PolledStatus::ImmediatelyPollable,
             FileBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
         },
+        */
         FdResource::MessageQueue(_) => todo!(),
         FdResource::Pipe(pipe_id) => {
             if let Some(peer_id) = &state.global.pipes.get(&pipe_id).unwrap().peer {

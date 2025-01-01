@@ -1,6 +1,7 @@
 use std::cmp;
 use std::fmt::Display;
 use std::os::fd::RawFd;
+use std::rc::Rc;
 
 use bitflags::bitflags;
 use fizzle_common::io::MAX_PATH_LEN;
@@ -8,7 +9,7 @@ use fizzle_common::path::FilePath;
 use fizzle_common::storage::Buffer;
 
 use crate::arena::ArenaKey;
-use crate::backend::FileBackend;
+use crate::backend::{FileBackend, FileFeedback};
 use crate::constants::FIZZLE_FOPEN_BUFSIZE;
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
@@ -258,7 +259,33 @@ impl ArenaKey for FileId {
 #[derive(Debug)]
 pub struct FileInfo {
     pub path: FilePath<MAX_PATH_LEN>,
+    /// The copy-on-write (CoW) shared memory being used to store modifications to the file.
+    pub cow: Option<CowId>,
     pub backend: FileBackend,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct CowId(usize);
+
+impl CowId {
+    pub fn first() -> Self {
+        Self(0)
+    }
+
+    pub fn next(&self) -> Self {
+        Self(self.0 + 1)
+    }
+}
+
+impl From<CowId> for usize {
+    fn from(value: CowId) -> Self {
+        value.0
+    }
+}
+
+pub struct CowInfo {
+    pub memfd: RawFd,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -341,6 +368,188 @@ impl FileObject {
             fd,
             read_buf: Buffer::new(),
             write_buf: Buffer::new(),
+        }
+    }
+}
+
+bitflags! {
+    #[derive(Clone, Copy, Debug)]
+    pub struct FileOpenFlags: libc::c_int {
+        const APPEND = libc::O_APPEND;
+        const ASYNC = libc::O_ASYNC;
+        const CLOEXEC = libc::O_CLOEXEC;
+        const CREATE = libc::O_CREAT;
+        const DIRECT = libc::O_DIRECT;
+        const DIRECTORY = libc::O_DIRECTORY;
+        const DSYNC = libc::O_DSYNC;
+        const EXCLUSIVE = libc::O_EXCL;
+        const LARGEFILE = libc::O_LARGEFILE;
+        const NOATIME = libc::O_NOATIME;
+        const NOCTTY = libc::O_NOCTTY;
+        const NOFOLLOW = libc::O_NOFOLLOW;
+        const NONBLOCK = libc::O_NONBLOCK;
+        const NODELAY = libc::O_NDELAY;
+        const PATH = libc::O_PATH;
+        const SYNC = libc::O_SYNC;
+        const TMPFILE = libc::O_TMPFILE;
+        const TRUNC = libc::O_TRUNC;
+        const READONLY = libc::O_RDONLY;
+        const WRITEONLY = libc::O_WRONLY;
+        const READWRITE = libc::O_RDWR;
+    }
+}
+
+pub struct FileOpenEvent {
+    path: FilePath<MAX_PATH_LEN>,
+    flags: FileOpenFlags,
+    mode: Option<AccessMode>,
+}
+
+impl FileOpenEvent {
+    #[inline]
+    pub fn new(path: FilePath<MAX_PATH_LEN>, flags: FileOpenFlags, mode: Option<AccessMode>) -> Self {
+        Self {
+            path,
+            flags,
+            mode,
+        }
+    }
+}
+
+/*
+
+    /// This method returns `Ok` if the file was created, and `Err` if a file already
+    /// exists at the given path.
+    pub fn create_file(&mut self, path: FilePath<MAX_PATH_LEN>) -> Result<Rc<FileId>, Rc<FileId>> {
+        match self.file_paths.get(&path) {
+            Some(id) => Err(id.clone()),
+            None => {
+                let buf = self.buffers.allocate(Buffer::new()).unwrap();
+                let read_polled = self.polled_events.allocate(PolledInfo::new()).unwrap();
+                let write_polled = self
+                    .polled_events
+                    .allocate(PolledInfo::new_raised())
+                    .unwrap();
+                let file_id = self
+                    .files
+                    .allocate(FileInfo {
+                        path,
+                        backend: FileBackend::Feedback(StandardFeedback {
+                            buf,
+                            read_polled,
+                            write_polled,
+                        }),
+                    })
+                    .unwrap();
+                Ok(file_id)
+            }
+        }
+    }
+*/
+
+pub enum FileOpenState {
+    Start,
+    CowCreated(Rc<CowId>),
+}
+
+impl Event for FileOpenEvent {
+    type Success = RawFd;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let path = match self.path.is_absolute() {
+            true => self.path.clone(),
+            false => match state.local.working_directory.clone().concat(&self.path) {
+                Ok(path) => path,
+                Err(_) => return Outcome::Error(Errno::EINVAL),
+            }
+        };
+
+        // if file exists internally {
+        //   if CREATE && EXCL {
+        //     return err
+        //   }
+        // 
+        //   if local_cow exists {
+        //     create new descriptor with passthrough=false and return it
+        //   } else if global_cow exists {
+        //     initiate local cow creation
+        //   } else {
+        //     open actual file, return its descriptor
+        //   }
+        // 
+        // } else {
+        //   open actual file
+        //   if actual file exists {
+        //     if CREAT && EXCL {
+        //       return err
+        //     } else {
+        //       create internal file entry
+        //       open actual file, return its descriptor
+        //     }
+        //
+        //   } else if CREAT {
+        //     initiate global/local cow creation
+        //   } else {
+        //     return err
+        //   }
+        // }
+
+        match state.global.file_paths.get(&path) {
+            Some(file_id) => if self.flags.contains(FileOpenFlags::CREATE | FileOpenFlags::EXCLUSIVE) {
+                Outcome::Error(Errno::EEXIST)
+
+            } else if let Some(cow_id) = state.global.files.get(file_id).unwrap().cow.as_ref() {
+                match state.local.pasture.get(cow_id) {
+                    Some(cow_info) => Outcome::Success(cow_info.memfd),
+                    None => Outcome::MigrateCow(cow_id.clone()),
+                }
+
+            } else {
+                // Neither local nor global CoW exist; return actual file
+                let fd = match self.mode {
+                    Some(mode) => unsafe { libc::open(path.as_cstr().as_ptr(), self.flags.bits(), mode) },
+                    None => unsafe { libc::open(path.as_cstr().as_ptr(), self.flags.bits()) },
+                };
+
+                if fd < 0 {
+                    panic!("File listed in files but not found in underlying filesystem--file likely deleted while Fizzle was running")
+                }
+
+                Outcome::Success(fd)
+            }
+            None => {
+                if self.flags.contains(FileOpenFlags::TRUNC) && self.flags.intersects(FileOpenFlags::WRITEONLY | FileOpenFlags::READWRITE) {
+                    Outcome::CreateCow(None) // The file is immediately truncated, so it is as if it has been wiped
+                }
+
+                let flag_bits = self.flags.difference(FileOpenFlags::CREATE | FileOpenFlags::EXCLUSIVE | FileOpenFlags::TRUNC).bits();
+                let fd = match self.mode {
+                    Some(mode) => unsafe { libc::open(path.as_cstr().as_ptr(), flag_bits, mode) },
+                    None => unsafe { libc::open(path.as_cstr().as_ptr(), flag_bits) },
+                };
+
+                if fd >= 0 {
+                    if self.flags.contains(FileOpenFlags::CREATE | FileOpenFlags::EXCLUSIVE) {
+                        unsafe { libc::close(fd); }
+                        return Outcome::Error(Errno::EEXIST)
+                    }
+
+                    let file_id = state.global.files.allocate(FileInfo {
+                        path: path.clone(),
+                        cow: None,
+                        backend: FileBackend::Feedback(FileFeedback {}),
+                    }).unwrap();
+                    state.global.file_paths.insert(path, file_id).unwrap();
+
+                    Outcome::Success(fd)
+
+                } else if self.flags.contains(FileOpenFlags::CREATE) {
+                    Outcome::CreateCow(None)
+                } else {
+                    Outcome::Error(Errno::ENOENT)
+                }
+            }
         }
     }
 }

@@ -40,6 +40,9 @@ pub struct StandardFeedback {
 }
 
 #[derive(Clone, Debug)]
+pub struct FileFeedback { }
+
+#[derive(Clone, Debug)]
 pub struct RegularConnected {
     pub peer: Option<Rc<SocketId>>,
     pub recv_buf: Rc<BufferId>,
@@ -67,7 +70,7 @@ pub type ConnectedBackend = IoBackend<RegularConnected, StandardFeedback>;
 pub type ConnectionlessBackend = IoBackend<RegularConnectionless, StandardFeedback>;
 
 /// A backend for a file handle.
-pub type FileBackend = IoBackend<Sealed, StandardFeedback>;
+pub type FileBackend = IoBackend<Sealed, FileFeedback>;
 
 /// A backend for a server socket.
 pub type ServerBackend = IoBackend<(), ()>;

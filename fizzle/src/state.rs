@@ -5,6 +5,7 @@ use std::io::Write;
 use std::mem::MaybeUninit;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::ops::{Deref, DerefMut};
+use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::process::Command;
 use std::thread::ThreadId;
@@ -24,6 +25,7 @@ use rand::{Rng, SeedableRng};
 use crate::arena::{KeyedArena, Rc};
 use crate::comptime;
 use crate::constants::*;
+use crate::errno::Errno;
 use crate::handlers::barrier::{BarrierInfo, BarrierPtr};
 use crate::handlers::buffer::BufferId;
 use crate::handlers::condvar::CondVarPtr;
@@ -31,7 +33,7 @@ use crate::handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource};
 use crate::handlers::directory::DirectoryId;
 use crate::handlers::epoll::{EpollId, EpollInfo};
 use crate::handlers::eventfd::{EventfdId, EventfdInfo};
-use crate::handlers::file::{FileId, FileInfo, FileObject, FilePtr};
+use crate::handlers::file::{CowId, CowInfo, FileId, FileInfo, FileObject, FilePtr};
 use crate::handlers::futex::FutexPtr;
 use crate::handlers::fuzz_endpoint::{FuzzEndpointId, FuzzEndpointInfo};
 use crate::handlers::id::{WorkerId, WorkerInfo};
@@ -56,7 +58,7 @@ use crate::once::SeqOnceCell;
 use crate::plugins::{IoEmulationType, PluginEndpoint, Plugins};
 use crate::semaphore::Semaphore;
 
-use crate::backend::{FileBackend, PendingBackend, ServerBackend, StandardFeedback, StdioBackend};
+use crate::backend::{FileBackend, FileFeedback, PendingBackend, ServerBackend, StandardFeedback, StdioBackend};
 
 pub use private::FizzleSingleton;
 
@@ -286,39 +288,41 @@ impl FizzleState {
             crate::__afl_manual_init();
         }
 
-        let (key, flags) = match env::var(FIZZLE_MEMORY_ENV) {
+        let memfd = match env::var(FIZZLE_MEMORY_ENV) {
             Ok(var) => {
                 log::debug!("attaching to already-created shared memory");
-                (var.parse().unwrap(), (libc::S_IRUSR | libc::S_IWUSR) as i32)
+                let memfd: RawFd = var.parse().unwrap();
+                memfd
             }
             Err(_) => unsafe {
-                let key = libc::getpid();
-                env::set_var(FIZZLE_MEMORY_ENV, key.to_string());
-                log::debug!("allocating public shared memory object with key {}", key);
-                (
-                    key,
-                    (libc::S_IRUSR | libc::S_IWUSR) as i32 | libc::IPC_CREAT | libc::IPC_EXCL,
-                )
-            },
+                log::debug!("allocating public shared memory object...");
+                let memfd = InterprocessState::interprocess_shmem_create();
+                log::debug!("allocated public shared memory object with fd {}", memfd);
+                env::set_var(FIZZLE_MEMORY_ENV, memfd.to_string());
+
+                let ret = libc::ftruncate(memfd, size as i64);
+                assert_eq!(ret, 0, "ftruncate() failed for interprocess memory: {}", Errno::get_errno());
+
+                memfd
+            }
         };
 
+        let location = unsafe {
+            libc::mmap(
+                ptr::null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                memfd,
+                0
+            )
+        };
+
+        if location == libc::MAP_FAILED {
+            panic!("failed to mmap global memory: {}", Errno::get_errno());
+        }
+
         unsafe {
-            let shmid = libc::shmget(key, size, flags);
-            assert!(
-                shmid >= 0,
-                "shared memory creation for key {} failed (errno {})",
-                key,
-                *libc::__errno_location()
-            );
-            log::debug!("shared memory allocated with shmid {}", shmid);
-
-            let location = libc::shmat(shmid, ptr::null_mut(), 0);
-            assert!(
-                location as isize != -1,
-                "mapping shared memory failed (errno {})",
-                *libc::__errno_location()
-            );
-
             &mut *(location as *mut MaybeUninit<InterprocessState>)
         }
     }
@@ -496,6 +500,15 @@ impl FizzleState {
                 thread_id: thread::current().id(),
             },
         );
+
+        let mut unix_fds: [RawFd; 2] = [0; 2];
+        let res = unsafe {
+            libc::socketpair(libc::AF_UNIX, libc::SOCK_DGRAM, 0, unix_fds.as_mut_ptr() as *mut i32)
+        };
+        assert_eq!(res, 0, "failed to create unix socketpair() for passing file descriptors across processes");
+
+        self.global.unix_write_fd = unix_fds[0];
+        self.global.unix_read_fd = unix_fds[1];
     }
 
     #[cold]
@@ -523,406 +536,29 @@ impl FizzleState {
                 onstartup_commands,
                 onready_commands,
                 plugins: plugins.assume_init(),
+                pasture: HashMap::default(),
             });
         }
 
-        self.global.load_config_mappings(endpoints);
+        self.load_config_mappings(endpoints);
     }
 
-    /// Returns both local and global state in separate lifetimes that can be used simultaneously.
-    ///
-    /// This method is used specifically to handle a particular lifetime issue in the Scheduler.
-    pub fn split(&mut self) -> (&mut ProcessLocalState, &mut InterprocessState) {
-        (&mut self.local, self.global)
-    }
+    fn allocate_cow(&mut self) -> CowId {
+        let cow_id = self.global.next_cow_id;
+        self.global.next_cow_id = CowId::next(&cow_id);
+        let cow_fd = InterprocessState::cow_shmem_create(cow_id);
 
-    /// Indicates whether the given polled event is ready to be acted on.
-    pub fn polled_is_ready(&self, polled_id: &Rc<PolledId>) -> bool {
-        let polled = self.global.polled_events.get(polled_id).unwrap();
-        polled.event_raised
-    }
+        self.local.main_state.as_mut().unwrap().pasture.insert(cow_id, CowInfo {
+            memfd: cow_fd,
+        });
+        let local_cow_fd = unsafe { libc::fcntl(cow_fd, libc::F_DUPFD_CLOEXEC, 0) };
+        assert!(local_cow_fd >= 0, "fcntl(F_DUPFD_CLOEXEC, ...) failed for local_cow_fd: {}", Errno::get_errno());
 
-    /// Marks the given polled event as ready.
-    ///
-    /// If not already raised, this method will push_back a poller waiting on this polled event
-    /// (if such a poller exists).
-    pub fn raise_polled(&mut self, polled_id: &Rc<PolledId>) {
-        self.global.raise_polled(polled_id);
-    }
+        self.local.pasture.insert(cow_id, CowInfo {
+            memfd: local_cow_fd,
+        });
 
-    // if buffer is empty, then call this
-    pub fn lower_polled(&mut self, polled_id: &Rc<PolledId>) {
-        let polled = self.global.polled_events.get_mut(polled_id).unwrap();
-        debug_assert!(polled.event_raised);
-        polled.event_raised = false;
-    }
-
-    /// Creates a new poller for the currently executing worker.
-    pub fn new_poller(&mut self) -> Rc<PollerId> {
-        let worker_id = self.current_worker_id();
-
-        self.global
-            .pollers
-            .allocate(PollerInfo {
-                worker_id,
-                polled_events: heapless::Vec::new(),
-                raised_events: heapless::FnvIndexSet::new(),
-            })
-            .unwrap()
-    }
-
-    /// Registers `poller_id` as waiting on `polled_id`.
-    pub fn register_poller(&mut self, poller_id: Rc<PollerId>, polled_id: Rc<PolledId>) {
-        let poller = self.global.pollers.get_mut(&poller_id).unwrap();
-        poller.polled_events.push(polled_id.clone()).unwrap();
-        let polled = self.global.polled_events.get_mut(&polled_id).unwrap();
-        debug_assert!(!polled.event_raised);
-        polled.pollers.push(poller_id).unwrap();
-    }
-
-    // Ugh. This looks like O(n^2)...
-    /// Deletes the given poller, removing any references to it from `Polled` objects.
-    pub fn delete_poller(&mut self, poller_id: Rc<PollerId>) {
-        let poller = self.global.pollers.get_mut(&poller_id).unwrap();
-
-        if poller.deref().in_raised_queue() {
-            // TODO: make queue indexable in future to improve speed here
-
-            // Remove the poller from the ready queue, leaving the others in the same order
-            for _ in 0..self.global.ready.len() {
-                let ready = self.global.ready.pop_front().unwrap();
-                if let ReadyInfo::Poller(current_poller_id) = &ready {
-                    if *current_poller_id != poller_id {
-                        self.global.ready.push_back(ready).unwrap();
-                    }
-                }
-            }
-        }
-
-        // Remove the poller from each polled instance it was registered to
-        for polled_id in poller.polled_events.iter() {
-            let polled = self.global.polled_events.get_mut(&polled_id).unwrap();
-            for i in 0..polled.pollers.len() {
-                if *polled.pollers.get(i).unwrap() == poller_id {
-                    polled.pollers.remove(i);
-                }
-            }
-        }
-    }
-
-    pub fn current_worker_id(&mut self) -> WorkerInfo {
-        WorkerInfo {
-            process_id: self.local.process_id,
-            thread_id: thread::current().id(),
-        }
-    }
-
-    /// Adds a thread from the current process to the back of the `ready` queue.
-    pub fn mark_thread_ready(&mut self, thread_id: ThreadId) {
-        let process_id = self.local.process_id;
-        self.global
-            .ready
-            .push_back(ReadyInfo::Worker(WorkerInfo {
-                process_id,
-                thread_id,
-            }))
-            .unwrap();
-    }
-
-    /// Adds a thread from the current process to the `delayed_ready` queue.
-    pub fn mark_thread_delayed_ready(&mut self, thread_id: ThreadId) {
-        let process_id = self.local.process_id;
-        self.global
-            .delayed_ready
-            .push_back(ReadyInfo::Worker(WorkerInfo {
-                process_id,
-                thread_id,
-            }))
-            .unwrap();
-    }
-
-    /// Adds a thread from the current process to the front of the `delayed_ready` queue.
-    pub fn mark_thread_immediately_ready(&mut self, thread_id: ThreadId) {
-        let process_id = self.local.process_id;
-        self.global
-            .delayed_ready
-            .push_front(ReadyInfo::Worker(WorkerInfo {
-                process_id,
-                thread_id,
-            }))
-            .unwrap();
-    }
-}
-
-#[derive(Debug)]
-pub struct InheritedState {
-    pub fds: Descriptors,
-    pub process_id: ProcessId,
-    pub signal_handlers: SignalHandlers,
-    pub sigmask: SignalSet,
-}
-
-/// State specific to the first (root) process instantiated by Fizzle.
-pub struct MainProcessState {
-    pub onstartup_commands: Vec<Command>,
-    pub onready_commands: Vec<Command>,
-    pub plugins: Box<Plugins>,
-}
-
-impl Debug for MainProcessState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MainProcessState")
-            .field("onstartup_commands", &self.onstartup_commands)
-            .field("awaiting_thread_death", &self.onready_commands)
-            .field("plugins", &"<opaque>")
-            .finish()
-    }
-}
-
-pub struct ProcessLocalState {
-    /// Indicates whether the given process-local state has completed initialization routines.
-    ///
-    /// When `ProcessLocalState` is first allocated and instantiated, this is set to `false`. Once
-    /// `FizzleState::initialize_local()` is called, this is set to `true`.
-    pub is_initialized: bool,
-    /// State associated with the main process (e.g. the first process instantiated with the Fizzle harness).
-    pub main_state: Option<MainProcessState>,
-    /// See `atexit()`
-    pub atexit_handlers: Vec<AtExitFunction>,
-    /// See `on_exit()`
-    pub on_exit_handlers: Vec<(OnExitFunction, *mut libc::c_void)>,
-    /// A thread that has received a cancellation request.
-    pub cancelling: Option<ThreadId>,
-    pub process_id: ProcessId,
-    /// A supplamentary thread used to reap exiting threads.
-    pub reaper: Option<ThreadId>,
-    pub fds: Box<Descriptors>,
-    pub dirs: KeyedArena<DirectoryId, FilePath<MAX_PATH_LEN>, FIZZLE_MAX_DIRS>,
-    pub barriers: HashMap<BarrierPtr, BarrierInfo, FxBuildHasher>,
-    pub condvars: HashMap<CondVarPtr, VecDeque<ThreadId>, FxBuildHasher>,
-    pub named_semaphores: HashMap<SemaphorePtr, Rc<SemaphoreId>>,
-    /// Files specifically designated as being emulated.
-    pub file_objs: HashMap<FilePtr, FileObject, FxBuildHasher>,
-    pub mutexes: HashMap<MutexPtr, MutexInfo, FxBuildHasher>,
-    pub rwlocks: HashMap<RwLockPtr, RwLockInfo, FxBuildHasher>,
-    pub semaphores: HashMap<SemaphorePtr, SemaphoreInfo>,
-    pub spinlocks: HashMap<SpinlockPtr, VecDeque<ThreadId>, FxBuildHasher>,
-    pub tids: HashMap<ThreadId, WorkerId>,
-    pub pthreads: HashMap<libc::pthread_t, ThreadInfo, FxBuildHasher>,
-    pub atfork_handlers: Vec<AtForkInfo>,
-    pub pthread_cleanup: HashMap<ThreadId, VecDeque<PThreadRoutine>, FxBuildHasher>,
-    pub pthread_keys: HashMap<libc::pthread_key_t, PThreadRoutine, FxBuildHasher>,
-    pub pthread_key_values: HashMap<
-        libc::pthread_key_t,
-        HashMap<ThreadId, *mut libc::c_void, FxBuildHasher>,
-        FxBuildHasher,
-    >,
-    pub futex_waiters: HashMap<FutexPtr, VecDeque<(u32, ThreadId)>, FxBuildHasher>,
-    pub terminated_threads: HashSet<ThreadId, FxBuildHasher>,
-    pub signals: HashMap<ThreadId, ThreadSigInfo, FxBuildHasher>,
-    /// Indicates which thread(s) are awaiting the death of a specific thread (via pthread_join)
-    pub awaiting_thread_death: HashMap<ThreadId, Vec<ThreadId>, FxBuildHasher>,
-    /// The directory that the program is currently executing relative to.
-    pub working_directory: FilePath<MAX_PATH_LEN>,
-}
-
-impl Debug for ProcessLocalState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FizzLocal")
-            .field("is_initialized", &self.is_initialized)
-            .field("main_state", &self.main_state)
-            .field("process_id", &self.process_id)
-            .field("cancelling", &self.cancelling)
-            .field("reaper", &self.reaper)
-            .field("fds", &self.fds)
-            .field("dirs", &self.dirs)
-            .field("barriers", &self.barriers)
-            .field("condvars", &self.condvars)
-            .field("named_semaphores", &self.named_semaphores)
-            .field("file_objs", &self.file_objs)
-            .field("mutexes", &self.mutexes)
-            .field("rwlocks", &self.rwlocks)
-            .field("semaphores", &self.semaphores)
-            .field("spinlocks", &self.spinlocks)
-            .field("pthreads", &self.pthreads)
-            .field("pthread_atfork", &self.atfork_handlers)
-            .field("pthread_cleanup", &self.pthread_cleanup)
-            .field("pthread_keys", &self.pthread_keys)
-            .field("pthread_key_values", &self.pthread_key_values)
-            .field("futex_waiters", &self.futex_waiters)
-            .field("terminated_threads", &self.terminated_threads)
-            .field("awaiting_thread_death", &self.awaiting_thread_death)
-            .field("working_directory", &self.working_directory)
-            .finish()
-    }
-}
-
-impl ProcessLocalState {
-    fn new() -> Self {
-        let working_directory =
-            FilePath::from_raw_bytes(env::current_dir().unwrap().as_os_str().as_bytes()).unwrap();
-
-        Self {
-            is_initialized: false,
-            main_state: None,
-            atexit_handlers: Vec::new(),
-            on_exit_handlers: Vec::new(),
-            cancelling: None,
-            process_id: ProcessId::main_process(),
-            reaper: None,
-            fds: Box::new(KeyedArena::new()),
-            dirs: Default::default(),
-            barriers: HashMap::default(),
-            condvars: HashMap::default(),
-            file_objs: HashMap::default(),
-            mutexes: HashMap::default(),
-            named_semaphores: HashMap::default(),
-            rwlocks: HashMap::default(),
-            semaphores: HashMap::default(),
-            spinlocks: HashMap::default(),
-            tids: Default::default(),
-            pthreads: HashMap::default(),
-            atfork_handlers: Vec::default(),
-            pthread_cleanup: HashMap::default(),
-            pthread_keys: HashMap::default(),
-            pthread_key_values: HashMap::default(),
-            signals: HashMap::default(),
-            futex_waiters: HashMap::default(),
-            terminated_threads: HashSet::default(),
-            working_directory,
-            awaiting_thread_death: HashMap::default(),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct InterprocessState {
-    /// Indicates whether the state has been properly initialized (not just instantiated).
-    pub is_initialized: bool,
-    /// The thread identifier to be executed by the waking process. This is `Some` if and only if
-    /// a thread is currently about to be scheduled.
-    pub waking_id: Option<ThreadId>,
-    /// The thread/process identifier to be reaped. This is `Some` if and only if a thread/process
-    /// is currently exiting.
-    pub exiting_id: Option<WorkerInfo>,
-    /// State passed between calls to the `exec()` family of functions
-    pub inherited_state: Option<InheritedState>,
-    /// The thread/process identifier to be signalled with the given signal value. This is `Some`
-    /// if and only if a thread is about to receive an outstanding signal.
-    pub signal: Option<(SignalDestination, RaisedSignalInfo)>,
-    /// Indicates which thread(s) are awaiting the death of a specific process (via `waitpid`)
-    pub awaiting_process_death: FnvIndexMap<
-        ProcessId,
-        FnvIndexSet<WorkerInfo, FIZZLE_MAX_WAITING_PARENTS>,
-        FIZZLE_MAX_DEAD_PROCESSES,
-    >,
-    /// Processes that have been exited.
-    pub exited_processes: FnvIndexMap<ProcessId, SigChildInfo, FIZZLE_MAX_DEAD_PROCESSES>,
-    /// Signal dispositions, handlers and blocked incoming signals for each process.
-    pub processes: KeyedArena<ProcessId, ProcessInfo, FIZZLE_MAX_PROCESSES>,
-    /// Thread/process IDs.
-    pub ids: KeyedArena<WorkerId, WorkerInfo, FIZZLE_MAX_WORKERS>,
-    pub process_groups: KeyedArena<
-        ProcessGroupId,
-        FnvIndexSet<ProcessId, FIZZLE_MAX_PROCESS_GROUP_SIZE>,
-        FIZZLE_MAX_PROCESS_GROUPS,
-    >,
-
-    /// The number of rounds to run fuzzing when executing in Persistent mode.
-    pub persistent_rounds: usize,
-    /// The next StreamId available to be assigned to an emulated stream.
-    pub next_stream_id: StreamId,
-    /// The next ephemeral port to be assigned to a socket.
-    pub next_ephemeral_port: u16,
-    pub process_locks: [Option<Semaphore>; FIZZLE_MAX_PROCESSES],
-    //    pub pids: FnvIndexMap<libc::pid_t, ProcessId, FIZZLE_MAX_PROCESSES>,
-    /// If true, stderr is silently dropped; otherwise it is printed.
-    pub mask_stderr: bool,
-    pub afl_shmem_initialized: bool,
-    pub epolls: KeyedArena<EpollId, EpollInfo, FIZZLE_MAX_EPOLLS>,
-    pub event_fds: KeyedArena<EventfdId, EventfdInfo, FIZZLE_MAX_EVENTFDS>,
-    pub file_paths: FnvIndexMap<FilePath<MAX_PATH_LEN>, Rc<FileId>, FIZZLE_MAX_FILE_PATHS>,
-    pub files: KeyedArena<FileId, FileInfo, FIZZLE_MAX_FILES>,
-    pub sem_paths: FnvIndexMap<SemaphorePath, Rc<SemaphoreId>, FIZZLE_MAX_NAMED_SEMAPHORES>,
-    pub semaphores: KeyedArena<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>,
-    pub pipes: KeyedArena<PipeId, PipeInfo, FIZZLE_MAX_PIPES>,
-    pub message_queues: KeyedArena<MqId, MqInfo, FIZZLE_MAX_MESSAGE_QUEUES>,
-    // TODO: SO_REUSEPORT breaks this...
-    pub socket_locations:
-        FnvIndexMap<TransportAddress, TransportLocationInfo, FIZZLE_MAX_SOCKADDRS>,
-    pub sockets: KeyedArena<SocketId, SocketInfo, FIZZLE_MAX_SOCKETS>,
-    pub buffers: KeyedArena<BufferId, Buffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
-    pub stdio: StdioBackend,
-    /// Polling infrastructure
-    pub plugins: KeyedArena<PluginEndpointId, PluginInfo, FIZZLE_MAX_PLUGIN_STREAMS>,
-    pub polled_events: KeyedArena<PolledId, PolledInfo, FIZZLE_MAX_POLLED_EVENTS>,
-    pub pollers: KeyedArena<PollerId, PollerInfo, FIZZLE_MAX_POLLERS>,
-    /// Pollers/Workers that can be immediately scheduled.
-    pub ready: Deque<ReadyInfo, FIZZLE_MAX_QUEUED_READY_POLLERS>,
-    /// Pollers/Workers that should be scheduled once the system has reached a halted state.
-    pub delayed_ready: Deque<ReadyInfo, FIZZLE_MAX_QUEUED_READY_POLLERS>,
-    pub fuzz_input: Buffer<FIZZLE_MAX_FUZZ_INPUT>,
-    pub per_round_clients: heapless::Vec<PerRoundClientInfo, FIZZLE_MAX_PER_ROUND_ENDPOINTS>,
-    pub per_round_endpoints: FnvIndexSet<Rc<SocketId>, FIZZLE_MAX_PER_ROUND_ENDPOINTS>,
-    pub fuzz_endpoints: KeyedArena<FuzzEndpointId, FuzzEndpointInfo, FIZZLE_MAX_FUZZ_ENDPOINTS>,
-    pub prefuzz_rng: rand::rngs::SmallRng,
-}
-
-impl InterprocessState {
-    // TODO: situate() is unsafe--whenever we change the fields in InterprocessState, it becomes
-    // unsound until we add the corresponding definition. We should really change it to a trait +
-    // proc macro derive.
-    /// Takes an uninitialized InterprocessState and initializes it in place.
-    fn situate(state: &mut MaybeUninit<InterprocessState>) -> &mut InterprocessState {
-        unsafe {
-            let state = state.as_mut_ptr();
-            *ptr::addr_of_mut!((*state).is_initialized) = false;
-
-            *ptr::addr_of_mut!((*state).waking_id) = None;
-            *ptr::addr_of_mut!((*state).exiting_id) = None;
-            *ptr::addr_of_mut!((*state).inherited_state) = None;
-
-            *ptr::addr_of_mut!((*state).mask_stderr) = false;
-            *ptr::addr_of_mut!((*state).signal) = None;
-            *ptr::addr_of_mut!((*state).awaiting_process_death) = Default::default();
-            *ptr::addr_of_mut!((*state).exited_processes) = Default::default();
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).processes));
-
-            *ptr::addr_of_mut!((*state).persistent_rounds) = FIZZLE_AFL_LOOP; // TODO: make configurable
-            *ptr::addr_of_mut!((*state).next_stream_id) = StreamId::from(0);
-            *ptr::addr_of_mut!((*state).next_ephemeral_port) = FIZZLE_EPHEMERAL_PORT_START;
-            *ptr::addr_of_mut!((*state).process_locks) = array::from_fn(|_| None);
-
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).ids));
-            *ptr::addr_of_mut!((*state).afl_shmem_initialized) = false;
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).process_groups));
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).epolls));
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).event_fds));
-            *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).files));
-            *ptr::addr_of_mut!((*state).sem_paths) = FnvIndexMap::new();
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).semaphores));
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).pipes));
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).message_queues));
-            *ptr::addr_of_mut!((*state).socket_locations) = FnvIndexMap::new();
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).sockets));
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).buffers));
-
-            *ptr::addr_of_mut!((*state).stdio) = StdioBackend::Passthrough;
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).plugins));
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).polled_events));
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).pollers));
-            *ptr::addr_of_mut!((*state).ready) = Deque::new();
-            *ptr::addr_of_mut!((*state).delayed_ready) = Deque::new();
-            *ptr::addr_of_mut!((*state).fuzz_input) = Buffer::new();
-            *ptr::addr_of_mut!((*state).per_round_clients) = heapless::Vec::new();
-            *ptr::addr_of_mut!((*state).per_round_endpoints) = FnvIndexSet::new();
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).fuzz_endpoints));
-            *ptr::addr_of_mut!((*state).prefuzz_rng) =
-                SmallRng::seed_from_u64(0xABAD_5EED_ABAD_5EED_u64); // TODO: enable custom seed loading
-
-            &mut (*state)
-        }
+        cow_id
     }
 
     fn load_config_mappings(&mut self, endpoints: Vec<PluginEndpoint>) {
@@ -931,20 +567,22 @@ impl InterprocessState {
                 let endpoint_variant = endpoint.endpoint_variant.clone();
                 match endpoint_variant {
                     IoEndpointVariant::Stdio => {
-                        self.stdio = match &endpoint.emulation_type {
+                        self.global.stdio = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => StdioBackend::Feedback(StandardFeedback {
-                                buf: self.buffers.allocate(Buffer::new()).unwrap(),
+                                buf: self.global.buffers.allocate(Buffer::new()).unwrap(),
                                 read_polled: self
+                                    .global
                                     .polled_events
                                     .allocate(PolledInfo::new())
                                     .unwrap(),
                                 write_polled: self
+                                    .global    
                                     .polled_events
                                     .allocate(PolledInfo::new_raised())
                                     .unwrap(),
                             }),
                             IoEmulationType::Plugin(module_id) => {
-                                StdioBackend::Plugin(self.add_plugin(
+                                StdioBackend::Plugin(self.global.add_plugin(
                                     endpoint.endpoint_variant.clone(),
                                     module_id.clone(),
                                 ))
@@ -952,7 +590,7 @@ impl InterprocessState {
                             IoEmulationType::Sink => StdioBackend::Sink,
                             IoEmulationType::NullSink => StdioBackend::NullSink,
                             IoEmulationType::Fuzz => {
-                                let fuzz_endpoint_id = self.add_fuzz_endpoint();
+                                let fuzz_endpoint_id = self.global.add_fuzz_endpoint();
                                 StdioBackend::Fuzz(fuzz_endpoint_id)
                             }
                             IoEmulationType::Passthrough => StdioBackend::Passthrough,
@@ -964,54 +602,54 @@ impl InterprocessState {
 
                         let file_id = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => self
+                                .global
                                 .files
                                 .allocate(FileInfo {
                                     path: path.clone(),
-                                    backend: FileBackend::Feedback(StandardFeedback {
-                                        buf: self.buffers.allocate(Buffer::new()).unwrap(),
-                                        read_polled: self
-                                            .polled_events
-                                            .allocate(PolledInfo::new())
-                                            .unwrap(),
-                                        write_polled: self
-                                            .polled_events
-                                            .allocate(PolledInfo::new_raised())
-                                            .unwrap(),
-                                    }),
+                                    backend: FileBackend::Feedback(FileFeedback { }),
+                                    cow: Some(self.allocate_cow()),
                                 })
                                 .unwrap(),
                             IoEmulationType::Plugin(module_id) => {
-                                let backend = FileBackend::Plugin(self.add_plugin(
+                                let backend = FileBackend::Plugin(self.global.add_plugin(
                                     endpoint.endpoint_variant.clone(),
                                     module_id.clone(),
                                 ));
-                                self.files
+                                self.global
+                                    .files
                                     .allocate(FileInfo {
                                         path: path.clone(),
+                                        cow: None,
                                         backend,
                                     })
                                     .unwrap()
                             }
                             IoEmulationType::Sink => self
+                                .global
                                 .files
                                 .allocate(FileInfo {
                                     path: path.clone(),
+                                    cow: None,
                                     backend: FileBackend::Sink,
                                 })
                                 .unwrap(),
                             IoEmulationType::NullSink => self
+                                .global
                                 .files
                                 .allocate(FileInfo {
                                     path: path.clone(),
+                                    cow: None,
                                     backend: FileBackend::NullSink,
                                 })
                                 .unwrap(),
                             IoEmulationType::Fuzz => {
-                                let fuzz_endpoint_id = self.add_fuzz_endpoint();
+                                let fuzz_endpoint_id = self.global.add_fuzz_endpoint();
                                 let file_id = self
+                                    .global
                                     .files
                                     .allocate(FileInfo {
                                         path: path.clone(),
+                                        cow: Some(self.allocate_cow()),
                                         backend: FileBackend::Fuzz(fuzz_endpoint_id),
                                     })
                                     .unwrap();
@@ -1019,15 +657,17 @@ impl InterprocessState {
                                 file_id
                             }
                             IoEmulationType::Passthrough => self
+                                .global
                                 .files
                                 .allocate(FileInfo {
                                     path: path.clone(),
+                                    cow: None,
                                     backend: FileBackend::Passthrough,
                                 })
                                 .unwrap(),
                         };
 
-                        self.file_paths.insert(path, file_id).unwrap();
+                        self.global.file_paths.insert(path, file_id).unwrap();
                     }
                     IoEndpointVariant::TcpServer(addr) => {
                         let backend = match &endpoint.emulation_type {
@@ -1191,6 +831,454 @@ impl InterprocessState {
                     _ => panic!("unimplemented IoEndpoint type"),
                 }
             }
+        }
+    }
+
+    /// Returns both local and global state in separate lifetimes that can be used simultaneously.
+    ///
+    /// This method is used specifically to handle a particular lifetime issue in the Scheduler.
+    pub fn split(&mut self) -> (&mut ProcessLocalState, &mut InterprocessState) {
+        (&mut self.local, self.global)
+    }
+
+    /// Indicates whether the given polled event is ready to be acted on.
+    pub fn polled_is_ready(&self, polled_id: &Rc<PolledId>) -> bool {
+        let polled = self.global.polled_events.get(polled_id).unwrap();
+        polled.event_raised
+    }
+
+    /// Marks the given polled event as ready.
+    ///
+    /// If not already raised, this method will push_back a poller waiting on this polled event
+    /// (if such a poller exists).
+    pub fn raise_polled(&mut self, polled_id: &Rc<PolledId>) {
+        self.global.raise_polled(polled_id);
+    }
+
+    // if buffer is empty, then call this
+    pub fn lower_polled(&mut self, polled_id: &Rc<PolledId>) {
+        let polled = self.global.polled_events.get_mut(polled_id).unwrap();
+        debug_assert!(polled.event_raised);
+        polled.event_raised = false;
+    }
+
+    /// Creates a new poller for the currently executing worker.
+    pub fn new_poller(&mut self) -> Rc<PollerId> {
+        let worker_id = self.current_worker_id();
+
+        self.global
+            .pollers
+            .allocate(PollerInfo {
+                worker_id,
+                polled_events: heapless::Vec::new(),
+                raised_events: heapless::FnvIndexSet::new(),
+            })
+            .unwrap()
+    }
+
+    /// Registers `poller_id` as waiting on `polled_id`.
+    pub fn register_poller(&mut self, poller_id: Rc<PollerId>, polled_id: Rc<PolledId>) {
+        let poller = self.global.pollers.get_mut(&poller_id).unwrap();
+        poller.polled_events.push(polled_id.clone()).unwrap();
+        let polled = self.global.polled_events.get_mut(&polled_id).unwrap();
+        debug_assert!(!polled.event_raised);
+        polled.pollers.push(poller_id).unwrap();
+    }
+
+    // Ugh. This looks like O(n^2)...
+    /// Deletes the given poller, removing any references to it from `Polled` objects.
+    pub fn delete_poller(&mut self, poller_id: Rc<PollerId>) {
+        let poller = self.global.pollers.get_mut(&poller_id).unwrap();
+
+        if poller.deref().in_raised_queue() {
+            // TODO: make queue indexable in future to improve speed here
+
+            // Remove the poller from the ready queue, leaving the others in the same order
+            for _ in 0..self.global.ready.len() {
+                let ready = self.global.ready.pop_front().unwrap();
+                if let ReadyInfo::Poller(current_poller_id) = &ready {
+                    if *current_poller_id != poller_id {
+                        self.global.ready.push_back(ready).unwrap();
+                    }
+                }
+            }
+        }
+
+        // Remove the poller from each polled instance it was registered to
+        for polled_id in poller.polled_events.iter() {
+            let polled = self.global.polled_events.get_mut(&polled_id).unwrap();
+            for i in 0..polled.pollers.len() {
+                if *polled.pollers.get(i).unwrap() == poller_id {
+                    polled.pollers.remove(i);
+                }
+            }
+        }
+    }
+
+    pub fn current_worker_id(&mut self) -> WorkerInfo {
+        WorkerInfo {
+            process_id: self.local.process_id,
+            thread_id: thread::current().id(),
+        }
+    }
+
+    /// Adds a thread from the current process to the back of the `ready` queue.
+    pub fn mark_thread_ready(&mut self, thread_id: ThreadId) {
+        let process_id = self.local.process_id;
+        self.global
+            .ready
+            .push_back(ReadyInfo::Worker(WorkerInfo {
+                process_id,
+                thread_id,
+            }))
+            .unwrap();
+    }
+
+    /// Adds a thread from the current process to the `delayed_ready` queue.
+    pub fn mark_thread_delayed_ready(&mut self, thread_id: ThreadId) {
+        let process_id = self.local.process_id;
+        self.global
+            .delayed_ready
+            .push_back(ReadyInfo::Worker(WorkerInfo {
+                process_id,
+                thread_id,
+            }))
+            .unwrap();
+    }
+
+    /// Adds a thread from the current process to the front of the `delayed_ready` queue.
+    pub fn mark_thread_immediately_ready(&mut self, thread_id: ThreadId) {
+        let process_id = self.local.process_id;
+        self.global
+            .delayed_ready
+            .push_front(ReadyInfo::Worker(WorkerInfo {
+                process_id,
+                thread_id,
+            }))
+            .unwrap();
+    }
+}
+
+#[derive(Debug)]
+pub struct InheritedState {
+    pub fds: Descriptors,
+    pub process_id: ProcessId,
+    pub signal_handlers: SignalHandlers,
+    pub sigmask: SignalSet,
+}
+
+/// State specific to the first (root) process instantiated by Fizzle.
+pub struct MainProcessState {
+    pub onstartup_commands: Vec<Command>,
+    pub onready_commands: Vec<Command>,
+    pub plugins: Box<Plugins>,
+    pub pasture: HashMap<CowId, CowInfo>,
+}
+
+impl Debug for MainProcessState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MainProcessState")
+            .field("onstartup_commands", &self.onstartup_commands)
+            .field("awaiting_thread_death", &self.onready_commands)
+            .field("plugins", &"<opaque>")
+            .finish()
+    }
+}
+
+pub struct ProcessLocalState {
+    /// Indicates whether the given process-local state has completed initialization routines.
+    ///
+    /// When `ProcessLocalState` is first allocated and instantiated, this is set to `false`. Once
+    /// `FizzleState::initialize_local()` is called, this is set to `true`.
+    pub is_initialized: bool,
+    /// State associated with the main process (e.g. the first process instantiated with the Fizzle harness).
+    pub main_state: Option<MainProcessState>,
+    /// See `atexit()`
+    pub atexit_handlers: Vec<AtExitFunction>,
+    /// See `on_exit()`
+    pub on_exit_handlers: Vec<(OnExitFunction, *mut libc::c_void)>,
+    /// A thread that has received a cancellation request.
+    pub cancelling: Option<ThreadId>,
+    pub process_id: ProcessId,
+    /// A supplamentary thread used to reap exiting threads.
+    pub reaper: Option<ThreadId>,
+    pub fds: Box<Descriptors>,
+    pub dirs: KeyedArena<DirectoryId, FilePath<MAX_PATH_LEN>, FIZZLE_MAX_DIRS>,
+    pub barriers: HashMap<BarrierPtr, BarrierInfo, FxBuildHasher>,
+    pub condvars: HashMap<CondVarPtr, VecDeque<ThreadId>, FxBuildHasher>,
+    pub named_semaphores: HashMap<SemaphorePtr, Rc<SemaphoreId>>,
+    /// Files specifically designated as being emulated.
+    pub file_objs: HashMap<FilePtr, FileObject, FxBuildHasher>,
+    pub mutexes: HashMap<MutexPtr, MutexInfo, FxBuildHasher>,
+    pub rwlocks: HashMap<RwLockPtr, RwLockInfo, FxBuildHasher>,
+    pub semaphores: HashMap<SemaphorePtr, SemaphoreInfo>,
+    pub spinlocks: HashMap<SpinlockPtr, VecDeque<ThreadId>, FxBuildHasher>,
+    pub tids: HashMap<ThreadId, WorkerId>,
+    pub pthreads: HashMap<libc::pthread_t, ThreadInfo, FxBuildHasher>,
+    pub atfork_handlers: Vec<AtForkInfo>,
+    pub pasture: HashMap<CowId, CowInfo>,
+    pub pthread_cleanup: HashMap<ThreadId, VecDeque<PThreadRoutine>, FxBuildHasher>,
+    pub pthread_keys: HashMap<libc::pthread_key_t, PThreadRoutine, FxBuildHasher>,
+    pub pthread_key_values: HashMap<
+        libc::pthread_key_t,
+        HashMap<ThreadId, *mut libc::c_void, FxBuildHasher>,
+        FxBuildHasher,
+    >,
+    pub futex_waiters: HashMap<FutexPtr, VecDeque<(u32, ThreadId)>, FxBuildHasher>,
+    pub terminated_threads: HashSet<ThreadId, FxBuildHasher>,
+    pub signals: HashMap<ThreadId, ThreadSigInfo, FxBuildHasher>,
+    /// Indicates which thread(s) are awaiting the death of a specific thread (via pthread_join)
+    pub awaiting_thread_death: HashMap<ThreadId, Vec<ThreadId>, FxBuildHasher>,
+    /// The directory that the program is currently executing relative to.
+    pub working_directory: FilePath<MAX_PATH_LEN>,
+}
+
+impl Debug for ProcessLocalState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FizzLocal")
+            .field("is_initialized", &self.is_initialized)
+            .field("main_state", &self.main_state)
+            .field("process_id", &self.process_id)
+            .field("cancelling", &self.cancelling)
+            .field("reaper", &self.reaper)
+            .field("fds", &self.fds)
+            .field("dirs", &self.dirs)
+            .field("barriers", &self.barriers)
+            .field("condvars", &self.condvars)
+            .field("named_semaphores", &self.named_semaphores)
+            .field("file_objs", &self.file_objs)
+            .field("mutexes", &self.mutexes)
+            .field("rwlocks", &self.rwlocks)
+            .field("semaphores", &self.semaphores)
+            .field("spinlocks", &self.spinlocks)
+            .field("pthreads", &self.pthreads)
+            .field("pthread_atfork", &self.atfork_handlers)
+            .field("pthread_cleanup", &self.pthread_cleanup)
+            .field("pthread_keys", &self.pthread_keys)
+            .field("pthread_key_values", &self.pthread_key_values)
+            .field("futex_waiters", &self.futex_waiters)
+            .field("terminated_threads", &self.terminated_threads)
+            .field("awaiting_thread_death", &self.awaiting_thread_death)
+            .field("working_directory", &self.working_directory)
+            .finish()
+    }
+}
+
+impl ProcessLocalState {
+    fn new() -> Self {
+        let working_directory =
+            FilePath::from_raw_bytes(env::current_dir().unwrap().as_os_str().as_bytes()).unwrap();
+
+        Self {
+            is_initialized: false,
+            main_state: None,
+            atexit_handlers: Vec::new(),
+            on_exit_handlers: Vec::new(),
+            cancelling: None,
+            pasture: Default::default(),
+            process_id: ProcessId::main_process(),
+            reaper: None,
+            fds: Box::new(KeyedArena::new()),
+            dirs: Default::default(),
+            barriers: HashMap::default(),
+            condvars: HashMap::default(),
+            file_objs: HashMap::default(),
+            mutexes: HashMap::default(),
+            named_semaphores: HashMap::default(),
+            rwlocks: HashMap::default(),
+            semaphores: HashMap::default(),
+            spinlocks: HashMap::default(),
+            tids: Default::default(),
+            pthreads: HashMap::default(),
+            atfork_handlers: Vec::default(),
+            pthread_cleanup: HashMap::default(),
+            pthread_keys: HashMap::default(),
+            pthread_key_values: HashMap::default(),
+            signals: HashMap::default(),
+            futex_waiters: HashMap::default(),
+            terminated_threads: HashSet::default(),
+            working_directory,
+            awaiting_thread_death: HashMap::default(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct InterprocessState {
+    /// Indicates whether the state has been properly initialized (not just instantiated).
+    pub is_initialized: bool,
+    /// The thread identifier to be executed by the waking process. This is `Some` if and only if
+    /// a thread is currently about to be scheduled.
+    pub waking_id: Option<ThreadId>,
+    /// The thread/process identifier to be reaped. This is `Some` if and only if a thread/process
+    /// is currently exiting.
+    pub exiting_id: Option<WorkerInfo>,
+    /// State passed between calls to the `exec()` family of functions
+    pub inherited_state: Option<InheritedState>,
+    /// The thread/process identifier to be signalled with the given signal value. This is `Some`
+    /// if and only if a thread is about to receive an outstanding signal.
+    /// 
+    pub signal: Option<(SignalDestination, RaisedSignalInfo)>,
+    // TODO: use an env variable to pass this from parent to child when receiving shared memory
+    /// The read end of the Unix socket pair used to pass file descriptors between processes.
+    pub unix_read_fd: RawFd,
+    /// The write end of the Unix socket pair used to pass file descriptors between processes.
+    pub unix_write_fd: RawFd,
+
+    /// Indicates which thread(s) are awaiting the death of a specific process (via `waitpid`)
+    pub awaiting_process_death: FnvIndexMap<
+        ProcessId,
+        FnvIndexSet<WorkerInfo, FIZZLE_MAX_WAITING_PARENTS>,
+        FIZZLE_MAX_DEAD_PROCESSES,
+    >,
+    /// Processes that have been exited.
+    pub exited_processes: FnvIndexMap<ProcessId, SigChildInfo, FIZZLE_MAX_DEAD_PROCESSES>,
+    /// Signal dispositions, handlers and blocked incoming signals for each process.
+    pub processes: KeyedArena<ProcessId, ProcessInfo, FIZZLE_MAX_PROCESSES>,
+    /// Thread/process IDs.
+    pub ids: KeyedArena<WorkerId, WorkerInfo, FIZZLE_MAX_WORKERS>,
+    pub process_groups: KeyedArena<
+        ProcessGroupId,
+        FnvIndexSet<ProcessId, FIZZLE_MAX_PROCESS_GROUP_SIZE>,
+        FIZZLE_MAX_PROCESS_GROUPS,
+    >,
+
+    /// The number of rounds to run fuzzing when executing in Persistent mode.
+    pub persistent_rounds: usize,
+    /// The next StreamId available to be assigned to an emulated stream.
+    pub next_stream_id: StreamId,
+
+    pub next_cow_id: CowId,
+    /// The next ephemeral port to be assigned to a socket.
+    pub next_ephemeral_port: u16,
+    pub process_locks: [Option<Semaphore>; FIZZLE_MAX_PROCESSES],
+    //    pub pids: FnvIndexMap<libc::pid_t, ProcessId, FIZZLE_MAX_PROCESSES>,
+    /// If true, stderr is silently dropped; otherwise it is printed.
+    pub mask_stderr: bool,
+    pub afl_shmem_initialized: bool,
+    pub epolls: KeyedArena<EpollId, EpollInfo, FIZZLE_MAX_EPOLLS>,
+    pub event_fds: KeyedArena<EventfdId, EventfdInfo, FIZZLE_MAX_EVENTFDS>,
+    pub file_paths: FnvIndexMap<FilePath<MAX_PATH_LEN>, Rc<FileId>, FIZZLE_MAX_FILE_PATHS>,
+    pub files: KeyedArena<FileId, FileInfo, FIZZLE_MAX_FILES>,
+    pub sem_paths: FnvIndexMap<SemaphorePath, Rc<SemaphoreId>, FIZZLE_MAX_NAMED_SEMAPHORES>,
+    pub semaphores: KeyedArena<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>,
+    pub pipes: KeyedArena<PipeId, PipeInfo, FIZZLE_MAX_PIPES>,
+    pub message_queues: KeyedArena<MqId, MqInfo, FIZZLE_MAX_MESSAGE_QUEUES>,
+    // TODO: SO_REUSEPORT breaks this...
+    pub socket_locations:
+        FnvIndexMap<TransportAddress, TransportLocationInfo, FIZZLE_MAX_SOCKADDRS>,
+    pub sockets: KeyedArena<SocketId, SocketInfo, FIZZLE_MAX_SOCKETS>,
+    pub buffers: KeyedArena<BufferId, Buffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
+    pub stdio: StdioBackend,
+    /// Polling infrastructure
+    pub plugins: KeyedArena<PluginEndpointId, PluginInfo, FIZZLE_MAX_PLUGIN_STREAMS>,
+    pub polled_events: KeyedArena<PolledId, PolledInfo, FIZZLE_MAX_POLLED_EVENTS>,
+    pub pollers: KeyedArena<PollerId, PollerInfo, FIZZLE_MAX_POLLERS>,
+    /// Pollers/Workers that can be immediately scheduled.
+    pub ready: Deque<ReadyInfo, FIZZLE_MAX_QUEUED_READY_POLLERS>,
+    /// Pollers/Workers that should be scheduled once the system has reached a halted state.
+    pub delayed_ready: Deque<ReadyInfo, FIZZLE_MAX_QUEUED_READY_POLLERS>,
+    pub fuzz_input: Buffer<FIZZLE_MAX_FUZZ_INPUT>,
+    pub per_round_clients: heapless::Vec<PerRoundClientInfo, FIZZLE_MAX_PER_ROUND_ENDPOINTS>,
+    pub per_round_endpoints: FnvIndexSet<Rc<SocketId>, FIZZLE_MAX_PER_ROUND_ENDPOINTS>,
+    pub fuzz_endpoints: KeyedArena<FuzzEndpointId, FuzzEndpointInfo, FIZZLE_MAX_FUZZ_ENDPOINTS>,
+    pub prefuzz_rng: rand::rngs::SmallRng,
+}
+
+impl InterprocessState {
+    pub fn interprocess_shmem_create() -> RawFd {
+        let filename = format!("/Fizzle_Interprocess{}\0", process::id());
+
+        let fd = unsafe {
+            libc::shm_open(filename.as_ptr() as *const i8, libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, libc::S_IRUSR | libc::S_IWUSR)
+        };
+
+        assert!(fd >= 0, "shm_open() failed: {}", Errno::get_errno());
+
+        unsafe {
+            assert_eq!(libc::shm_unlink(filename.as_ptr() as *const i8), 0, "shm_unlink() failed: {}", Errno::get_errno());
+        }
+
+        let non_cloexec_fd = unsafe { libc::dup(fd) };
+        assert!(non_cloexec_fd >= 0, "dup() failed during interprocess file creation: {}", Errno::get_errno());
+
+        unsafe {
+            libc::close(fd);
+        }
+
+        non_cloexec_fd
+    }
+
+    pub fn cow_shmem_create(id: CowId) -> RawFd {
+        let filename = format!("/Fizzle_Process{}_CoW{}\0", process::id(), usize::from(id));
+
+        let fd = unsafe {
+            libc::shm_open(filename.as_ptr() as *const i8, libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, libc::S_IRUSR | libc::S_IWUSR)
+        };
+
+        assert!(fd >= 0, "shm_open() failed: {}", Errno::get_errno());
+
+        unsafe {
+            assert_eq!(libc::shm_unlink(filename.as_ptr() as *const i8), 0, "shm_unlink() failed: {}", Errno::get_errno());
+        }
+
+        fd
+    }
+
+    // TODO: situate() is unsafe--whenever we change the fields in InterprocessState, it becomes
+    // unsound until we add the corresponding definition. We should really change it to a trait +
+    // proc macro derive.
+    /// Takes an uninitialized InterprocessState and initializes it in place.
+    fn situate(state: &mut MaybeUninit<InterprocessState>) -> &mut InterprocessState {
+        unsafe {
+            let state = state.as_mut_ptr();
+            *ptr::addr_of_mut!((*state).is_initialized) = false;
+
+            *ptr::addr_of_mut!((*state).waking_id) = None;
+            *ptr::addr_of_mut!((*state).exiting_id) = None;
+            *ptr::addr_of_mut!((*state).inherited_state) = None;
+
+            *ptr::addr_of_mut!((*state).mask_stderr) = false;
+            *ptr::addr_of_mut!((*state).signal) = None;
+            *ptr::addr_of_mut!((*state).awaiting_process_death) = Default::default();
+            *ptr::addr_of_mut!((*state).exited_processes) = Default::default();
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).processes));
+
+            *ptr::addr_of_mut!((*state).persistent_rounds) = FIZZLE_AFL_LOOP; // TODO: make configurable
+            *ptr::addr_of_mut!((*state).next_stream_id) = StreamId::from(0);
+            *ptr::addr_of_mut!((*state).next_ephemeral_port) = FIZZLE_EPHEMERAL_PORT_START;
+            *ptr::addr_of_mut!((*state).next_cow_id) = CowId::first();
+            *ptr::addr_of_mut!((*state).process_locks) = array::from_fn(|_| None);
+
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).ids));
+            *ptr::addr_of_mut!((*state).afl_shmem_initialized) = false;
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).process_groups));
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).epolls));
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).event_fds));
+            *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).files));
+            *ptr::addr_of_mut!((*state).sem_paths) = FnvIndexMap::new();
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).semaphores));
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).pipes));
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).message_queues));
+            *ptr::addr_of_mut!((*state).socket_locations) = FnvIndexMap::new();
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).sockets));
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).buffers));
+
+            *ptr::addr_of_mut!((*state).stdio) = StdioBackend::Passthrough;
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).plugins));
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).polled_events));
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).pollers));
+            *ptr::addr_of_mut!((*state).ready) = Deque::new();
+            *ptr::addr_of_mut!((*state).delayed_ready) = Deque::new();
+            *ptr::addr_of_mut!((*state).fuzz_input) = Buffer::new();
+            *ptr::addr_of_mut!((*state).per_round_clients) = heapless::Vec::new();
+            *ptr::addr_of_mut!((*state).per_round_endpoints) = FnvIndexSet::new();
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).fuzz_endpoints));
+            *ptr::addr_of_mut!((*state).prefuzz_rng) =
+                SmallRng::seed_from_u64(0xABAD_5EED_ABAD_5EED_u64); // TODO: enable custom seed loading
+
+            &mut (*state)
         }
     }
 
@@ -1469,34 +1557,6 @@ impl InterprocessState {
     /// Marks the given process/thread pair as having further work to execute.
     pub fn mark_worker_ready(&mut self, worker_id: WorkerInfo) {
         self.ready.push_back(ReadyInfo::Worker(worker_id)).unwrap();
-    }
-
-    /// This method returns `Ok` if the file was created, and `Err` if a file already
-    /// exists at the given path.
-    pub fn create_file(&mut self, path: FilePath<MAX_PATH_LEN>) -> Result<Rc<FileId>, Rc<FileId>> {
-        match self.file_paths.get(&path) {
-            Some(id) => Err(id.clone()),
-            None => {
-                let buf = self.buffers.allocate(Buffer::new()).unwrap();
-                let read_polled = self.polled_events.allocate(PolledInfo::new()).unwrap();
-                let write_polled = self
-                    .polled_events
-                    .allocate(PolledInfo::new_raised())
-                    .unwrap();
-                let file_id = self
-                    .files
-                    .allocate(FileInfo {
-                        path,
-                        backend: FileBackend::Feedback(StandardFeedback {
-                            buf,
-                            read_polled,
-                            write_polled,
-                        }),
-                    })
-                    .unwrap();
-                Ok(file_id)
-            }
-        }
     }
 }
 
