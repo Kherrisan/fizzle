@@ -73,7 +73,7 @@ pub enum FdResource {
     /// Event file descriptor.
     EventFd(Rc<EventfdId>),
     /// Files that are accessed via the virtual filesystem.
-    File(Rc<FileId>),
+    File(Rc<OpenFileId>),
     /// Cross-process message queues.
     #[allow(unused)]
     MessageQueue(Rc<MqId>),

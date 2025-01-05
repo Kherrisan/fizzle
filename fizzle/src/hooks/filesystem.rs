@@ -2,9 +2,7 @@ use std::ffi::CStr;
 
 use fizzle_common::path::FilePath;
 
-use crate::backend::FileBackend;
 use crate::errno::Errno;
-use crate::handlers::descriptor::*;
 use crate::handlers::file::*;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
@@ -16,6 +14,7 @@ hook_macros::hook! {
         offset: libc::off_t,
         whence: libc::c_int
     ) -> libc::c_int => fizzle_lseek(_ctx) {
+        log::error!("unimplemented function `lseek`");
         hook_macros::real!(lseek)(fd, offset, whence)
     }
 }
@@ -23,12 +22,22 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn umask(
         mask: libc::mode_t
-    ) -> libc::c_int => fizzle_umask(_ctx) {
+    ) -> libc::c_int => fizzle_umask(ctx) {
+        let access_mode = AccessMode::from_bits_truncate(mask);
 
-        // TODO: set umask in virtual fs once permissions implemented
-        log::error!("unimplemented function `umask`");
+        crate::strace!("umask(mask={}) -> ...", access_mode);
 
-        hook_macros::real!(umask)(mask)
+        match Scheduler::handle_event(&mut ctx, UmaskEvent::new(access_mode)) {
+            Ok(()) => {
+                crate::strace!("umask(mask={}) -> 0", access_mode);
+                0
+            },
+            Err(e) => {
+                crate::strace!("umask(mask={}) -> -1 ({})", access_mode, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
@@ -47,7 +56,7 @@ hook_macros::hook! {
 
         // TODO: track atime
 
-        // TODO: deal with terminals
+        // TODO: deal with terminal devices
 
         // TODO: what about O_TRUNC?
 
@@ -67,7 +76,7 @@ hook_macros::hook! {
 
         crate::strace!("open(pathname={:?}, flags={:?}, mode={:?}) -> ...", relative_path, open_flags, mode);
 
-        match Scheduler::handle_event(&mut ctx, FileOpenEvent::new(relative_path.clone(), open_flags, mode)) {
+        match Scheduler::handle_event(&mut ctx, FileOpenEvent::new(FileOpenLocation::Path(relative_path.clone()), open_flags, mode)) {
             Ok(fd) => {
                 crate::strace!("open(pathname={:?}, flags={:?}, mode={:?}) -> {}", relative_path, open_flags, mode, fd);
                 fd
@@ -91,13 +100,58 @@ hook_macros::hook! {
 
         // TODO: track atime
 
-        // TODO: deal with terminals
+        // TODO: deal with terminal devices
+
+        // TODO: what about O_TRUNC?
+
+        let mode = AccessMode::from_bits_truncate(mode);
+
+        let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
+            log::warn!("malformed or oversized filepath passed to `creat()`");
+            strace!("creat(pathname={:?}, mode={:?}) -> -1 (EINVAL)", pathname, mode);
+            Errno::EINVAL.set_errno();
+            return -1
+        };
+
+        crate::strace!("creat(pathname={:?}, mode={:?}) -> ...", relative_path, mode);
+
+        match Scheduler::handle_event(&mut ctx, FileOpenEvent::new(FileOpenLocation::Path(relative_path.clone()), open_flags, Some(mode))) {
+            Ok(fd) => {
+                crate::strace!("creat(pathname={:?}, mode={:?}) -> {}", relative_path, mode, fd);
+                fd
+            },
+            Err(e) => {
+                crate::strace!("creat(pathname={:?}, mode={:?}) -> -1 ({})", relative_path, mode, e);
+                e.set_errno();
+                -1
+            }
+        }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn openat(
+        dirfd: libc::c_int,
+        pathname: *const libc::c_char,
+        flags: libc::c_int,
+        mode: libc::mode_t
+    ) -> libc::c_int => fizzle_openat(ctx) {
+        let Some(open_flags) = FileOpenFlags::from_bits(flags) else {
+            log::warn!("unrecognized flags in `openat()`");
+            strace!("openat(dirfd={}, pathname={:?}, flags={}) -> -1 (EINVAL)", dirfd, pathname, flags);
+            Errno::EINVAL.set_errno();
+            return -1
+        };
+
+        // TODO: track atime
+
+        // TODO: deal with terminal devices
 
         // TODO: what about O_TRUNC?
 
         let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
-            log::warn!("malformed or oversized filepath passed to `open()`");
-            strace!("open(pathname={:?}, flags={:?}) -> -1 (EINVAL)", pathname, open_flags);
+            log::warn!("malformed or oversized filepath passed to `openat()`");
+            strace!("openat(dirfd={}, pathname={:?}, flags={:?}) -> -1 (EINVAL)", dirfd, pathname, open_flags);
             Errno::EINVAL.set_errno();
             return -1
         };
@@ -109,132 +163,18 @@ hook_macros::hook! {
             None
         };
 
-        crate::strace!("open(pathname={:?}, flags={:?}, mode={:?}) -> ...", relative_path, open_flags, mode);
+        crate::strace!("openat(dirfd={}, pathname={:?}, flags={:?}, mode={:?}) -> ...", dirfd, relative_path, open_flags, mode);
 
-        match Scheduler::handle_event(&mut ctx, FileOpenEvent::new(relative_path.clone(), open_flags, mode)) {
+        match Scheduler::handle_event(&mut ctx, FileOpenEvent::new(FileOpenLocation::PathAt(relative_path.clone(), dirfd), open_flags, mode)) {
             Ok(fd) => {
-                crate::strace!("open(pathname={:?}, flags={:?}, mode={:?}) -> {}", relative_path, open_flags, mode, fd);
+                crate::strace!("openat(dirfd={}, pathname={:?}, flags={:?}, mode={:?}) -> {}", dirfd, relative_path, open_flags, mode, fd);
                 fd
             },
             Err(e) => {
-                crate::strace!("open(pathname={:?}, flags={:?}, mode={:?}) -> -1 ({})", relative_path, open_flags, mode, e);
+                crate::strace!("openat(dirfd={}, pathname={:?}, flags={:?}, mode={:?}) -> -1 ({})", dirfd, relative_path, open_flags, mode, e);
                 e.set_errno();
                 -1
             }
-        }
-    
-    
-    
-    }
-}
-
-hook_macros::hook! {
-    unsafe fn openat(
-        dirfd: libc::c_int,
-        pathname: *const libc::c_char,
-        flags: libc::c_int,
-        mode: libc::mode_t
-    ) -> libc::c_int => fizzle_openat(ctx) {
-        let mut state = ctx.acquire();
-
-        let close_on_exec = (flags & libc::O_CLOEXEC) != 0;
-        // TODO: file locking is not yet supported here...
-
-        // TODO: track atime
-
-        // TODO: deal with terminals
-
-        // TODO: what about O_TRUNC?
-
-        let Ok(mut path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
-
-        if !path.is_absolute() {
-            if dirfd == libc::AT_FDCWD {
-                let cwd = &state.local.working_directory;
-                path = cwd.clone().concat(&path).unwrap();
-            } else {
-                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(dirfd)).cloned() else {
-                    log::debug!("`openat` called with unrecognized file descriptor");
-                    *libc::__errno_location() = libc::ENOTDIR;
-                    return -1
-                };
-
-                let Some(dir_path) = state.local.dirs.get(&dir_id) else {
-                    *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
-                    return -1
-                };
-
-                path = dir_path.clone().concat(&path).unwrap();
-            }
-        }
-
-        // Files are drawn from the underlying filesystem by default.
-        // A user may configure certain file paths to be mapped to virtual files.
-        // Likewise, files created during the lifetime of fizzle are stored virtually.
-
-        if (flags & libc::O_CREAT) != 0 {
-            // TODO: we ignore open mode here
-
-            let file_id = match state.global.create_file(path) {
-                Ok(file_id) => file_id,
-                Err(_) if (flags & libc::O_EXCL) != 0 => {
-                    *libc::__errno_location() = libc::EEXIST;
-                    return -1
-                }
-                Err(file_id) => file_id,
-            };
-
-            let fd = crate::create_descriptor();
-
-            state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
-                close_on_exec,
-                nonblocking: false,
-                is_passthrough: false,
-                resource: FdResource::File(file_id)
-            }).unwrap();
-
-            fd
-
-        } else if (flags & libc::O_PATH) != 0 {
-            // TODO: what about O_CREAT here?
-            let fd = hook_macros::real!(open)(pathname, flags, mode);
-            let dir_id = state.local.dirs.allocate(path).unwrap();
-            state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
-                close_on_exec,
-                nonblocking: false,
-                is_passthrough: true,
-                resource: FdResource::Directory(dir_id)
-            }).unwrap();
-
-            fd
-
-        } else if let Some(file_id) = state.global.file_paths.get(&path).cloned() {
-            let fd = crate::create_descriptor();
-            state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
-                close_on_exec,
-                nonblocking: false,
-                is_passthrough: true,
-                resource: FdResource::File(file_id),
-            }).unwrap();
-            fd
-
-        } else {
-            let fd = hook_macros::real!(open)(pathname, flags, mode);
-            if fd >= 0 {
-                let file_id = state.global.files.allocate(FileBackend::Passthrough).unwrap();
-
-                state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
-                    close_on_exec: false,
-                    nonblocking: false,
-                    is_passthrough: true,
-                    resource: FdResource::File(file_id),
-                }).unwrap();
-            }
-
-            fd
         }
     }
 }
@@ -258,7 +198,7 @@ hook_macros::hook! {
         mount_id: *mut libc::c_int,
         flags: libc::c_int
     ) -> libc::c_int => fizzle_name_to_handle_at(_ctx) {
-
+        log::warn!("`name_to_handle_at` not implemented by Fizzle");
         hook_macros::real!(name_to_handle_at)(dirfd, pathname, handle, mount_id, flags)
     }
 }
@@ -269,7 +209,7 @@ hook_macros::hook! {
         handle: *mut file_handle,
         flags: libc::c_int
     ) -> libc::c_int => fizzle_open_by_handle_at(_ctx) {
-
+        log::warn!("`open_by_handle_at` not implemented by Fizzle");
         hook_macros::real!(open_by_handle_at)(mount_fd, handle, flags)
     }
 }
@@ -278,20 +218,24 @@ hook_macros::hook! {
     unsafe fn chdir(
         path: *const libc::c_char
     ) -> libc::c_int => fizzle_chdir(ctx) {
-        let mut state = ctx.acquire();
+        strace!("chdir(path={:?}) -> ...", path);
 
-        let res = hook_macros::real!(chdir)(path);
+        let Ok(filepath) = FilePath::from_cstr(CStr::from_ptr(path)) else {
+            *libc::__errno_location() = libc::EINVAL;
+            return -1
+        };
 
-        if res == 0 {
-            let Ok(new_abspath) = FilePath::from_cstr(CStr::from_ptr(path)) else {
-                *libc::__errno_location() = libc::EINVAL;
-                return -1
-            };
-
-            state.local.working_directory = new_abspath;
+        match Scheduler::handle_event(&mut ctx, ChangeDirectoryEvent::new(ChangeDirectorySource::Path(filepath.clone()))) {
+            Ok(()) => {
+                strace!("chdir(path={:?}) -> 0", filepath);
+                0
+            },
+            Err(e) => {
+                strace!("chdir(path={:?}) -> -1 ({})", filepath, e);
+                e.set_errno();
+                -1
+            }
         }
-
-        res
     }
 }
 
@@ -299,24 +243,19 @@ hook_macros::hook! {
     unsafe fn fchdir(
         fd: libc::c_int
     ) -> libc::c_int => fizzle_fchdir(ctx) {
-        let mut state = ctx.acquire();
+        strace!("fchdir(fd={}) -> ...", fd);
 
-        let res = hook_macros::real!(fchdir)(fd);
-        if res == 0 {
-            let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(fd)) else {
-                log::debug!("`fchdir` called with unrecognized fd");
-                *libc::__errno_location() = libc::EBADF;
-                return -1
-            };
-
-            let Some(path) = state.local.dirs.get(dir_id) else {
-                panic!("inconsistent fizzle state in directory fds for `fchdir`");
-            };
-
-            state.local.working_directory = path.clone();
+        match Scheduler::handle_event(&mut ctx, ChangeDirectoryEvent::new(ChangeDirectorySource::Directory(fd))) {
+            Ok(()) => {
+                strace!("fchdir(fd={}) -> 0", fd);
+                0
+            },
+            Err(e) => {
+                strace!("fchdir(fd={}) -> -1 ({})", fd, e);
+                e.set_errno();
+                -1
+            }
         }
-
-        res
     }
 }
 
@@ -324,9 +263,7 @@ hook_macros::hook! {
     unsafe fn chroot(
         _path: *const libc::c_char
     ) -> libc::c_int => fizzle_chroot(_ctx) {
-
-        crate::report_strict_failure("`chroot` not implemented for fizzle virtual fs");
-        -1
+        panic!("`chroot` not implemented for fizzle virtual fs")
     }
 }
 
@@ -338,22 +275,23 @@ hook_macros::hook! {
         owner: libc::uid_t,
         group: libc::gid_t
     ) -> libc::c_int => fizzle_chown(ctx) {
-        let state = ctx.acquire();
+        strace!("chown(pathname={:?}, owner={}, group={}) -> ...", pathname, owner, group);
 
         let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
-            *libc::__errno_location() = libc::EINVAL;
+            Errno::EINVAL.set_errno();
             return -1
         };
 
-        let Ok(path) = state.local.working_directory.clone().concat(&relative_path) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
-
-        if state.global.file_paths.contains_key(&path) {
-            0 // TODO: handle ownership permissions?
-        } else {
-            hook_macros::real!(chown)(pathname, owner, group)
+        match Scheduler::handle_event(&mut ctx, ChangeOwnerEvent::new(ChangeOwnerSource::Path(relative_path), owner, group, ChangeOwnerFlags::empty())) {
+            Ok(()) => {
+                strace!("chown(pathname={:?}, owner={}, group={}) -> 0", pathname, owner, group);
+                0
+            },
+            Err(e) => {
+                strace!("chown(pathname={:?}, owner={}, group={}) -> -1 ({})", pathname, owner, group, e);
+                e.set_errno();
+                -1
+            }
         }
     }
 }
@@ -363,22 +301,24 @@ hook_macros::hook! {
         pathname: *const libc::c_char,
         mode: libc::mode_t
     ) -> libc::c_int => fizzle_chmod(ctx) {
-        let state = ctx.acquire();
+        strace!("chmod(pathname={:?}, mode={}) -> ...", pathname, mode);
 
         let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
-            *libc::__errno_location() = libc::EINVAL;
+            strace!("chmod(pathname={:?}, mode={}) -> -1 (EINVAL)", pathname, mode);
+            Errno::EINVAL.set_errno();
             return -1
         };
 
-        let Ok(path) = state.local.working_directory.clone().concat(&relative_path) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
-
-        if state.global.file_paths.contains_key(&path) {
-            0 // TODO: handle ownership permissions?
-        } else {
-            hook_macros::real!(chmod)(pathname, mode)
+        match Scheduler::handle_event(&mut ctx, ChangeModeEvent::new(ChangeModeSource::Path(relative_path), mode, ChangeModeFlags::empty())) {
+            Ok(()) => {
+                strace!("chmod(pathname={:?}, mode={}) -> 0", pathname, mode);
+                0
+            },
+            Err(e) => {
+                strace!("chmod(pathname={:?}, mode={}) -> -1 ({})", pathname, mode, e);
+                e.set_errno();
+                -1
+            }
         }
     }
 }
@@ -389,12 +329,18 @@ hook_macros::hook! {
         owner: libc::uid_t,
         group: libc::gid_t
     ) -> libc::c_int => fizzle_fchown(ctx) {
-        let state = ctx.acquire();
+        strace!("fchown(fd={}, owner={}, group={}) -> ...", fd, owner, group);
 
-        if let Some(_fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(fd)) {
-            0 // TODO: handle ownership permissions?
-        } else {
-            hook_macros::real!(fchown)(fd, owner, group)
+        match Scheduler::handle_event(&mut ctx, ChangeOwnerEvent::new(ChangeOwnerSource::Descriptor(fd), owner, group, ChangeOwnerFlags::empty())) {
+            Ok(()) => {
+                strace!("fchown(fd={:?}, owner={}, group={}) -> 0", fd, owner, group);
+                0
+            },
+            Err(e) => {
+                strace!("fchown(fd={:?}, owner={}, group={}) -> -1 ({})", fd, owner, group, e);
+                e.set_errno();
+                -1
+            }
         }
     }
 }
@@ -404,12 +350,18 @@ hook_macros::hook! {
         fd: libc::c_int,
         mode: libc::mode_t
     ) -> libc::c_int => fizzle_fchmod(ctx) {
-        let state = ctx.acquire();
+        strace!("fchmod(fd={:?}, mode={}) -> ...", fd, mode);
 
-        if let Some(_fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(fd)) {
-            0 // TODO: handle ownership permissions?
-        } else {
-            hook_macros::real!(fchmod)(fd, mode)
+        match Scheduler::handle_event(&mut ctx, ChangeModeEvent::new(ChangeModeSource::Descriptor(fd), mode, ChangeModeFlags::empty())) {
+            Ok(()) => {
+                strace!("fchmod(fd={}, mode={}) -> 0", fd, mode);
+                0
+            },
+            Err(e) => {
+                strace!("fchmod(fd={}, mode={}) -> -1 ({})", fd, mode, e);
+                e.set_errno();
+                -1
+            }
         }
     }
 }
@@ -422,37 +374,30 @@ hook_macros::hook! {
         group: libc::gid_t,
         flags: libc::c_int
     ) -> libc::c_int => fizzle_fchownat(ctx) {
-        let state = ctx.acquire();
+        strace!("fchownat(dirfd={}, pathname={:?}, owner={}, group={}, flags={}) -> ...", dirfd, pathname, owner, group, flags);
 
-        let Ok(mut path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
-            *libc::__errno_location() = libc::EINVAL;
+        let Some(chown_flags) = ChangeOwnerFlags::from_bits(flags) else {
+            strace!("fchownat(dirfd={}, pathname={:?}, owner={}, group={}, flags={}) -> -1 (EINVAL)", dirfd, pathname, owner, group, flags);
+            Errno::EINVAL.set_errno();
             return -1
         };
 
-        if !path.is_absolute() {
-            if dirfd == libc::AT_FDCWD {
-                let cwd = &state.local.working_directory;
-                path = cwd.clone().concat(&path).unwrap();
-            } else {
-                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(dirfd)) else {
-                    log::debug!("`fchownat` called with unrecognized file descriptor");
-                    *libc::__errno_location() = libc::ENOTDIR;
-                    return -1
-                };
+        let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
+            strace!("fchownat(dirfd={}, pathname={:?}, owner={}, group={}, flags={}) -> -1 (EINVAL)", dirfd, pathname, owner, group, flags);
+            Errno::EINVAL.set_errno();
+            return -1
+        };
 
-                let Some(dir_path) = state.local.dirs.get(dir_id) else {
-                    *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
-                    return -1
-                };
-
-                path = dir_path.clone().concat(&path).unwrap();
+        match Scheduler::handle_event(&mut ctx, ChangeOwnerEvent::new(ChangeOwnerSource::Path(relative_path), owner, group, chown_flags)) {
+            Ok(()) => {
+                strace!("fchownat(dirfd={}, pathname={:?}, owner={}, group={}, flags={:?}) -> 0", dirfd, pathname, owner, group, flags);
+                0
+            },
+            Err(e) => {
+                strace!("chown(dirfd={}, pathname={:?}, owner={}, group={}, flags={:?}) -> -1 ({})", dirfd, pathname, owner, group, flags, e);
+                e.set_errno();
+                -1
             }
-        }
-
-        if state.global.file_paths.contains_key(&path) {
-            0 // TODO: handle ownership permissions?
-        } else {
-            hook_macros::real!(fchownat)(dirfd, pathname, owner, group, flags)
         }
     }
 }
@@ -464,37 +409,30 @@ hook_macros::hook! {
         mode: libc::mode_t,
         flags: libc::c_int
     ) -> libc::c_int => fizzle_fchmodat(ctx) {
-        let state = ctx.acquire();
+        strace!("fchmodat(dirfd={:?}, pathname={:?}, mode={}, flags={}) -> ...", dirfd, pathname, mode, flags);
 
-        let Ok(mut path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
-            *libc::__errno_location() = libc::EINVAL;
+        let Some(chmod_flags) = ChangeModeFlags::from_bits(flags) else {
+            strace!("fchmodat(dirfd={:?}, pathname={:?}, mode={}, flags={}) -> -1 (EINVAL)", dirfd, pathname, mode, flags);
+            Errno::EINVAL.set_errno();
             return -1
         };
 
-        if !path.is_absolute() {
-            if dirfd == libc::AT_FDCWD {
-                let cwd = &state.local.working_directory;
-                path = cwd.clone().concat(&path).unwrap();
-            } else {
-                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(dirfd)) else {
-                    log::debug!("`fchmodat` called with unrecognized file descriptor");
-                    *libc::__errno_location() = libc::ENOTDIR;
-                    return -1
-                };
+        let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
+            strace!("fchmodat(dirfd={:?}, pathname={:?}, mode={}, flags={}) -> -1 (EINVAL)", dirfd, pathname, mode, flags);
+            Errno::EINVAL.set_errno();
+            return -1
+        };
 
-                let Some(dir_path) = state.local.dirs.get(dir_id) else {
-                    *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
-                    return -1
-                };
-
-                path = dir_path.clone().concat(&path).unwrap();
+        match Scheduler::handle_event(&mut ctx, ChangeModeEvent::new(ChangeModeSource::PathAt(relative_path, dirfd), mode, chmod_flags)) {
+            Ok(()) => {
+                strace!("fchmodat(dirfd={:?}, pathname={:?}, mode={}, flags={:?}) -> 0", dirfd, pathname, mode, chmod_flags);
+                0
+            },
+            Err(e) => {
+                strace!("fchmodat(dirfd={:?}, pathname={:?}, mode={}, flags={:?}) -> -1 ({})", dirfd, pathname, mode, chmod_flags, e);
+                e.set_errno();
+                -1
             }
-        }
-
-        if state.global.file_paths.contains_key(&path) {
-            0 // TODO: handle ownership permissions?
-        } else {
-            hook_macros::real!(fchmodat)(dirfd, pathname, mode, flags)
         }
     }
 }
@@ -505,22 +443,24 @@ hook_macros::hook! {
         owner: libc::uid_t,
         group: libc::gid_t
     ) -> libc::c_int => fizzle_lchown(ctx) {
-        let state = ctx.acquire();
+        strace!("lchown(pathname={:?}, owner={}, group={}) -> ...", pathname, owner, group);
 
         let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
-            *libc::__errno_location() = libc::EINVAL;
+            strace!("lchown(pathname={:?}, owner={}, group={}) -> -1 (EINVAL)", pathname, owner, group);
+            Errno::EINVAL.set_errno();
             return -1
         };
 
-        let Ok(path) = state.local.working_directory.clone().concat(&relative_path) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
-
-        if state.global.file_paths.contains_key(&path) {
-            0 // TODO: handle ownership permissions?
-        } else {
-            hook_macros::real!(lchown)(pathname, owner, group)
+        match Scheduler::handle_event(&mut ctx, ChangeOwnerEvent::new(ChangeOwnerSource::Path(relative_path), owner, group, ChangeOwnerFlags::AT_SYMLINK_NOFOLLOW)) {
+            Ok(()) => {
+                strace!("lchown(pathname={:?}, owner={}, group={}) -> 0", pathname, owner, group);
+                0
+            },
+            Err(e) => {
+                strace!("lchown(pathname={:?}, owner={}, group={}) -> -1 ({})", pathname, owner, group, e);
+                e.set_errno();
+                -1
+            }
         }
     }
 }
@@ -530,22 +470,24 @@ hook_macros::hook! {
         pathname: *mut libc::c_char,
         mode: libc::c_int
     ) -> libc::c_int => fizzle_access(ctx) {
-        let state = ctx.acquire();
+        strace!("access(pathname={:?}, mode={}) -> ...", pathname, mode);
 
         let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
-            *libc::__errno_location() = libc::EINVAL;
+            strace!("access(pathname={:?}, mode={}) -> -1 (EINVAL)", pathname, mode);
+            Errno::EINVAL.set_errno();
             return -1
         };
 
-        let Ok(path) = state.local.working_directory.clone().concat(&relative_path) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
-
-        if state.global.file_paths.contains_key(&path) {
-            0 // TODO: handle passthrough
-        } else {
-            hook_macros::real!(access)(pathname, mode)
+        match Scheduler::handle_event(&mut ctx, AccessEvent::new(AccessSource::Path(relative_path), mode, AccessFlags::empty())) {
+            Ok(()) => {
+                strace!("access(pathname={:?}, mode={}) -> 0", pathname, mode);
+                0
+            },
+            Err(e) => {
+                strace!("access(pathname={:?}, mode={}) -> -1 ({})", pathname, mode, e);
+                e.set_errno();
+                -1
+            }
         }
     }
 }
@@ -557,37 +499,28 @@ hook_macros::hook! {
         mode: libc::c_int,
         flags: libc::c_int
     ) -> libc::c_int => fizzle_faccessat(ctx) {
-        let state = ctx.acquire();
+        strace!("faccessat(dirfd={}, pathname={:?}, mode={}, flags={}) -> ...", dirfd, pathname, mode, flags);
 
-        let Ok(mut path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
-            *libc::__errno_location() = libc::EINVAL;
+        let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
+            strace!("faccessat(dirfd={}, pathname={:?}, mode={}, flags={}) -> -1 (EINVAL)", dirfd, pathname, mode, flags);
+            Errno::EINVAL.set_errno();
             return -1
         };
 
-        if !path.is_absolute() {
-            if dirfd == libc::AT_FDCWD {
-                let cwd = &state.local.working_directory;
-                path = cwd.clone().concat(&path).unwrap();
-            } else {
-                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(dirfd)) else {
-                    log::debug!("`faccessat` called with unrecognized file descriptor");
-                    *libc::__errno_location() = libc::ENOTDIR;
-                    return -1
-                };
+        let Some(access_flags) = AccessFlags::from_bits(flags) else {
+            panic!("access flags unrecognized for `faccessat`")
+        };
 
-                let Some(dir_path) = state.local.dirs.get(dir_id) else {
-                    *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
-                    return -1
-                };
-
-                path = dir_path.clone().concat(&path).unwrap();
+        match Scheduler::handle_event(&mut ctx, AccessEvent::new(AccessSource::PathAt(relative_path, dirfd), mode, access_flags)) {
+            Ok(()) => {
+                strace!("faccessat(dirfd={}, pathname={:?}, mode={}, flags={}) -> 0", dirfd, pathname, mode, flags);
+                0
+            },
+            Err(e) => {
+                strace!("faccessat(dirfd={}, pathname={:?}, mode={}, flags={}) -> -1 ({})", dirfd, pathname, mode, flags, e);
+                e.set_errno();
+                -1
             }
-        }
-
-        if state.global.file_paths.contains_key(&path) {
-            0 // TODO: handle ownership permissions?
-        } else {
-            hook_macros::real!(faccessat)(dirfd, pathname, mode, flags)
         }
     }
 }
@@ -597,23 +530,27 @@ hook_macros::hook! {
         pathname: *mut libc::c_char,
         statbuf: *mut libc::stat
     ) -> libc::c_int => fizzle_stat(ctx) {
-        let state = ctx.acquire();
+        strace!("stat(pathname={:?}, statbuf={:?}) -> ...", pathname, statbuf);
+
+        let stat_mut = statbuf.as_mut().unwrap();
 
         let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
-            *libc::__errno_location() = libc::EINVAL;
+            strace!("stat(pathname={:?}, statbuf={:?}) -> -1 (EINVAL)", pathname, statbuf);
+            Errno::EINVAL.set_errno();
             return -1
         };
 
-        let Ok(path) = state.local.working_directory.clone().concat(&relative_path) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
 
-        if state.global.file_paths.contains_key(&path) {
-            crate::report_strict_failure("`stat` not implemented for fizzle virtual fs");
-            -1
-        } else {
-            hook_macros::real!(stat)(pathname, statbuf)
+        match Scheduler::handle_event(&mut ctx, StatEvent::new(StatSource::Path(relative_path), stat_mut, StatFlags::empty())) {
+            Ok(()) => {
+                strace!("stat(pathname={:?}, statbuf={:?}) -> 0", pathname, statbuf);
+                0
+            },
+            Err(e) => {
+                strace!("stat(pathname={:?}, statbuf={:?}) -> -1 ({})", pathname, statbuf, e);
+                e.set_errno();
+                -1
+            }
         }
     }
 }
@@ -623,23 +560,27 @@ hook_macros::hook! {
         pathname: *mut libc::c_char,
         statbuf: *mut libc::stat
     ) -> libc::c_int => fizzle_lstat(ctx) {
-        let state = ctx.acquire();
+        strace!("lstat(pathname={:?}, statbuf={:?}) -> ...", pathname, statbuf);
+
+        let stat_mut = statbuf.as_mut().unwrap();
 
         let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
-            *libc::__errno_location() = libc::EINVAL;
+            strace!("lstat(pathname={:?}, statbuf={:?}) -> -1 (EINVAL)", pathname, statbuf);
+            Errno::EINVAL.set_errno();
             return -1
         };
 
-        let Ok(path) = state.local.working_directory.clone().concat(&relative_path) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
 
-        if state.global.file_paths.contains_key(&path) {
-            crate::report_strict_failure("`lstat` not implemented for fizzle virtual fs");
-            -1
-        } else {
-            hook_macros::real!(lstat)(pathname, statbuf)
+        match Scheduler::handle_event(&mut ctx, StatEvent::new(StatSource::Path(relative_path), stat_mut, StatFlags::AT_SYMLINK_NOFOLLOW)) {
+            Ok(()) => {
+                strace!("lstat(pathname={:?}, statbuf={:?}) -> 0", pathname, statbuf);
+                0
+            },
+            Err(e) => {
+                strace!("lstat(pathname={:?}, statbuf={:?}) -> -1 ({})", pathname, statbuf, e);
+                e.set_errno();
+                -1
+            }
         }
     }
 }
@@ -649,13 +590,20 @@ hook_macros::hook! {
         fd: libc::c_int,
         statbuf: *mut libc::stat
     ) -> libc::c_int => fizzle_fstat(ctx) {
-        let state = ctx.acquire();
+        strace!("fstat(fd={}, statbuf={:?}) -> ...", fd, statbuf);
 
-        if let Some(_fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(fd)) {
-            crate::report_strict_failure("`fstat` not implemented for fizzle virtual fs");
-            -1
-        } else {
-            hook_macros::real!(fstat)(fd, statbuf)
+        let stat_mut = statbuf.as_mut().unwrap();
+
+        match Scheduler::handle_event(&mut ctx, StatEvent::new(StatSource::Descriptor(fd), stat_mut, StatFlags::empty())) {
+            Ok(()) => {
+                strace!("fstat(fd={}, statbuf={:?}) -> 0", fd, statbuf);
+                0
+            },
+            Err(e) => {
+                strace!("fstat(fd={}, statbuf={:?}) -> -1 ({})", fd, statbuf, e);
+                e.set_errno();
+                -1
+            }
         }
     }
 }
@@ -667,38 +615,28 @@ hook_macros::hook! {
         statbuf: *mut libc::stat,
         flags: libc::c_int
     ) -> libc::c_int => fizzle_fstatat(ctx) {
-        let state = ctx.acquire();
+        strace!("fstatat(dirfd={}, pathname={:?}, statbuf={:?}, flags={}) -> ...", dirfd, pathname, statbuf, flags);
 
-        let Ok(mut path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
-            *libc::__errno_location() = libc::EINVAL;
+        let stat_mut = statbuf.as_mut().unwrap();
+
+        let stat_flags = StatFlags::from_bits_truncate(flags);
+
+        let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
+            strace!("fstatat(dirfd={}, pathname={:?}, statbuf={:?}, flags={}) -> -1 (EINVAL)", dirfd, pathname, statbuf, flags);
+            Errno::EINVAL.set_errno();
             return -1
         };
 
-        if !path.is_absolute() {
-            if dirfd == libc::AT_FDCWD {
-                let cwd = &state.local.working_directory;
-                path = cwd.clone().concat(&path).unwrap();
-            } else {
-                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(dirfd)) else {
-                    log::debug!("`fstatat` called with unrecognized file descriptor");
-                    *libc::__errno_location() = libc::ENOTDIR;
-                    return -1
-                };
-
-                let Some(dir_path) = state.local.dirs.get(dir_id) else {
-                    *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
-                    return -1
-                };
-
-                path = dir_path.clone().concat(&path).unwrap();
+        match Scheduler::handle_event(&mut ctx, StatEvent::new(StatSource::PathAt(relative_path, dirfd), stat_mut, stat_flags)) {
+            Ok(()) => {
+                strace!("fstatat(dirfd={}, pathname={:?}, statbuf={:?}, flags={}) -> 0", dirfd, pathname, statbuf, flags);
+                0
+            },
+            Err(e) => {
+                strace!("fstatat(dirfd={}, pathname={:?}, statbuf={:?}, flags={}) -> -1 ({})", dirfd, pathname, statbuf, flags, e);
+                e.set_errno();
+                -1
             }
-        }
-
-        if state.global.file_paths.contains_key(&path) {
-            crate::report_strict_failure("`fstatat` unimplemented for fizzle virtual fs");
-            -1
-        } else {
-            hook_macros::real!(fstatat)(dirfd, pathname, statbuf, flags)
         }
     }
 }
@@ -726,7 +664,7 @@ hook_macros::hook! {
         _path: *const libc::c_char,
         _length: libc::off_t
     ) => fizzle_truncate(_ctx) {
-        unimplemented!("truncate()")
+        unimplemented!("truncate()") // TODO: can implement now
     }
 }
 
@@ -735,23 +673,39 @@ hook_macros::hook! {
         _fd: libc::c_int,
         _length: libc::off_t
     ) => fizzle_ftruncate(_ctx) {
-        unimplemented!("ftruncate()")
+        unimplemented!("ftruncate()") // TODO: can implement now
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn sync() => fizzle_sync(_ctx) {
+        log::warn!("`sync` unimplemented by Fizzle");
+        hook_macros::real!(sync)()
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn syncfs(fd: libc::c_int) => fizzle_syncfd(_ctx) {
+        log::warn!("`syncfs` unimplemented by Fizzle");
+        hook_macros::real!(syncfs)(fd)
     }
 }
 
 hook_macros::hook! {
     unsafe fn fsync(
-        _fd: libc::c_int
+        fd: libc::c_int
     ) => fizzle_fsync(_ctx) {
-        unimplemented!("fsync()")
+        log::warn!("`fsync` unimplemented by Fizzle");
+        hook_macros::real!(fsync)(fd)
     }
 }
 
 hook_macros::hook! {
     unsafe fn fdatasync(
-        _fd: libc::c_int
+        fd: libc::c_int
     ) => fizzle_fdatasync(_ctx) {
-        unimplemented!("fdatasync()")
+        log::warn!("`fdatasync` unimplemented by Fizzle");
+        hook_macros::real!(fdatasync)(fd)
     }
 }
 
@@ -761,6 +715,7 @@ hook_macros::hook! {
         buf: *mut libc::c_char,
         bufsiz: libc::size_t
     ) -> libc::c_int => fizzle_readlink(_ctx) {
+        log::warn!("`readlink` unimplemented by Fizzle");
         hook_macros::real!(readlink)(pathname, buf, bufsiz)
     }
 }
@@ -772,6 +727,7 @@ hook_macros::hook! {
         buf: *mut libc::c_char,
         bufsiz: libc::size_t
     ) -> libc::c_int => fizzle_readlinkat(_ctx) {
+        log::warn!("`readlinkat` unimplemented by Fizzle");
         hook_macros::real!(readlinkat)(dirfd, pathname, buf, bufsiz)
     }
 }
@@ -781,6 +737,7 @@ hook_macros::hook! {
         target: *mut libc::c_char,
         linkpath: *const libc::c_char
     ) -> libc::c_int => fizzle_symlink(_ctx) {
+        log::warn!("`symlink` unimplemented by Fizzle");
         hook_macros::real!(symlink)(target, linkpath)
     }
 }
@@ -791,6 +748,7 @@ hook_macros::hook! {
         newdirfd: libc::c_int,
         linkpath: *const libc::c_char
     ) -> libc::c_int => fizzle_symlinkat(_ctx) {
+        log::warn!("`symlinkat` unimplemented by Fizzle");
         hook_macros::real!(symlinkat)(target, newdirfd, linkpath)
     }
 }
@@ -800,6 +758,7 @@ hook_macros::hook! {
         oldpath: *mut libc::c_char,
         newpath: *const libc::c_char
     ) -> libc::c_int => fizzle_link(_ctx) {
+        log::warn!("`link` unimplemented by Fizzle");
         hook_macros::real!(link)(oldpath, newpath)
     }
 }
@@ -812,6 +771,7 @@ hook_macros::hook! {
         newpath: *const libc::c_char,
         flags: libc::c_int
     ) -> libc::c_int => fizzle_linkat(_ctx) {
+        log::warn!("`linkat` unimplemented by Fizzle");
         hook_macros::real!(linkat)(olddirfd, oldpath, newdirfd, newpath, flags)
     }
 }
@@ -820,6 +780,7 @@ hook_macros::hook! {
     unsafe fn unlink(
         pathname: *const libc::c_char
     ) -> libc::c_int => fizzle_unlink(_ctx) {
+        log::warn!("`unlink` unimplemented by Fizzle");
         hook_macros::real!(unlink)(pathname)
     }
 }
@@ -830,6 +791,7 @@ hook_macros::hook! {
         pathname: *const libc::c_char,
         flags: libc::c_int
     ) -> libc::c_int => fizzle_unlinkat(_ctx) {
+        log::warn!("`unlinkat` unimplemented by Fizzle");
         hook_macros::real!(unlinkat)(dirfd, pathname, flags)
     }
 }
@@ -839,34 +801,30 @@ hook_macros::hook! {
         oldpath: *mut libc::c_char,
         newpath: *const libc::c_char
     ) -> libc::c_int => fizzle_rename(ctx) {
-        let mut state = ctx.acquire();
+        strace!("rename(oldpath={:?}, newpath={:?}) -> ...", oldpath, newpath);
 
         let Ok(rel_oldpath) = FilePath::from_cstr(CStr::from_ptr(oldpath)) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
-
-        let Ok(abs_oldpath) = state.local.working_directory.clone().concat(&rel_oldpath) else {
-            *libc::__errno_location() = libc::EINVAL;
+            strace!("rename(oldpath={:?}, newpath={:?}) -> -1 (EINVAL)", oldpath, newpath);
+            Errno::EINVAL.set_errno();
             return -1
         };
 
         let Ok(rel_newpath) = FilePath::from_cstr(CStr::from_ptr(newpath)) else {
-            *libc::__errno_location() = libc::EINVAL;
+            strace!("rename(oldpath={:?}, newpath={:?}) -> -1 (EINVAL)", oldpath, newpath);
+            Errno::EINVAL.set_errno();
             return -1
         };
 
-        let Ok(_abs_newpath) = state.local.working_directory.clone().concat(&rel_newpath) else {
-            *libc::__errno_location() = libc::EINVAL;
-            return -1
-        };
-
-        // TODO: handle inode deletion here
-        if state.global.file_paths.remove(&abs_oldpath).is_some() {
-            crate::report_strict_failure("`rename` not implemented for fizzle virtual fs");
-            -1
-        } else {
-            hook_macros::real!(rename)(oldpath, newpath)
+        match Scheduler::handle_event(&mut ctx, RenameEvent::new(RenameSrcDst::Path(rel_oldpath.clone(), rel_newpath.clone()), RenameFlags::empty())) {
+            Ok(()) => {
+                strace!("rename(oldpath={:?}, newpath={:?}) -> 0", rel_oldpath, rel_newpath);
+                0
+            },
+            Err(e) => {
+                strace!("rename(oldpath={:?}, newpath={:?}) -> -1 ({})", rel_oldpath, rel_newpath, e);
+                e.set_errno();
+                -1
+            }
         }
     }
 }
@@ -878,64 +836,30 @@ hook_macros::hook! {
         newdirfd: libc::c_int,
         newpath: *const libc::c_char
     ) -> libc::c_int => fizzle_renameat(ctx) {
-        let mut state = ctx.acquire();
+        strace!("renameat(olddirfd={}, oldpath={:?}, newdirfd={}, newpath={:?}) -> ...", olddirfd, oldpath, newdirfd, newpath);
 
-        let Ok(mut old) = FilePath::from_cstr(CStr::from_ptr(oldpath)) else {
-            *libc::__errno_location() = libc::EINVAL;
+        let Ok(rel_oldpath) = FilePath::from_cstr(CStr::from_ptr(oldpath)) else {
+            strace!("renameat(olddirfd={}, oldpath={:?}, newdirfd={}, newpath={:?}) -> -1 (EINVAL)", olddirfd, oldpath, newdirfd, newpath);
+            Errno::EINVAL.set_errno();
             return -1
         };
 
-        if !old.is_absolute() {
-            if olddirfd == libc::AT_FDCWD {
-                let cwd = &state.local.working_directory;
-                old = cwd.clone().concat(&old).unwrap();
-            } else {
-                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(olddirfd)) else {
-                    log::debug!("`renameat` called with unrecognized file descriptor `olddirfd`");
-                    *libc::__errno_location() = libc::ENOTDIR;
-                    return -1
-                };
-
-                let Some(dir_path) = state.local.dirs.get(dir_id) else {
-                    *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
-                    return -1
-                };
-
-                old = dir_path.clone().concat(&old).unwrap();
-            }
-        }
-
-        let Ok(mut _new) = FilePath::from_cstr(CStr::from_ptr(newpath)) else {
-            *libc::__errno_location() = libc::EINVAL;
+        let Ok(rel_newpath) = FilePath::from_cstr(CStr::from_ptr(newpath)) else {
+            strace!("renameat(olddirfd={}, oldpath={:?}, newdirfd={}, newpath={:?}) -> -1 (EINVAL)", olddirfd, oldpath, newdirfd, newpath);
+            Errno::EINVAL.set_errno();
             return -1
         };
 
-        if !_new.is_absolute() {
-            if newdirfd == libc::AT_FDCWD {
-                let cwd = &state.local.working_directory;
-                _new = cwd.clone().concat(&_new).unwrap();
-            } else {
-                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(newdirfd)) else {
-                    log::debug!("`renameat` called with unrecognized file descriptor `newdirfd`");
-                    *libc::__errno_location() = libc::ENOTDIR;
-                    return -1
-                };
-
-                let Some(dir_path) = state.local.dirs.get(dir_id) else {
-                    *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
-                    return -1
-                };
-
-                _new = dir_path.clone().concat(&_new).unwrap();
+        match Scheduler::handle_event(&mut ctx, RenameEvent::new(RenameSrcDst::PathAt(rel_oldpath.clone(), olddirfd, rel_newpath.clone(), newdirfd), RenameFlags::empty())) {
+            Ok(()) => {
+                strace!("renameat(olddirfd={}, oldpath={:?}, newdirfd={}, newpath={:?}) -> 0", olddirfd, oldpath, newdirfd, newpath);
+                0
+            },
+            Err(e) => {
+                strace!("renameat(olddirfd={}, oldpath={:?}, newdirfd={}, newpath={:?}) -> -1 ({})", olddirfd, oldpath, newdirfd, newpath, e);
+                e.set_errno();
+                -1
             }
-        }
-
-        // TODO: handle inode deletion
-        if state.global.file_paths.remove(&old).is_some() {
-            crate::report_strict_failure("`renameat` not implemented for fizzle virtual fs");
-            -1
-        } else {
-            hook_macros::real!(renameat)(olddirfd, oldpath, newdirfd, newpath)
         }
     }
 }
@@ -945,65 +869,35 @@ hook_macros::hook! {
         olddirfd: libc::c_int,
         oldpath: *mut libc::c_char,
         newdirfd: libc::c_int,
-        newpath: *const libc::c_char
+        newpath: *const libc::c_char,
+        flags: libc::c_uint
     ) -> libc::c_int => fizzle_renameat2(ctx) {
-        let mut state = ctx.acquire();
+        let rename_flags = RenameFlags::from_bits_truncate(flags);
 
-        let Ok(mut old) = FilePath::from_cstr(CStr::from_ptr(oldpath)) else {
-            *libc::__errno_location() = libc::EINVAL;
+        strace!("renameat2(olddirfd={}, oldpath={:?}, newdirfd={}, newpath={:?}, flags={:?}) -> ...", olddirfd, oldpath, newdirfd, newpath, rename_flags);
+
+        let Ok(rel_oldpath) = FilePath::from_cstr(CStr::from_ptr(oldpath)) else {
+            strace!("renameat2(olddirfd={}, oldpath={:?}, newdirfd={}, newpath={:?}, flags={:?}) -> -1 (EINVAL)", olddirfd, oldpath, newdirfd, newpath, rename_flags);
+            Errno::EINVAL.set_errno();
             return -1
         };
 
-        if !old.is_absolute() {
-            if olddirfd == libc::AT_FDCWD {
-                let cwd = &state.local.working_directory;
-                old = cwd.clone().concat(&old).unwrap();
-            } else {
-                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(olddirfd)) else {
-                    log::debug!("`renameat2` called with unrecognized file descriptor `olddirfd`");
-                    *libc::__errno_location() = libc::ENOTDIR;
-                    return -1
-                };
-
-                let Some(dir_path) = state.local.dirs.get(dir_id) else {
-                    *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
-                    return -1
-                };
-
-                old = dir_path.clone().concat(&old).unwrap();
-            }
-        }
-
-        let Ok(mut _new) = FilePath::from_cstr(CStr::from_ptr(newpath)) else {
-            *libc::__errno_location() = libc::EINVAL;
+        let Ok(rel_newpath) = FilePath::from_cstr(CStr::from_ptr(newpath)) else {
+            strace!("renameat2(olddirfd={}, oldpath={:?}, newdirfd={}, newpath={:?}, flags={:?}) -> -1 (EINVAL)", olddirfd, oldpath, newdirfd, newpath, rename_flags);
+            Errno::EINVAL.set_errno();
             return -1
         };
 
-        if !_new.is_absolute() {
-            if newdirfd == libc::AT_FDCWD {
-                let cwd = &state.local.working_directory;
-                _new = cwd.clone().concat(&_new).unwrap();
-            } else {
-                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(newdirfd)) else {
-                    log::debug!("`renameat2` called with unrecognized file descriptor `newdirfd`");
-                    *libc::__errno_location() = libc::ENOTDIR;
-                    return -1
-                };
-
-                let Some(dir_path) = state.local.dirs.get(dir_id) else {
-                    *libc::__errno_location() = libc::EBADFD; // TODO: verify correct err code
-                    return -1
-                };
-
-                _new = dir_path.clone().concat(&_new).unwrap();
+        match Scheduler::handle_event(&mut ctx, RenameEvent::new(RenameSrcDst::PathAt(rel_oldpath.clone(), olddirfd, rel_newpath.clone(), newdirfd), rename_flags)) {
+            Ok(()) => {
+                strace!("renameat2(olddirfd={}, oldpath={:?}, newdirfd={}, newpath={:?}, flags={:?}) -> 0", olddirfd, oldpath, newdirfd, newpath, rename_flags);
+                0
+            },
+            Err(e) => {
+                strace!("renameat2(olddirfd={}, oldpath={:?}, newdirfd={}, newpath={:?}, flags={:?}) -> -1 ({})", olddirfd, oldpath, newdirfd, newpath, rename_flags, e);
+                e.set_errno();
+                -1
             }
-        }
-
-        if state.global.file_paths.remove(&old).is_some() {
-            crate::report_strict_failure("`renameat2` not implemented for fizzle virtual fs");
-            -1
-        } else {
-            hook_macros::real!(renameat2)(olddirfd, oldpath, newdirfd, newpath)
         }
     }
 }
@@ -1014,6 +908,7 @@ hook_macros::hook! {
         mode: libc::mode_t,
         dev: libc::dev_t
     ) -> libc::c_int => fizzle_mknod(_ctx) {
+        log::warn!("`mknod` unimplemented by Fizzle");
         hook_macros::real!(mknod)(pathname, mode, dev)
     }
 }
@@ -1025,6 +920,7 @@ hook_macros::hook! {
         mode: libc::mode_t,
         dev: libc::dev_t
     ) -> libc::c_int => fizzle_mknodat(_ctx) {
+        log::warn!("`mknodat` unimplemented by Fizzle");
         hook_macros::real!(mknodat)(dirfd, pathname, mode, dev)
     }
 }
@@ -1037,6 +933,7 @@ hook_macros::hook! {
         mountflags: libc::c_ulong,
         data: *const libc::c_void
     ) -> libc::c_int => fizzle_mount(_ctx) {
+        log::warn!("`mount` unimplemented by Fizzle");
         hook_macros::real!(mount)(source, target, filesystemtype, mountflags, data)
     }
 }
@@ -1045,6 +942,7 @@ hook_macros::hook! {
     unsafe fn umount(
         target: *const libc::c_char
     ) -> libc::c_int => fizzle_umount(_ctx) {
+        log::warn!("`umount` unimplemented by Fizzle");
         hook_macros::real!(umount)(target)
     }
 }
@@ -1054,6 +952,7 @@ hook_macros::hook! {
         target: *const libc::c_char,
         flags: libc::c_int
     ) -> libc::c_int => fizzle_umount2(_ctx) {
+        log::warn!("`umount2` unimplemented by Fizzle");
         hook_macros::real!(umount2)(target, flags)
     }
 }

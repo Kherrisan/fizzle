@@ -1,15 +1,16 @@
+use core::slice;
 use std::os::fd::RawFd;
 use std::process::Command;
 use std::thread::ThreadId;
 use std::time::Duration;
-use std::{mem, ptr, thread};
+use std::{cmp, mem, ptr, thread};
 
 use heapless::FnvIndexSet;
 
 use crate::arena::Rc;
-use crate::backend::{ConnectedBackend, PendingBackend};
+use crate::backend::{ConnectedBackend, FileBackend, FileFeedback, PendingBackend};
 use crate::constants::{FIZZLE_MAX_FUZZ_ENDPOINTS, FIZZLE_MEMORY_ENV};
-use crate::handlers::file::CowId;
+use crate::handlers::file::{CowInfo, FileInfo};
 use crate::handlers::id::{WorkerId, WorkerInfo};
 use crate::handlers::mutex::MutexStatus;
 use crate::handlers::polled::PolledId;
@@ -17,8 +18,13 @@ use crate::handlers::process::*;
 use crate::handlers::signal::*;
 use crate::handlers::socket::SocketState;
 use crate::plugins;
-use crate::state::{self, PerRoundClientBackend, PerRoundClientInfo, SignalDestination};
-use crate::state::{FizzleSingleton, FizzleState, ReadyInfo};
+use crate::state;
+use crate::state::*;
+
+#[allow(non_snake_case)]
+pub const fn CMSG_ALIGN(len: usize) -> usize {
+    len + mem::size_of::<usize>() - 1 & !(mem::size_of::<usize>() - 1)
+}
 
 // Input parameters are contained within the event
 pub trait Event {
@@ -54,10 +60,8 @@ pub enum Outcome<S, E> {
     Execute(unsafe extern "C" fn()),
     /// Send the given signal to the specified worker
     SendSignal(SignalDestination, RaisedSignalInfo),
-    /// Create a copy-on-write (CoW) file with contents taken from the (optional) file descriptor.
-    CreateCow(Option<RawFd>),
-    /// Migrate the CoW file descriptor to the calling process.
-    MigrateCow(CowId),
+    /// Create or migrate a copy-on-write (CoW) file.
+    CreateCow(CreateCowSource),
 }
 
 pub struct Scheduler;
@@ -146,6 +150,10 @@ impl Scheduler {
                 Outcome::SendSignal(destination, raised_info) => {
                     drop(state);
                     Scheduler::send_signal(ctx, destination, raised_info);
+                }
+                Outcome::CreateCow(create_cow) => {
+                    drop(state);
+                    Scheduler::create_cow(ctx, create_cow);
                 }
             }
         }
@@ -336,6 +344,72 @@ impl Scheduler {
 
                 assert_eq!(thread_id, thread::current().id());
                 DelegationState::TerminateThread(TerminationMethod::Cancellation)
+            } else if let Some(source) = state.global.create_cow.take() {
+                let fd = match source {
+                    CreateCowSource::Existing(cow_id) => {
+                        state.local.pasture.get(&cow_id).unwrap().memfd
+                    }
+                    CreateCowSource::New(path, mode) => {
+                        let cow_id = state.allocate_cow();
+                        let inode = state.global.next_inode();
+                        let current_time = state.global.current_time;
+                        let uid = state.global.uid;
+                        let gid = state.global.gid;
+
+
+                        let file_id = state.global.files.allocate(FileInfo {
+                            path: path.clone(),
+                            cow: Some(cow_id),
+                            dev_id: 0xfe01,
+                            inode,
+                            mode,
+                            nlink: 1, // TODO: fix
+                            backend: FileBackend::Feedback(FileFeedback { }),
+                            uid,
+                            gid,
+                            atime: current_time,
+                            btime: current_time,
+                            mtime: current_time,
+                            ctime: current_time,
+                        }).unwrap();
+
+                        state.global.file_paths.insert(path.clone(), file_id).unwrap();
+                        let fd = state.local.pasture.get(&cow_id).unwrap().memfd;
+
+                        copy_to_shmem(fd, &path);
+
+                        fd
+                    }
+                };
+
+                let cmsghdr = libc::cmsghdr {
+                    cmsg_len: mem::size_of::<libc::cmsghdr>() + mem::size_of::<RawFd>(),
+                    cmsg_level: libc::SCM_RIGHTS,
+                    cmsg_type: libc::SOL_SOCKET,
+                };
+
+                let mut control = [0u8; mem::size_of::<libc::cmsghdr>() + mem::size_of::<RawFd>()];
+                control[..mem::size_of::<libc::cmsghdr>()].copy_from_slice(unsafe { slice::from_ref(&cmsghdr).align_to::<u8>().1 });
+                control[mem::size_of::<libc::cmsghdr>()..].copy_from_slice(&fd.to_ne_bytes());
+
+                let msghdr = libc::msghdr {
+                    msg_name: ptr::null_mut(),
+                    msg_namelen: 0,
+                    msg_iov: ptr::null_mut(),
+                    msg_iovlen: 0,
+                    msg_control: control.as_mut_ptr() as *mut libc::c_void,
+                    msg_controllen: control.len(),
+                    msg_flags: 0,
+                };
+
+                let len = unsafe {
+                    libc::sendmsg(state.global.unix_write_fd, ptr::addr_of!(msghdr), 0)
+                };
+
+                assert_eq!(len, 0);
+
+                DelegationState::RunNextWorker
+
             } else if let Some((dst, raised_info)) = state.global.signal.take() {
                 // ...because it has received a signal (e.g. from `kill()`, `pthread_kill()`)
                 let signum = raised_info.signum();
@@ -1168,6 +1242,129 @@ impl Scheduler {
                 libc::sleep(1); // Acts as a backup cancellation point in case `pthread_kill` didn't work
                 panic!("`pthread_kill()` failed to kill current thread");
             },
+        }
+    }
+
+    pub fn create_cow(ctx: &mut FizzleSingleton, source: CreateCowSource) {
+        let mut state = ctx.acquire();
+        let current_worker = state.current_worker_id();
+        let current_process_id = current_worker.process_id;
+        let main_process_id = ProcessId::main_process();
+
+        if current_process_id.is_main_process() {
+            // No need to use `SCM_RIGHTS`--we're doing everything in the same process
+
+            match source {
+                CreateCowSource::Existing(cow_id) => (), // Already created
+                CreateCowSource::New(path, mode) => {
+                    // Create a CoW
+                    let cow_id = state.allocate_cow();
+
+                    let inode = state.global.next_inode();
+                    let current_time = state.global.current_time;
+                    let uid = state.global.uid;
+                    let gid = state.global.gid;
+
+                    if !state.global.file_paths.contains_key(&path) {
+                        let file_id = state.global.files.allocate(FileInfo {
+                            path: path.clone(),
+                            cow: Some(cow_id),
+                            dev_id: 0xfe01,
+                            inode,
+                            mode,
+                            nlink: 1, // TODO: fix
+                            backend: FileBackend::Feedback(FileFeedback { }),
+                            uid,
+                            gid,
+                            atime: current_time,
+                            btime: current_time,
+                            mtime: current_time,
+                            ctime: current_time,
+                        }).unwrap();
+
+                        state.global.file_paths.insert(path, file_id).unwrap();
+                    } else {
+                        let file_id = state.global.file_paths.get(&path).unwrap();
+                        state.global.files.get(&file_id).unwrap().cow = Some(cow_id);
+                    }
+
+                    let memfd = state.local.pasture.get(&cow_id).unwrap().memfd;
+                    copy_to_shmem(memfd, &path);
+                }
+            }
+
+        } else {
+            state.global.create_cow = Some(source);
+
+            state.global.ready.push_front(ReadyInfo::Worker(current_worker));
+            state.global.process_locks[usize::from(main_process_id)].unwrap().post();
+            drop(state);
+            Scheduler::await_delegation(ctx, DelegationSource::Process);
+
+            // Now the SCM_RIGHTS have been sent by the main process--receive and assign
+            let mut state = ctx.acquire();
+
+            let cow_id = match source {
+                CreateCowSource::Existing(cow_id) => cow_id,
+                CreateCowSource::New(path, _mode) => {
+                    let file_id = state.global.file_paths.get(&path).unwrap();
+                    state.global.files.get(file_id).unwrap().cow.unwrap()
+                }
+            };
+
+            let mut msg = [0u8; 1024];
+
+            let mut msghdr = libc::msghdr {
+                msg_name: ptr::null_mut(),
+                msg_namelen: 0,
+                msg_iov: ptr::null_mut(),
+                msg_iovlen: 0,
+                msg_control: msg.as_mut_ptr() as *mut libc::c_void,
+                msg_controllen: 1024,
+                msg_flags: 0,
+            };
+
+            unsafe {
+                assert_eq!(libc::recvmsg(state.global.unix_read_fd, ptr::addr_of_mut!(msghdr), 0), 0);
+            }
+
+            let msg_len = msghdr.msg_controllen;
+            let mut msg_idx = 0;
+
+            while msg_len - msg_idx > mem::size_of::<libc::cmsghdr>() {
+                let (s1, m, s2) = unsafe { msg[msg_idx..].align_to::<libc::cmsghdr>() };
+                assert!(s1.is_empty());
+                let hdr = &m[0];
+                if hdr.cmsg_len > msg_len {
+                    break
+                }
+
+                if hdr.cmsg_type == libc::SOL_SOCKET && hdr.cmsg_level == libc::SCM_RIGHTS {
+                    let msg_data = &msg[msg_idx + mem::size_of::<libc::cmsghdr>()..msg_idx + hdr.cmsg_len];
+                    let (s1, fds, s2) = unsafe { msg_data.align_to::<RawFd>() };
+                    assert!(s1.is_empty() && s2.is_empty() && fds.len() == 1);
+
+                    state.local.pasture.insert(cow_id, CowInfo {
+                        memfd: fds[0],
+                    });
+
+                    return
+                }
+
+                // Update msg index
+                msg_idx = unsafe {
+                    cmp::max(
+                        CMSG_ALIGN(msg_idx + hdr.cmsg_len),
+                        CMSG_ALIGN(msg_idx + mem::size_of::<libc::cmsghdr>())
+                    )
+                };
+
+                if msg_idx > msg_len {
+                    break
+                }
+            }
+
+            unreachable!("SCM_RIGHTS not received on Unix socket")
         }
     }
 

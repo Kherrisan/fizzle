@@ -9,6 +9,7 @@ use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::process::Command;
 use std::thread::ThreadId;
+use std::time::Duration;
 use std::{array, env, mem, process, ptr, thread};
 
 use fizzle_common::io::{
@@ -33,7 +34,7 @@ use crate::handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource};
 use crate::handlers::directory::DirectoryId;
 use crate::handlers::epoll::{EpollId, EpollInfo};
 use crate::handlers::eventfd::{EventfdId, EventfdInfo};
-use crate::handlers::file::{CowId, CowInfo, FileId, FileInfo, FileObject, FilePtr};
+use crate::handlers::file::*;
 use crate::handlers::futex::FutexPtr;
 use crate::handlers::fuzz_endpoint::{FuzzEndpointId, FuzzEndpointInfo};
 use crate::handlers::id::{WorkerId, WorkerInfo};
@@ -109,6 +110,61 @@ pub fn has_entered_handler() -> bool {
         entered = *e.borrow();
     });
     entered
+}
+
+pub fn copy_to_shmem(memfd: RawFd, path: &FilePath<MAX_PATH_LEN>) {
+    let in_fd = unsafe {
+        libc::open(path.as_cstr().as_ptr(), libc::O_RDONLY)
+    };
+
+    if in_fd < 0 {
+        panic!("failed to copy file to shared memory--file couldn't be opened: {}", Errno::get_errno())
+    }
+
+    let stat_data = unsafe {
+        let mut stat_buf: MaybeUninit<libc::stat> = MaybeUninit::uninit();
+        if libc::fstat(in_fd, ptr::addr_of_mut!(stat_buf) as *mut libc::stat) != 0 {
+            panic!("failed to copy file to shared memory--fstat filure: {}", Errno::get_errno())
+        }
+        stat_buf.assume_init()
+    };
+
+    let length = stat_data.st_size as usize;
+
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let mut offset = 0;
+        while (offset as usize) < length {
+            let sent = libc::copy_file_range(memfd, ptr::addr_of_mut!(offset), in_fd, ptr::addr_of_mut!(offset), length - (offset as usize), 0);
+            if sent < 0 {
+                panic!("failed to copy file to CoW shmem object: {}", Errno::get_errno())
+            }
+            offset += sent as i64;
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    unsafe {
+        let mut offset = 0;
+        let mapped = libc::mmap(ptr::null_mut(), length, libc::PROT_READ | libc::PROT_WRITE, 0, memfd, 0);
+        if mapped == libc::MAP_FAILED {
+            panic!("failed to mmap() when copying to shared memory: {}", Errno::get_errno())
+        }
+        while (offset as usize) < length {
+            let sent = libc::read(in_fd, mapped, length - offset);
+            if sent < 0 {
+                panic!("failed to copy file: {}", Errno::get_errno())
+            }
+
+            offset += sent as usize;
+        }
+
+        libc::munmap(mapped);
+    }
+
+    unsafe {
+        libc::close(in_fd);
+    }
 }
 
 /// Produces a new `FizzleSingleton` instance that can be used to acquire global state in a safe manner.
@@ -543,7 +599,8 @@ impl FizzleState {
         self.load_config_mappings(endpoints);
     }
 
-    fn allocate_cow(&mut self) -> CowId {
+    /// Allocates a new Copy-on-Write (CoW) within the main process, returning its identifier.
+    pub fn allocate_cow(&mut self) -> CowId {
         let cow_id = self.global.next_cow_id;
         self.global.next_cow_id = CowId::next(&cow_id);
         let cow_fd = InterprocessState::cow_shmem_create(cow_id);
@@ -1031,6 +1088,7 @@ pub struct ProcessLocalState {
     pub awaiting_thread_death: HashMap<ThreadId, Vec<ThreadId>, FxBuildHasher>,
     /// The directory that the program is currently executing relative to.
     pub working_directory: FilePath<MAX_PATH_LEN>,
+    pub umask: AccessMode,
 }
 
 impl Debug for ProcessLocalState {
@@ -1060,6 +1118,7 @@ impl Debug for ProcessLocalState {
             .field("terminated_threads", &self.terminated_threads)
             .field("awaiting_thread_death", &self.awaiting_thread_death)
             .field("working_directory", &self.working_directory)
+            .field("umask", &self.umask)
             .finish()
     }
 }
@@ -1099,6 +1158,7 @@ impl ProcessLocalState {
             terminated_threads: HashSet::default(),
             working_directory,
             awaiting_thread_death: HashMap::default(),
+            umask: AccessMode::GROUP_READ | AccessMode::USER_WRITE | AccessMode::USER_EXEC, // 644
         }
     }
 }
@@ -1117,14 +1177,14 @@ pub struct InterprocessState {
     pub inherited_state: Option<InheritedState>,
     /// The thread/process identifier to be signalled with the given signal value. This is `Some`
     /// if and only if a thread is about to receive an outstanding signal.
-    /// 
     pub signal: Option<(SignalDestination, RaisedSignalInfo)>,
+    /// Indicates a Copy-on-Write file should be passed to the given worker.
+    pub create_cow: Option<CreateCowSource>,
     // TODO: use an env variable to pass this from parent to child when receiving shared memory
     /// The read end of the Unix socket pair used to pass file descriptors between processes.
     pub unix_read_fd: RawFd,
     /// The write end of the Unix socket pair used to pass file descriptors between processes.
     pub unix_write_fd: RawFd,
-
     /// Indicates which thread(s) are awaiting the death of a specific process (via `waitpid`)
     pub awaiting_process_death: FnvIndexMap<
         ProcessId,
@@ -1142,7 +1202,7 @@ pub struct InterprocessState {
         FnvIndexSet<ProcessId, FIZZLE_MAX_PROCESS_GROUP_SIZE>,
         FIZZLE_MAX_PROCESS_GROUPS,
     >,
-
+    pub next_inode: libc::ino_t,
     /// The number of rounds to run fuzzing when executing in Persistent mode.
     pub persistent_rounds: usize,
     /// The next StreamId available to be assigned to an emulated stream.
@@ -1160,6 +1220,7 @@ pub struct InterprocessState {
     pub event_fds: KeyedArena<EventfdId, EventfdInfo, FIZZLE_MAX_EVENTFDS>,
     pub file_paths: FnvIndexMap<FilePath<MAX_PATH_LEN>, Rc<FileId>, FIZZLE_MAX_FILE_PATHS>,
     pub files: KeyedArena<FileId, FileInfo, FIZZLE_MAX_FILES>,
+    pub open_files: KeyedArena<OpenFileId, OpenFileInfo, FIZZLE_MAX_OPEN_FILES>,
     pub sem_paths: FnvIndexMap<SemaphorePath, Rc<SemaphoreId>, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub semaphores: KeyedArena<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub pipes: KeyedArena<PipeId, PipeInfo, FIZZLE_MAX_PIPES>,
@@ -1183,6 +1244,9 @@ pub struct InterprocessState {
     pub per_round_endpoints: FnvIndexSet<Rc<SocketId>, FIZZLE_MAX_PER_ROUND_ENDPOINTS>,
     pub fuzz_endpoints: KeyedArena<FuzzEndpointId, FuzzEndpointInfo, FIZZLE_MAX_FUZZ_ENDPOINTS>,
     pub prefuzz_rng: rand::rngs::SmallRng,
+    pub current_time: Duration,
+    pub uid: libc::uid_t,
+    pub gid: libc::gid_t,
 }
 
 impl InterprocessState {
@@ -1250,6 +1314,8 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).next_cow_id) = CowId::first();
             *ptr::addr_of_mut!((*state).process_locks) = array::from_fn(|_| None);
 
+            *ptr::addr_of_mut!((*state).next_inode) = 1_000_000;
+
             KeyedArena::initialize(ptr::addr_of_mut!((*state).ids));
             *ptr::addr_of_mut!((*state).afl_shmem_initialized) = false;
             KeyedArena::initialize(ptr::addr_of_mut!((*state).process_groups));
@@ -1265,6 +1331,8 @@ impl InterprocessState {
             KeyedArena::initialize(ptr::addr_of_mut!((*state).sockets));
             KeyedArena::initialize(ptr::addr_of_mut!((*state).buffers));
 
+            KeyedArena::initialize(ptr::addr_of_mut!((*state).open_files));
+
             *ptr::addr_of_mut!((*state).stdio) = StdioBackend::Passthrough;
             KeyedArena::initialize(ptr::addr_of_mut!((*state).plugins));
             KeyedArena::initialize(ptr::addr_of_mut!((*state).polled_events));
@@ -1277,7 +1345,9 @@ impl InterprocessState {
             KeyedArena::initialize(ptr::addr_of_mut!((*state).fuzz_endpoints));
             *ptr::addr_of_mut!((*state).prefuzz_rng) =
                 SmallRng::seed_from_u64(0xABAD_5EED_ABAD_5EED_u64); // TODO: enable custom seed loading
-
+            *ptr::addr_of_mut!((*state).current_time) = Duration::from_secs(1735924847); // TODO: set this randomly each fuzzing round
+            *ptr::addr_of_mut!((*state).uid) = 1000; // TODO: make this configurable
+            *ptr::addr_of_mut!((*state).gid) = 1000; // TODO: make this configurable
             &mut (*state)
         }
     }
@@ -1329,6 +1399,12 @@ impl InterprocessState {
             let data = self.fuzz_input.data();
             array::from_fn(|i| data[i % data.len()])
         }
+    }
+
+    pub fn next_inode(&mut self) -> libc::ino_t {
+        let inode = self.next_inode;
+        self.next_inode += 1;
+        inode
     }
 
     pub fn add_fuzz_endpoint(&mut self) -> Rc<FuzzEndpointId> {
@@ -1584,4 +1660,10 @@ pub enum ReadyInfo {
 pub enum SignalDestination {
     Process(WorkerId),
     Thread(WorkerId),
+}
+
+#[derive(Clone, Debug)]
+pub enum CreateCowSource {
+    New(FilePath<256>, AccessMode),
+    Existing(CowId),
 }

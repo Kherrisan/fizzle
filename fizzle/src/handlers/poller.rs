@@ -128,6 +128,7 @@ impl Event for SelectEvent<'_> {
                     Outcome::TerminateProcess(t) => Outcome::TerminateProcess(t),
                     Outcome::Execute(e) => Outcome::Execute(e),
                     Outcome::SendSignal(d, i) => Outcome::SendSignal(d, i),
+                    Outcome::CreateCow(c) => Outcome::CreateCow(c),
                 }
             }
             SelectState::CheckDescriptors => {
@@ -319,6 +320,7 @@ impl Event for SelectEvent<'_> {
                     Outcome::TerminateProcess(t) => Outcome::TerminateProcess(t),
                     Outcome::Execute(e) => Outcome::Execute(e),
                     Outcome::SendSignal(d, i) => Outcome::SendSignal(d, i),
+                    Outcome::CreateCow(c) => Outcome::CreateCow(c),
                 }
             }
         }
@@ -394,6 +396,7 @@ impl Event for PollEvent<'_> {
                     Outcome::TerminateProcess(t) => Outcome::TerminateProcess(t),
                     Outcome::Execute(e) => Outcome::Execute(e),
                     Outcome::SendSignal(d, i) => Outcome::SendSignal(d, i),
+                    Outcome::CreateCow(c) => Outcome::CreateCow(c),
                 }
             }
             PollState::CheckDescriptors => {
@@ -575,6 +578,7 @@ impl Event for PollEvent<'_> {
                     Outcome::TerminateProcess(t) => Outcome::TerminateProcess(t),
                     Outcome::Execute(e) => Outcome::Execute(e),
                     Outcome::SendSignal(d, i) => Outcome::SendSignal(d, i),
+                    Outcome::CreateCow(c) => Outcome::CreateCow(c),
                 }
             }
         }
@@ -849,6 +853,7 @@ impl Event for EpollWaitEvent<'_> {
                     Outcome::TerminateProcess(t) => Outcome::TerminateProcess(t),
                     Outcome::Execute(e) => Outcome::Execute(e),
                     Outcome::SendSignal(d, i) => Outcome::SendSignal(d, i),
+                    Outcome::CreateCow(c) => Outcome::CreateCow(c),
                 }
             }
             EpollWaitState::CheckDescriptors => {
@@ -1060,6 +1065,7 @@ impl Event for EpollWaitEvent<'_> {
                     Outcome::TerminateProcess(t) => Outcome::TerminateProcess(t),
                     Outcome::Execute(e) => Outcome::Execute(e),
                     Outcome::SendSignal(d, i) => Outcome::SendSignal(d, i),
+                    Outcome::CreateCow(c) => Outcome::CreateCow(c),
                 }
             }
         }

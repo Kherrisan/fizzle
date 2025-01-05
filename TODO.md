@@ -1,8 +1,6 @@
 # Tasks
 
 ## Refactor
-- file.rs: everything (effort: high)
-- filesystem.rs: everything (effort: medium)
 - check `dup`, `dup2` handling of reference counts
 
 ## Eventually Needed Features
@@ -10,6 +8,9 @@
 - signalfd
 - Refactoring of sockets
 - C streams (FILE*) implementation
+- Embedded allocator use:
+  * https://crates.io/crates/embedded-alloc
+  * Use custom allocator APIs available in regular `Rc`, `Vec`, `BTreeMap`
 
 ## On the Roadmap
 - time.rs: all timers; internals in `scheduler.rs` (effort: high)
