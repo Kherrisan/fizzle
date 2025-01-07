@@ -25,7 +25,7 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
 use crate::arena::{KeyedArena, Rc};
-use crate::{comptime, GlobalList, GlobalRc, GlobalSet, GlobalVec};
+use crate::{comptime, GlobalRc, GlobalVec};
 use crate::constants::*;
 use crate::errno::Errno;
 use crate::handlers::barrier::{BarrierInfo, BarrierPtr};
@@ -391,13 +391,19 @@ impl FizzleState {
         assert!(!self.local.is_initialized);
 
         if !self.global.is_initialized {
+            log::info!("calling `initialize_global()`...");
             self.initialize_global();
+            log::info!("`initialize_global()` complete.");
         }
 
+        log::info!("calling `initialize_local()`...");
         self.initialize_local();
+        log::info!("`initialize_local()` complete.");
 
         if self.local.process_id.is_main_process() {
+            log::info!("calling `initialize_main_process()`...");
             self.initialize_main_process();
+            log::info!("`initialize_main_process()` complete.");
         }
     }
 
@@ -546,7 +552,7 @@ impl FizzleState {
                 process_id: ProcessId::from(usize::MAX),
                 thread_id: thread::current().id(),
             },
-        );
+        ).unwrap();
 
         // 1 is the PID for the `init` process
         self.global.ids.allocate_with_key(
@@ -555,7 +561,7 @@ impl FizzleState {
                 process_id: ProcessId::from(usize::MAX),
                 thread_id: thread::current().id(),
             },
-        );
+        ).unwrap();
 
         let mut unix_fds: [RawFd; 2] = [0; 2];
         let res = unsafe {
