@@ -581,6 +581,7 @@ impl FizzleState {
         // Initialize immediate ("onstartup") commands
         comptime::populate_onstartup_processes(&mut onstartup_commands);
 
+        log::info!("`populate_onready_processes`...");
         // Initialize delayed ("onready") commands
         comptime::populate_onready_processes(&mut onready_commands);
 
@@ -592,7 +593,9 @@ impl FizzleState {
 
             // Initialize plugin endpoints
 
+            log::info!("populating comptime-generated plugins...");
             comptime::populate_plugins(&mut endpoints, plugins.assume_init_mut());
+            log::info!("comptime-generated plugins populated.");
 
             self.local.main_state = Some(MainProcessState {
                 onstartup_commands,
@@ -602,7 +605,9 @@ impl FizzleState {
             });
         }
 
+        log::info!("calling `load_config_mappings()`...");
         self.load_config_mappings(endpoints);
+        log::info!("`load_config_mappings()` complete.");
     }
 
     /// Allocates a new Copy-on-Write (CoW) within the main process, returning its identifier.
