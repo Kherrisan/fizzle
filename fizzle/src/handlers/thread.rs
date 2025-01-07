@@ -18,6 +18,7 @@ use super::mutex::MutexPtr;
 use super::signal::SignalSet;
 
 extern "C" {
+    /*
     pub fn pthread_attr_setsigmask_np(
         attr: *mut libc::pthread_attr_t,
         sigmask: *const libc::sigset_t,
@@ -27,6 +28,7 @@ extern "C" {
         attr: *const libc::pthread_attr_t,
         sigmask: *mut libc::sigset_t,
     ) -> libc::c_int;
+    */
 
     pub fn pthread_attr_getdetachstate(
         attr: *const libc::pthread_attr_t,
@@ -209,14 +211,19 @@ impl ThreadCreateEvent {
         arg: *mut libc::c_void,
     ) -> Self {
         // If the attributes contain a sigmask, note it (but remove the actual sigmask)
+        /*
         let sigmask = match attrs.is_null() {
             true => None,
             false => {
+                // TODO: 
                 let sigmask = Self::get_attr_sigmask(attrs);
                 Self::clear_attr_sigmask(attrs as *mut libc::pthread_attr_t); // TODO: BUG: undefined behavior--fix
                 Some(SignalSet::from_sigset(sigmask))
             }
         };
+        */
+        // TODO: track pthread_attr_t instances instead
+        let sigmask = None;
 
         let detached = if attrs.is_null() {
             false
@@ -244,6 +251,7 @@ impl ThreadCreateEvent {
         }
     }
 
+    /*
     fn get_attr_sigmask(attrs: *const libc::pthread_attr_t) -> libc::sigset_t {
         let mut set = MaybeUninit::<libc::sigset_t>::uninit();
 
@@ -255,6 +263,7 @@ impl ThreadCreateEvent {
             set.assume_init()
         }
     }
+    */
 
     fn clear_attr_sigmask(attrs: *mut libc::pthread_attr_t) {
         let mut set = MaybeUninit::<libc::sigset_t>::uninit();
@@ -639,6 +648,7 @@ impl Event for ThreadYieldEvent {
         match self.state {
             ThreadYieldState::Start => {
                 state.mark_thread_ready(thread::current().id());
+                self.state = ThreadYieldState::Finish;
                 Outcome::Yield(None)
             }
             ThreadYieldState::Finish => Outcome::Success(()),
