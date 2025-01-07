@@ -2,6 +2,7 @@ use std::cmp;
 use std::io::{IoSlice, IoSliceMut};
 use std::mem::MaybeUninit;
 use std::os::fd::RawFd;
+use std::rc::Weak;
 
 use super::directory::*;
 use super::epoll::*;
@@ -17,6 +18,7 @@ use crate::backend::{ConnectedBackend, StdioBackend};
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
+use crate::GlobalRc;
 
 use bitflags::bitflags;
 use fizzle_common::io::TransportAddress;
@@ -64,7 +66,7 @@ impl DescriptorInfo {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug)]
 pub enum FdResource {
     /// Files `open()`ed using O_PATH
     Directory(Rc<DirectoryId>),
@@ -86,7 +88,7 @@ pub enum FdResource {
     /// The standard error of the parent process. (which may be inherited by children).
     Stderr,
     /// Network sockets.
-    Socket(Rc<SocketId>),
+    Socket(GlobalRc<SocketInfo>),
 }
 
 impl ArenaKey for DescriptorId {
@@ -113,16 +115,15 @@ impl Event for DescriptorCloseEvent {
             return Outcome::Error(Errno::EBADFD);
         };
 
-        if let FdResource::Socket(socket_id) = fd_info.resource.clone() {
+        if let FdResource::Socket(socket_info) = fd_info.resource.clone() {
             // Decrement the number of fd references to the socket
-            let socket_info = state.global.sockets.get_mut(&socket_id).unwrap();
-            socket_info.fd_count.checked_sub(1).unwrap();
+            socket_info.borrow_mut().fd_count.checked_sub(1).unwrap();
 
             // Is this the last file descriptor referencing the socket?
-            if socket_info.fd_count == 0 {
+            if socket_info.borrow().fd_count == 0 {
                 // Remove the socket's address from the global space
-                if let LocalAddress::Assigned(sockaddr) = socket_info.local_addr.clone() {
-                    let protocol = socket_info.protocol;
+                if let LocalAddress::Assigned(sockaddr) = socket_info.borrow().local_addr.clone() {
+                    let protocol = socket_info.borrow().protocol;
                     state
                         .global
                         .socket_locations
@@ -132,13 +133,13 @@ impl Event for DescriptorCloseEvent {
 
                 // Certain socket states contain cyclic references with other sockets.
                 // We need to manually remove these to
-                if let SocketState::Connected(connected) = &mut socket_info.state {
+                if let SocketState::Connected(connected) = &mut socket_info.borrow_mut().state {
                     if !connected.peer_closed {
                         connected.peer_closed = true;
                         if let ConnectedBackend::Peered(peer_info) = &mut connected.backend {
                             // TODO: do we take the peer's socket ID here so that we can set peer_closed = true on it?
                             // TODO: do we raise the poll of the peer here?
-                            peer_info.peer = None;
+                            peer_info.peer = Weak::new_in(state.global.allocator.allocator());
                         }
                     }
                 }
@@ -157,6 +158,157 @@ impl Event for DescriptorCloseEvent {
         Outcome::Success(())
     }
 }
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub enum pid_type {
+    F_OWNER_TID = 0,
+    F_OWNER_PID,
+    F_OWNER_PGRP, // F_OWNER_GID
+}
+
+#[allow(non_camel_case_types)]
+#[repr(C)]
+pub struct f_owner_ex {
+    pid_type: pid_type,
+    pid: libc::pid_t,
+}
+
+pub enum FcntlCommand<'a> {
+    DupFd(RawFd),
+    DupFdCloexec(RawFd),
+    SetFd(RawFd),
+    SetFl(libc::c_int),
+    SetOwn(libc::c_int),
+    SetSig(libc::c_int),
+    Notify(libc::c_int),
+    SetPipeSize(libc::c_int),
+    AddSeals(libc::c_int),
+    GetFd,
+    GetFl,
+    GetOwn,
+    GetSig,
+    GetLease,
+    GetSeals,
+    SetLock(&'a mut libc::flock),
+    SetLockWait(&'a mut libc::flock),
+    GetLock(&'a mut libc::flock),
+    OfdSetLock(&'a mut libc::flock),
+    OfdSetLockWait(&'a mut libc::flock),
+    OfdGetLock(&'a mut libc::flock),
+    GetOwnEx(&'a mut f_owner_ex),
+    SetOwnEx(&'a mut f_owner_ex),
+    GetRwHint(&'a mut u64),
+    SetRwHint(&'a mut u64),
+    GetFileRwHint(&'a mut u64),
+    SetFileRwHint(&'a mut u64),
+}
+
+pub struct FcntlEvent<'a> {
+    fd: DescriptorId,
+    command: FcntlCommand<'a>,
+}
+
+impl<'a> FcntlEvent<'a> {
+    #[inline]
+    pub fn new(fd: DescriptorId, command: FcntlCommand<'a>) -> Self {
+        Self {
+            fd,
+            command,
+        }
+    }
+}
+
+impl Event for FcntlEvent<'_> {
+    type Success = libc::c_int;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        match state.local.fds.get_mut(&self.fd) {
+            Some(fd_info) if fd_info.is_passthrough => {
+                unimplemented!("fd passthrough")
+                /*
+                let dupfd = libc::fcntl(fd, cmd, arg);
+                if dupfd >= 0 && (cmd == libc::F_DUPFD || cmd == libc::F_DUPFD_CLOEXEC) {
+                    let nonblocking = fd_info.nonblocking;
+                    let close_on_exec = cmd == libc::F_DUPFD_CLOEXEC;
+                    let resource = fd_info.resource.clone();
+                    state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(dupfd), DescriptorInfo {
+                        close_on_exec,
+                        nonblocking,
+                        is_passthrough: true,
+                        resource,
+                    }).unwrap();
+                }
+
+                dupfd
+                */
+            }
+            Some(fd_info) => {
+                match &self.command {
+                    FcntlCommand::GetFl => {
+                        // TODO: handle other flags
+                        if fd_info.nonblocking {
+                            Outcome::Success(libc::O_NONBLOCK)
+                        } else {
+                            Outcome::Success(0)
+                        }
+                    }
+                    FcntlCommand::SetFl(flags) => {
+                        fd_info.nonblocking = flags & libc::O_NONBLOCK > 0;
+                        Outcome::Success(0)
+                    }
+                    FcntlCommand::GetFd => {
+                        // TODO: handle other fields
+                        if fd_info.close_on_exec {
+                            Outcome::Success(libc::O_CLOEXEC)
+                        } else {
+                            Outcome::Success(0)
+                        }
+                    }
+                    FcntlCommand::SetFd(fields) => {
+                        fd_info.close_on_exec = fields & libc::O_CLOEXEC > 0; // TODO: can CLOEXEC be unset?
+                        Outcome::Success(0)
+                    }
+                    FcntlCommand::DupFd(newfd) => {
+                        let nonblocking = fd_info.nonblocking;
+                        let resource = fd_info.resource.clone();
+                        let dupfd = crate::create_descriptor(); // TODO: what about read-only files here? use actual dup...
+                        state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(dupfd), DescriptorInfo {
+                            close_on_exec: false,
+                            nonblocking,
+                            is_passthrough: false,
+                            resource,                           
+                        }).unwrap();
+                        
+                        Outcome::Success(dupfd)
+                    }
+                    FcntlCommand::DupFdCloexec(newfd) => {
+                        let nonblocking = fd_info.nonblocking;
+                        let resource = fd_info.resource.clone();
+                        let dupfd = crate::create_descriptor(); // TODO: what about read-only files here? use actual dup...
+                        state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(dupfd), DescriptorInfo {
+                            close_on_exec: true,
+                            nonblocking,
+                            is_passthrough: false,
+                            resource,                           
+                        }).unwrap();
+
+                        Outcome::Success(dupfd)
+                    }
+                    _ => {
+                        log::error!("unimplemented fcntl command");
+                        Outcome::Error(Errno::EINVAL)
+                    }
+                }
+            },
+            None => {
+                Outcome::Error(Errno::EBADF)
+            },
+        }
+    }
+}
+
 
 pub struct DescriptorDuplicateEvent {
     old_fd: DescriptorId,
@@ -199,8 +351,8 @@ impl Event for DescriptorDuplicateEvent {
         new_fd_info.close_on_exec = self.close_on_exec;
 
         // Upref the file descriptor count where applicable
-        if let FdResource::Socket(socket_id) = new_fd_info.resource.clone() {
-            state.global.sockets.get_mut(&socket_id).unwrap().fd_count += 1;
+        if let FdResource::Socket(socket_info) = new_fd_info.resource.clone() {
+            socket_info.borrow_mut().fd_count += 1;
         }
 
         // Close `newfd` if it points to an occupied descriptor
@@ -369,9 +521,9 @@ impl Event for DescriptorReadEvent<'_> {
                             self.data.take().unwrap(),
                         ));
                     }
-                    FdResource::Socket(socket_id) => {
+                    FdResource::Socket(socket_info) => {
                         self.state = DescriptorReadState::Socket(SocketReadEvent::new(
-                            socket_id.clone(),
+                            socket_info.clone(),
                             fd_info.nonblocking,
                             self.data.take().unwrap(),
                         ));

@@ -8,6 +8,9 @@ pub const FIZZLE_MEMORY_ENV: &str = "FIZZLE_MEMORY";
 /// Setting this may slightly speed up the execution rate of a program due to deferred forkserver initialization.
 pub const FIZZLE_SINGLEPROCESS_ENV: &str = "FIZZLE_SINGLEPROCESS";
 
+pub const FIZZLE_HEAP_SIZE: usize = 10 * 1024 * 1024; // 10 MB by default
+
+
 /// Instructs the fizzle harness to keep running if the main process would exit normally
 // pub const FIZZLE_NOEXIT_ENV: &str = "FIZZLE_NOEXIT";
 

@@ -5,8 +5,6 @@ use std::thread::ThreadId;
 use std::time::Duration;
 use std::{cmp, mem, ptr, thread};
 
-use heapless::FnvIndexSet;
-
 use crate::arena::Rc;
 use crate::backend::{ConnectedBackend, FileBackend, FileFeedback, PendingBackend};
 use crate::constants::{FIZZLE_MAX_FUZZ_ENDPOINTS, FIZZLE_MEMORY_ENV};
@@ -16,8 +14,8 @@ use crate::handlers::mutex::MutexStatus;
 use crate::handlers::polled::PolledId;
 use crate::handlers::process::*;
 use crate::handlers::signal::*;
-use crate::handlers::socket::SocketState;
-use crate::plugins;
+use crate::handlers::socket::{SocketInfo, SocketState};
+use crate::{plugins, GlobalRc};
 use crate::state;
 use crate::state::*;
 
@@ -578,7 +576,7 @@ impl Scheduler {
 
         // Add new pending per-round fuzzing clients
         for client_info in per_round_clients {
-            let socket_id = state.global.add_pending_client(
+            let socket_info = state.global.add_pending_client(
                 client_info.source_address,
                 client_info.target_address,
                 match client_info.backend {
@@ -588,8 +586,8 @@ impl Scheduler {
                     PerRoundClientBackend::Plugin(plugin_id) => PendingBackend::Plugin(plugin_id),
                 },
             );
-            log::debug!("added pending client {:?}", socket_id);
-            state.global.per_round_endpoints.insert(socket_id).unwrap();
+            log::debug!("added pending client {:?}", socket_info);
+            state.global.per_round_endpoints.push(socket_info);
         }
 
         drop(state);
@@ -597,18 +595,13 @@ impl Scheduler {
 
     fn remove_perround_endpoints(ctx: &mut FizzleSingleton) {
         let mut state = ctx.acquire();
+        let global = &mut state.global;
 
-        let mut endpoints = FnvIndexSet::new();
-        mem::swap(&mut endpoints, &mut state.global.per_round_endpoints);
+        let endpoints: Vec<GlobalRc<SocketInfo>> = global.per_round_endpoints.drain(..).collect();
+        for sock_info in endpoints {
+            let local_transport = sock_info.borrow().local_transport();
 
-        for socket_id in endpoints.into_iter() {
-            let Some(sock_info) = state.global.sockets.get_mut(&socket_id) else {
-                continue;
-            };
-
-            let local_transport = sock_info.local_transport();
-
-            match &mut sock_info.state {
+            match &mut sock_info.borrow_mut().state {
                 SocketState::PendingConnection(_) => (), // Leave be
                 SocketState::Connected(connected) => {
                     log::debug!("removing connected fuzz/plugin client socket");
@@ -632,28 +625,26 @@ impl Scheduler {
                         // Now raise all applicable poll events so the reader discovers the peer is closed
                         match connected.backend.clone() {
                             ConnectedBackend::Plugin(plugin_id) => {
-                                let plugin = state.global.plugins.get(&plugin_id).unwrap();
+                                let plugin = global.plugins.get(&plugin_id).unwrap();
                                 let read_polled = plugin.read_polled.clone();
                                 let write_polled = plugin.write_polled.clone();
-                                state.raise_polled(&read_polled);
-                                state.raise_polled(&write_polled);
+                                global.raise_polled(&read_polled);
+                                global.raise_polled(&write_polled);
                             }
                             ConnectedBackend::Fuzz(fuzz_endpoint_id) => {
-                                let read_polled = state
-                                    .global
+                                let read_polled = global
                                     .fuzz_endpoints
                                     .get(&fuzz_endpoint_id)
                                     .unwrap()
                                     .read_polled
                                     .clone();
-                                state.raise_polled(&read_polled);
+                                global.raise_polled(&read_polled);
                             }
                             _ => unreachable!(),
                         }
                     }
 
-                    state
-                        .global
+                    global
                         .per_round_clients
                         .push(PerRoundClientInfo {
                             source_address,
@@ -1255,7 +1246,7 @@ impl Scheduler {
             // No need to use `SCM_RIGHTS`--we're doing everything in the same process
 
             match source {
-                CreateCowSource::Existing(cow_id) => (), // Already created
+                CreateCowSource::Existing(_cow_id) => (), // Already created
                 CreateCowSource::New(path, mode) => {
                     // Create a CoW
                     let cow_id = state.allocate_cow();
@@ -1282,10 +1273,10 @@ impl Scheduler {
                             ctime: current_time,
                         }).unwrap();
 
-                        state.global.file_paths.insert(path, file_id).unwrap();
+                        state.global.file_paths.insert(path.clone(), file_id).unwrap();
                     } else {
-                        let file_id = state.global.file_paths.get(&path).unwrap();
-                        state.global.files.get(&file_id).unwrap().cow = Some(cow_id);
+                        let file_id = state.global.file_paths.get(&path).unwrap().clone();
+                        state.global.files.get_mut(&file_id).unwrap().cow = Some(cow_id);
                     }
 
                     let memfd = state.local.pasture.get(&cow_id).unwrap().memfd;
@@ -1294,10 +1285,10 @@ impl Scheduler {
             }
 
         } else {
-            state.global.create_cow = Some(source);
+            state.global.create_cow = Some(source.clone());
 
             state.global.ready.push_front(ReadyInfo::Worker(current_worker));
-            state.global.process_locks[usize::from(main_process_id)].unwrap().post();
+            state.global.process_locks[usize::from(main_process_id)].as_mut().unwrap().post();
             drop(state);
             Scheduler::await_delegation(ctx, DelegationSource::Process);
 

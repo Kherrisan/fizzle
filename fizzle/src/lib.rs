@@ -1,7 +1,8 @@
+#![feature(allocator_api)]
 #![feature(c_variadic)]
 #![feature(string_remove_matches)]
 
-extern crate libc;
+// extern crate libc;
 
 mod arena;
 mod backend;
@@ -18,11 +19,22 @@ mod semaphore;
 mod state;
 mod streams;
 
+use embedded_alloc::TlsfHeap;
 pub(crate) use hook_macros::hook;
 
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, LinkedList};
 use std::os::fd::RawFd;
 use std::ptr;
 use std::time::Duration;
+
+pub type GlobalRc<T> = std::rc::Rc<RefCell<T>, &'static TlsfHeap>;
+pub type GlobalWeak<T> = std::rc::Weak<RefCell<T>, &'static TlsfHeap>;
+
+pub type GlobalList<T> = LinkedList<T, &'static TlsfHeap>;
+pub type GlobalVec<T> = Vec<T, &'static TlsfHeap>;
+pub type GlobalMap<K, V> = BTreeMap<K, V, &'static TlsfHeap>;
+pub type GlobalSet<K> = BTreeSet<K, &'static TlsfHeap>;
 
 extern "C" {
     #[cfg(feature = "afl")]

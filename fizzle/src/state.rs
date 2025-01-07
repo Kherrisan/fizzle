@@ -1,5 +1,5 @@
 use std::cell::{Ref, RefCell, RefMut};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, LinkedList, VecDeque};
 use std::fmt::Debug;
 use std::io::Write;
 use std::mem::MaybeUninit;
@@ -12,6 +12,7 @@ use std::thread::ThreadId;
 use std::time::Duration;
 use std::{array, env, mem, process, ptr, thread};
 
+use embedded_alloc::TlsfHeap;
 use fizzle_common::io::{
     AddressFamily, SocketAddrUnix, SocketType, TransportAddress, TransportProtocol, MAX_PATH_LEN,
 };
@@ -24,7 +25,7 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
 use crate::arena::{KeyedArena, Rc};
-use crate::comptime;
+use crate::{comptime, GlobalList, GlobalRc, GlobalSet, GlobalVec};
 use crate::constants::*;
 use crate::errno::Errno;
 use crate::handlers::barrier::{BarrierInfo, BarrierPtr};
@@ -280,7 +281,6 @@ impl FizzleSingleton {
     }
 }
 
-#[derive(Debug)]
 pub struct FizzleState {
     pub local: ProcessLocalState,
     pub global: &'static mut InterprocessState,
@@ -657,14 +657,30 @@ impl FizzleState {
                         let path =
                             FilePath::from_raw_bytes(pathbuf.as_os_str().as_bytes()).unwrap();
 
+                        let inode = self.global.next_inode();
+                        let uid = self.global.uid;
+                        let gid = self.global.gid;
+                        let current_time = self.global.current_time;
+                        let cow = self.allocate_cow();
+
                         let file_id = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => self
                                 .global
                                 .files
                                 .allocate(FileInfo {
                                     path: path.clone(),
+                                    dev_id: 0xfe01,
                                     backend: FileBackend::Feedback(FileFeedback { }),
-                                    cow: Some(self.allocate_cow()),
+                                    cow: Some(cow),
+                                    inode,
+                                    mode: AccessMode::all(),
+                                    nlink: 1,
+                                    uid,
+                                    gid,
+                                    atime: current_time,
+                                    btime: current_time,
+                                    mtime: current_time,
+                                    ctime: current_time,
                                 })
                                 .unwrap(),
                             IoEmulationType::Plugin(module_id) => {
@@ -678,6 +694,16 @@ impl FizzleState {
                                         path: path.clone(),
                                         cow: None,
                                         backend,
+                                        dev_id: 0xfe01,
+                                        inode,
+                                        mode: AccessMode::all(),
+                                        nlink: 1,
+                                        uid,
+                                        gid,
+                                        atime: current_time,
+                                        btime: current_time,
+                                        mtime: current_time,
+                                        ctime: current_time,
                                     })
                                     .unwrap()
                             }
@@ -688,6 +714,16 @@ impl FizzleState {
                                     path: path.clone(),
                                     cow: None,
                                     backend: FileBackend::Sink,
+                                    dev_id: 0xfe01,
+                                    inode,
+                                    mode: AccessMode::all(),
+                                    nlink: 1,
+                                    uid,
+                                    gid,
+                                    atime: current_time,
+                                    btime: current_time,
+                                    mtime: current_time,
+                                    ctime: current_time,
                                 })
                                 .unwrap(),
                             IoEmulationType::NullSink => self
@@ -697,17 +733,38 @@ impl FizzleState {
                                     path: path.clone(),
                                     cow: None,
                                     backend: FileBackend::NullSink,
+                                    dev_id: 0xfe01,
+                                    inode,
+                                    mode: AccessMode::all(),
+                                    nlink: 1,
+                                    uid,
+                                    gid,
+                                    atime: current_time,
+                                    btime: current_time,
+                                    mtime: current_time,
+                                    ctime: current_time,
                                 })
                                 .unwrap(),
                             IoEmulationType::Fuzz => {
                                 let fuzz_endpoint_id = self.global.add_fuzz_endpoint();
+                                let cow = self.allocate_cow();
                                 let file_id = self
                                     .global
                                     .files
                                     .allocate(FileInfo {
                                         path: path.clone(),
-                                        cow: Some(self.allocate_cow()),
+                                        cow: Some(cow),
                                         backend: FileBackend::Fuzz(fuzz_endpoint_id),
+                                        dev_id: 0xfe01,
+                                        inode,
+                                        mode: AccessMode::all(),
+                                        nlink: 1,
+                                        uid,
+                                        gid,
+                                        atime: current_time,
+                                        btime: current_time,
+                                        mtime: current_time,
+                                        ctime: current_time,
                                     })
                                     .unwrap();
 
@@ -720,6 +777,16 @@ impl FizzleState {
                                     path: path.clone(),
                                     cow: None,
                                     backend: FileBackend::Passthrough,
+                                    dev_id: 0xfe01,
+                                    inode,
+                                    mode: AccessMode::all(),
+                                    nlink: 1,
+                                    uid,
+                                    gid,
+                                    atime: current_time,
+                                    btime: current_time,
+                                    mtime: current_time,
+                                    ctime: current_time,
                                 })
                                 .unwrap(),
                         };
@@ -730,15 +797,15 @@ impl FizzleState {
                         let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => ServerBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => ServerBackend::Plugin(
-                                self.add_plugin(endpoint_variant.clone(), module_id.clone()),
+                                self.global.add_plugin(endpoint_variant.clone(), module_id.clone()),
                             ),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
-                            IoEmulationType::Fuzz => ServerBackend::Fuzz(self.add_fuzz_endpoint()),
+                            IoEmulationType::Fuzz => ServerBackend::Fuzz(self.global.add_fuzz_endpoint()),
                             IoEmulationType::Passthrough => ServerBackend::Passthrough,
                         };
 
-                        self.add_server(
+                        self.global.add_server(
                             TransportAddress::new_inet(addr, TransportProtocol::Tcp),
                             backend,
                         )
@@ -747,20 +814,20 @@ impl FizzleState {
                         let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(
-                                self.add_plugin(endpoint_variant.clone(), module_id.clone()),
+                                self.global.add_plugin(endpoint_variant.clone(), module_id.clone()),
                             ),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
-                            IoEmulationType::Fuzz => PendingBackend::Fuzz(self.add_fuzz_endpoint()),
+                            IoEmulationType::Fuzz => PendingBackend::Fuzz(self.global.add_fuzz_endpoint()),
                             IoEmulationType::Passthrough => PendingBackend::Passthrough,
                         };
 
                         let target_address =
                             TransportAddress::new_inet(addr, TransportProtocol::Tcp);
-                        let source_address = self
+                        let source_address = self.global
                             .ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
-                            self.per_round_clients
+                            self.global.per_round_clients
                                 .push(PerRoundClientInfo {
                                     source_address,
                                     target_address,
@@ -776,22 +843,22 @@ impl FizzleState {
                                 })
                                 .unwrap();
                         } else {
-                            self.add_pending_client(source_address, target_address, backend);
+                            self.global.add_pending_client(source_address, target_address, backend);
                         }
                     }
                     IoEndpointVariant::UdpServer(addr) => {
                         let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => ServerBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => ServerBackend::Plugin(
-                                self.add_plugin(endpoint_variant.clone(), module_id.clone()),
+                                self.global.add_plugin(endpoint_variant.clone(), module_id.clone()),
                             ),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
-                            IoEmulationType::Fuzz => ServerBackend::Fuzz(self.add_fuzz_endpoint()),
+                            IoEmulationType::Fuzz => ServerBackend::Fuzz(self.global.add_fuzz_endpoint()),
                             IoEmulationType::Passthrough => ServerBackend::Passthrough,
                         };
 
-                        self.add_server(
+                        self.global.add_server(
                             TransportAddress::new_inet(addr, TransportProtocol::Udp),
                             backend,
                         )
@@ -800,20 +867,20 @@ impl FizzleState {
                         let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(
-                                self.add_plugin(endpoint_variant.clone(), module_id.clone()),
+                                self.global.add_plugin(endpoint_variant.clone(), module_id.clone()),
                             ),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
-                            IoEmulationType::Fuzz => PendingBackend::Fuzz(self.add_fuzz_endpoint()),
+                            IoEmulationType::Fuzz => PendingBackend::Fuzz(self.global.add_fuzz_endpoint()),
                             IoEmulationType::Passthrough => PendingBackend::Passthrough,
                         };
 
                         let target_address =
                             TransportAddress::new_inet(addr, TransportProtocol::Udp);
-                        let source_address = self
+                        let source_address = self.global
                             .ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
-                            self.per_round_clients
+                            self.global.per_round_clients
                                 .push(PerRoundClientInfo {
                                     source_address,
                                     target_address,
@@ -829,22 +896,22 @@ impl FizzleState {
                                 })
                                 .unwrap();
                         } else {
-                            self.add_pending_client(source_address, target_address, backend);
+                            self.global.add_pending_client(source_address, target_address, backend);
                         }
                     }
                     IoEndpointVariant::SctpServer(addr) => {
                         let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => ServerBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => ServerBackend::Plugin(
-                                self.add_plugin(endpoint_variant.clone(), module_id.clone()),
+                                self.global.add_plugin(endpoint_variant.clone(), module_id.clone()),
                             ),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
-                            IoEmulationType::Fuzz => ServerBackend::Fuzz(self.add_fuzz_endpoint()),
+                            IoEmulationType::Fuzz => ServerBackend::Fuzz(self.global.add_fuzz_endpoint()),
                             IoEmulationType::Passthrough => ServerBackend::Passthrough,
                         };
 
-                        self.add_server(
+                        self.global.add_server(
                             TransportAddress::new_inet(addr, TransportProtocol::Sctp),
                             backend,
                         )
@@ -853,20 +920,20 @@ impl FizzleState {
                         let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(
-                                self.add_plugin(endpoint_variant.clone(), module_id.clone()),
+                                self.global.add_plugin(endpoint_variant.clone(), module_id.clone()),
                             ),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
-                            IoEmulationType::Fuzz => PendingBackend::Fuzz(self.add_fuzz_endpoint()),
+                            IoEmulationType::Fuzz => PendingBackend::Fuzz(self.global.add_fuzz_endpoint()),
                             IoEmulationType::Passthrough => PendingBackend::Passthrough,
                         };
 
                         let target_address =
                             TransportAddress::new_inet(addr, TransportProtocol::Sctp);
-                        let source_address = self
+                        let source_address = self.global
                             .ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
-                            self.per_round_clients
+                            self.global.per_round_clients
                                 .push(PerRoundClientInfo {
                                     source_address,
                                     target_address,
@@ -882,7 +949,7 @@ impl FizzleState {
                                 })
                                 .unwrap();
                         } else {
-                            self.add_pending_client(source_address, target_address, backend);
+                            self.global.add_pending_client(source_address, target_address, backend);
                         }
                     }
                     _ => panic!("unimplemented IoEndpoint type"),
@@ -1163,7 +1230,6 @@ impl ProcessLocalState {
     }
 }
 
-#[derive(Debug)]
 pub struct InterprocessState {
     /// Indicates whether the state has been properly initialized (not just instantiated).
     pub is_initialized: bool,
@@ -1241,12 +1307,14 @@ pub struct InterprocessState {
     pub delayed_ready: Deque<ReadyInfo, FIZZLE_MAX_QUEUED_READY_POLLERS>,
     pub fuzz_input: Buffer<FIZZLE_MAX_FUZZ_INPUT>,
     pub per_round_clients: heapless::Vec<PerRoundClientInfo, FIZZLE_MAX_PER_ROUND_ENDPOINTS>,
-    pub per_round_endpoints: FnvIndexSet<Rc<SocketId>, FIZZLE_MAX_PER_ROUND_ENDPOINTS>,
+    pub per_round_endpoints: GlobalVec<GlobalRc<SocketInfo>>,
     pub fuzz_endpoints: KeyedArena<FuzzEndpointId, FuzzEndpointInfo, FIZZLE_MAX_FUZZ_ENDPOINTS>,
     pub prefuzz_rng: rand::rngs::SmallRng,
     pub current_time: Duration,
     pub uid: libc::uid_t,
     pub gid: libc::gid_t,
+    
+    pub allocator: InterprocessAllocator,
 }
 
 impl InterprocessState {
@@ -1341,13 +1409,19 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).delayed_ready) = Deque::new();
             *ptr::addr_of_mut!((*state).fuzz_input) = Buffer::new();
             *ptr::addr_of_mut!((*state).per_round_clients) = heapless::Vec::new();
-            *ptr::addr_of_mut!((*state).per_round_endpoints) = FnvIndexSet::new();
             KeyedArena::initialize(ptr::addr_of_mut!((*state).fuzz_endpoints));
             *ptr::addr_of_mut!((*state).prefuzz_rng) =
                 SmallRng::seed_from_u64(0xABAD_5EED_ABAD_5EED_u64); // TODO: enable custom seed loading
             *ptr::addr_of_mut!((*state).current_time) = Duration::from_secs(1735924847); // TODO: set this randomly each fuzzing round
             *ptr::addr_of_mut!((*state).uid) = 1000; // TODO: make this configurable
             *ptr::addr_of_mut!((*state).gid) = 1000; // TODO: make this configurable
+
+            // Initialize interprocess allocator
+            *ptr::addr_of_mut!((*state).allocator.heap) = TlsfHeap::empty();
+            (*ptr::addr_of_mut!((*state).allocator.heap)).init((ptr::addr_of_mut!((*state).allocator.heap_memory)) as usize, FIZZLE_HEAP_SIZE);
+
+            // SAFETY: must happen *after* interprocess allocator has been initialized
+            *ptr::addr_of_mut!((*state).per_round_endpoints) = Vec::new_in((*state).allocator.allocator());
             &mut (*state)
         }
     }
@@ -1371,7 +1445,7 @@ impl InterprocessState {
     ///
     /// If not already raised, this method will push_back a poller waiting on this polled event
     /// (if such a poller exists).
-    fn raise_polled(&mut self, polled_id: &Rc<PolledId>) {
+    pub fn raise_polled(&mut self, polled_id: &Rc<PolledId>) {
         let polled = self.polled_events.get_mut(polled_id).unwrap();
         if !polled.event_raised {
             polled.event_raised = true;
@@ -1422,21 +1496,18 @@ impl InterprocessState {
         src_addr: TransportAddress,
         rem_addr: TransportAddress,
         backend: PendingBackend,
-    ) -> Rc<SocketId> {
-        let client_socket_id = self
-            .sockets
-            .allocate(SocketInfo {
-                fd_count: 0,
-                state: SocketState::PendingConnection(PendingSocket {
-                    rem_addr: rem_addr.clone(),
-                    backend,
-                    next_pending: None,
-                }),
-                socktype: SocketType::Datagram,
-                protocol: src_addr.protocol(),
-                local_addr: LocalAddress::Assigned(src_addr.addr().clone()),
-            })
-            .unwrap();
+    ) -> GlobalRc<SocketInfo> {
+        let client_socket_info = std::rc::Rc::new_in(RefCell::new(SocketInfo {
+            fd_count: 0,
+            state: SocketState::PendingConnection(PendingSocket {
+                rem_addr: rem_addr.clone(),
+                backend,
+                next_pending: None,
+            }),
+            socktype: SocketType::Datagram,
+            protocol: src_addr.protocol(),
+            local_addr: LocalAddress::Assigned(src_addr.addr().clone()),
+        }), self.allocator.allocator());
 
         // Add the client to the pending client chain, if applicable
         match self.socket_locations.get_mut(&rem_addr) {
@@ -1447,9 +1518,9 @@ impl InterprocessState {
                         rem_addr,
                         TransportLocationInfo {
                             reuse_port: false,
-                            bound_sockets: Deque::new(),
+                            bound_sockets: LinkedList::new_in(self.allocator.allocator()),
                             pending: Some(PendingInfo {
-                                client: client_socket_id.clone(),
+                                client: client_socket_info.clone(),
                                 poll: polled_id,
                             }),
                         },
@@ -1460,44 +1531,42 @@ impl InterprocessState {
                 match &location_info.pending {
                     Some(PendingInfo { client, .. }) => {
                         let mut last_client = client.clone();
-                        while let Some(SocketInfo {
-                            state:
-                                SocketState::PendingConnection(PendingSocket {
-                                    next_pending: Some(id),
-                                    ..
-                                }),
+                        let mut last_client_borrow = last_client.borrow();
+                        while let SocketState::PendingConnection(PendingSocket {
+                            next_pending: Some(id),
                             ..
-                        }) = self.sockets.get(&last_client)
-                        {
-                            last_client = id.clone();
+                        }) = &last_client_borrow.state {
+                            let new_last_client = id.clone();
+                            drop(last_client_borrow);
+                            last_client = new_last_client;
+                            last_client_borrow = last_client.borrow();
                         }
 
                         let SocketState::PendingConnection(PendingSocket {
                             next_pending: next_awaiting,
                             ..
-                        }) = &mut self.sockets.get_mut(client).unwrap().state
+                        }) = &mut last_client.borrow_mut().state
                         else {
                             panic!("unexpected internal fizzle state--chain of awaiting clients had invalid socket variant")
                         };
 
-                        *next_awaiting = Some(client_socket_id.clone());
+                        *next_awaiting = Some(client_socket_info.clone());
                     }
                     None => {
                         let polled_id = self.polled_events.allocate(PolledInfo::new()).unwrap();
                         location_info.pending = Some(PendingInfo {
-                            client: client_socket_id.clone(),
+                            client: client_socket_info.clone(),
                             poll: polled_id,
                         });
                     }
                 }
 
-                if let Some(socket_id) = location_info.bound_sockets.pop_front() {
+                if let Some(socket_info) = location_info.bound_sockets.pop_front() {
                     log::debug!("found bound socket at location for pending connection");
-                    location_info
-                        .bound_sockets
-                        .push_back(socket_id.clone())
-                        .unwrap();
-                    match &self.sockets.get(&socket_id).unwrap().state {
+
+                    location_info.bound_sockets.push_back(socket_info.clone());
+
+                    match &socket_info.borrow().state {
                         SocketState::Server(server_info) => {
                             log::debug!("notifying server that pending connection exists...");
                             let connect_poll = server_info.ready_to_connect.clone();
@@ -1513,32 +1582,30 @@ impl InterprocessState {
             }
         }
 
-        client_socket_id
+        client_socket_info
     }
 
+ 
     pub fn add_server(&mut self, transport_addr: TransportAddress, backend: ServerBackend) {
         // Create a new polled instance for listeners waiting to accept connections
         let connect_polled_id = self.polled_events.allocate(PolledInfo::new()).unwrap();
 
-        let socket_id = self
-            .sockets
-            .allocate(SocketInfo {
-                fd_count: 0,
-                state: SocketState::Server(ServerSocket {
-                    backend,
-                    connecting: Deque::new(),
-                    ready_to_connect: connect_polled_id,
-                }),
-                socktype: SocketType::Datagram, // TODO: this (and above) aren't necessarily true
-                protocol: transport_addr.protocol(),
-                local_addr: LocalAddress::Assigned(transport_addr.addr().clone()),
-            })
-            .unwrap();
-
+        let socket_info = std::rc::Rc::new_in(RefCell::new(SocketInfo {
+            fd_count: 0,
+            state: SocketState::Server(ServerSocket {
+                backend,
+                connecting: LinkedList::new_in(self.allocator.allocator()),
+                ready_to_connect: connect_polled_id,
+            }),
+            socktype: SocketType::Datagram, // TODO: this (and above) aren't necessarily true
+            protocol: transport_addr.protocol(),
+            local_addr: LocalAddress::Assigned(transport_addr.addr().clone()),
+        }), self.allocator.allocator());
+        
         match self.socket_locations.get_mut(&transport_addr) {
             None => {
-                let mut bound_sockets = heapless::Deque::new();
-                bound_sockets.push_back(socket_id).unwrap();
+                let mut bound_sockets = LinkedList::new_in(self.allocator.allocator());
+                bound_sockets.push_back(socket_info);
 
                 self.socket_locations
                     .insert(
@@ -1553,7 +1620,7 @@ impl InterprocessState {
             }
             Some(location_info) => {
                 debug_assert!(location_info.bound_sockets.is_empty());
-                location_info.bound_sockets.push_back(socket_id).unwrap();
+                location_info.bound_sockets.push_back(socket_info);
             }
         };
     }
@@ -1633,6 +1700,21 @@ impl InterprocessState {
     /// Marks the given process/thread pair as having further work to execute.
     pub fn mark_worker_ready(&mut self, worker_id: WorkerInfo) {
         self.ready.push_back(ReadyInfo::Worker(worker_id)).unwrap();
+    }
+}
+
+pub struct InterprocessAllocator {
+    heap: TlsfHeap,
+    heap_memory: [MaybeUninit<u8>; FIZZLE_HEAP_SIZE],
+}
+
+impl InterprocessAllocator {
+    pub fn allocator<'a>(&'a self) -> &'static TlsfHeap {
+        // Safety: `self.heap` is never mutably referenced outside of initialization, and lives
+        // until the end of the program. This means that static shared references to it are safe.
+        unsafe {
+            mem::transmute::<&'a TlsfHeap, &'static TlsfHeap>(&self.heap)
+        }
     }
 }
 

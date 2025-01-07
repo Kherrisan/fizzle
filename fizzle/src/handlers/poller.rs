@@ -1156,7 +1156,7 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
         },
         FdResource::Stdout => PolledStatus::NotPollable,
         FdResource::Stderr => PolledStatus::NotPollable,
-        FdResource::Socket(socket_id) => match &state.global.sockets.get(&socket_id).unwrap().state
+        FdResource::Socket(socket_info) => match &socket_info.borrow().state
         {
             SocketState::Connectionless(connectionless) => match &connectionless.backend {
                 ConnectionlessBackend::Passthrough => PolledStatus::ImmediatelyPollable,
@@ -1298,8 +1298,7 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
             StdioBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
         },
         FdResource::Stderr => PolledStatus::NotPollable,
-        FdResource::Socket(socket_id) => match &state.global.sockets.get(&socket_id).unwrap().state
-        {
+        FdResource::Socket(socket_info) => match &socket_info.borrow().state {
             SocketState::Connectionless(connectionless) => match &connectionless.backend {
                 ConnectionlessBackend::Passthrough => unreachable!(),
                 ConnectionlessBackend::Peered(_) => PolledStatus::ImmediatelyPollable, // A connectionless socket can always `send()` TODO: ??
@@ -1328,11 +1327,10 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
             SocketState::Connected(connected) => match &connected.backend {
                 ConnectedBackend::Passthrough => unreachable!(),
                 ConnectedBackend::Peered(peered) => {
-                    if let Some(peer_id) = &peered.peer {
-                        let SocketState::Connected(conn) =
-                            &state.global.sockets.get(peer_id).unwrap().state
+                    if let Some(peer_info) = peered.peer.upgrade() {
+                        let SocketState::Connected(conn) = &peer_info.borrow().state
                         else {
-                            panic!()
+                            unreachable!()
                         };
 
                         match &conn.backend {

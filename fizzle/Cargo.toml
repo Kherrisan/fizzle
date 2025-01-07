@@ -31,9 +31,15 @@ libc = "0.2"
 log = "0.4"
 rand = { version = "0.8", features = ["small_rng"] }
 toml = "0.8"
-fizzle-plugin-fuzz-s1ap = {version = "0.1", path = "../fizzle-plugin-fuzz-s1ap"}
+
+embedded-alloc = { version = "0.6.0", features = ["tlsf", "allocator_api"] }
+# TODO: implement custom critical-section with no Mutex to speed up shim? (since no concurrency is guaranteed)
+critical-section = { version = "1.1", features = ["std"]}
 
 # Start of Fizzle Plugin Dependencies
+fizzle-plugin-fuzz-s1ap = {version = "0.1", path = "../fizzle-plugin-fuzz-s1ap"}
+
+
 
 # Examples:
 # 

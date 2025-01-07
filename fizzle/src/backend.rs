@@ -1,11 +1,16 @@
+use std::cell::RefCell;
+use std::collections::LinkedList;
 use std::fmt::Debug;
+
+use embedded_alloc::TlsfHeap;
 
 use crate::arena::Rc;
 use crate::handlers::buffer::BufferId;
 use crate::handlers::fuzz_endpoint::FuzzEndpointId;
 use crate::handlers::plugin::PluginEndpointId;
 use crate::handlers::polled::PolledId;
-use crate::handlers::socket::SocketId;
+use crate::handlers::socket::{ConnectionlessMessage, SocketId, SocketInfo};
+use crate::{GlobalVec, GlobalWeak};
 
 use self::private::Sealed;
 
@@ -44,7 +49,7 @@ pub struct FileFeedback { }
 
 #[derive(Clone, Debug)]
 pub struct RegularConnected {
-    pub peer: Option<Rc<SocketId>>,
+    pub peer: GlobalWeak<SocketInfo>,
     pub recv_buf: Rc<BufferId>,
     pub read_polled: Rc<PolledId>,
     pub write_polled: Rc<PolledId>,
@@ -52,7 +57,14 @@ pub struct RegularConnected {
 
 #[derive(Clone, Debug)]
 pub struct RegularConnectionless {
-    pub recv_buf: Rc<BufferId>,
+    pub recv_buf: LinkedList<ConnectionlessMessage, &'static TlsfHeap>,
+    pub read_polled: Rc<PolledId>,
+    pub write_polled: Rc<PolledId>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FeedbackConnectionless {
+    pub recv_buf: LinkedList<ConnectionlessMessage, &'static TlsfHeap>,
     pub read_polled: Rc<PolledId>,
     pub write_polled: Rc<PolledId>,
 }
@@ -67,7 +79,7 @@ pub type ConnectingBackend = IoBackend<(), ()>;
 pub type ConnectedBackend = IoBackend<RegularConnected, StandardFeedback>;
 
 /// The backend for a connectionless (UDP) socket.
-pub type ConnectionlessBackend = IoBackend<RegularConnectionless, StandardFeedback>;
+pub type ConnectionlessBackend = IoBackend<RegularConnectionless, FeedbackConnectionless>;
 
 /// A backend for a file handle.
 pub type FileBackend = IoBackend<Sealed, FileFeedback>;

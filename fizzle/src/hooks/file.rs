@@ -9,11 +9,9 @@ use crate::handlers::file::{FileObject, FilePtr};
 use crate::hook_macros;
 
 hook_macros::hook! {
-    unsafe fn fanotify_init(
-        _flags: libc::c_uint,
-        _event_f_flags: libc::c_uint
-    ) => fizzle_fanotify_init(_ctx) {
-        unimplemented!("fanotify_init()")
+    unsafe fn inotify_init() => fizzle_inotify_init(_ctx) {
+        log::error!("`inotify_init()` not implemented by Fizzle");
+        unimplemented!("inotify_init()")
     }
 }
 
@@ -21,13 +19,18 @@ hook_macros::hook! {
     unsafe fn inotify_init1(
         _flags: libc::c_int
     ) => fizzle_inotify_init1(_ctx) {
+        log::error!("`inotify_init1()` not implemented by Fizzle");
         unimplemented!("inotify_init1()")
     }
 }
 
 hook_macros::hook! {
-    unsafe fn inotify_init() => fizzle_inotify_init(_ctx) {
-        unimplemented!("inotify_init()")
+    unsafe fn fanotify_init(
+        _flags: libc::c_uint,
+        _event_f_flags: libc::c_uint
+    ) => fizzle_fanotify_init(_ctx) {
+        log::error!("`fanotify_init()` not implemented by Fizzle");
+        unimplemented!("fanotify_init()")
     }
 }
 
@@ -36,6 +39,10 @@ hook_macros::hook! {
         fd: libc::c_int,
         mode: *const libc::c_char
     ) -> *mut libc::FILE => fizzle_fdopen(ctx) {
+        log::error!("fdopen() unimplemented");
+        libc::fdopen(fd, mode)
+
+        /*
         let mut state = ctx.acquire();
 
         let descriptor_id = DescriptorId::from_raw_fd(fd);
@@ -52,6 +59,7 @@ hook_macros::hook! {
             }
 
             return p
+            
         };
 
         let file = match fd_info.resource {
@@ -73,6 +81,7 @@ hook_macros::hook! {
         log::debug!("fdopen({}, {:?} -> {:?}", fd, CStr::from_ptr(mode), file);
 
         file
+        */
     }
 }
 
@@ -81,6 +90,10 @@ hook_macros::hook! {
         pathname: *const libc::c_char,
         mode: *const libc::c_char
     ) -> *mut libc::FILE => fizzle_fopen(ctx) {
+        log::error!("fopen unimplemented");
+        libc::fopen(pathname, mode)
+
+        /*
         let mut state = ctx.acquire();
 
         let path = CStr::from_ptr(pathname).to_str().unwrap();
@@ -166,6 +179,8 @@ hook_macros::hook! {
         log::debug!("fopen(pathname={:?}, mode={:?}) -> {:?}", CStr::from_ptr(pathname), CStr::from_ptr(mode), file);
 
         file
+
+        */
     }
 }
 
@@ -175,6 +190,10 @@ hook_macros::hook! {
         mode: *const libc::c_char,
         stream: *mut libc::FILE
     ) -> *mut libc::FILE => fizzle_freopen(ctx) {
+        log::error!("freopen() unimplemented");
+        libc::freopen(pathname, mode, stream)
+
+        /*
         let state = ctx.acquire();
 
         let file_id = FilePtr::from(stream);
@@ -194,6 +213,7 @@ hook_macros::hook! {
         };
 
         panic!("freopen() unimplemented")
+        */
     }
 }
 
@@ -201,6 +221,9 @@ hook_macros::hook! {
     unsafe fn fclose(
         stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_fclose(ctx) {
+        log::error!("fclose() unimplemented");
+        libc::fclose(stream)
+        /*
         if stream.is_null() {
             let state = ctx.acquire();
             let keys: Vec<FilePtr> = state.local.file_objs.keys().cloned().collect();
@@ -234,28 +257,37 @@ hook_macros::hook! {
                 }
             }
         }
+        */
     }
 }
 
 hook_macros::hook! {
     unsafe fn fileno(stream: *mut libc::FILE) -> libc::c_int => fizzle_fileno(ctx) {
+        log::error!("fileno() unimplemented");
+        libc::fileno(stream)
+        /*
         let state = ctx.acquire();
 
         match state.local.file_objs.get(&FilePtr::from(stream)) {
             Some(file) => file.fd,
             None => hook_macros::real!(fileno)(stream),
         }
+        */
     }
 }
 
 hook_macros::hook! {
     unsafe fn fflush(stream: *mut libc::FILE) -> libc::c_int => fizzle_fflush(ctx) {
+        log::error!("fflush() unimplemented");
+        libc::fflush(stream)
+        /*
         let state = ctx.acquire();
 
         match state.local.file_objs.get(&FilePtr::from(stream)) {
             Some(_) => 0,
             None => hook_macros::real!(fflush)(stream),
         }
+        */
     }
 }
 
@@ -266,6 +298,9 @@ hook_macros::hook! {
         nmemb: libc::size_t,
         stream: *mut libc::FILE
     ) -> libc::size_t => fizzle_fwrite(ctx) {
+        log::error!("fwrite() unimplemented");
+        libc::fwrite(ptr, size, nmemb, stream)
+        /*
         let mut state = ctx.acquire();
 
         let file_id = FilePtr::from(stream);
@@ -273,6 +308,7 @@ hook_macros::hook! {
             Some(_fd) => unimplemented!("fwrite()"),
             None => hook_macros::real!(fwrite)(ptr, size, nmemb, stream),
         }
+        */
     }
 }
 
@@ -283,6 +319,9 @@ hook_macros::hook! {
         nmemb: libc::size_t,
         stream: *mut libc::FILE
     ) -> libc::size_t => fizzle_fread(ctx) {
+        log::error!("fread() unimplemented");
+        libc::fread(ptr, size, nmemb, stream)
+        /*
         let mut state = ctx.acquire();
 
         let file_id = FilePtr::from(stream);
@@ -290,6 +329,7 @@ hook_macros::hook! {
             Some(_fd) => unimplemented!("fread()"),
             None => hook_macros::real!(fread)(ptr, size, nmemb, stream),
         }
+        */
     }
 }
 
@@ -297,6 +337,9 @@ hook_macros::hook! {
     unsafe fn fgetc(
         stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_fgetc(ctx) {
+        log::error!("fgetc() unimplemented");
+        libc::fgetc(stream)
+        /*
         let state = ctx.acquire();
 
         let file_id = FilePtr::from(stream);
@@ -312,13 +355,18 @@ hook_macros::hook! {
         };
 
         unimplemented!("fgetc()")
+        */
     }
 }
 
+/*
 hook_macros::hook! {
     unsafe fn getc(
         stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_getc(ctx) {
+        log::error!("getc() unimplemented");
+        libc::getc(stream)
+        /*
         let state = ctx.acquire();
 
         let file_id = FilePtr::from(stream);
@@ -335,14 +383,20 @@ hook_macros::hook! {
         };
 
         panic!("getc() unimplemented")
+        */
     }
 }
+*/
 
 hook_macros::hook! {
     unsafe fn ungetc(
         c: libc::c_int,
         stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_ungetc(ctx) {
+        log::error!("ungetc() unimplemented");
+        libc::ungetc(c, stream)
+
+        /*
         let state = ctx.acquire();
 
         let file_id = FilePtr::from(stream);
@@ -358,6 +412,7 @@ hook_macros::hook! {
         };
 
         panic!("ungetc() unimplemented")
+        */
     }
 }
 
@@ -366,6 +421,9 @@ hook_macros::hook! {
         c: libc::c_int,
         stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_fputc(ctx) {
+        log::error!("fputc() unimplemented");
+        libc::fputc(c, stream)
+        /*
         let state = ctx.acquire();
 
         let file_id = FilePtr::from(stream);
@@ -381,14 +439,19 @@ hook_macros::hook! {
         };
 
         panic!("fputc() unimplemented")
+        */
     }
 }
 
+/*
 hook_macros::hook! {
     unsafe fn putc(
         c: libc::c_int,
         stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_putc(ctx) {
+        log::error!("pugc() unimplemented");
+        libc::putc(c, stream)
+        /*
         let state = ctx.acquire();
 
         let file_id = FilePtr::from(stream);
@@ -404,8 +467,10 @@ hook_macros::hook! {
         };
 
         panic!("putc() unimplemented")
+        */
     }
 }
+*/
 
 hook_macros::hook! {
     unsafe fn putchar(
@@ -420,6 +485,9 @@ hook_macros::hook! {
         s: *const libc::c_char,
         stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_fputs(ctx) {
+        log::error!("fputs() unimplemented");
+        libc::fputs(s, stream)
+        /*
         let state = ctx.acquire();
 
         let file_id = FilePtr::from(stream);
@@ -435,14 +503,16 @@ hook_macros::hook! {
         };
 
         unimplemented!("fputs()")
+        */
     }
 }
 
 hook_macros::hook! {
     unsafe fn puts(
-        _s: *const libc::c_char
+        s: *const libc::c_char
     ) -> libc::c_int => fizzle_puts(_ctx) {
-        unimplemented!("puts()")
+        log::error!("puts() unimplemented");
+        libc::puts(s)
     }
 }
 
