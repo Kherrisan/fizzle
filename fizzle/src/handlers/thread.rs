@@ -263,7 +263,6 @@ impl ThreadCreateEvent {
             set.assume_init()
         }
     }
-    */
 
     fn clear_attr_sigmask(attrs: *mut libc::pthread_attr_t) {
         let mut set = MaybeUninit::<libc::sigset_t>::uninit();
@@ -276,6 +275,7 @@ impl ThreadCreateEvent {
             assert_eq!(pthread_attr_setsigmask_np(attrs, ptr::addr_of!(set)), 0);
         }
     }
+    */
 }
 
 impl Event for ThreadCreateEvent {
