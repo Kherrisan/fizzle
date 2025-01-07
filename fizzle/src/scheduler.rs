@@ -75,19 +75,27 @@ impl Scheduler {
 
             // Initialize local/global state if needed
             if !state.local.is_initialized {
+                log::info!("running `initialize_state()`...");
                 state.initialize_state();
+                log::info!("`initialize_state()` complete.");
 
                 if let Some(main_state) = state.local.main_state.as_mut() {
+                    log::info!("Initializing main state startup commands");
                     let mut startup_commands = Vec::new();
                     mem::swap(&mut startup_commands, &mut main_state.onstartup_commands);
                     drop(state);
 
                     while let Some(onstartup) = startup_commands.pop() {
+                        log::info!("`Scheduler::run_subprocess()` called for startup command {:?}", onstartup);
                         Scheduler::run_subprocess(ctx, onstartup);
+                        log::info!("`Scheduler::run_subprocess()` complete.");
                     }
                 } else {
                     drop(state);
                 }
+
+                log::info!("one-off process initialization complete.");
+
             } else {
                 drop(state);
             }

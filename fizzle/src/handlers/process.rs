@@ -206,6 +206,7 @@ impl Event for ProcessForkEvent {
                         // SAFETY: first time this is called in this process; parent process won't
                         // access the fizzle singleton until it is awakened.
                         let mut ctx = unsafe { fizzle_singleton() };
+                        // SAFETY: this is a forked process, so it already has its FizzleState initialized.
                         let mut state = ctx.acquire();
 
                         let parent_info = state.global.processes.get(&parent_process_id).unwrap();

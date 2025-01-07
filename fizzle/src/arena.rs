@@ -449,7 +449,9 @@ impl<K: ArenaKey> Drop for Rc<K> {
 impl<K: ArenaKey> Clone for Rc<K> {
     fn clone(&self) -> Self {
         unsafe {
-            debug_assert!((*(*self.ptr).get()).ref_cnt > 0);
+            if !(*(*self.ptr).get()).ref_cnt > 0 {
+                panic!("ref_cnt <= 0");
+            }
             assert!((*(*self.ptr).get()).ref_cnt < u16::MAX);
             (*(*self.ptr).get())
                 .ref_cnt

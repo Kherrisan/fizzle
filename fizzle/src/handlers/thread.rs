@@ -172,6 +172,8 @@ extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void {
     let wrapped_arg = unsafe { (arg as *mut PTCreateWrapper).as_mut().unwrap() };
 
     ctx.init_thread_lock();
+    // SAFETY: the FizzleState can be acquired here because we know startup initialization has
+    // already run for this process (otherwise how could this pt_wrapper_fn be called?).
     let mut state = ctx.acquire();
     let process_id = state.local.process_id;
 
