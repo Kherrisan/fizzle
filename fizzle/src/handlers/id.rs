@@ -18,7 +18,7 @@ pub struct WorkerId(usize);
 
 impl WorkerId {
     pub fn from_id(pid: libc::c_int) -> Self {
-        debug_assert!(pid > 0);
+        debug_assert!(pid >= 0);
         Self(pid as usize)
     }
 
