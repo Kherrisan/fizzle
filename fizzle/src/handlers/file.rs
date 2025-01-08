@@ -14,12 +14,10 @@ use crate::backend::{FileBackend, FileFeedback};
 use crate::constants::FIZZLE_FOPEN_BUFSIZE;
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
-use crate::state::{CreateCowSource, FizzleSingleton, FizzleState};
+use crate::state::{CreateCowSource, FizzleState};
 use crate::handlers::descriptor::*;
 
 use super::descriptor::{DescriptorId, ReadData, WriteData};
-use super::fuzz_endpoint::FuzzEndpointInfo;
-use super::{init_from_slice, MsgHdr, MsgHdrOut};
 
 pub use private::FileId;
 

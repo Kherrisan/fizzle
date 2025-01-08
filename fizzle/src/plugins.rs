@@ -1,12 +1,8 @@
-use crate::arena::{KeyedArena, Rc};
-use crate::constants::FIZZLE_MAX_PLUGINS;
-use crate::handlers::plugin_module::PluginId;
+use std::cell::RefCell;
 
 use fizzle_plugin::{Context, IoEndpointVariant, PluginObject};
 
 use crate::state::FizzleState;
-
-pub type Plugins = KeyedArena<PluginId, Box<dyn PluginObject>, FIZZLE_MAX_PLUGINS>;
 
 /// Plugin information, populated based on the Fizzle configuration file.
 ///
@@ -32,16 +28,16 @@ pub struct PluginEndpoint {
     pub num_streams: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone)]
 pub enum IoEmulationType {
     #[allow(unused)]
     Passthrough,
     /// `read()`s will return whatever was written by prior `write()`s--acts as a virtual file.
     #[allow(unused)]
     Feedback,
-    /// Uses the plugin specified by `PluginId` to decide `read()`/`write()` behavior.
+    /// Uses the plugin specified by the Rc to decide `read()`/`write()` behavior.
     #[allow(unused)]
-    Plugin(Rc<PluginId>),
+    Plugin(std::rc::Rc<RefCell<dyn PluginObject>>),
     #[allow(unused)]
     Sink,
     #[allow(unused)]
@@ -67,20 +63,11 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
         let mut raise_read = false;
         let mut lower_write = false;
 
-        let plugin_module_id = plugin_info.module_id.clone();
+        let plugin_module = plugin_info.module.clone();
         let context = Context {
             endpoint: plugin_info.endpoint.clone(),
             stream_id: plugin_info.stream,
         };
-
-        let plugin_module = state
-            .local
-            .main_state
-            .as_mut()
-            .unwrap()
-            .plugins
-            .get_mut(&plugin_module_id)
-            .unwrap();
 
         let write_buf_id = plugin_info.write_buf.clone();
         let write_polled = plugin_info.write_polled.clone();
@@ -89,10 +76,10 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
 
         // Check read end
         let write_buf = state.global.buffers.get_mut(&write_buf_id).unwrap();
-        if plugin_module.can_read(&context) && !write_buf.is_empty() {
+        if plugin_module.borrow().can_read(&context) && !write_buf.is_empty() {
             log::debug!("plugin module context {:?} can be read", &context);
             plugin_activated = true;
-            match plugin_module.read(write_buf.data(), &context) {
+            match plugin_module.borrow_mut().read(write_buf.data(), &context) {
                 Ok(0) => unimplemented!(),
                 Err(_) => unimplemented!(),
                 Ok(amount) => {
@@ -107,10 +94,10 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
 
         // Check write end
         let read_buf = state.global.buffers.get_mut(&read_buf_id).unwrap();
-        if plugin_module.can_write(&context) && !read_buf.is_full() {
+        if plugin_module.borrow().can_write(&context) && !read_buf.is_full() {
             log::debug!("plugin module context {:?} can write", &context);
             plugin_activated = true;
-            match plugin_module.write(read_buf.remaining_mut(), &context) {
+            match plugin_module.borrow_mut().write(read_buf.remaining_mut(), &context) {
                 Ok(0) => unimplemented!(),
                 Err(_) => unimplemented!(),
                 Ok(amount) => {

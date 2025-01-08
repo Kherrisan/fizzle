@@ -157,24 +157,6 @@ impl<K: ArenaKey<Value = V>, V: Sized, const N: usize> KeyedArena<K, V, N> {
         item.ref_cnt += 1;
     }
 
-    /*
-    /// Promotes the given key value into a reference-counted key, incrementing the reference count
-    /// in the process.
-    pub fn promote(&mut self, key: &K) -> Rc<K> {
-        let idx: usize = (*key).to_usize();
-        assert!(idx < self.inner.len());
-
-        let item = self.inner[idx].get_mut();
-        assert!(item.ref_cnt > 0);
-        item.ref_cnt += 1;
-
-        Rc {
-            key: K::from_usize(idx),
-            ptr: ptr::addr_of!(self.inner[idx]),
-        }
-    }
-    */
-
     /// Decrements the reference count for the given key, returning the new reference count.
     pub fn downref(&mut self, key: &K) -> usize {
         let idx: usize = (*key).to_usize();
@@ -243,7 +225,6 @@ impl<K: ArenaKey<Value = V>, V: Sized + Clone, const N: usize> Clone for KeyedAr
 struct ArenaItem<V: Sized> {
     value: MaybeUninit<V>,
     ref_cnt: u16,
-    //    _pinned: PhantomPinned,
 }
 
 impl<V: Sized + Clone> Clone for ArenaItem<V> {
@@ -292,6 +273,7 @@ impl<'a, K: ArenaKey<Value = V>, V: Sized, const N: usize> Iterator for ArenaKey
             for i in raw_key + 1..=self.arena.max_key {
                 if unsafe { (*(self.arena.inner[i].get() as *const ArenaItem<V>)).ref_cnt } > 0 {
                     self.next_key = Some(K::from_usize(i));
+                    break
                 }
             }
         }
@@ -508,7 +490,6 @@ pub(crate) mod private {
     use crate::handlers::mq::MqId;
     use crate::handlers::pipe::PipeId;
     use crate::handlers::plugin::PluginEndpointId;
-    use crate::handlers::plugin_module::PluginId;
     use crate::handlers::polled::PolledId;
     use crate::handlers::poller::PollerId;
     use crate::handlers::process::{ProcessGroupId, ProcessId};
@@ -668,18 +649,6 @@ pub(crate) mod private {
 
         fn from_usize(val: usize) -> Self {
             // SAFETY: `PluginEndpointId` is a repr(transparent) usize
-            unsafe { mem::transmute(val) }
-        }
-    }
-
-    impl InnerUsize for PluginId {
-        fn to_usize(&self) -> usize {
-            // SAFETY: `PluginId` is a repr(transparent) usize
-            unsafe { mem::transmute_copy(self) }
-        }
-
-        fn from_usize(val: usize) -> Self {
-            // SAFETY: `PluginId` is a repr(transparent) usize
             unsafe { mem::transmute(val) }
         }
     }

@@ -536,18 +536,12 @@ impl Scheduler {
             .global
             .plugins
             .values()
-            .map(|plugin_info| plugin_info.module_id.clone())
+            .map(|plugin_info| plugin_info.module.clone())
             .collect();
         for module in modules {
             let (local, global) = state.split();
-            let plugin_module = local
-                .main_state
-                .as_mut()
-                .unwrap()
-                .plugins
-                .get_mut(&module)
-                .unwrap();
-            plugin_module.fuzz_round_start(global.fuzz_input.data());
+
+            module.borrow_mut().fuzz_round_start(global.fuzz_input.data());
         }
 
         // Gather all plugin endpoints
@@ -1331,7 +1325,7 @@ impl Scheduler {
             let mut msg_idx = 0;
 
             while msg_len - msg_idx > mem::size_of::<libc::cmsghdr>() {
-                let (s1, m, s2) = unsafe { msg[msg_idx..].align_to::<libc::cmsghdr>() };
+                let (s1, m, _s2) = unsafe { msg[msg_idx..].align_to::<libc::cmsghdr>() };
                 assert!(s1.is_empty());
                 let hdr = &m[0];
                 if hdr.cmsg_len > msg_len {
@@ -1351,12 +1345,10 @@ impl Scheduler {
                 }
 
                 // Update msg index
-                msg_idx = unsafe {
-                    cmp::max(
-                        CMSG_ALIGN(msg_idx + hdr.cmsg_len),
-                        CMSG_ALIGN(msg_idx + mem::size_of::<libc::cmsghdr>())
-                    )
-                };
+                msg_idx = cmp::max(
+                    CMSG_ALIGN(msg_idx + hdr.cmsg_len),
+                    CMSG_ALIGN(msg_idx + mem::size_of::<libc::cmsghdr>())
+                );
 
                 if msg_idx > msg_len {
                     break

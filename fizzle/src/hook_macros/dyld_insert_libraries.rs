@@ -29,8 +29,7 @@ macro_rules! hook {
                     crate::state::set_entered_handler(true);
 
                     log::trace!(
-                        "Thread {:?} invoked function {}", // TODO: add process info in the future
-                        std::thread::current().id(),
+                        "invoked function {}",
                         stringify!($real_fn)
                     );
 

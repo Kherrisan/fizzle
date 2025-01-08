@@ -191,9 +191,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         #[allow(unused)]
         use crate::handlers::plugin::PluginEndpointId;
         #[allow(unused)]
-        use crate::handlers::plugin_module::PluginId;
+        use std::rc::Rc;
         #[allow(unused)]
-        use crate::plugins::{IoEmulationType, Plugins, PluginEndpoint};
+        use std::cell::RefCell;
+        #[allow(unused)]
+        use crate::plugins::{IoEmulationType, PluginEndpoint};
         #[allow(unused)]
         use std::path::PathBuf;
         #[allow(unused)]
@@ -203,7 +205,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         #includes
 
-        pub fn populate_plugins(endpoints: &mut Vec<PluginEndpoint>, modules: &mut Plugins) {
+        pub fn populate_plugins(endpoints: &mut Vec<PluginEndpoint>, plugins: &mut Vec<std::rc::Rc<RefCell<dyn PluginObject>>>) {
             #plugins_impl
         }
 
@@ -431,7 +433,8 @@ fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
         let plugin = quote::format_ident!("{}", str::replace(&plugin, "-", "_"));
         let key_id = quote::format_ident!("key_{}", module_id);
         comptime_output_tokens.extend(quote::quote! {
-            let #key_id = modules.allocate(Box::new(#module::#plugin::new(endpoint_toml_configs))).unwrap(); // TODO
+            let #key_id = Rc::new(RefCell::new((#module::#plugin::new(endpoint_toml_configs))));
+            plugins.push(#key_id.clone());
         });
     }
 

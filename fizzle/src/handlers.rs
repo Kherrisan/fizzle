@@ -1,9 +1,8 @@
 use std::mem::MaybeUninit;
-use std::{cmp, mem, ptr, slice};
+use std::{cmp, ptr, slice};
 
 use bitflags::bitflags;
 use fizzle_common::io::{SockAddr, SockAddrError};
-use fizzle_common::storage::Buffer;
 
 pub mod barrier;
 pub mod buffer;
@@ -21,7 +20,6 @@ pub mod mq;
 pub mod mutex;
 pub mod pipe;
 pub mod plugin;
-pub mod plugin_module;
 pub mod polled;
 pub mod poller;
 pub mod process;
@@ -32,161 +30,6 @@ pub mod sleep;
 pub mod socket;
 pub mod spinlock;
 pub mod thread;
-
-pub trait FfiOutput {
-    type OutputType;
-
-    fn out(&self) -> Self::OutputType;
-
-    fn display(&self) -> &'static str;
-
-    fn set_errno(errno: i32) {
-        unsafe {
-            *libc::__errno_location() = errno;
-        }
-    }
-}
-
-// Helper functions for I/O operations
-
-pub fn read_stream(msg: &mut MsgHdrOut, data: &[u8]) -> usize {
-    let mut total_read = 0;
-    for iovec in msg.vdata_mut() {
-        let v_read = cmp::min(data.len() - total_read, iovec.data_mut().len());
-        init_from_slice(
-            &mut iovec.data_mut()[..v_read],
-            &data[total_read..total_read + v_read],
-        );
-        total_read += v_read;
-    }
-
-    total_read
-}
-
-// MaybeUninit would help here...
-/*
-pub fn write_stream(msg: &impl MsgHdr, data: &mut [u8]) -> usize {
-    let mut total_written = 0;
-
-    for iovec in msg.vdata() {
-        let v_write = cmp::min(data.len() - total_written, iovec.data().len());
-        data[total_written..total_written + v_write].copy_from_slice(&iovec.data()[..v_write]);
-        total_written += v_write;
-    }
-
-    total_written
-}
-*/
-
-/// The data of a datagram is written sequentially as follows:
-///
-/// ancillary_len: u32
-/// ancillary: <ancillary_len> bytes
-/// data_len: u32
-/// data: <data_len> bytes
-/// addrlen: u8
-/// padding: variable to make addr well-aligned
-/// addr: sockaddr composed of <addrlen> bytes
-
-pub fn read_datagram<const N: usize>(msghdr: &mut MsgHdrOut, buf: &mut Buffer<N>) -> Option<usize> {
-    let buffer_data = buf.data();
-
-    let Some((ancillary_len_bytes, rem)) = buffer_data.split_at_checked(mem::size_of::<u32>())
-    else {
-        return None;
-    };
-
-    let ancillary_len = u32::from_be_bytes(ancillary_len_bytes.try_into().unwrap()) as usize;
-    let (ancillary_bytes, rem) = rem.split_at(ancillary_len);
-    let total_read = mem::size_of::<u32>() + ancillary_len;
-
-    let (data_len_bytes, rem) = rem.split_at(mem::size_of::<u32>());
-
-    let data_len = u32::from_be_bytes(data_len_bytes.try_into().unwrap()) as usize;
-    let (data_bytes, rem) = rem.split_at(data_len);
-    let total_read = total_read + mem::size_of::<u32>() + data_len;
-
-    let sockaddr_len = rem[0] as usize;
-    let rem = &rem[1..];
-
-    let sockaddr_start = rem
-        .as_ptr()
-        .align_offset(mem::align_of::<libc::sockaddr_storage>());
-    let sockaddr_bytes = &rem[sockaddr_start..sockaddr_start + sockaddr_len];
-    let total_read = total_read + 1 + sockaddr_start + sockaddr_len;
-
-    let mut total_written = 0;
-    for v in msghdr.vdata_mut() {
-        for (dst, src) in v.data_mut().iter_mut().zip(&data_bytes[total_written..]) {
-            dst.write(*src);
-        }
-        total_written += cmp::min(v.data_mut().len(), data_bytes.len() - total_written);
-    }
-
-    for (dst, src) in msghdr.ancillary_bytes().iter_mut().zip(ancillary_bytes) {
-        dst.write(*src);
-    }
-
-    for (dst, src) in msghdr.addr_bytes().iter_mut().zip(sockaddr_bytes) {
-        dst.write(*src);
-    }
-
-    buf.did_read(total_read);
-
-    if msghdr.flags_mut().contains(MsgFlags::TRUNC) {
-        Some(data_len)
-    } else {
-        Some(total_written)
-    }
-}
-
-pub fn init_from_slice<T>(dst: &mut [MaybeUninit<T>], src: &[T]) {
-    assert_eq!(src.len(), dst.len());
-
-    unsafe {
-        ptr::copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr() as *mut T, src.len());
-    }
-}
-
-pub fn write_datagram<const N: usize>(msghdr: &impl MsgHdr, buf: &mut Buffer<N>) -> Option<usize> {
-    let buffer_data = buf.remaining_mut();
-    let mut total_written = 0;
-
-    let (ancillary_len_bytes, rem) = buffer_data.split_at_mut_checked(mem::size_of::<u32>())?;
-    let ancillary_len = msghdr.ancillary_bytes().len() as u32;
-    init_from_slice(ancillary_len_bytes, ancillary_len.to_be_bytes().as_slice());
-
-    let (ancillary_bytes, rem) = rem.split_at_mut_checked(msghdr.ancillary_bytes().len())?;
-    init_from_slice(ancillary_bytes, msghdr.ancillary_bytes());
-    total_written = total_written + mem::size_of::<u32>() + ancillary_len as usize;
-
-    let (data_len_bytes, mut rem) = rem.split_at_mut_checked(mem::size_of::<u32>())?;
-    let data_len = msghdr.vdata().iter().map(|d| d.data().len()).sum::<usize>() as u32;
-    init_from_slice(data_len_bytes, data_len.to_be_bytes().as_slice());
-    total_written = total_written + mem::size_of::<u32>() + data_len as usize;
-
-    for iovec in msghdr.vdata() {
-        let data_len = iovec.data().len();
-        let data_bytes: &mut [MaybeUninit<u8>];
-        (data_bytes, rem) = rem.split_at_mut_checked(data_len)?;
-        init_from_slice(data_bytes, iovec.data());
-    }
-
-    let sockaddr_len = msghdr.addr_bytes().len();
-    rem[0].write(sockaddr_len as u8);
-    let rem = &mut rem[1..];
-
-    let sockaddr_offset = rem
-        .as_ptr()
-        .align_offset(mem::align_of::<libc::sockaddr_storage>());
-    let sockaddr_bytes = &mut rem[sockaddr_offset..sockaddr_offset + sockaddr_len];
-    init_from_slice(sockaddr_bytes, msghdr.addr_bytes());
-    let total_written = total_written + 1 + sockaddr_offset + sockaddr_len;
-
-    buf.did_write(total_written);
-
-    Some(total_written)
-}
 
 bitflags! {
     #[derive(Debug)]

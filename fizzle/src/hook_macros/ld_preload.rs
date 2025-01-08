@@ -57,9 +57,7 @@ macro_rules! hook {
 
                     if should_log {
                         log::trace!(
-                            "PID {}/Thread {:?} invoked function {}", // TODO: add process info in the future
-                            std::process::id(),
-                            std::thread::current().id(),
+                            "invoked function {}",
                             stringify!($real_fn)
                         );
                     }

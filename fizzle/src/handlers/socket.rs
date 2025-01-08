@@ -75,7 +75,7 @@ fn get_or_assign_local(socket_info: &mut GlobalRc<SocketInfo>, state: &mut Fizzl
                             bound_sockets,
                             pending: None,
                         },
-                    );
+                    ).unwrap();
                     break addr;
                 };
 
@@ -448,7 +448,7 @@ impl Event for SocketCreatePairEvent {
                 bound_sockets,
                 pending: None,
             },
-        );
+        ).unwrap();
 
         let mut bound_sockets = LinkedList::new_in(state.global.allocator.allocator());
         bound_sockets.push_back(socket2);
@@ -460,7 +460,7 @@ impl Event for SocketCreatePairEvent {
                 bound_sockets,
                 pending: None,
             },
-        );
+        ).unwrap();
 
         Outcome::Success((fd1, fd2))
     }
@@ -586,7 +586,7 @@ impl Event for SocketBindEvent {
         }
 
         // Swap the address out properly
-        mem::replace(
+        let _ = mem::replace(
             &mut socket_info.borrow_mut().local_addr,
             LocalAddress::Assigned(sockaddr),
         );
@@ -790,9 +790,9 @@ impl Event for SocketConnectEvent {
                                 // Create new plugin
                                 let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
                                 let endpoint = plugin_info.endpoint.clone();
-                                let module_id = plugin_info.module_id.clone();
+                                let module = plugin_info.module.clone();
                                 let connect_plugin_id =
-                                    state.global.add_plugin(endpoint, module_id);
+                                    state.global.add_plugin(endpoint, module);
                                 ConnectedBackend::Plugin(connect_plugin_id)
                             }
                             ServerBackend::Sink => ConnectedBackend::Sink,
@@ -1097,8 +1097,8 @@ impl Event for SocketAcceptEvent {
                     ConnectingBackend::Plugin(plugin_id) => {
                         let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
                         let endpoint = plugin_info.endpoint.clone();
-                        let module_id = plugin_info.module_id.clone();
-                        let connect_plugin_id = state.global.add_plugin(endpoint, module_id);
+                        let module = plugin_info.module.clone();
+                        let connect_plugin_id = state.global.add_plugin(endpoint, module);
                         ConnectedBackend::Plugin(connect_plugin_id)
                     }
                     ConnectingBackend::Sink => ConnectedBackend::Sink,
@@ -2079,7 +2079,7 @@ impl Event for SocketReadEvent<'_> {
 
                             *out_msg.addrlen = msg.source.encode(&mut out_msg.addr_bytes) as u32;
                             for (out_byte, byte) in out_msg.control_info.iter_mut().zip(msg.ancillary.iter()) {
-                                *out_byte.write(*byte);
+                                out_byte.write(*byte);
                             }
 
                             *out_msg.control_len = cmp::min(*out_msg.control_len, msg.ancillary.len());
@@ -2136,7 +2136,7 @@ impl Event for SocketReadEvent<'_> {
 
                             *out_msg.addrlen = msg.source.encode(&mut out_msg.addr_bytes) as u32;
                             for (out_byte, byte) in out_msg.control_info.iter_mut().zip(msg.ancillary.iter()) {
-                                *out_byte.write(*byte);
+                                out_byte.write(*byte);
                             }
 
                             *out_msg.control_len = cmp::min(*out_msg.control_len, msg.ancillary.len());

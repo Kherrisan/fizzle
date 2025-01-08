@@ -18,7 +18,7 @@ use fizzle_common::io::{
 };
 use fizzle_common::path::{FilePath, SemaphorePath};
 use fizzle_common::storage::Buffer;
-use fizzle_plugin::{IoEndpointVariant, StreamId};
+use fizzle_plugin::{IoEndpointVariant, PluginObject, StreamId};
 use fxhash::FxBuildHasher;
 use heapless::{Deque, FnvIndexMap, FnvIndexSet};
 use rand::rngs::SmallRng;
@@ -43,7 +43,6 @@ use crate::handlers::mq::{MqId, MqInfo};
 use crate::handlers::mutex::{MutexInfo, MutexPtr};
 use crate::handlers::pipe::{PipeId, PipeInfo};
 use crate::handlers::plugin::{PluginEndpointId, PluginInfo};
-use crate::handlers::plugin_module::PluginId;
 use crate::handlers::polled::{PolledId, PolledInfo};
 use crate::handlers::poller::{PollerId, PollerInfo};
 use crate::handlers::process::*;
@@ -57,7 +56,7 @@ use crate::handlers::socket::{
 use crate::handlers::spinlock::SpinlockPtr;
 use crate::handlers::thread::{PThreadRoutine, ThreadInfo};
 use crate::once::SeqOnceCell;
-use crate::plugins::{IoEmulationType, PluginEndpoint, Plugins};
+use crate::plugins::{IoEmulationType, PluginEndpoint};
 use crate::semaphore::Semaphore;
 
 use crate::backend::{FileBackend, FileFeedback, PendingBackend, ServerBackend, StandardFeedback, StdioBackend};
@@ -586,24 +585,20 @@ impl FizzleState {
         comptime::populate_onready_processes(&mut onready_commands);
 
         // Initialize plugins--these need to remain fixed in memory, so we use a Box with in-place initialization.
-        let mut plugins: Box<MaybeUninit<Plugins>> = Box::new_uninit();
         let mut endpoints = Vec::new();
-        unsafe {
-            Plugins::initialize(plugins.as_mut_ptr());
+        let mut plugins = Vec::new();
 
-            // Initialize plugin endpoints
+        // Initialize plugin endpoints
+        log::info!("populating comptime-generated plugins...");
+        comptime::populate_plugins(&mut endpoints, &mut plugins);
+        log::info!("comptime-generated plugins populated.");
 
-            log::info!("populating comptime-generated plugins...");
-            comptime::populate_plugins(&mut endpoints, plugins.assume_init_mut());
-            log::info!("comptime-generated plugins populated.");
-
-            self.local.main_state = Some(MainProcessState {
-                onstartup_commands,
-                onready_commands,
-                plugins: plugins.assume_init(),
-                pasture: HashMap::default(),
-            });
-        }
+        self.local.main_state = Some(MainProcessState {
+            onstartup_commands,
+            onready_commands,
+            plugins,
+            pasture: HashMap::default(),
+        });
 
         log::info!("calling `load_config_mappings()`...");
         self.load_config_mappings(endpoints);
@@ -1106,7 +1101,7 @@ pub struct InheritedState {
 pub struct MainProcessState {
     pub onstartup_commands: Vec<Command>,
     pub onready_commands: Vec<Command>,
-    pub plugins: Box<Plugins>,
+    pub plugins: Vec<std::rc::Rc<RefCell<dyn PluginObject>>>,
     pub pasture: HashMap<CowId, CowInfo>,
 }
 
@@ -1437,21 +1432,6 @@ impl InterprocessState {
         }
     }
 
-    pub fn gen_random_bytes(&mut self, input: &mut [MaybeUninit<u8>]) {
-        if self.fuzz_input.is_empty() {
-            for b in input {
-                *b = MaybeUninit::new(self.prefuzz_rng.gen());
-            }
-        } else {
-            let data = self.fuzz_input.data();
-            let mut idx = 0usize;
-            for b in input {
-                *b = MaybeUninit::new(data[idx]);
-                idx = (idx + 1) % data.len();
-            }
-        }
-    }
-
     /// Marks the given polled event as ready.
     ///
     /// If not already raised, this method will push_back a poller waiting on this polled event
@@ -1474,15 +1454,6 @@ impl InterprocessState {
                     .insert(polled_id.clone())
                     .unwrap();
             }
-        }
-    }
-
-    pub fn gen_random_array<const N: usize>(&mut self) -> [u8; N] {
-        if self.fuzz_input.is_empty() {
-            array::from_fn(|_| self.prefuzz_rng.gen())
-        } else {
-            let data = self.fuzz_input.data();
-            array::from_fn(|i| data[i % data.len()])
         }
     }
 
@@ -1639,7 +1610,7 @@ impl InterprocessState {
     pub fn add_plugin(
         &mut self,
         endpoint: IoEndpointVariant,
-        module_id: Rc<PluginId>,
+        module: std::rc::Rc<RefCell<dyn PluginObject>>,
     ) -> Rc<PluginEndpointId> {
         let stream = self.next_stream_id;
         self.next_stream_id = StreamId::from(usize::from(stream) + 1);
@@ -1655,7 +1626,7 @@ impl InterprocessState {
             .allocate(PluginInfo {
                 endpoint,
                 stream,
-                module_id,
+                module,
                 read_buf,
                 read_polled,
                 write_buf,
