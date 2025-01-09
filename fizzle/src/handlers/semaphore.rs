@@ -14,7 +14,7 @@ use crate::WaitDuration;
 pub use private::SemaphoreId;
 
 use super::file::AccessMode;
-use super::id::WorkerInfo;
+use super::id::Worker;
 
 // This is to forbid access to the SocketId's inner `usize` field.
 mod private {
@@ -27,12 +27,11 @@ impl ArenaKey for SemaphoreId {
     type Value = SemaphoreInfo;
 }
 
-#[derive(Debug)]
 pub struct SemaphoreInfo {
     pub refs: usize,
     pub unlinked: bool,
     pub value: usize,
-    pub waiting: VecDeque<WorkerInfo>,
+    pub waiting: VecDeque<Worker>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -415,7 +414,7 @@ impl Event for SemWaitEvent {
 
                 // Check to see if this is due to timeout
                 for (idx, worker_id) in semaphore.waiting.iter().enumerate() {
-                    if *worker_id == current_worker_id {
+                    if worker_id == &current_worker_id {
                         // Remove the current worker from the wait queue
                         semaphore.waiting.remove(idx).unwrap();
 

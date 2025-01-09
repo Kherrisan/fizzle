@@ -5,7 +5,7 @@ use crate::{arena::ArenaKey, scheduler::Outcome};
 
 pub use private::MqId;
 
-use super::descriptor::{DescriptorId, ReadData, WriteData};
+use super::descriptor::{Descriptor, ReadData, WriteData};
 
 // This is to forbid access to the SocketId's inner `usize` field.
 mod private {
@@ -22,13 +22,13 @@ impl ArenaKey for MqId {
 }
 
 pub struct MqReadEvent<'a> {
-    fd: DescriptorId,
+    fd: Descriptor,
     data: ReadData<'a>,
 }
 
 impl<'a> MqReadEvent<'a> {
     #[inline]
-    pub fn new(fd: DescriptorId, data: ReadData<'a>) -> Self {
+    pub fn new(fd: Descriptor, data: ReadData<'a>) -> Self {
         Self { fd, data }
     }
 }
@@ -43,13 +43,13 @@ impl Event for MqReadEvent<'_> {
 }
 
 pub struct MqWriteEvent<'a> {
-    fd: DescriptorId,
+    fd: Descriptor,
     data: WriteData<'a>,
 }
 
 impl<'a> MqWriteEvent<'a> {
     #[inline]
-    pub fn new(fd: DescriptorId, data: WriteData<'a>) -> Self {
+    pub fn new(fd: Descriptor, data: WriteData<'a>) -> Self {
         Self { fd, data }
     }
 }

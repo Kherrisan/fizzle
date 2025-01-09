@@ -8,7 +8,7 @@ use fizzle_common::path::FilePath;
 
 pub use private::DirectoryId;
 
-use super::descriptor::{DescriptorId, ReadData, WriteData};
+use super::descriptor::{Descriptor, ReadData, WriteData};
 
 // This is to forbid access to the SocketId's inner `usize` field.
 mod private {
@@ -22,13 +22,13 @@ impl ArenaKey for DirectoryId {
 }
 
 pub struct DirectoryReadEvent<'a> {
-    fd: DescriptorId,
+    fd: Descriptor,
     data: ReadData<'a>,
 }
 
 impl<'a> DirectoryReadEvent<'a> {
     #[inline]
-    pub fn new(fd: DescriptorId, data: ReadData<'a>) -> Self {
+    pub fn new(fd: Descriptor, data: ReadData<'a>) -> Self {
         Self { fd, data }
     }
 }
@@ -43,13 +43,13 @@ impl Event for DirectoryReadEvent<'_> {
 }
 
 pub struct DirectoryWriteEvent<'a> {
-    fd: DescriptorId,
+    fd: Descriptor,
     data: WriteData<'a>,
 }
 
 impl<'a> DirectoryWriteEvent<'a> {
     #[inline]
-    pub fn new(fd: DescriptorId, data: WriteData<'a>) -> Self {
+    pub fn new(fd: Descriptor, data: WriteData<'a>) -> Self {
         Self { fd, data }
     }
 }

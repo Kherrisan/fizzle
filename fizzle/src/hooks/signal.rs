@@ -2,9 +2,9 @@ use std::mem;
 use std::time::Duration;
 
 use crate::errno::Errno;
-use crate::handlers::id::WorkerId;
-use crate::handlers::process::ProcessGroupId;
+use crate::handlers::process::{Pgid, Pid};
 use crate::handlers::signal::*;
+use crate::handlers::thread::Tid;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
 
@@ -220,10 +220,10 @@ hook_macros::hook! {
         crate::strace!("kill(pid={}, sig={}) -> ...", pid, sig);
 
         let target = match pid {
-            1.. => SignalTarget::Pid(WorkerId::from_id(pid)),
+            1.. => SignalTarget::Pid(Pid::from_raw(pid)),
             0 => SignalTarget::CallingProcessGroup,
             -1 => SignalTarget::AllPermissive,
-            ..=-2 => SignalTarget::Pgid(ProcessGroupId::from_pgid(-pid)),
+            ..=-2 => SignalTarget::Pgid(Pgid::from_raw(-pid)),
         };
 
         match Scheduler::handle_event(&mut ctx, SignalSendEvent::new(target, sig, None)) {
@@ -248,7 +248,7 @@ hook_macros::hook! {
         crate::strace!("killpg(pgrp={}, sig={}) -> ...", pgrp, sig);
 
         let target = match pgrp {
-            1.. => SignalTarget::Pgid(ProcessGroupId::from_pgid(pgrp)),
+            1.. => SignalTarget::Pgid(Pgid::from_raw(pgrp)),
             0 => SignalTarget::CallingProcessGroup,
             ..=-1 => {
                 Errno::EINVAL.set_errno();
@@ -279,7 +279,7 @@ hook_macros::hook! {
         crate::strace!("sigqueue(pid={}, sig={}, value=<union>) -> ...", pid, sig);
 
         let target = match pid {
-            1.. => SignalTarget::Pid(WorkerId::from_id(pid)),
+            1.. => SignalTarget::Pid(Pid::from_raw(pid)),
             ..=-0 => {
                 Errno::EINVAL.set_errno();
                 return -1
@@ -329,7 +329,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_tgkill(ctx) {
         crate::strace!("tgkill(tgid={}, tid={}, sig={}) -> ...", tgid, tid, sig);
 
-        match Scheduler::handle_event(&mut ctx, SignalSendEvent::new(SignalTarget::Tid(WorkerId::from_id(tid), tgid), sig, None)) {
+        match Scheduler::handle_event(&mut ctx, SignalSendEvent::new(SignalTarget::Tid(Tid::from_raw(tid), Pid::from_raw(tgid)), sig, None)) {
             Ok(()) => {
                 crate::strace!("tgkill(tgid={}, tid={}, sig={}) -> 0", tgid, tid, sig);
                 0

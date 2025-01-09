@@ -13,7 +13,7 @@ use super::mq::*;
 use super::pipe::*;
 use super::poller::PollerId;
 use super::socket::*;
-use crate::arena::{ArenaKey, Rc};
+use crate::arena::Rc;
 use crate::backend::{ConnectedBackend, StdioBackend};
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
@@ -22,24 +22,17 @@ use crate::GlobalRc;
 
 use bitflags::bitflags;
 use fizzle_common::io::TransportAddress;
-pub use private::DescriptorId;
 
-// This is to forbid access to the SocketId's inner `usize` field.
-mod private {
-    use std::os::fd::RawFd;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Descriptor(usize);
 
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    #[repr(transparent)]
-    pub struct DescriptorId(usize);
+impl Descriptor {
+    pub fn from_raw_fd(fd: RawFd) -> Self {
+        Descriptor(fd as usize)
+    }
 
-    impl DescriptorId {
-        pub fn from_raw_fd(fd: RawFd) -> Self {
-            DescriptorId(fd as usize)
-        }
-
-        pub fn as_raw_fd(&self) -> RawFd {
-            self.0 as RawFd
-        }
+    pub fn as_raw_fd(&self) -> RawFd {
+        self.0 as RawFd
     }
 }
 
@@ -53,17 +46,6 @@ pub struct DescriptorInfo {
     pub is_passthrough: bool,
     /// The resource the file descriptor points to.
     pub resource: FdResource,
-}
-
-impl DescriptorInfo {
-    pub fn new(resource: FdResource) -> Self {
-        Self {
-            close_on_exec: false,
-            nonblocking: false,
-            is_passthrough: false,
-            resource,
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -91,17 +73,13 @@ pub enum FdResource {
     Socket(GlobalRc<SocketInfo>),
 }
 
-impl ArenaKey for DescriptorId {
-    type Value = DescriptorInfo;
-}
-
 pub struct DescriptorCloseEvent {
-    fd: DescriptorId,
+    fd: Descriptor,
 }
 
 impl DescriptorCloseEvent {
     #[inline]
-    pub fn new(fd: DescriptorId) -> Self {
+    pub fn new(fd: Descriptor) -> Self {
         Self { fd }
     }
 }
@@ -139,7 +117,7 @@ impl Event for DescriptorCloseEvent {
                         if let ConnectedBackend::Peered(peer_info) = &mut connected.backend {
                             // TODO: do we take the peer's socket ID here so that we can set peer_closed = true on it?
                             // TODO: do we raise the poll of the peer here?
-                            peer_info.peer = Weak::new_in(state.global.allocator.allocator());
+                            peer_info.peer = Weak::new_in(state.global.alloc.alloc());
                         }
                     }
                 }
@@ -152,9 +130,7 @@ impl Event for DescriptorCloseEvent {
             _ => crate::destroy_descriptor(self.fd.as_raw_fd()),
         };
 
-        // fds never have more than one reference at a time, so this will always destroy a fd.
-        state.local.fds.downref(&self.fd);
-
+        state.local.fds.remove(&self.fd);
         Outcome::Success(())
     }
 }
@@ -205,13 +181,13 @@ pub enum FcntlCommand<'a> {
 }
 
 pub struct FcntlEvent<'a> {
-    fd: DescriptorId,
+    fd: Descriptor,
     command: FcntlCommand<'a>,
 }
 
 impl<'a> FcntlEvent<'a> {
     #[inline]
-    pub fn new(fd: DescriptorId, command: FcntlCommand<'a>) -> Self {
+    pub fn new(fd: Descriptor, command: FcntlCommand<'a>) -> Self {
         Self {
             fd,
             command,
@@ -273,26 +249,32 @@ impl Event for FcntlEvent<'_> {
                     FcntlCommand::DupFd(newfd) => {
                         let nonblocking = fd_info.nonblocking;
                         let resource = fd_info.resource.clone();
-                        let dupfd = crate::create_descriptor(); // TODO: what about read-only files here? use actual dup...
-                        state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(dupfd), DescriptorInfo {
+                        let dupfd = unsafe { libc::fcntl(self.fd.as_raw_fd(), libc::F_DUPFD, *newfd) };
+                        if dupfd < 0 {
+                            return Outcome::Error(Errno::get_errno())
+                        }
+                        state.local.fds.insert(Descriptor::from_raw_fd(dupfd), DescriptorInfo {
                             close_on_exec: false,
                             nonblocking,
                             is_passthrough: false,
                             resource,                           
-                        }).unwrap();
+                        });
                         
                         Outcome::Success(dupfd)
                     }
                     FcntlCommand::DupFdCloexec(newfd) => {
                         let nonblocking = fd_info.nonblocking;
                         let resource = fd_info.resource.clone();
-                        let dupfd = crate::create_descriptor(); // TODO: what about read-only files here? use actual dup...
-                        state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(dupfd), DescriptorInfo {
+                        let dupfd = unsafe { libc::fcntl(self.fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, *newfd) };
+                        if dupfd < 0 {
+                            return Outcome::Error(Errno::get_errno())
+                        }
+                        state.local.fds.insert(Descriptor::from_raw_fd(dupfd), DescriptorInfo {
                             close_on_exec: true,
                             nonblocking,
                             is_passthrough: false,
                             resource,                           
-                        }).unwrap();
+                        });
 
                         Outcome::Success(dupfd)
                     }
@@ -311,14 +293,14 @@ impl Event for FcntlEvent<'_> {
 
 
 pub struct DescriptorDuplicateEvent {
-    old_fd: DescriptorId,
-    new_fd: Option<DescriptorId>,
+    old_fd: Descriptor,
+    new_fd: Option<Descriptor>,
     close_on_exec: bool,
 }
 
 impl DescriptorDuplicateEvent {
     #[inline]
-    pub fn new(old_fd: DescriptorId, new_fd: Option<DescriptorId>, close_on_exec: bool) -> Self {
+    pub fn new(old_fd: Descriptor, new_fd: Option<Descriptor>, close_on_exec: bool) -> Self {
         Self {
             old_fd,
             new_fd,
@@ -340,7 +322,7 @@ impl Event for DescriptorDuplicateEvent {
         // Create a new, unique file descriptor
         let new_fd = match self.new_fd {
             Some(fd) => fd,
-            None => DescriptorId::from_raw_fd(crate::create_descriptor()),
+            None => Descriptor::from_raw_fd(crate::create_descriptor()),
         };
 
         if self.old_fd == new_fd {
@@ -356,7 +338,7 @@ impl Event for DescriptorDuplicateEvent {
         }
 
         // Close `newfd` if it points to an occupied descriptor
-        if state.local.fds.is_occupied(&new_fd) {
+        if state.local.fds.contains_key(&new_fd) {
             // TODO: this is dangerous(ish), as the behavior of the run event loop may change.
             // Figure out how to call events within events more ergonomically while not exposing
             // `ctx`
@@ -367,11 +349,7 @@ impl Event for DescriptorDuplicateEvent {
             }
         }
 
-        state
-            .local
-            .fds
-            .allocate_with_key(new_fd, new_fd_info)
-            .unwrap();
+        state.local.fds.insert(new_fd, new_fd_info);
 
         Outcome::Success(new_fd.as_raw_fd())
     }
@@ -448,14 +426,14 @@ enum DescriptorReadState<'a> {
 }
 
 pub struct DescriptorReadEvent<'a> {
-    fd: DescriptorId,
+    fd: Descriptor,
     data: Option<ReadData<'a>>,
     state: DescriptorReadState<'a>,
 }
 
 impl<'a> DescriptorReadEvent<'a> {
     #[inline]
-    pub fn new(fd: DescriptorId, data: ReadData<'a>) -> Self {
+    pub fn new(fd: Descriptor, data: ReadData<'a>) -> Self {
         Self {
             fd,
             data: Some(data),
@@ -549,14 +527,14 @@ pub enum StdinReadState {
 }
 
 pub struct StdinReadEvent<'a> {
-    fd: DescriptorId,
+    fd: Descriptor,
     data: ReadData<'a>,
     state: StdinReadState,
 }
 
 impl<'a> StdinReadEvent<'a> {
     #[inline]
-    pub fn new(fd: DescriptorId, data: ReadData<'a>) -> Self {
+    pub fn new(fd: Descriptor, data: ReadData<'a>) -> Self {
         Self {
             fd,
             data,
@@ -789,14 +767,14 @@ enum DescriptorWriteState<'a> {
 }
 
 pub struct DescriptorWriteEvent<'a> {
-    fd: DescriptorId,
+    fd: Descriptor,
     data: Option<WriteData<'a>>,
     state: DescriptorWriteState<'a>,
 }
 
 impl<'a> DescriptorWriteEvent<'a> {
     #[inline]
-    pub fn new(fd: DescriptorId, data: WriteData<'a>) -> Self {
+    pub fn new(fd: Descriptor, data: WriteData<'a>) -> Self {
         Self {
             fd,
             data: Some(data),
@@ -895,14 +873,14 @@ pub enum StdoutWriteState {
 }
 
 pub struct StdoutWriteEvent<'a> {
-    fd: DescriptorId,
+    fd: Descriptor,
     data: WriteData<'a>,
     state: StdoutWriteState,
 }
 
 impl<'a> StdoutWriteEvent<'a> {
     #[inline]
-    pub fn new(fd: DescriptorId, data: WriteData<'a>) -> Self {
+    pub fn new(fd: Descriptor, data: WriteData<'a>) -> Self {
         Self {
             fd,
             data,
@@ -1024,14 +1002,14 @@ pub enum StderrWriteState {
 }
 
 pub struct StderrWriteEvent<'a> {
-    fd: DescriptorId,
+    fd: Descriptor,
     data: WriteData<'a>,
     state: StderrWriteState,
 }
 
 impl<'a> StderrWriteEvent<'a> {
     #[inline]
-    pub fn new(fd: DescriptorId, data: WriteData<'a>) -> Self {
+    pub fn new(fd: Descriptor, data: WriteData<'a>) -> Self {
         Self {
             fd,
             data,

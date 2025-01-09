@@ -65,7 +65,7 @@ fn get_or_assign_local(socket_info: &mut GlobalRc<SocketInfo>, state: &mut Fizzl
                 };
 
                 let Some(location_info) = state.global.socket_locations.get_mut(&addr) else {
-                    let mut bound_sockets = LinkedList::new_in(state.global.allocator.allocator());
+                    let mut bound_sockets = LinkedList::new_in(state.global.alloc.alloc());
                     bound_sockets.push_back(socket_info.clone());
 
                     state.global.socket_locations.insert(
@@ -239,11 +239,11 @@ pub struct SocketCreateEvent {
 }
 
 impl Event for SocketCreateEvent {
-    type Success = DescriptorId;
+    type Success = Descriptor;
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let fd = DescriptorId::from_raw_fd(crate::create_descriptor());
+        let fd = Descriptor::from_raw_fd(crate::create_descriptor());
 
         let socket_info = std::rc::Rc::new_in(RefCell::new(SocketInfo {
             fd_count: 1,
@@ -269,7 +269,7 @@ impl Event for SocketCreateEvent {
                     SocketState::Connectionless(ConnectionlessSocket {
                         reuse_port: false,
                         backend: ConnectionlessBackend::Peered(RegularConnectionless {
-                            recv_buf: LinkedList::new_in(state.global.allocator.allocator()),
+                            recv_buf: LinkedList::new_in(state.global.alloc.alloc()),
                             read_polled,
                             write_polled,
                         }),
@@ -277,21 +277,14 @@ impl Event for SocketCreateEvent {
                     })
                 }
             },
-        }), state.global.allocator.allocator());
+        }), state.global.alloc.alloc());
 
-        state
-            .local
-            .fds
-            .allocate_with_key(
-                fd,
-                DescriptorInfo {
-                    close_on_exec: self.cloexec,
-                    nonblocking: self.nonblocking,
-                    is_passthrough: false,
-                    resource: FdResource::Socket(socket_info),
-                },
-            )
-            .unwrap();
+        state.local.fds.insert(fd, DescriptorInfo {
+            close_on_exec: self.cloexec,
+            nonblocking: self.nonblocking,
+            is_passthrough: false,
+            resource: FdResource::Socket(socket_info),
+        });
 
         Outcome::Success(fd)
     }
@@ -306,12 +299,12 @@ pub struct SocketCreatePairEvent {
 }
 
 impl Event for SocketCreatePairEvent {
-    type Success = (DescriptorId, DescriptorId);
+    type Success = (Descriptor, Descriptor);
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let addr1 = state.global.ephemeral_address(self.domain, self.protocol);
-        let fd1 = DescriptorId::from_raw_fd(crate::create_descriptor());
+        let fd1 = Descriptor::from_raw_fd(crate::create_descriptor());
         let recv_buf1 = state.global.buffers.allocate(Buffer::new()).unwrap();
         let read_polled1 = state
             .global
@@ -325,7 +318,7 @@ impl Event for SocketCreatePairEvent {
             .unwrap();
 
         let addr2 = state.global.ephemeral_address(self.domain, self.protocol);
-        let fd2 = DescriptorId::from_raw_fd(crate::create_descriptor());
+        let fd2 = Descriptor::from_raw_fd(crate::create_descriptor());
         let recv_buf2 = state.global.buffers.allocate(Buffer::new()).unwrap();
         let read_polled2 = state
             .global
@@ -347,7 +340,7 @@ impl Event for SocketCreatePairEvent {
                 SocketType::SeqPacket | SocketType::Stream => {
                     SocketState::Connected(ConnectedSocket {
                         backend: ConnectedBackend::Peered(RegularConnected {
-                            peer: Weak::new_in(state.global.allocator.allocator()),
+                            peer: Weak::new_in(state.global.alloc.alloc()),
                             recv_buf: recv_buf1,
                             read_polled: read_polled1,
                             write_polled: write_polled1,
@@ -359,14 +352,14 @@ impl Event for SocketCreatePairEvent {
                 SocketType::Datagram => SocketState::Connectionless(ConnectionlessSocket {
                     reuse_port: false,
                     backend: ConnectionlessBackend::Peered(RegularConnectionless {
-                        recv_buf: LinkedList::new_in(state.global.allocator.allocator()),
+                        recv_buf: LinkedList::new_in(state.global.alloc.alloc()),
                         read_polled: read_polled1,
                         write_polled: write_polled1,
                     }),
                     rem_addr: Some(addr2.clone()),
                 }),
             },
-        }), state.global.allocator.allocator());
+        }), state.global.alloc.alloc());
 
         let socket1_weak = std::rc::Rc::downgrade(&socket1);
 
@@ -391,14 +384,14 @@ impl Event for SocketCreatePairEvent {
                 SocketType::Datagram => SocketState::Connectionless(ConnectionlessSocket {
                     reuse_port: false,
                     backend: ConnectionlessBackend::Peered(RegularConnectionless {
-                        recv_buf: LinkedList::new_in(state.global.allocator.allocator()),
+                        recv_buf: LinkedList::new_in(state.global.alloc.alloc()),
                         read_polled: read_polled2,
                         write_polled: write_polled2,
                     }),
                     rem_addr: Some(addr1.clone()),
                 }),
             },
-        }), state.global.allocator.allocator());
+        }), state.global.alloc.alloc());
 
         let socket2_weak = std::rc::Rc::downgrade(&socket2);
 
@@ -410,35 +403,21 @@ impl Event for SocketCreatePairEvent {
             _ => unreachable!(),
         }
 
-        state
-            .local
-            .fds
-            .allocate_with_key(
-                fd1,
-                DescriptorInfo {
-                    close_on_exec: self.cloexec,
-                    nonblocking: self.nonblocking,
-                    is_passthrough: false,
-                    resource: FdResource::Socket(socket1.clone()),
-                },
-            )
-            .unwrap();
+        state.local.fds.insert(fd1, DescriptorInfo {
+            close_on_exec: self.cloexec,
+            nonblocking: self.nonblocking,
+            is_passthrough: false,
+            resource: FdResource::Socket(socket1.clone()),
+        });
 
-        state
-            .local
-            .fds
-            .allocate_with_key(
-                fd2,
-                DescriptorInfo {
-                    close_on_exec: self.cloexec,
-                    nonblocking: self.nonblocking,
-                    is_passthrough: false,
-                    resource: FdResource::Socket(socket2.clone()),
-                },
-            )
-            .unwrap();
+        state.local.fds.insert(fd2, DescriptorInfo {
+            close_on_exec: self.cloexec,
+            nonblocking: self.nonblocking,
+            is_passthrough: false,
+            resource: FdResource::Socket(socket2.clone()),
+        });
 
-        let mut bound_sockets = LinkedList::new_in(state.global.allocator.allocator());
+        let mut bound_sockets = LinkedList::new_in(state.global.alloc.alloc());
         bound_sockets.push_back(socket1);
 
         state.global.socket_locations.insert(
@@ -450,7 +429,7 @@ impl Event for SocketCreatePairEvent {
             },
         ).unwrap();
 
-        let mut bound_sockets = LinkedList::new_in(state.global.allocator.allocator());
+        let mut bound_sockets = LinkedList::new_in(state.global.alloc.alloc());
         bound_sockets.push_back(socket2);
 
         state.global.socket_locations.insert(
@@ -467,12 +446,12 @@ impl Event for SocketCreatePairEvent {
 }
 
 pub struct SocketBindEvent {
-    descriptor_id: DescriptorId,
+    descriptor_id: Descriptor,
     sockaddr: SockAddr,
 }
 
 impl SocketBindEvent {
-    pub fn new(descriptor_id: DescriptorId, sockaddr: SockAddr) -> Self {
+    pub fn new(descriptor_id: Descriptor, sockaddr: SockAddr) -> Self {
         Self {
             descriptor_id,
             sockaddr,
@@ -573,7 +552,7 @@ impl Event for SocketBindEvent {
                 }
             }
             Entry::Vacant(v) => {
-                let mut bound_sockets = LinkedList::new_in(state.global.allocator.allocator());
+                let mut bound_sockets = LinkedList::new_in(state.global.alloc.alloc());
                 bound_sockets.push_back(socket_info.clone());
 
                 v.insert(TransportLocationInfo {
@@ -596,12 +575,12 @@ impl Event for SocketBindEvent {
 }
 
 pub struct SocketListenEvent {
-    descriptor_id: DescriptorId,
+    descriptor_id: Descriptor,
     backlog: libc::c_int, // Not actually used
 }
 
 impl SocketListenEvent {
-    pub fn new(descriptor_id: DescriptorId, backlog: libc::c_int) -> Self {
+    pub fn new(descriptor_id: Descriptor, backlog: libc::c_int) -> Self {
         Self {
             descriptor_id,
             backlog,
@@ -654,7 +633,7 @@ impl Event for SocketListenEvent {
 
         socket_info.borrow_mut().state = SocketState::Server(ServerSocket {
             backend: ServerBackend::Peered(()),
-            connecting: LinkedList::new_in(state.global.allocator.allocator()),
+            connecting: LinkedList::new_in(state.global.alloc.alloc()),
             ready_to_connect,
         });
 
@@ -668,13 +647,13 @@ pub enum SocketConnectState {
 }
 
 pub struct SocketConnectEvent {
-    descriptor_id: DescriptorId,
+    descriptor_id: Descriptor,
     dst_addr: SockAddr,
     state: SocketConnectState,
 }
 
 impl SocketConnectEvent {
-    pub fn new(descriptor_id: DescriptorId, dst_addr: SockAddr) -> Self {
+    pub fn new(descriptor_id: Descriptor, dst_addr: SockAddr) -> Self {
         Self {
             descriptor_id,
             dst_addr,
@@ -868,14 +847,14 @@ pub enum SocketAcceptState {
 }
 
 pub struct SocketAcceptEvent {
-    descriptor_id: DescriptorId,
+    descriptor_id: Descriptor,
     nonblock: bool,
     cloexec: bool,
     state: SocketAcceptState,
 }
 
 impl SocketAcceptEvent {
-    pub fn new(descriptor_id: DescriptorId, nonblock: bool, cloexec: bool) -> Self {
+    pub fn new(descriptor_id: Descriptor, nonblock: bool, cloexec: bool) -> Self {
         Self {
             descriptor_id,
             nonblock,
@@ -886,7 +865,7 @@ impl SocketAcceptEvent {
 }
 
 impl Event for SocketAcceptEvent {
-    type Success = (DescriptorId, SockAddr);
+    type Success = (Descriptor, SockAddr);
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
@@ -1117,7 +1096,7 @@ impl Event for SocketAcceptEvent {
                             backend: accepting_backend,
                             peer_closed: false,
                         }),
-                    }), state.global.allocator.allocator());
+                    }), state.global.alloc.alloc());
 
                     let connected_backend = ConnectedBackend::Peered(RegularConnected {
                         peer: std::rc::Rc::downgrade(&accepting_info),
@@ -1160,21 +1139,14 @@ impl Event for SocketAcceptEvent {
                 // Let the connecting socket know it's been connected
                 state.raise_polled(&connecting_polled);
 
-                let new_fd = DescriptorId::from_raw_fd(crate::create_descriptor());
+                let new_fd = Descriptor::from_raw_fd(crate::create_descriptor());
                 // The two sockets are now joined--add a file descriptor to the accepted socket
-                state
-                    .local
-                    .fds
-                    .allocate_with_key(
-                        new_fd,
-                        DescriptorInfo {
-                            close_on_exec,
-                            is_passthrough: false,
-                            nonblocking,
-                            resource: FdResource::Socket(accepting_info),
-                        },
-                    )
-                    .unwrap();
+                state.local.fds.insert(new_fd, DescriptorInfo {
+                    close_on_exec,
+                    is_passthrough: false,
+                    nonblocking,
+                    resource: FdResource::Socket(accepting_info),
+                });
 
                 Outcome::Success((new_fd, connecting_address.sockaddr.clone()))
             }
@@ -1183,11 +1155,11 @@ impl Event for SocketAcceptEvent {
 }
 
 pub struct SocketGetNameEvent {
-    descriptor_id: DescriptorId,
+    descriptor_id: Descriptor,
 }
 
 impl SocketGetNameEvent {
-    pub fn new(descriptor_id: DescriptorId) -> Self {
+    pub fn new(descriptor_id: Descriptor) -> Self {
         Self { descriptor_id }
     }
 }
@@ -1542,7 +1514,7 @@ pub enum OptInput {
 }
 
 pub struct SocketGetOptionEvent {
-    descriptor_id: DescriptorId,
+    descriptor_id: Descriptor,
     optlevel: OptLevel,
     optname: libc::c_int,
     input: OptInput,
@@ -1550,7 +1522,7 @@ pub struct SocketGetOptionEvent {
 
 impl SocketGetOptionEvent {
     pub fn new(
-        descriptor_id: DescriptorId,
+        descriptor_id: Descriptor,
         optlevel: OptLevel,
         optname: libc::c_int,
         input: OptInput,
@@ -1866,12 +1838,12 @@ impl Event for SocketGetOptionEvent {
 }
 
 pub struct SocketSetOptionEvent {
-    descriptor_id: DescriptorId,
+    descriptor_id: Descriptor,
     option: SocketOption,
 }
 
 impl SocketSetOptionEvent {
-    pub fn new(descriptor_id: DescriptorId, option: SocketOption) -> Self {
+    pub fn new(descriptor_id: Descriptor, option: SocketOption) -> Self {
         Self {
             descriptor_id,
             option,
@@ -2436,13 +2408,13 @@ impl Event for SocketReadEvent<'_> {
 }
 
 pub struct SocketWriteEvent<'a> {
-    fd: DescriptorId,
+    fd: Descriptor,
     data: WriteData<'a>,
 }
 
 impl<'a> SocketWriteEvent<'a> {
     #[inline]
-    pub fn new(fd: DescriptorId, data: WriteData<'a>) -> Self {
+    pub fn new(fd: Descriptor, data: WriteData<'a>) -> Self {
         Self { fd, data }
     }
 }

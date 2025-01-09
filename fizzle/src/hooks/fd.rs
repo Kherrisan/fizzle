@@ -3,16 +3,16 @@
 
 use crate::errno::Errno;
 use crate::handlers::descriptor::{
-    f_owner_ex, DescriptorCloseEvent, DescriptorDuplicateEvent, DescriptorId, FcntlCommand, FcntlEvent
+    f_owner_ex, DescriptorCloseEvent, DescriptorDuplicateEvent, Descriptor, FcntlCommand, FcntlEvent
 };
 use crate::{hook_macros, state, strace};
-use crate::scheduler::Scheduler;
+use crate::scheduler::{fizzle_singleton, Scheduler};
 
 hook_macros::hook! {
     unsafe fn close(
         fd: libc::c_int
     ) -> libc::c_int => fizzle_close(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("close(fd={}) -> ...", fd);
         match Scheduler::handle_event(&mut ctx, DescriptorCloseEvent::new(descriptor_id)) {
@@ -33,7 +33,7 @@ hook_macros::hook! {
     unsafe fn dup(
         oldfd: libc::c_int
     ) -> libc::c_int => fizzle_dup(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(oldfd);
+        let descriptor_id = Descriptor::from_raw_fd(oldfd);
 
         crate::strace!("dup(oldfd={}) -> ...", oldfd);
         match Scheduler::handle_event(&mut ctx, DescriptorDuplicateEvent::new(descriptor_id, None, false)) {
@@ -59,8 +59,8 @@ hook_macros::hook! {
             return newfd
         }
 
-        let old_descriptor = DescriptorId::from_raw_fd(oldfd);
-        let new_descriptor = DescriptorId::from_raw_fd(newfd);
+        let old_descriptor = Descriptor::from_raw_fd(oldfd);
+        let new_descriptor = Descriptor::from_raw_fd(newfd);
 
         crate::strace!("dup2(oldfd={}, newfd={}) -> ...", oldfd, newfd);
         match Scheduler::handle_event(&mut ctx, DescriptorDuplicateEvent::new(old_descriptor, Some(new_descriptor), false)) {
@@ -85,8 +85,8 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_dup3(ctx) {
         let close_on_exec = flags & libc::O_CLOEXEC > 0;
 
-        let old_descriptor = DescriptorId::from_raw_fd(oldfd);
-        let new_descriptor = DescriptorId::from_raw_fd(newfd);
+        let old_descriptor = Descriptor::from_raw_fd(oldfd);
+        let new_descriptor = Descriptor::from_raw_fd(newfd);
         let flags_fmt = if close_on_exec {
             format!("O_CLOEXEC ({})", flags)
         } else {
@@ -148,7 +148,7 @@ pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: .
     crate::state::set_entered_handler(true);
 
     // SAFETY: only one FizzleSingleton is ever owned at a time
-    let mut ctx = state::fizzle_singleton();
+    let mut ctx = fizzle_singleton();
 
     strace!("fcntl(fd={}, cmd={}, ...) -> ...", fd, cmd);
 
@@ -211,7 +211,7 @@ pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: .
         }
     };
 
-    match Scheduler::handle_event(&mut ctx, FcntlEvent::new(DescriptorId::from_raw_fd(fd), command)) {
+    match Scheduler::handle_event(&mut ctx, FcntlEvent::new(Descriptor::from_raw_fd(fd), command)) {
         Ok(i) => {
             strace!("fcntl(fd={}, cmd={}, ...) -> {}", fd, cmd, i);
             crate::state::set_entered_handler(false);

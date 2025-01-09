@@ -1,4 +1,4 @@
-use super::descriptor::{DescriptorId, ReadData, WriteData};
+use super::descriptor::{Descriptor, ReadData, WriteData};
 use super::polled::PolledId;
 use crate::arena::{ArenaKey, Rc};
 use crate::constants::FIZZLE_MAX_EPOLL_FDS;
@@ -19,7 +19,7 @@ mod private {
 
 #[derive(Debug)]
 pub struct EpollInfo {
-    pub interests: FnvIndexMap<DescriptorId, EpollInterest, FIZZLE_MAX_EPOLL_FDS>,
+    pub interests: FnvIndexMap<Descriptor, EpollInterest, FIZZLE_MAX_EPOLL_FDS>,
 }
 
 #[derive(Clone, Debug)]
@@ -52,13 +52,13 @@ impl ArenaKey for EpollId {
 }
 
 pub struct EpollReadEvent<'a> {
-    fd: DescriptorId,
+    fd: Descriptor,
     data: ReadData<'a>,
 }
 
 impl<'a> EpollReadEvent<'a> {
     #[inline]
-    pub fn new(fd: DescriptorId, data: ReadData<'a>) -> Self {
+    pub fn new(fd: Descriptor, data: ReadData<'a>) -> Self {
         Self { fd, data }
     }
 }
@@ -74,13 +74,13 @@ impl Event for EpollReadEvent<'_> {
 }
 
 pub struct EpollWriteEvent<'a> {
-    fd: DescriptorId,
+    fd: Descriptor,
     data: WriteData<'a>,
 }
 
 impl<'a> EpollWriteEvent<'a> {
     #[inline]
-    pub fn new(fd: DescriptorId, data: WriteData<'a>) -> Self {
+    pub fn new(fd: Descriptor, data: WriteData<'a>) -> Self {
         Self { fd, data }
     }
 }

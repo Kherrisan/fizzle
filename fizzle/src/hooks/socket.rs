@@ -2,7 +2,7 @@ use std::mem::MaybeUninit;
 use std::{cmp, mem, slice};
 
 use crate::errno::Errno;
-use crate::handlers::descriptor::DescriptorId;
+use crate::handlers::descriptor::Descriptor;
 use crate::handlers::socket::*;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
@@ -148,7 +148,7 @@ hook_macros::hook! {
 
         crate::strace!("bind(fd={}, addr={:?}, addrlen={} ({:?})) -> ...", fd, addr, addrlen, sockaddr);
 
-        match Scheduler::handle_event(&mut ctx, SocketBindEvent::new(DescriptorId::from_raw_fd(fd), sockaddr.clone())) {
+        match Scheduler::handle_event(&mut ctx, SocketBindEvent::new(Descriptor::from_raw_fd(fd), sockaddr.clone())) {
             Ok(()) => {
                 crate::strace!("bind(fd={}, addr={:?}, addrlen={} ({:?})) -> 0", fd, addr, addrlen, sockaddr);
                 0
@@ -167,7 +167,7 @@ hook_macros::hook! {
         fd: libc::c_int,
         backlog: libc::c_int
     ) -> libc::c_int => fizzle_listen(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("listen(fd={}, backlog={}) -> ...", fd, backlog);
 
@@ -193,7 +193,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_connect(ctx) {
         // SAFETY: caller ensures addr points to a valid buffer of `adderlen` bytes.
         let addr_bytes = slice::from_raw_parts(addr as *const u8, addrlen as usize);
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         let Ok(sockaddr) = SockAddr::decode(addr_bytes) else {
             crate::strace!("connect(fd={}, addr={:?}, addrlen={} ({:?})) -> -1 (EINVAL)", fd, addr, addrlen, addr_bytes);
@@ -223,7 +223,7 @@ hook_macros::hook! {
         addr: *mut libc::sockaddr,
         addrlen: *mut libc::socklen_t
     ) -> libc::c_int => fizzle_accept(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("accept(fd={}, addr={:?}, addrlen={:?}) -> ...", fd, addr, addrlen);
 
@@ -260,7 +260,7 @@ hook_macros::hook! {
         addrlen: *mut libc::socklen_t,
         flags: libc::c_int
     ) -> libc::c_int => fizzle_accept4(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
         let nonblocking = flags & libc::SOCK_NONBLOCK > 0;
         let cloexec = flags & libc::SOCK_CLOEXEC > 0;
 
@@ -311,7 +311,7 @@ hook_macros::hook! {
         addr: *mut libc::sockaddr,
         addrlen: *mut libc::socklen_t
     ) -> libc::c_int => fizzle_getsockname(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(sockfd);
+        let descriptor_id = Descriptor::from_raw_fd(sockfd);
 
         crate::strace!("getsockname(sockfd={}, addr={:?}, addrlen={:?}) -> ...", sockfd, addr, addrlen);
 
@@ -364,7 +364,7 @@ hook_macros::hook! {
         optval: *mut libc::c_void,
         optlen: *mut libc::socklen_t
     ) -> libc::c_int => fizzle_getsockopt(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(sockfd);
+        let descriptor_id = Descriptor::from_raw_fd(sockfd);
 
         let opt_level = match level {
             libc::SOL_SOCKET => OptLevel::Socket,
@@ -445,7 +445,7 @@ hook_macros::hook! {
         optval: *const libc::c_void,
         optlen: libc::socklen_t
     ) -> libc::c_int => fizzle_setsockopt(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(sockfd);
+        let descriptor_id = Descriptor::from_raw_fd(sockfd);
 
         log::info!("setsockopt({}, {}, {}, {:?}, {})", sockfd, level, optname, optval, optlen);
 

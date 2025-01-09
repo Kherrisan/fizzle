@@ -11,7 +11,7 @@ use fizzle_common::storage::Buffer;
 pub use private::PipeId;
 
 use super::buffer::BufferId;
-use super::descriptor::{DescriptorId, DescriptorInfo, FdResource, ReadData, WriteData};
+use super::descriptor::{Descriptor, DescriptorInfo, FdResource, ReadData, WriteData};
 use super::polled::{PolledId, PolledInfo};
 use super::poller::PollerId;
 
@@ -72,7 +72,7 @@ impl PipeCreateEvent {
 }
 
 impl Event for PipeCreateEvent {
-    type Success = (DescriptorId, DescriptorId);
+    type Success = (Descriptor, Descriptor);
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
@@ -140,12 +140,12 @@ impl Event for PipeCreateEvent {
             resource: FdResource::Pipe(second_pipe_id),
         };
 
-        let desc1 = DescriptorId::from_raw_fd(fd1);
-        let desc2 = DescriptorId::from_raw_fd(fd2);
+        let desc1 = Descriptor::from_raw_fd(fd1);
+        let desc2 = Descriptor::from_raw_fd(fd2);
 
         // Now add the fd -> pipe_id mapping
-        state.local.fds.allocate_with_key(desc1, fd1_info).unwrap();
-        state.local.fds.allocate_with_key(desc2, fd2_info).unwrap();
+        state.local.fds.insert(desc1, fd1_info);
+        state.local.fds.insert(desc2, fd2_info);
 
         Outcome::Success((desc1, desc2))
     }

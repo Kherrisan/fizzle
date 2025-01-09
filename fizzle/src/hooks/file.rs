@@ -4,7 +4,7 @@ use std::ptr;
 use fizzle_common::path::FilePath;
 
 use crate::backend::FileBackend;
-use crate::handlers::descriptor::{DescriptorId, DescriptorInfo, FdResource};
+use crate::handlers::descriptor::{Descriptor, DescriptorInfo, FdResource};
 use crate::handlers::file::{FileObject, FilePtr};
 use crate::hook_macros;
 

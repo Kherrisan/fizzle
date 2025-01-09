@@ -1,4 +1,5 @@
 #![feature(allocator_api)]
+#![feature(btreemap_alloc)]
 #![feature(c_variadic)]
 #![feature(string_remove_matches)]
 
@@ -6,13 +7,13 @@
 
 mod arena;
 mod backend;
+mod cell;
 mod comptime;
 mod constants;
 mod errno;
 mod handlers;
 mod hook_macros;
 pub mod hooks;
-mod once;
 mod plugins;
 mod scheduler;
 mod semaphore;
@@ -35,6 +36,8 @@ pub type GlobalList<T> = LinkedList<T, &'static TlsfHeap>;
 pub type GlobalVec<T> = Vec<T, &'static TlsfHeap>;
 pub type GlobalMap<K, V> = BTreeMap<K, V, &'static TlsfHeap>;
 pub type GlobalSet<K> = BTreeSet<K, &'static TlsfHeap>;
+
+pub type GlobalBox<T> = Box<T, &'static TlsfHeap>;
 
 extern "C" {
     #[cfg(feature = "afl")]

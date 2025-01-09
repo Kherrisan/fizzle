@@ -3,8 +3,8 @@ use std::{mem, slice};
 
 use crate::handlers::entropy::*;
 use crate::handlers::futex::*;
-use crate::scheduler::Scheduler;
-use crate::{hook_macros, state, WaitDuration};
+use crate::scheduler::{fizzle_singleton, Scheduler};
+use crate::{hook_macros, WaitDuration};
 
 const FUTEX_OP_SHIFT_SET: i32 = libc::FUTEX_OP_OPARG_SHIFT | libc::FUTEX_OP_SET;
 const FUTEX_OP_SHIFT_ADD: i32 = libc::FUTEX_OP_OPARG_SHIFT | libc::FUTEX_OP_ADD;
@@ -71,7 +71,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
     crate::state::set_entered_handler(true);
 
     // SAFETY: only one FizzleSingleton is ever owned at a time
-    let mut ctx = state::fizzle_singleton();
+    let mut ctx = fizzle_singleton();
 
     let res = match number {
         libc::SYS_gettid => {

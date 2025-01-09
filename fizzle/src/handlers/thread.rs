@@ -2,17 +2,15 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
-use std::mem::MaybeUninit;
 use std::thread::ThreadId;
 use std::{ptr, thread};
 
 use fxhash::FxBuildHasher;
 
-use crate::arena::Rc;
 use crate::errno::Errno;
-use crate::handlers::id::WorkerInfo;
-use crate::scheduler::{DelegationSource, Event, Outcome, Scheduler, TerminationMethod};
-use crate::state::{self, FizzleState};
+use crate::scheduler::{fizzle_singleton, DelegationSource, Event, Outcome, Scheduler, TerminationMethod};
+use crate::semaphore::Semaphore;
+use crate::state::{set_entered_handler, FizzleState};
 
 use super::mutex::MutexPtr;
 use super::signal::SignalSet;
@@ -51,6 +49,22 @@ impl Display for ThreadCancelType {
             Self::Deferred => f.write_str("PTHREAD_CANCEL_DEFERRED"),
             Self::Asynchronous => f.write_str("PTHREAD_CANCEL_ASYNCHRONOUS"),
         }
+    }
+}
+
+/// The ID associated with a given thread.
+///
+/// Equivalent to a tid_t.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Tid(usize);
+
+impl Tid {
+    pub fn from_raw(tid: libc::pid_t) -> Self {
+        Self(tid.try_into().unwrap())
+    }
+
+    pub fn as_raw(&self) -> libc::pid_t {
+        self.0 as i32
     }
 }
 
@@ -165,27 +179,20 @@ pub enum ThreadCreateState {
 
 extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void {
     // Before we do ANYTHING, we need to set this to avoid accidental preload hook recursion
-    state::set_entered_handler(true);
+    set_entered_handler(true);
     // SAFETY: only one ctx at the time (so that it in turn enforces only one `state` alias at a time...)
-    let mut ctx = unsafe { state::fizzle_singleton() };
+    let mut ctx = unsafe { fizzle_singleton() };
 
     let wrapped_arg = unsafe { (arg as *mut PTCreateWrapper).as_mut().unwrap() };
 
-    ctx.init_thread_lock();
     // SAFETY: the FizzleState can be acquired here because we know startup initialization has
     // already run for this process (otherwise how could this pt_wrapper_fn be called?).
     let mut state = ctx.acquire();
-    let process_id = state.local.process_id;
+    let tid = state.global.next_tid();
+    let alloc = state.global.alloc.alloc();
 
-    let mut tid = state
-        .global
-        .ids
-        .allocate(WorkerInfo::current(process_id))
-        .unwrap();
-    Rc::upref(&mut tid);
-    let tid = *tid;
-
-    state.initialize_thread(tid, wrapped_arg.sigmask);
+    state.local.thread_locks.insert(thread::current().id(), Semaphore::new_rc_in(0, true, alloc));
+    state.local.initialize_thread(tid, wrapped_arg.sigmask);
     drop(state);
 
     let res = Scheduler::run_outside_hook(&mut ctx, || unsafe {
@@ -319,9 +326,11 @@ impl Event for ThreadCreateEvent {
                 };
                 // SAFETY: `state` must not be used after here
 
+                // TODO: is this still UB unsafe due to `state` being acquired while another thread is running?
+
                 match res {
                     // The newly-created thread executes now, so this thread pauses
-                    0.. => Outcome::Pause(DelegationSource::Thread),
+                    0.. => Outcome::Pause(DelegationSource::Thread, None),
                     // Thread creation failed
                     ..=-1 => Outcome::Error(Errno::get_errno()),
                 }

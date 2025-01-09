@@ -1,6 +1,8 @@
+use std::alloc::{Allocator, Global};
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::ptr;
+use std::rc::Rc;
 
 unsafe fn raw(s: &Semaphore) -> *mut libc::sem_t {
     s.inner.get().cast()
@@ -16,10 +18,47 @@ impl Semaphore {
     ///
     /// This method is safe to use under most normal circumstances, but the enclosed `Sem` must
     /// not be moved out of the box or undefined behavior will occur.
+    #[inline]
     pub fn new_boxed(value: u32) -> Box<Semaphore> {
-        let mut s: Box<MaybeUninit<Semaphore>> = Box::new(MaybeUninit::uninit());
+        Self::new_boxed_in(value, false, Global)
+    }
 
-        Self::initialize(&mut s, false, value);
+    /// Constructs a new semaphore within a boxed memory region from the provided allocator.
+    ///
+    /// This method is safe to use under most normal circumstances, but the enclosed `Sem` must
+    /// not be moved out of the box or undefined behavior will occur.
+    pub fn new_boxed_in<A>(value: u32, shared: bool, alloc: A) -> Box<Semaphore, A> 
+    where
+        A: Allocator
+    {
+        let mut s: Box<MaybeUninit<Semaphore>, A> = Box::new_in(MaybeUninit::uninit(), alloc);
+
+        Self::initialize(&mut s, shared, value);
+
+        unsafe { s.assume_init() }
+    }
+
+    /// Constructs a new semaphore within an `Rc` memory region.
+    ///
+    /// This method is safe to use under most normal circumstances, but the enclosed `Sem` must
+    /// not be moved out of the box or undefined behavior will occur.
+    #[inline]
+    pub fn new_rc(value: u32) -> Rc<Semaphore> {
+        Self::new_rc_in(value, false, Global)
+    }
+
+    /// Constructs a new semaphore within an `Rc` memory region from the provided allocator.
+    ///
+    /// This method is safe to use under most normal circumstances, but the enclosed `Sem` must
+    /// not be moved out of the box or undefined behavior will occur.
+    pub fn new_rc_in<A>(value: u32, shared: bool, alloc: A) -> Rc<Semaphore, A> 
+    where
+        A: Allocator 
+    {
+        let mut s: Rc<MaybeUninit<Semaphore>, A> = Rc::new_in(MaybeUninit::uninit(), alloc);
+
+        // SAFETY: `s` is the only reference, so `Rc::get_mut()` is guaranteed to return `Some()`.
+        Self::initialize(Rc::get_mut(&mut s).unwrap(), shared, value);
 
         unsafe { s.assume_init() }
     }

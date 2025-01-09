@@ -1325,7 +1325,7 @@ hook_macros::hook! {
         crate::strace!("gettid() -> ...");
         match Scheduler::handle_event(&mut ctx, ThreadGetIdEvent) {
             Ok(tid) => {
-                let tid = tid.as_id();
+                let tid = tid.as_raw();
                 crate::strace!("gettid() -> {}", tid);
                 tid
             },

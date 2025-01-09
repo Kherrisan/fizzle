@@ -1,23 +1,117 @@
 use core::slice;
+use std::cell::RefMut;
+use std::collections::BTreeMap;
 use std::os::fd::RawFd;
 use std::process::Command;
 use std::thread::ThreadId;
 use std::time::Duration;
 use std::{cmp, mem, ptr, thread};
 
+use embedded_alloc::TlsfHeap;
+
 use crate::arena::Rc;
 use crate::backend::{ConnectedBackend, FileBackend, FileFeedback, PendingBackend};
+use crate::cell::{PanicOnceCell, SequentialRefCell};
 use crate::constants::{FIZZLE_MAX_FUZZ_ENDPOINTS, FIZZLE_MEMORY_ENV};
 use crate::handlers::file::{CowInfo, FileInfo};
-use crate::handlers::id::{WorkerId, WorkerInfo};
+use crate::handlers::id::Worker;
 use crate::handlers::mutex::MutexStatus;
 use crate::handlers::polled::PolledId;
 use crate::handlers::process::*;
 use crate::handlers::signal::*;
 use crate::handlers::socket::{SocketInfo, SocketState};
+use crate::semaphore::Semaphore;
 use crate::{plugins, GlobalRc};
 use crate::state;
 use crate::state::*;
+
+static FIZZLE_STATE: PanicOnceCell<SequentialRefCell<FizzleState>> = PanicOnceCell::new();
+
+pub struct FizzleSingleton {
+    /// Empty private field to ensure `FizzleSingleton` isn't constructed outside of
+    /// `fizzle_singleton()`.
+    _private: (),
+}
+
+/// Produces a new `FizzleSingleton` instance that can be used to acquire global state in a safe manner.
+///
+/// WARNING: this function SHOULD NOT be used in any methods other than a) the hook macro, or b)
+/// those that create new threads, such as `pthread_create`. The `FizzleSingleton` is designed to
+/// ensure that the global `FIZZLE_STATE` variable is never mutably referenced more than once. A
+/// single instantiation of it is provided for each LD_PRELOAD hook; this instance is passed around
+/// and is meant to be the _sole_ means of accessing global state.
+///
+/// WARNING 2: the `FizzleSingleton` prevents mutable aliasing within a single-threaded context, but
+/// it cannot inherently prevent mutable access to data by multiple threads. Thread creation hooks
+/// and scheduling routines need to ensure that any acquired `FizzGuard` instances are dropped prior
+/// to another thread acquiring the global state.
+pub unsafe fn fizzle_singleton() -> FizzleSingleton {
+    FizzleSingleton::new()
+}
+
+impl FizzleSingleton {
+    fn new() -> Self {
+        FizzleSingleton { _private: () }
+    }
+
+    /*
+    /// Creates the FizzleState instance for the given process.
+    ///
+    /// This function is called at most once per process, and is one of the very first instatiations
+    /// Fizzle runs. As such, it contains methods that need to be called on startup (logging, handling
+    /// children, etc.) and must be done prior to any other initialization routines.
+    fn instantiate() -> RefCell<FizzleState> {
+        // Initialize logger to print PID and TID with each message
+        env_logger::Builder::from_default_env()
+            .format(|buf, record| {
+                writeln!(
+                    buf,
+                    "[PID({:8})|{:4?}|{}] {}",
+                    process::id(),
+                    thread::current().id(),
+                    record.level().as_str().to_uppercase(),
+                    record.args()
+                )
+            })
+            .init();
+        log::info!("Logger initialized");
+
+        // Set signal mask to be inherited by all threads/processes of Fizzle
+        unsafe {
+            let new_set = (SignalSet::SIGPIPE | SignalSet::SIGCHLD).to_sigset();
+            let mut old_set = SignalSet::empty().to_sigset();
+            assert_eq!(
+                libc::pthread_sigmask(
+                    libc::SIG_SETMASK,
+                    ptr::addr_of!(new_set),
+                    ptr::addr_of_mut!(old_set)
+                ),
+                0
+            );
+        }
+
+        // Clean up child processes if the parent is ever killed
+        unsafe {
+            assert_eq!(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM), 0);
+        }
+
+        // Allocate and instantiate the FizzleState
+        let ctx = RefCell::new(FizzleState::new());
+
+        log::info!("FizzleSingleton::instantiate() complete");
+        ctx
+    }
+    */
+
+    /// Acquires the global shared state for mutable access.
+    ///
+    /// This access does not involve any atomic or locking operations.
+    pub fn acquire(&mut self) -> RefMut<'_, FizzleState> {
+        FIZZLE_STATE
+            .get_or_init(|| { SequentialRefCell::new(FizzleState::new()) })
+            .borrow_mut()
+    }
+}
 
 #[allow(non_snake_case)]
 pub const fn CMSG_ALIGN(len: usize) -> usize {
@@ -48,7 +142,7 @@ pub enum Outcome<S, E> {
     /// The event should move on to its next action immediately.
     Continue,
     /// Yields the current thread without executing the next ready worker.
-    Pause(DelegationSource),
+    Pause(DelegationSource, Option<std::rc::Rc<Semaphore, &'static TlsfHeap>>),
     /// Terminates the given thread's execution.
     TerminateThread(TerminationMethod),
     /// Terminates the given process's execution.
@@ -73,29 +167,18 @@ impl Scheduler {
             // First `acquire()` call for state allocates and instantiates shared memory
             let mut state = ctx.acquire();
 
-            // Initialize local/global state if needed
-            if !state.local.is_initialized {
-                log::info!("running `initialize_state()`...");
-                state.initialize_state();
-                log::info!("`initialize_state()` complete.");
+            // Run startup commands if needed
+            if let Some(main_state) = state.local.main_state.as_mut() {
+                log::info!("Initializing main state startup commands");
+                let mut startup_commands = Vec::new();
+                mem::swap(&mut startup_commands, &mut main_state.onstartup_commands);
+                drop(state);
 
-                if let Some(main_state) = state.local.main_state.as_mut() {
-                    log::info!("Initializing main state startup commands");
-                    let mut startup_commands = Vec::new();
-                    mem::swap(&mut startup_commands, &mut main_state.onstartup_commands);
-                    drop(state);
-
-                    while let Some(onstartup) = startup_commands.pop() {
-                        log::info!("`Scheduler::run_subprocess()` called for startup command {:?}", onstartup);
-                        Scheduler::run_subprocess(ctx, onstartup);
-                        log::info!("`Scheduler::run_subprocess()` complete.");
-                    }
-                } else {
-                    drop(state);
+                while let Some(onstartup) = startup_commands.pop() {
+                    log::info!("`Scheduler::run_subprocess()` called for startup command {:?}", onstartup);
+                    Scheduler::run_subprocess(ctx, onstartup);
+                    log::info!("`Scheduler::run_subprocess()` complete.");
                 }
-
-                log::info!("one-off process initialization complete.");
-
             } else {
                 drop(state);
             }
@@ -136,10 +219,10 @@ impl Scheduler {
                         // Long enough to consider as a permanent timer--just leave
                     }
                 }
-                Outcome::Pause(src) => {
+                Outcome::Pause(src, sem) => {
                     // SAFETY: `state` is never used prior to being dropped, so noalias isn't violated
                     drop(state);
-                    Scheduler::yield_worker(ctx, DelegationAction::PauseCurrentWorker(src));
+                    Scheduler::yield_worker(ctx, DelegationAction::PauseCurrentWorker(src, sem));
                 }
                 Outcome::TerminateThread(method) => {
                     drop(state);
@@ -189,40 +272,51 @@ impl Scheduler {
 
         'yielded: loop {
             // 1. Perform a delegation action
-            match delegation_state {
+            let posted_sem = match delegation_state {
                 // The current worker is creating a new thread
-                DelegationState::PauseCurrentWorker(src) => delegation_source = src,
+                DelegationState::PauseCurrentWorker(src, sem) => {
+                    delegation_source = src;
+                    sem
+                },
                 // The current worker is done being yielded
                 DelegationState::RunCurrentWorker => return,
                 // The current worker is delegating execution to whatever is available
                 DelegationState::RunNextWorker => {
                     let mut state = ctx.acquire();
 
-                    let Some(worker_id) = Self::next_ready_worker(&mut state) else {
+                    let Some(dst_worker) = Self::next_ready_worker(&mut state) else {
                         delegation_state = DelegationState::NoMoreWorkers;
                         continue 'yielded;
                     };
 
-                    log::debug!("Scheduling worker {:?} for execution", worker_id);
+                    let Some(dst_proc_info) = dst_worker.process.upgrade() else {
+                        // The given worker was killed--continue on to the next one
+                        continue 'yielded;
+                    };
+
+                    let worker_pid = dst_proc_info.borrow().pid;
+
+                    log::debug!("Scheduling next worker for execution");
 
                     // Give the next process the info it needs to run the correct thread
-                    state.global.waking_id = Some(worker_id.thread_id);
-                    let local_process_id = state.local.process_id;
-                    drop(state);
+                    state.global.waking_id = Some(dst_worker.thread_id);
+                    let local_pid = dst_proc_info.borrow().pid;
 
-                    if worker_id.process_id != local_process_id {
+                    if worker_pid != local_pid {
                         // Execution needs to move to another process
-                        Scheduler::wake_process(ctx, worker_id.process_id);
+                        let sem = dst_proc_info.borrow().semaphore.clone();
+                        drop(state);
                         delegation_source = DelegationSource::Process;
-                    } else if worker_id.thread_id != current_thread_id {
+                        Some(sem)
+
+                    } else if dst_worker.thread_id != current_thread_id {
                         // Execution needs to move to another thread
-                        ctx.thread_lock(&worker_id.thread_id)
-                            .as_ref()
-                            .unwrap()
-                            .post();
+                        let sem = state.local.thread_locks.get(&dst_worker.thread_id).unwrap().clone();
+                        drop(state);
                         delegation_source = DelegationSource::Thread;
+                        Some(sem)
+
                     } else {
-                        let mut state = ctx.acquire();
                         state.global.waking_id = None;
                         drop(state);
 
@@ -233,26 +327,35 @@ impl Scheduler {
                 DelegationState::RunProcess(process_id) => {
                     // Immediately awaken the specified process (used during cancellation)
                     delegation_source = DelegationSource::Process;
-                    Scheduler::wake_process(ctx, process_id);
+                    let state = ctx.acquire();
+                    let sem = state.global.pids.get(&process_id).unwrap().borrow().semaphore.clone();
+                    drop(state);
+                    Some(sem)
                 }
                 DelegationState::RunThread(thread_id) => {
                     // Immediately awaken the specified thread (used during cancellation)
                     delegation_source = DelegationSource::Thread;
-                    ctx.thread_lock(&thread_id).as_ref().unwrap().post();
+                    let state = ctx.acquire();
+                    let sem = state.local.thread_locks.get(&thread_id).unwrap().clone();
+                    drop(state);
+                    Some(sem)
                 }
                 DelegationState::NoMoreWorkers => {
                     log::debug!("No workers were ready for execution");
 
                     let state = ctx.acquire();
-                    let local_id = state.local.process_id;
-                    let main_id = ProcessId::main_process();
+                    let local_proc_info = state.local.process_info.clone();
+                    let pid = local_proc_info.borrow().pid;
+                    let main_sem = state.global.pids.get(&Pid::PRIMARY).unwrap().borrow().semaphore.clone();
+
                     drop(state);
 
                     // No more workers means it's time for plugins to execute
-                    if local_id != main_id {
+                    if pid != Pid::PRIMARY {
                         // Execution needs to be moved to the main process
-                        Scheduler::wake_process(ctx, main_id);
                         delegation_source = DelegationSource::Process;
+                        Some(main_sem)
+
                     } else {
                         // Execution is already in the main process
                         delegation_state = DelegationState::RunPlugins;
@@ -261,17 +364,20 @@ impl Scheduler {
                 }
                 DelegationState::RunPlugins => {
                     let mut state = ctx.acquire();
-                    assert!(state.local.process_id.is_main_process());
+                    
+                    assert_eq!(state.local.process_info.borrow().pid, Pid::PRIMARY);
 
                     if plugins::run_plugins(&mut state) {
                         // There are outstanding inputs from plugins to be processed
                         delegation_state = DelegationState::RunNextWorker;
                         continue 'yielded;
+
                     } else if let Some(ready) = state.global.delayed_ready.pop_front() {
                         // There are outstanding delayed workers
-                        state.global.ready.push_back(ready).unwrap();
+                        state.global.ready.push_back(ready);
                         delegation_state = DelegationState::RunNextWorker;
                         continue 'yielded;
+
                     } else if let Some(onready) = state
                         .local
                         .main_state
@@ -282,9 +388,12 @@ impl Scheduler {
                     {
                         // Not all `onready` subprocesses have been spawned
 
+                        // Safety: this drop MUST occur before `run_subprocess()`
                         drop(state);
                         Scheduler::run_subprocess(ctx, onready);
                         delegation_source = DelegationSource::Process;
+                        None
+
                     } else if !state.global.per_round_endpoints.is_empty() {
                         // Not all endpoints have been disconnected for this round?
 
@@ -292,6 +401,7 @@ impl Scheduler {
                         Scheduler::remove_perround_endpoints(ctx);
                         delegation_state = DelegationState::RunNextWorker;
                         continue 'yielded;
+
                     } else {
                         drop(state);
 
@@ -307,16 +417,16 @@ impl Scheduler {
                 DelegationState::TerminateThread(method) => {
                     Scheduler::terminate_thread(ctx, method);
                 }
-                DelegationState::SignalToThread(worker_id, signal) => {
+                DelegationState::SignalToThread(pid, thread_id, signal) => {
                     let mut state = ctx.acquire();
 
-                    let thread_id = state.global.ids.get(&worker_id).unwrap().thread_id;
-
                     if thread_id != thread::current().id() {
-                        state.global.signal = Some((SignalDestination::Thread(worker_id), signal));
+                        state.global.signal = Some((SignalDestination::Thread(pid, thread_id), signal));
                         delegation_source = DelegationSource::Thread;
+                        let sem = state.local.thread_locks.get(&thread_id).unwrap().clone();
                         drop(state);
-                        ctx.thread_lock(&thread_id).as_ref().unwrap().post();
+                        Some(sem)
+
                     } else {
                         delegation_state = DelegationState::HandleSignal(signal);
                         continue 'yielded;
@@ -327,12 +437,34 @@ impl Scheduler {
                     delegation_state = DelegationState::RunNextWorker;
                     continue 'yielded;
                 }
-            }
+            };
 
             // SAFETY: no mutable references to `state` being held here
 
             // 2. Suspend execution
-            Scheduler::await_delegation(ctx, delegation_source);
+
+            let sem = match delegation_source {
+                DelegationSource::Thread => {
+                    let state = ctx.acquire();
+                    let sem = state.local.thread_locks.get(&thread::current().id()).unwrap().clone();
+                    drop(state);
+                    sem
+                }
+                DelegationSource::Process => {
+                    let state = ctx.acquire();
+                    let sem = state.local.process_info.borrow().semaphore.clone();
+                    drop(state);
+                    sem
+                }
+            };
+
+            // Awaken the next thread to be run
+            if let Some(sem) = posted_sem {
+                sem.post();
+            }
+
+            // Wait until our semaphore is awakened
+            sem.wait();
 
             // 3. Determine next delegation action based on global state
             // NOTE: delegation_state SHOULD NOT be relied on here.
@@ -421,7 +553,7 @@ impl Scheduler {
                 let signum = raised_info.signum();
 
                 match dst {
-                    SignalDestination::Process(worker_id) => {
+                    SignalDestination::Process(pid) => {
                         // The worker raising the signal should always yield to the appropriate process
                         // assert_eq!(process_id, state.local.process_id);
 
@@ -434,9 +566,9 @@ impl Scheduler {
                         }
 
                         if let Some(chosen_thread) = chosen_thread {
-                            let tid = *state.local.tids.get(&chosen_thread).unwrap();
                             // Now run that thread
-                            DelegationState::SignalToThread(tid, raised_info)
+                            DelegationState::SignalToThread(pid, chosen_thread, raised_info)
+
                         } else {
                             // None of the threads were ready--assign the (blocked) signal to one of the threads
                             'assigned: {
@@ -450,18 +582,17 @@ impl Scheduler {
                                 log::warn!(
                                     "Signal {} for PID {:?} was dropped",
                                     raised_info.signum(),
-                                    worker_id,
+                                    pid,
                                 );
                                 DelegationState::RunNextWorker
                             }
                         }
                     }
-                    SignalDestination::Thread(worker_id) => {
-                        let worker_info = *state.global.ids.get(&worker_id).unwrap();
+                    SignalDestination::Thread(pid, thread_id) => {
                         // The worker raising the signal should always yield to the appropriate process
-                        debug_assert_eq!(worker_info.process_id, state.local.process_id);
+                        debug_assert_eq!(pid, state.local.process_info.borrow().pid);
 
-                        let siginfo = state.local.signals.get_mut(&worker_info.thread_id).unwrap();
+                        let siginfo = state.local.signals.get_mut(&thread_id).unwrap();
 
                         if siginfo.blocked.contains(SignalSet::from_signum(signum)) {
                             // The signal was blocked--store it (if there's room)
@@ -471,13 +602,13 @@ impl Scheduler {
                                 log::warn!(
                                     "Signal {} for TID {:?} was dropped",
                                     raised_info.signum(),
-                                    worker_id,
+                                    thread_id,
                                 );
                             }
 
                             DelegationState::RunNextWorker
-                        } else if worker_info.thread_id != thread::current().id() {
-                            DelegationState::SignalToThread(worker_id, raised_info)
+                        } else if thread_id != thread::current().id() {
+                            DelegationState::SignalToThread(pid, thread_id, raised_info)
                         } else {
                             DelegationState::HandleSignal(raised_info)
                         }
@@ -539,9 +670,7 @@ impl Scheduler {
             .map(|plugin_info| plugin_info.module.clone())
             .collect();
         for module in modules {
-            let (local, global) = state.split();
-
-            module.borrow_mut().fuzz_round_start(global.fuzz_input.data());
+            module.borrow_mut().fuzz_round_start(state.global.fuzz_input.data());
         }
 
         // Gather all plugin endpoints
@@ -748,20 +877,19 @@ impl Scheduler {
         // Save the current worker
         let mut state = ctx.acquire();
         let current_worker = state.current_worker_id();
-        let worker_id = match dst {
-            SignalDestination::Process(p) => p,
-            SignalDestination::Thread(p) => p,
+        let current_pid = state.local.process_info.borrow().pid;
+        let dst_pid = match &dst {
+            SignalDestination::Process(p) => *p,
+            SignalDestination::Thread(p, _) => *p,
         };
 
-        let dst_process = state.global.ids.get(&worker_id).unwrap().process_id;
-        let dst_thread = state.global.ids.get(&worker_id).unwrap().thread_id;
-
-        let disposition = &state
+        let disposition = state
             .global
-            .processes
-            .get(&dst_process)
+            .pids
+            .get(&dst_pid)
             .unwrap()
-            .signal_handlers[signum as usize];
+            .borrow()
+            .signal_handlers[signum as usize].clone();
         if let SigDisposition::Ignore = disposition {
             return; // Ignores the signal without saving it
         }
@@ -773,29 +901,46 @@ impl Scheduler {
             .push_front(ReadyInfo::Worker(current_worker));
 
         // Add the signal to the global state
-        assert!(state.global.signal.replace((dst, raised_info)).is_none());
+        assert!(state.global.signal.replace((dst.clone(), raised_info)).is_none());
         drop(state);
 
         // TODO: delegate to process/thread signal is being sent to
-        if dst_process == current_worker.process_id {
-            Scheduler::yield_worker(ctx, DelegationAction::RunThread(dst_thread))
+        if dst_pid == current_pid {
+            match &dst {
+                SignalDestination::Process(_) => {
+                    Scheduler::handle_signal(ctx, raised_info);
+                    // Te worker was pushed to the front of the queue, so we need to run it
+                    Scheduler::yield_worker(ctx, DelegationAction::RunNextWorker);                   
+                }
+                SignalDestination::Thread(_, t) => {
+                    if t == &thread::current().id() {
+                        Scheduler::handle_signal(ctx, raised_info);
+                        // Te worker was pushed to the front of the queue, so we need to run it
+                        Scheduler::yield_worker(ctx, DelegationAction::RunNextWorker);
+                    } else {
+                        Scheduler::yield_worker(ctx, DelegationAction::RunThread(*t))
+                    }
+                }
+            }
         } else {
-            Scheduler::yield_worker(ctx, DelegationAction::RunProcess(dst_process))
+            Scheduler::yield_worker(ctx, DelegationAction::RunProcess(dst_pid))
         }
     }
 
     fn handle_signal(ctx: &mut FizzleSingleton, raised_info: RaisedSignalInfo) {
         let mut state = ctx.acquire();
-        let (local, global) = state.split();
-        let thread_id = thread::current().id();
-        let process_id = local.process_id;
+        let current_thread_id = thread::current().id();
+        let current_pid = state.local.process_info.borrow().pid;
 
         let signum = raised_info.signum();
-        let thread_siginfo = local.signals.get_mut(&thread_id).unwrap();
-        let proc_siginfo = global.processes.get_mut(&process_id).unwrap();
+
+        let proc_siginfo = state.global.pids.get_mut(&current_pid).unwrap();
+        let sig_handler = proc_siginfo.borrow().signal_handlers[signum as usize].clone();
+
+        let thread_siginfo = state.local.signals.get_mut(&current_thread_id).unwrap();
 
         match (
-            &proc_siginfo.signal_handlers[signum as usize],
+            &sig_handler,
             thread_siginfo
                 .blocked
                 .contains(SignalSet::from_signum(signum)),
@@ -806,8 +951,8 @@ impl Scheduler {
                     log::warn!(
                         "Signal {} for {:?}, {:?} dropped",
                         signum,
-                        process_id,
-                        thread_id
+                        current_pid,
+                        current_thread_id
                     );
                 } else {
                     thread_siginfo.raised[signum as usize].insert(raised_info);
@@ -817,7 +962,7 @@ impl Scheduler {
                     {
                         // A sigwait signal has become pending--awaken the waiting thread
                         thread_siginfo.sigwait_set = SignalSet::empty();
-                        state.mark_thread_ready(thread_id);
+                        state.mark_thread_ready(current_thread_id);
                     }
                 }
             }
@@ -826,7 +971,7 @@ impl Scheduler {
                     // Any call to `sigsuspend()` should return for this process
                     thread_siginfo.sigsuspend = false;
                     thread_siginfo.interrupted = true;
-                    state.mark_thread_ready(thread_id);
+                    state.mark_thread_ready(current_thread_id);
                 }
 
                 match SignalSet::from_signum(signum) {
@@ -855,7 +1000,7 @@ impl Scheduler {
                 if thread_siginfo.sigsuspend {
                     // Any call to `sigsuspend()` should return for this process
                     thread_siginfo.sigsuspend = false;
-                    state.mark_thread_ready(thread_id);
+                    state.mark_thread_ready(current_thread_id);
                 }
 
                 drop(state);
@@ -869,7 +1014,7 @@ impl Scheduler {
                 if thread_siginfo.sigsuspend {
                     // Any call to `sigsuspend()` should return for this process
                     thread_siginfo.sigsuspend = false;
-                    state.mark_thread_ready(thread_id);
+                    state.mark_thread_ready(current_thread_id);
                 }
 
                 drop(state);
@@ -887,24 +1032,48 @@ impl Scheduler {
         }
     }
 
-    /// Causes a thread with the specified ThreadId to be awakened.
-    fn wake_thread(ctx: &mut FizzleSingleton, thread_id: &ThreadId) {
-        ctx.thread_lock(thread_id).as_ref().unwrap().post();
-    }
-
-    /// Causes a thread in the process with the specified ID to be awakened.
-    fn wake_process(ctx: &mut FizzleSingleton, process_id: ProcessId) {
-        ctx.acquire().global.process_locks[usize::from(process_id)]
-            .as_ref()
-            .unwrap()
-            .post();
-    }
+    // TODO: this must be consistent with `fork()`/`execve()` and similar.
 
     /// Executes the provided command as a child process within the Fizzle harness.
-    fn run_subprocess(_ctx: &mut FizzleSingleton, mut cmd: Command) {
-        // TODO: need to upref all reference-counted global variables here
+    fn run_subprocess(ctx: &mut FizzleSingleton, mut cmd: Command) {
+        // TODO: need to upref all reference-counted (non-CLOEXEC) global variables here
 
         // TODO: need to prepare signal handlers to be passed
+        let mut state = ctx.acquire();
+
+        // Initialize AFL (forkservers and multi-process applications don't play well)
+        #[cfg(feature = "afl")]
+        if !state.global.afl_shmem_initialized {
+            state.global.afl_shmem_initialized = true;
+
+            #[cfg(feature = "pcr")]
+            unsafe {
+                crate::__afl_sharedmem_fuzzing = 1;
+            }
+
+            log::debug!("calling __afl_manual_init()");
+            unsafe {
+                crate::__afl_manual_init();
+            }
+            log::debug!("__afl_manual_init finished");
+        }
+
+        let parent_info = state.local.process_info.clone();
+        let ppid = Pid::INIT;
+        let signal_handlers = parent_info.borrow().signal_handlers.clone();
+
+        // Assign a pid to this process--use parent ProcessId TEMPORARILY until child id assigned
+        let new_pid = state.global.next_pid();
+        let pgid = Pgid::from_pid(new_pid);
+
+        state.global.inherited_state = Some(InheritedState {
+            fds: BTreeMap::new_in(state.global.alloc.alloc()),
+            pid: new_pid,
+            ppid,
+            pgid,
+            signal_handlers,
+            sigmask: SignalSet::empty(), // TODO: is this correct?
+        });
 
         cmd.env("LD_PRELOAD", std::env::var("LD_PRELOAD").unwrap());
         cmd.env(FIZZLE_MEMORY_ENV, std::env::var(FIZZLE_MEMORY_ENV).unwrap());
@@ -914,7 +1083,7 @@ impl Scheduler {
     /// Fetches the next available worker with a completed task from Fizzle's state.
     ///
     /// If no workers are ready, this function will return `None`.
-    fn next_ready_worker(state: &mut FizzleState) -> Option<WorkerInfo> {
+    fn next_ready_worker(state: &mut FizzleState) -> Option<Worker> {
         while let Some(item) = state.global.ready.pop_front() {
             match item {
                 ReadyInfo::Worker(worker_id) => return Some(worker_id),
@@ -931,7 +1100,7 @@ impl Scheduler {
                         let polled_info = global.polled_events.get_mut(&polled_id).unwrap();
                         if polled_info.event_raised {
                             log::trace!("Poller {:?} is ready for execution", poller_id);
-                            return Some(poller_info.worker_id);
+                            return Some(poller_info.worker.clone());
                         }
                     }
 
@@ -945,45 +1114,6 @@ impl Scheduler {
         }
 
         return None;
-    }
-
-    /// Suspends execution of the current thread and awaits delegation from the specified source.
-    fn await_delegation(ctx: &mut FizzleSingleton, source: DelegationSource) {
-        let thread_id = thread::current().id();
-
-        match source {
-            DelegationSource::Process => {
-                let state = ctx.acquire();
-                // SAFETY: The below action holds a mutable reference to `state` while delegating
-                // execution to another worker. **HOWEVER**, this is _not_ undefined behavior, for the
-                // following reasons:
-                //
-                // 1. This method passes off execution to another _process_, not another _thread_. Once
-                // other processes are done, Fizzle guarantees execution will be handed back to **this**
-                // thread in this process, not some other thread in this process. Thus, this process never
-                // holds two mutable references to `state` at once; rather, it and some other process hold
-                // one mutable reference each to shared memory. The rust compiler cannot possibly reason
-                // about the presence or absense of other processes accessing data in its memory model, so
-                // this _technically_ upholds the "no mutable aliasing" requirement.
-                //
-                // 2. Okay, 1. addresses mutable aliasing but it doesn't consider the more fundamental issue
-                // that mutable aliasing is trying to address: data races. Once again, Fizzle is safe in
-                // this regard--since this process **only** accesses a semaphore within the state and waits
-                // on that semaphore until another process signals that it can continue on, any interprocess
-                // memory will be synchronized by the time this process begins execution again.
-                //
-                // To sum up, mutable aliasing doesn't count since we're reasoning across multiple processes,
-                // and data races won't happen because we've made sure our ducks (**sic** semaphores) are all
-                // in a row.
-                state.global.process_locks[usize::from(state.local.process_id)]
-                    .as_ref()
-                    .unwrap()
-                    .wait();
-            }
-            DelegationSource::Thread => {
-                ctx.thread_lock(&thread_id).as_ref().unwrap().wait();
-            }
-        }
     }
 
     /// Terminates the current thread, cleaning up its resources along the way.
@@ -1020,20 +1150,20 @@ impl Scheduler {
             }
         });
 
-        // Clean up this thread's semaphore
-        ctx.destroy_thread_lock();
-
         let mut state = ctx.acquire();
+
+        // Clean up this thread's semaphore
+        state.local.thread_locks.remove(&thread::current().id());
 
         // Mark this thread as dead for future threads that may wait on it.
         state.local.terminated_threads.insert(thread_id);
 
         // Notify any threads awaiting this thread's death
         if let Some(awaiting_threads) = state.local.awaiting_thread_death.remove(&thread_id) {
-            let process_id = state.local.process_id;
+            let process_info = std::rc::Rc::downgrade(&state.local.process_info);
             for thread_id in awaiting_threads {
-                state.global.mark_worker_ready(WorkerInfo {
-                    process_id,
+                state.global.mark_worker_ready(Worker {
+                    process: process_info.clone(),
                     thread_id,
                 });
             }
@@ -1064,8 +1194,11 @@ impl Scheduler {
         // Delegate execution to...
         if let Some(thread_id) = state.local.pthreads.values().next().map(|t| t.id) {
             // ...another running thread in this process
+            let sem = state.local.thread_locks.get(&thread_id).unwrap().clone();
             drop(state);
-            Scheduler::wake_thread(ctx, &thread_id);
+            
+            // Wake thread
+            sem.post();
             // SAFETY: `state` is never held from this point onward
             match method {
                 TerminationMethod::Cancellation => unsafe {
@@ -1128,47 +1261,46 @@ impl Scheduler {
 
         // Clean up process state
         let state = ctx.acquire();
-        let process_id = state.local.process_id;
+        let pid = state.local.process_info.borrow().pid;
+        let ppid = state.local.process_info.borrow().ppid;
+
         assert!(
-            !process_id.is_main_process(),
+            !(pid == Pid::PRIMARY),
             "main process forcibly terminated"
         );
-
-        let pid = state.global.processes.get(&process_id).unwrap().pid.as_id();
 
         let sigchild = match &method {
             TerminationMethod::Cancellation | TerminationMethod::ThreadExit(_) => SigChildInfo {
                 code: SigChildCode::Exited,
-                pid,
+                pid: pid.as_raw(),
                 uid: unsafe { libc::getuid() },
                 status: 0,
             },
             TerminationMethod::ProcessExit(val) | TerminationMethod::ProcessImmediateExit(val) => {
                 SigChildInfo {
                     code: SigChildCode::Exited,
-                    pid,
+                    pid: pid.as_raw(),
                     uid: unsafe { libc::getuid() },
                     status: *val,
                 }
             }
             TerminationMethod::Signal(raised_info) => SigChildInfo {
                 code: SigChildCode::Killed,
-                pid: raised_info.pid().unwrap_or(pid),
+                pid: raised_info.pid().unwrap_or(pid.as_raw()),
                 uid: raised_info.uid().unwrap_or(unsafe { libc::getuid() }),
                 status: raised_info.signum(),
             },
         };
 
-        let parent_id = state.global.processes.get(&process_id).unwrap().ppid;
-
         drop(state);
 
         // Send SIGCHLD to parent process
         // NOTE: it is VERY IMPORTANT that this go towards the end of process termination.
-        if parent_id != WorkerId::init_process() {
+        if ppid != Pid::INIT {
+            // TODO: if ppid == Pid::INIT, things should be reaped
             Scheduler::handle_event(
                 ctx,
-                SignalSendEvent::new(SignalTarget::Pid(parent_id), libc::SIGCHLD, None),
+                SignalSendEvent::new(SignalTarget::Pid(ppid), libc::SIGCHLD, None),
             )
             .unwrap();
         }
@@ -1182,42 +1314,29 @@ impl Scheduler {
         // If userspace code access resources from this process, bad things could happen (?).
         state
             .global
-            .exited_processes
-            .insert(process_id, sigchild.clone())
-            .unwrap();
+            .dead_pids
+            .insert(pid, sigchild.clone());
 
         // If a parent is awaiting this process's death, notify it
         let awaiting = state
-            .global
-            .awaiting_process_death
-            .remove(&process_id)
-            .unwrap();
-        for awaiting_worker in awaiting.iter() {
-            state.global.mark_worker_ready(*awaiting_worker);
+            .local.process_info.borrow_mut().awaiting_death.take();
+        if let Some(awaiting_worker) = awaiting { 
+            state.global.mark_worker_ready(awaiting_worker);
         }
 
-        // DO NOT remove pid or ppid info--they will happen when the process is reaped
-        /*
-        // Remove the PID of the current process
         state.global.pids.remove(&pid);
-
-        // Remove process info
-        state.global.processes.downref(&process_id);
-        */
+        // TODO: mark process as able to be reaped
 
         // TODO: if a parent dies before a child does, the child will never be reaped.
         // Fix this...
 
-        // Clean up this process's semaphore
-        state.global.process_locks[usize::from(process_id)] = None;
-
         // TODO: other global cleanup (such as of socket state from dropped fds) here
 
         // Delegate execution to the primary process (it's guaranteed not to exit)
-        let delegate_process_id = ProcessId::main_process();
+        let delegate_sem = state.global.pids.get(&Pid::PRIMARY).unwrap().borrow().semaphore.clone();
 
         drop(state);
-        Scheduler::wake_process(ctx, delegate_process_id);
+        delegate_sem.post();
 
         match method {
             TerminationMethod::Cancellation => unsafe {
@@ -1241,10 +1360,9 @@ impl Scheduler {
     pub fn create_cow(ctx: &mut FizzleSingleton, source: CreateCowSource) {
         let mut state = ctx.acquire();
         let current_worker = state.current_worker_id();
-        let current_process_id = current_worker.process_id;
-        let main_process_id = ProcessId::main_process();
+        let current_pid = state.local.process_info.borrow().pid;
 
-        if current_process_id.is_main_process() {
+        if current_pid == Pid::PRIMARY {
             // No need to use `SCM_RIGHTS`--we're doing everything in the same process
 
             match source {
@@ -1290,9 +1408,14 @@ impl Scheduler {
             state.global.create_cow = Some(source.clone());
 
             state.global.ready.push_front(ReadyInfo::Worker(current_worker));
-            state.global.process_locks[usize::from(main_process_id)].as_mut().unwrap().post();
+
+            let primary_sem = state.global.pids.get(&Pid::PRIMARY).unwrap().borrow().semaphore.clone();
+            let current_sem = state.local.process_info.borrow().semaphore.clone();
             drop(state);
-            Scheduler::await_delegation(ctx, DelegationSource::Process);
+
+            // TODO: is this safe to do, or do we need to drop to yield_process?
+            primary_sem.post();
+            current_sem.wait();
 
             // Now the SCM_RIGHTS have been sent by the main process--receive and assign
             let mut state = ctx.acquire();
@@ -1381,22 +1504,22 @@ impl Scheduler {
 }
 
 pub enum DelegationAction {
-    PauseCurrentWorker(DelegationSource),
+    PauseCurrentWorker(DelegationSource, Option<std::rc::Rc<Semaphore, &'static TlsfHeap>>),
     RunNextWorker,
     RunThread(ThreadId),
-    RunProcess(ProcessId),
+    RunProcess(Pid),
 }
 
 pub enum DelegationState {
-    PauseCurrentWorker(DelegationSource),
+    PauseCurrentWorker(DelegationSource, Option<std::rc::Rc<Semaphore, &'static TlsfHeap>>),
     RunNextWorker,
     NoMoreWorkers,
     RunCurrentWorker,
     RunThread(ThreadId),
-    RunProcess(ProcessId),
+    RunProcess(Pid),
     RunPlugins,
     TerminateThread(TerminationMethod),
-    SignalToThread(WorkerId, RaisedSignalInfo),
+    SignalToThread(Pid, ThreadId, RaisedSignalInfo),
     HandleSignal(RaisedSignalInfo),
 }
 
@@ -1404,7 +1527,7 @@ impl<'a> From<DelegationAction> for DelegationState {
     #[inline]
     fn from(value: DelegationAction) -> Self {
         match value {
-            DelegationAction::PauseCurrentWorker(src) => Self::PauseCurrentWorker(src),
+            DelegationAction::PauseCurrentWorker(src, sem) => Self::PauseCurrentWorker(src, sem),
             DelegationAction::RunNextWorker => Self::RunNextWorker,
             DelegationAction::RunThread(t) => Self::RunThread(t),
             DelegationAction::RunProcess(p) => Self::RunProcess(p),

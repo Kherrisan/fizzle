@@ -17,7 +17,7 @@ use crate::scheduler::{Event, Outcome};
 use crate::state::{CreateCowSource, FizzleState};
 use crate::handlers::descriptor::*;
 
-use super::descriptor::{DescriptorId, ReadData, WriteData};
+use super::descriptor::{Descriptor, ReadData, WriteData};
 
 pub use private::FileId;
 
@@ -248,7 +248,7 @@ impl Event for FileOpenEvent {
                 path
 
             } else {
-                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(*dirfd)).cloned() else {
+                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&Descriptor::from_raw_fd(*dirfd)).cloned() else {
                     log::debug!("`openat` called with unrecognized file descriptor");
                     return Outcome::Error(Errno::ENOTDIR)
                 };
@@ -389,14 +389,14 @@ impl Event for FileOpenEvent {
 }
 
 pub struct FileReadEvent<'a> {
-    fd: DescriptorId,
+    fd: Descriptor,
     data: ReadData<'a>,
     cow_created: bool,
 }
 
 impl<'a> FileReadEvent<'a> {
     #[inline]
-    pub fn new(fd: DescriptorId, data: ReadData<'a>) -> Self {
+    pub fn new(fd: Descriptor, data: ReadData<'a>) -> Self {
         Self { fd, data, cow_created: false }
     }
 }
@@ -553,14 +553,14 @@ impl Event for FileReadEvent<'_> {
 }
 
 pub struct FileWriteEvent<'a> {
-    fd: DescriptorId,
+    fd: Descriptor,
     data: WriteData<'a>,
     cow_created: bool,
 }
 
 impl<'a> FileWriteEvent<'a> {
     #[inline]
-    pub fn new(fd: DescriptorId, data: WriteData<'a>) -> Self {
+    pub fn new(fd: Descriptor, data: WriteData<'a>) -> Self {
         Self { fd, data, cow_created: false }
     }
 }
@@ -734,7 +734,7 @@ impl Event for ChangeDirectoryEvent {
                 }
             },
             ChangeDirectorySource::Directory(dirfd) => {
-                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&DescriptorId::from_raw_fd(*dirfd)) else {
+                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&Descriptor::from_raw_fd(*dirfd)) else {
                     log::debug!("`fchdir` called with unrecognized fd");
                     return Outcome::Error(Errno::EBADF)
                 };
@@ -797,7 +797,7 @@ impl Event for ChangeOwnerEvent {
                 filepath
             }
             ChangeOwnerSource::Descriptor(fd) => {
-                let Some(fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(*fd)) else {
+                let Some(fd_info) = state.local.fds.get(&Descriptor::from_raw_fd(*fd)) else {
                     return Outcome::Error(Errno::EBADF)
                 };
 
@@ -816,7 +816,7 @@ impl Event for ChangeOwnerEvent {
                 let dir_path = if *fd == libc::AT_FDCWD {
                     state.local.working_directory.clone()
                 } else {
-                    let Some(fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(*fd)) else {
+                    let Some(fd_info) = state.local.fds.get(&Descriptor::from_raw_fd(*fd)) else {
                         return Outcome::Error(Errno::EBADF)
                     };
 
@@ -896,7 +896,7 @@ impl Event for ChangeModeEvent {
                 filepath
             }
             ChangeModeSource::Descriptor(fd) => {
-                let Some(fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(*fd)) else {
+                let Some(fd_info) = state.local.fds.get(&Descriptor::from_raw_fd(*fd)) else {
                     return Outcome::Error(Errno::EBADF)
                 };
 
@@ -915,7 +915,7 @@ impl Event for ChangeModeEvent {
                 let dir_path = if *fd == libc::AT_FDCWD {
                     state.local.working_directory.clone()
                 } else {
-                    let Some(fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(*fd)) else {
+                    let Some(fd_info) = state.local.fds.get(&Descriptor::from_raw_fd(*fd)) else {
                         return Outcome::Error(Errno::EBADF)
                     };
 
@@ -997,7 +997,7 @@ impl Event for AccessEvent {
                 let dir_path = if *fd == libc::AT_FDCWD {
                     state.local.working_directory.clone()
                 } else {
-                    let Some(fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(*fd)) else {
+                    let Some(fd_info) = state.local.fds.get(&Descriptor::from_raw_fd(*fd)) else {
                         return Outcome::Error(Errno::EBADF)
                     };
 
@@ -1078,7 +1078,7 @@ impl Event for StatEvent<'_> {
                 filepath
             }
             StatSource::Descriptor(fd) => {
-                let Some(fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(*fd)) else {
+                let Some(fd_info) = state.local.fds.get(&Descriptor::from_raw_fd(*fd)) else {
                     return Outcome::Error(Errno::EBADF)
                 };
 
@@ -1097,7 +1097,7 @@ impl Event for StatEvent<'_> {
                 let dir_path = if *fd == libc::AT_FDCWD {
                     state.local.working_directory.clone()
                 } else {
-                    let Some(fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(*fd)) else {
+                    let Some(fd_info) = state.local.fds.get(&Descriptor::from_raw_fd(*fd)) else {
                         return Outcome::Error(Errno::EBADF)
                     };
 
@@ -1283,7 +1283,7 @@ impl Event for RenameEvent {
                 let olddir_path = if *oldfd == libc::AT_FDCWD {
                     state.local.working_directory.clone()
                 } else {
-                    let Some(fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(*oldfd)) else {
+                    let Some(fd_info) = state.local.fds.get(&Descriptor::from_raw_fd(*oldfd)) else {
                         return Outcome::Error(Errno::EBADF)
                     };
 
@@ -1306,7 +1306,7 @@ impl Event for RenameEvent {
                 let newdir_path = if *newfd == libc::AT_FDCWD {
                     state.local.working_directory.clone()
                 } else {
-                    let Some(fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(*newfd)) else {
+                    let Some(fd_info) = state.local.fds.get(&Descriptor::from_raw_fd(*newfd)) else {
                         return Outcome::Error(Errno::EBADF)
                     };
 

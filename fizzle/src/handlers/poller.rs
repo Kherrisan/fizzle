@@ -13,9 +13,9 @@ use crate::state::FizzleState;
 use fxhash::FxBuildHasher;
 pub use private::PollerId;
 
-use super::descriptor::{DescriptorId, DescriptorInfo, FdResource};
+use super::descriptor::{Descriptor, DescriptorInfo, FdResource};
 use super::epoll::{EpollInfo, PolledStatus};
-use super::id::WorkerInfo;
+use super::id::Worker;
 use super::polled::PolledId;
 use super::signal::{SigmaskOp, SignalSet, SignalSetSigmaskEvent};
 use super::socket::SocketState;
@@ -27,11 +27,8 @@ mod private {
     pub struct PollerId(usize);
 }
 
-// Each time a Polled is *raised* (i.e., goes from `event_raised: false` to `event_raised: true`),
-// the PolledInfo will move all of its `pollers` into the ready queue (if they are not already there).
-#[derive(Debug)]
 pub struct PollerInfo {
-    pub worker_id: WorkerInfo,
+    pub worker: Worker,
     pub polled_events: heapless::Vec<Rc<PolledId>, FIZZLE_MAX_PER_POLLER_QUEUED_EVENTS>,
     /// Polled events that have been raised for the Poller prior to it being evaluated.
     ///
@@ -123,7 +120,7 @@ impl Event for SelectEvent<'_> {
                     // For all other outcomes, have the scheduler continue running
                     Outcome::Yield(duration) => Outcome::Yield(duration),
                     Outcome::Continue => Outcome::Continue,
-                    Outcome::Pause(delegation_source) => Outcome::Pause(delegation_source),
+                    Outcome::Pause(delegation_source, sem) => Outcome::Pause(delegation_source, sem),
                     Outcome::TerminateThread(t) => Outcome::TerminateThread(t),
                     Outcome::TerminateProcess(t) => Outcome::TerminateProcess(t),
                     Outcome::Execute(e) => Outcome::Execute(e),
@@ -315,7 +312,7 @@ impl Event for SelectEvent<'_> {
                     // For all other outcomes, have the scheduler continue running
                     Outcome::Yield(duration) => Outcome::Yield(duration),
                     Outcome::Continue => Outcome::Continue,
-                    Outcome::Pause(delegation_source) => Outcome::Pause(delegation_source),
+                    Outcome::Pause(delegation_source, sem) => Outcome::Pause(delegation_source, sem),
                     Outcome::TerminateThread(t) => Outcome::TerminateThread(t),
                     Outcome::TerminateProcess(t) => Outcome::TerminateProcess(t),
                     Outcome::Execute(e) => Outcome::Execute(e),
@@ -391,7 +388,7 @@ impl Event for PollEvent<'_> {
                     // For all other outcomes, have the scheduler continue running
                     Outcome::Yield(duration) => Outcome::Yield(duration),
                     Outcome::Continue => Outcome::Continue,
-                    Outcome::Pause(delegation_source) => Outcome::Pause(delegation_source),
+                    Outcome::Pause(delegation_source, sem) => Outcome::Pause(delegation_source, sem),
                     Outcome::TerminateThread(t) => Outcome::TerminateThread(t),
                     Outcome::TerminateProcess(t) => Outcome::TerminateProcess(t),
                     Outcome::Execute(e) => Outcome::Execute(e),
@@ -573,7 +570,7 @@ impl Event for PollEvent<'_> {
                     // For all other outcomes, have the scheduler continue running
                     Outcome::Yield(duration) => Outcome::Yield(duration),
                     Outcome::Continue => Outcome::Continue,
-                    Outcome::Pause(delegation_source) => Outcome::Pause(delegation_source),
+                    Outcome::Pause(delegation_source, sem) => Outcome::Pause(delegation_source, sem),
                     Outcome::TerminateThread(t) => Outcome::TerminateThread(t),
                     Outcome::TerminateProcess(t) => Outcome::TerminateProcess(t),
                     Outcome::Execute(e) => Outcome::Execute(e),
@@ -596,11 +593,11 @@ impl EpollCreateEvent {
 }
 
 impl Event for EpollCreateEvent {
-    type Success = DescriptorId;
+    type Success = Descriptor;
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let fd = DescriptorId::from_raw_fd(crate::create_descriptor());
+        let fd = Descriptor::from_raw_fd(crate::create_descriptor());
         let epoll_id = state
             .global
             .epolls
@@ -609,19 +606,12 @@ impl Event for EpollCreateEvent {
             })
             .unwrap();
 
-        state
-            .local
-            .fds
-            .allocate_with_key(
-                fd,
-                DescriptorInfo {
-                    close_on_exec: self.cloexec,
-                    nonblocking: false,
-                    is_passthrough: false,
-                    resource: FdResource::Epoll(epoll_id),
-                },
-            )
-            .unwrap();
+        state.local.fds.insert(fd, DescriptorInfo {
+            close_on_exec: self.cloexec,
+            nonblocking: false,
+            is_passthrough: false,
+            resource: FdResource::Epoll(epoll_id),
+        });
 
         Outcome::Success(fd)
     }
@@ -635,16 +625,16 @@ pub enum EpollOperation {
 }
 
 pub struct EpollCtlEvent {
-    epoll_descriptor: DescriptorId,
+    epoll_descriptor: Descriptor,
     op: EpollOperation,
-    target_descriptor: DescriptorId,
+    target_descriptor: Descriptor,
 }
 
 impl EpollCtlEvent {
     pub fn new(
-        epoll_descriptor: DescriptorId,
+        epoll_descriptor: Descriptor,
         op: EpollOperation,
-        target_descriptor: DescriptorId,
+        target_descriptor: Descriptor,
     ) -> Self {
         Self {
             epoll_descriptor,
@@ -791,7 +781,7 @@ enum EpollWaitState {
 }
 
 pub struct EpollWaitEvent<'a> {
-    epoll_descriptor: DescriptorId,
+    epoll_descriptor: Descriptor,
     events: &'a mut [libc::epoll_event],
     timeout: Option<Duration>,
     sigmask: Option<SignalSet>,
@@ -800,7 +790,7 @@ pub struct EpollWaitEvent<'a> {
 
 impl<'a> EpollWaitEvent<'a> {
     pub fn new(
-        epoll_descriptor: DescriptorId,
+        epoll_descriptor: Descriptor,
         events: &'a mut [libc::epoll_event],
         timeout: Option<Duration>,
         sigmask: Option<SignalSet>,
@@ -848,7 +838,7 @@ impl Event for EpollWaitEvent<'_> {
                     // For all other outcomes, have the scheduler continue running
                     Outcome::Yield(duration) => Outcome::Yield(duration),
                     Outcome::Continue => Outcome::Continue,
-                    Outcome::Pause(delegation_source) => Outcome::Pause(delegation_source),
+                    Outcome::Pause(delegation_source, sem) => Outcome::Pause(delegation_source, sem),
                     Outcome::TerminateThread(t) => Outcome::TerminateThread(t),
                     Outcome::TerminateProcess(t) => Outcome::TerminateProcess(t),
                     Outcome::Execute(e) => Outcome::Execute(e),
@@ -1060,7 +1050,7 @@ impl Event for EpollWaitEvent<'_> {
                     // For all other outcomes, have the scheduler continue running
                     Outcome::Yield(duration) => Outcome::Yield(duration),
                     Outcome::Continue => Outcome::Continue,
-                    Outcome::Pause(delegation_source) => Outcome::Pause(delegation_source),
+                    Outcome::Pause(delegation_source, sem) => Outcome::Pause(delegation_source, sem),
                     Outcome::TerminateThread(t) => Outcome::TerminateThread(t),
                     Outcome::TerminateProcess(t) => Outcome::TerminateProcess(t),
                     Outcome::Execute(e) => Outcome::Execute(e),
@@ -1074,7 +1064,7 @@ impl Event for EpollWaitEvent<'_> {
 
 /// Polled for read() operations
 pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
-    let Some(fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(fd)) else {
+    let Some(fd_info) = state.local.fds.get(&Descriptor::from_raw_fd(fd)) else {
         return PolledStatus::BadFd;
     };
     match &fd_info.resource {
@@ -1225,7 +1215,7 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
 }
 
 pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
-    let Some(fd_info) = state.local.fds.get(&DescriptorId::from_raw_fd(fd)) else {
+    let Some(fd_info) = state.local.fds.get(&Descriptor::from_raw_fd(fd)) else {
         return PolledStatus::BadFd;
     };
     match &fd_info.resource {

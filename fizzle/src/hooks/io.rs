@@ -13,7 +13,7 @@ hook_macros::hook! {
         buf: *const libc::c_void,
         len: libc::size_t
     ) -> libc::ssize_t => fizzle_write(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("write(fd={}, buf={:?}, len={}) -> ...", fd, buf, len);
 
@@ -42,7 +42,7 @@ hook_macros::hook! {
         len: libc::size_t,
         flags: libc::c_int
     ) -> libc::ssize_t => fizzle_send(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("send(fd={}, buf={:?}, len={}, flags={}) -> ...", fd, buf, len, flags);
 
@@ -94,7 +94,7 @@ hook_macros::hook! {
         dest_addr: *const libc::sockaddr,
         addrlen: libc::socklen_t
     ) -> libc::ssize_t => fizzle_sendto(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("sendto(fd={}, buf={:?}, len={}, flags={}, dest_addr={:?}, addrlen={}) -> ...", fd, buf, len, flags, dest_addr, addrlen);
 
@@ -149,7 +149,7 @@ hook_macros::hook! {
         msg: *const libc::msghdr,
         flags: libc::c_int
     ) -> libc::ssize_t => fizzle_sendmsg(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("sendmsg(fd={}, msg={:?}, flags={}) -> ...", fd, msg, flags);
 
@@ -210,7 +210,7 @@ hook_macros::hook! {
         vlen: libc::c_uint,
         flags: libc::c_int
     ) -> libc::c_int => fizzle_sendmmsg(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("sendmmsg(fd={}, msgvec={:?}, vlen={}, flags={}) -> ...", fd, msgvec, vlen, flags);
 
@@ -279,7 +279,7 @@ hook_macros::hook! {
         buf: *mut libc::c_void,
         len: libc::size_t
     ) -> libc::ssize_t => fizzle_read(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("read(fd={}, buf={:?}, len={}) -> ...", fd, buf, len);
 
@@ -308,7 +308,7 @@ hook_macros::hook! {
         len: libc::size_t,
         flags: libc::c_int
     ) -> libc::ssize_t => fizzle_recv(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("recv(fd={}, buf={:?}, len={}, flags={}) -> ...", fd, buf, len, flags);
 
@@ -365,7 +365,7 @@ hook_macros::hook! {
         src_addr: *mut libc::sockaddr,
         addrlen: *mut libc::socklen_t
     ) -> libc::ssize_t => fizzle_recvfrom(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("recvfrom(fd={}, buf={:?}, len={}, flags={}, src_addr={:?}, addrlen={:?}) -> ...", fd, buf, len, flags, src_addr, addrlen);
 
@@ -424,7 +424,7 @@ hook_macros::hook! {
         msg: *mut libc::msghdr,
         flags: libc::c_int
     ) -> libc::ssize_t => fizzle_recvmsg(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("recvmsg(fd={}, msg={:?}, flags={}) -> ...", fd, msg, flags);
 
@@ -486,7 +486,7 @@ hook_macros::hook! {
         flags: libc::c_int,
         timeout: *mut libc::timespec
     ) -> libc::c_int => fizzle_recvmmsg(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("recvmmsg(fd={}, msgvec={:?}, vlen={}, flags={}, timeout={:?}) -> ...", fd, msgvec, vlen, flags, timeout);
 
@@ -555,7 +555,7 @@ hook_macros::hook! {
         iov: *mut libc::iovec, // NOTE: the definition has this as *const
         iovcnt: libc::c_int
     ) -> libc::ssize_t => fizzle_readv(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("readv(fd={}, iov={:?}, iovcnt={}) -> ...", fd, iov, iovcnt);
 
@@ -582,7 +582,7 @@ hook_macros::hook! {
         iov: *const libc::iovec,
         iovcnt: libc::c_int
     ) -> libc::ssize_t => fizzle_writev(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("writev(fd={}, iov={:?}, iovcnt={}) -> ...", fd, iov, iovcnt);
 
@@ -610,7 +610,7 @@ hook_macros::hook! {
         count: libc::size_t,
         offset: libc::off_t
     ) -> libc::ssize_t => fizzle_pread(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("pread(fd={}, buf={:?}, count={}, offset={}) -> ...", fd, buf, count, offset);
 
@@ -644,7 +644,7 @@ hook_macros::hook! {
         count: libc::size_t,
         offset: libc::off_t
     ) -> libc::ssize_t => fizzle_pwrite(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("pwrite(fd={}, buf={:?}, count={}, offset={}) -> ...", fd, buf, count, offset);
 
@@ -678,7 +678,7 @@ hook_macros::hook! {
         iovcnt: libc::c_int,
         offset: libc::off_t
     ) -> libc::ssize_t => fizzle_preadv(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("preadv(fd={}, iov={:?}, iovcnt={}, offset={}) -> ...", fd, iov, iovcnt, offset);
 
@@ -710,7 +710,7 @@ hook_macros::hook! {
         iovcnt: libc::c_int,
         offset: libc::off_t
     ) -> libc::ssize_t => fizzle_pwritev(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("pwritev(fd={}, iov={:?}, iovcnt={}, offset={}) -> ...", fd, iov, iovcnt, offset);
 
@@ -743,7 +743,7 @@ hook_macros::hook! {
         offset: libc::off_t,
         flags: libc::c_int
     ) -> libc::ssize_t => fizzle_preadv2(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("preadv2(fd={}, iov={:?}, iovcnt={}, offset={}, flags={}) -> ...", fd, iov, iovcnt, offset, flags);
 
@@ -781,7 +781,7 @@ hook_macros::hook! {
         offset: libc::off_t,
         flags: libc::c_int
     ) -> libc::ssize_t => fizzle_pwritev2(ctx) {
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
+        let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("pwritev2(fd={}, iov={:?}, iovcnt={}, offset={}, flags={}) -> ...", fd, iov, iovcnt, offset, flags);
 

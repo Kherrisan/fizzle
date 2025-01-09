@@ -480,19 +480,17 @@ pub enum KeyedArenaError {
 
 pub(crate) mod private {
     use crate::handlers::buffer::BufferId;
-    use crate::handlers::descriptor::DescriptorId;
+    use crate::handlers::descriptor::Descriptor;
     use crate::handlers::directory::DirectoryId;
     use crate::handlers::epoll::EpollId;
     use crate::handlers::eventfd::EventfdId;
     use crate::handlers::file::{CowId, FileId, OpenFileId};
     use crate::handlers::fuzz_endpoint::FuzzEndpointId;
-    use crate::handlers::id::WorkerId;
     use crate::handlers::mq::MqId;
     use crate::handlers::pipe::PipeId;
     use crate::handlers::plugin::PluginEndpointId;
     use crate::handlers::polled::PolledId;
     use crate::handlers::poller::PollerId;
-    use crate::handlers::process::{ProcessGroupId, ProcessId};
     use crate::handlers::semaphore::SemaphoreId;
     use crate::handlers::socket::SocketId;
     use std::mem;
@@ -533,7 +531,7 @@ pub(crate) mod private {
         }
     }
 
-    impl InnerUsize for DescriptorId {
+    impl InnerUsize for Descriptor {
         fn to_usize(&self) -> usize {
             // SAFETY: `DescriptorId` is a repr(transparent) usize
             unsafe { mem::transmute_copy(self) }
@@ -677,18 +675,6 @@ pub(crate) mod private {
         }
     }
 
-    impl InnerUsize for ProcessId {
-        fn to_usize(&self) -> usize {
-            // SAFETY: `ProcessId` is a repr(transparent) usize
-            unsafe { mem::transmute_copy(self) }
-        }
-
-        fn from_usize(val: usize) -> Self {
-            // SAFETY: `ProcessId` is a repr(transparent) usize
-            unsafe { mem::transmute(val) }
-        }
-    }
-
     impl InnerUsize for SemaphoreId {
         fn to_usize(&self) -> usize {
             // SAFETY: `SemaphoreId` is a repr(transparent) usize
@@ -709,30 +695,6 @@ pub(crate) mod private {
 
         fn from_usize(val: usize) -> Self {
             // SAFETY: `SocketId` is a repr(transparent) usize
-            unsafe { mem::transmute(val) }
-        }
-    }
-
-    impl InnerUsize for ProcessGroupId {
-        fn to_usize(&self) -> usize {
-            // SAFETY: `ProcessGroupId` is a repr(transparent) usize
-            unsafe { mem::transmute_copy(self) }
-        }
-
-        fn from_usize(val: usize) -> Self {
-            // SAFETY: `ProcessGroupId` is a repr(transparent) usize
-            unsafe { mem::transmute(val) }
-        }
-    }
-
-    impl InnerUsize for WorkerId {
-        fn to_usize(&self) -> usize {
-            // SAFETY: `WorkerId` is a repr(transparent) usize
-            unsafe { mem::transmute_copy(self) }
-        }
-
-        fn from_usize(val: usize) -> Self {
-            // SAFETY: `WorkerId` is a repr(transparent) usize
             unsafe { mem::transmute(val) }
         }
     }

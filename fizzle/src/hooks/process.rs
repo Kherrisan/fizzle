@@ -9,13 +9,12 @@ use fizzle_common::path::FilePath;
 
 use crate::constants::FIZZLE_MEMORY_ENV;
 use crate::errno::Errno;
-use crate::handlers::descriptor::DescriptorId;
+use crate::handlers::descriptor::Descriptor;
 use crate::handlers::id::*;
 use crate::handlers::process::*;
 use crate::handlers::signal::*;
 use crate::hook_macros;
-use crate::scheduler::Scheduler;
-use crate::state::fizzle_singleton;
+use crate::scheduler::{fizzle_singleton, Scheduler};
 
 const MAX_ARGS: usize = 512;
 
@@ -464,7 +463,7 @@ hook_macros::hook! {
             }
         };
 
-        match Scheduler::handle_event(&mut ctx, ProcessExecEvent::new(ExecLocation::AtDirectory(DescriptorId::from_raw_fd(dirfd), file), Some(env), args)) {
+        match Scheduler::handle_event(&mut ctx, ProcessExecEvent::new(ExecLocation::AtDirectory(Descriptor::from_raw_fd(dirfd), file), Some(env), args)) {
             Ok(()) => unreachable!(),
             Err(e) => {
                 crate::strace!("execveat(dirfd={}, pathname={:?}, ...) -> -1 ({})", dirfd, file_cstr, e);
@@ -506,7 +505,7 @@ hook_macros::hook! {
 
         crate::strace!("fexecve(fd={}, args={:?}, env={:?}) -> ...", fd, args, env);
 
-        match Scheduler::handle_event(&mut ctx, ProcessExecEvent::new(ExecLocation::Descriptor(DescriptorId::from_raw_fd(fd)), Some(env), args)) {
+        match Scheduler::handle_event(&mut ctx, ProcessExecEvent::new(ExecLocation::Descriptor(Descriptor::from_raw_fd(fd)), Some(env), args)) {
             Ok(()) => unreachable!(),
             Err(e) => {
                 crate::strace!("execveat(fd={}, ...) -> -1 ({})", fd, e);
@@ -675,13 +674,13 @@ hook_macros::hook! {
         let options = WaitOptions::from_bits_truncate(options & (libc::WNOHANG | libc::WUNTRACED | libc::WCONTINUED));
 
         let wait_type = match pid {
-            ..=-2 => WaitType::Gid(ProcessGroupId::from_pgid(-pid)),
+            ..=-2 => WaitType::Gid(Pgid::from_raw(-pid)),
             -1 => WaitType::AllChildren,
             0 => {
                 let pgid = Scheduler::handle_event(&mut ctx, ProcessGetGroupIdEvent::new(None)).unwrap();
                 WaitType::Gid(pgid)
             }
-            1.. => WaitType::Pid(ProcessId::from(pid as usize)),
+            1.. => WaitType::Pid(Pid::from_raw(pid)),
         };
 
         crate::strace!("waitpid(pid={}, wstatus={:?}, options={:?}) -> ...", pid, wstatus, options);
@@ -725,9 +724,9 @@ hook_macros::hook! {
         let options = WaitOptions::from_bits_truncate(options);
 
         let wait_type = match idtype {
-            libc::P_PID => WaitType::Pid(ProcessId::from(id as usize)),
-            libc::P_PIDFD => WaitType::PidFd(DescriptorId::from_raw_fd(id as i32)),
-            libc::P_PGID => WaitType::Gid(ProcessGroupId::from_pgid(id as i32)),
+            libc::P_PID => WaitType::Pid(Pid::from_raw(id as libc::pid_t)),
+            libc::P_PIDFD => WaitType::PidFd(Descriptor::from_raw_fd(id as i32)),
+            libc::P_PGID => WaitType::Gid(Pgid::from_raw(id as libc::pid_t)),
             libc::P_ALL => WaitType::AllChildren,
             _ => {
                 crate::strace!("waitid(idtype={}, id={}, infop={:?}, options={:?}) -> -1 (EINVAL)", idtype, id, infop, options);
@@ -815,13 +814,13 @@ hook_macros::hook! {
                 return -1
             }
             0 => None,
-            1.. => Some(WorkerId::from_id(pid)),
+            1.. => Some(Pid::from_raw(pid)),
         };
 
         crate::strace!("getpgid(pid={}) -> ...", pid);
         match Scheduler::handle_event(&mut ctx, ProcessGetGroupIdEvent::new(worker_id)) {
             Ok(pgid) => {
-                let pgid = pgid.as_pgid();
+                let pgid = pgid.as_raw();
                 crate::strace!("getpgid(pid={}) -> {}", pid, pgid);
                 pgid
             },
@@ -836,7 +835,7 @@ hook_macros::hook! {
         crate::strace!("getpgrp() -> ...");
         match Scheduler::handle_event(&mut ctx, ProcessGetGroupIdEvent::new(None)) {
             Ok(pgid) => {
-                let pgid = pgid.as_pgid();
+                let pgid = pgid.as_raw();
                 crate::strace!("getpgrp() -> {}", pgid);
                 pgid
             },
@@ -853,11 +852,11 @@ hook_macros::hook! {
                 return -1
             }
             0 => None,
-            1.. => Some(WorkerId::from_id(pid)),
+            1.. => Some(Pid::from_raw(pid)),
         };
 
         crate::strace!("setpgid(pid={}, pgid={}) -> ...", pid, pgid);
-        match Scheduler::handle_event(&mut ctx, ProcessSetGroupIdEvent::new(worker_id, ProcessGroupId::from_pgid(pgid))) {
+        match Scheduler::handle_event(&mut ctx, ProcessSetGroupIdEvent::new(worker_id, Pgid::from_raw(pgid))) {
             Ok(()) => {
                 crate::strace!("setpgid(pid={}, pgid={}) -> 0", pid, pgid);
                 0

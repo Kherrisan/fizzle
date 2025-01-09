@@ -88,16 +88,15 @@ impl Event for EventfdCreateEvent {
         state
             .local
             .fds
-            .allocate_with_key(
-                DescriptorId::from_raw_fd(fd),
+            .insert(
+                Descriptor::from_raw_fd(fd),
                 DescriptorInfo {
                     close_on_exec: self.close_on_exec,
                     nonblocking: self.nonblocking,
                     is_passthrough: false,
                     resource: FdResource::EventFd(eventfd_id),
                 },
-            )
-            .unwrap();
+            );
 
         Outcome::Success(fd)
     }

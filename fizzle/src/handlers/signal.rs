@@ -9,8 +9,9 @@ use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::{FizzleState, SignalDestination};
 
-use super::id::{WorkerId, WorkerInfo};
-use super::process::ProcessGroupId;
+use super::id::Worker;
+use super::process::{Pgid, Pid};
+use super::thread::Tid;
 
 pub type SignalHandlers = [SigDisposition; 32];
 pub type RaisedSignalSet = [Option<RaisedSignalInfo>; 32];
@@ -566,13 +567,8 @@ impl Event for SignalSetHandlerEvent {
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let process_id = state.local.process_id;
-        let handler = &mut state
-            .global
-            .processes
-            .get_mut(&process_id)
-            .unwrap()
-            .signal_handlers[self.signum as usize];
+        let mut proc_info_borrow = state.local.process_info.borrow_mut();
+        let handler = &mut proc_info_borrow.signal_handlers[self.signum as usize];
 
         if let Some(mut tmp_handler) = self.disposition.clone() {
             mem::swap(&mut tmp_handler, handler);
@@ -585,12 +581,12 @@ impl Event for SignalSetHandlerEvent {
 
 #[derive(Clone, Debug)]
 pub enum SignalTarget {
-    Pid(WorkerId),
+    Pid(Pid),
     CallingProcessGroup,
     AllPermissive,
-    Pgid(ProcessGroupId),
+    Pgid(Pgid),
     Thread(libc::pthread_t),
-    Tid(WorkerId, libc::pid_t),
+    Tid(Tid, Pid),
 }
 
 pub enum SignalSendState {
@@ -626,16 +622,16 @@ impl Event for SignalSendEvent {
                 let mut destinations = Vec::new();
 
                 match self.target {
-                    SignalTarget::Pid(worker_id) => {
-                        if state.global.ids.get(&worker_id).is_none() {
-                            return Outcome::Error(Errno::ESRCH);
-                        }
+                    SignalTarget::Pid(pid) => {
+                        if !state.global.pids.contains_key(&pid) {
+                            return Outcome::Error(Errno::ESRCH)
+                        };
 
-                        destinations.push(SignalDestination::Process(worker_id));
+                        // TODO: change SignalDestination to be passed an Rc<ProcessInfo>?
+                        destinations.push(SignalDestination::Process(pid));
                     }
                     SignalTarget::CallingProcessGroup => {
-                        let process_id = state.local.process_id;
-                        let pgid = state.global.processes.get(&process_id).unwrap().pgid;
+                        let pgid = state.local.process_info.borrow().pgid;
 
                         let processes: Vec<_> = state
                             .global
@@ -644,54 +640,50 @@ impl Event for SignalSendEvent {
                             .unwrap()
                             .iter()
                             .collect();
-                        for process_id in processes {
-                            let pid = state.global.processes.get(&process_id).unwrap().pid;
-                            destinations.push(SignalDestination::Process(pid));
+                        for dst_pid in processes {
+                            // TODO: check to see if process exists?
+                            destinations.push(SignalDestination::Process(*dst_pid));
                         }
                     }
                     SignalTarget::AllPermissive => {
-                        let processes: Vec<_> = state.global.processes.keys().collect();
-                        for process_id in processes {
-                            let pid = state.global.processes.get(&process_id).unwrap().pid;
-                            destinations.push(SignalDestination::Process(pid));
+                        // TODO: send signal to all children? All children + in group? All but startup processes?
+                        let pids: Vec<_> = state.global.pids.keys().collect();
+                        for pid in pids {
+                            //TODO: check to see if processes exist?
+                            destinations.push(SignalDestination::Process(*pid));
                         }
                     }
                     SignalTarget::Pgid(pgid) => {
-                        let processes: Vec<_> = state
-                            .global
-                            .process_groups
-                            .get(&pgid)
-                            .unwrap()
-                            .iter()
-                            .collect();
-                        for process_id in processes {
-                            let pid = state.global.processes.get(&process_id).unwrap().pid;
-                            destinations.push(SignalDestination::Process(pid));
+                        let Some(pids) = state.global.process_groups.get(&pgid) else {
+                            return Outcome::Error(Errno::ESRCH) // TODO: esrch?
+                        };
+
+                        for pid in pids.iter() {
+                            destinations.push(SignalDestination::Process(*pid));
                         }
                     }
                     SignalTarget::Tid(tid, _pid) => {
-                        let Some(_worker_info) = state.global.ids.get(&tid) else {
-                            return Outcome::Error(Errno::ESRCH);
+                        let Some(thread_id) = state.local.tid_threads.get(&tid) else {
+                            return Outcome::Error(Errno::ESRCH)
                         };
+
+                        let pid = state.local.process_info.borrow().pid;
 
                         // TODO: check to see if `tid` exists within `pid`
 
-                        destinations.push(SignalDestination::Thread(tid));
+                        destinations.push(SignalDestination::Thread(pid, *thread_id));
                     }
                     SignalTarget::Thread(pthread) => {
                         let Some(t) = state.local.pthreads.get(&pthread) else {
                             return Outcome::Error(Errno::EINVAL);
                         };
 
-                        let tid = state.local.tids.get(&t.id).unwrap();
-
-                        let Some(_worker_info) = state.global.ids.get(&tid) else {
-                            return Outcome::Error(Errno::ESRCH);
-                        };
+                        let pid = state.local.process_info.borrow().pid;
+                        let thread_id = t.id;
 
                         // TODO: check to see if `tid` exists within `pid`
 
-                        destinations.push(SignalDestination::Thread(*tid));
+                        destinations.push(SignalDestination::Thread(pid, thread_id));
                     }
                 }
 
@@ -702,19 +694,18 @@ impl Event for SignalSendEvent {
                     return Outcome::Success(());
                 };
 
-                let process_id = state.local.process_id;
-                let pid = state.global.processes.get(&process_id).unwrap().pid;
+                let pid = state.local.process_info.borrow().pid;
 
                 let raised_info = match self.value {
                     Some(value) => RaisedSignalInfo::SigQueue(SigQueueInfo {
                         signum: self.signum,
-                        pid: pid.as_id(),
+                        pid: pid.as_raw(),
                         uid: unsafe { libc::getuid() },
                         value,
                     }),
                     None => RaisedSignalInfo::Kill(SigKillInfo {
                         signum: self.signum,
-                        pid: pid.as_id(),
+                        pid: pid.as_raw(),
                         uid: unsafe { libc::getuid() },
                     }),
                 };
@@ -753,8 +744,8 @@ impl Event for SignalWaitEvent {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match self.state {
             SignalWaitState::Start => {
-                let process_id = state.local.process_id;
-                let worker_id = WorkerInfo::current(process_id);
+                let process_id = std::rc::Rc::downgrade(&state.local.process_info);
+                let worker_id = Worker::current(process_id);
 
                 // Are there any blocked signals for this thread?
                 let thread_signals = state
@@ -887,7 +878,7 @@ impl Event for SignalSetSigmaskEvent {
             SigmaskOp::Unblock => (old & !mask, old & mask),
         };
 
-        let pid = *state.local.tids.get(&thread::current().id()).unwrap();
+        let pid = state.local.process_info.borrow().pid;
 
         let siginfo = state
             .local
@@ -900,7 +891,7 @@ impl Event for SignalSetSigmaskEvent {
             if let Some(raised_info) = siginfo.raised[signal.lowest_signal_value() as usize].take()
             {
                 // This entire function runs for as many times as is needed to handle all signals
-                return Outcome::SendSignal(SignalDestination::Thread(pid), raised_info);
+                return Outcome::SendSignal(SignalDestination::Thread(pid, thread::current().id()), raised_info);
             }
         }
 
@@ -941,7 +932,7 @@ impl Event for SignalSuspendEvent {
 
                 let unblocked = old & !self.mask;
 
-                let pid = *state.local.tids.get(&thread_id).unwrap();
+                let pid = state.local.process_info.borrow().pid;
 
                 let siginfo = state.local.signals.get_mut(&thread_id).unwrap();
                 for signal in unblocked {
@@ -949,7 +940,7 @@ impl Event for SignalSuspendEvent {
                         siginfo.raised[signal.lowest_signal_value() as usize].take()
                     {
                         // This entire function runs for as many times as is needed to handle all signals
-                        return Outcome::SendSignal(SignalDestination::Thread(pid), raised_info);
+                        return Outcome::SendSignal(SignalDestination::Thread(pid, thread_id), raised_info);
                     }
                 }
 

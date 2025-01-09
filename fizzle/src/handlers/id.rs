@@ -1,59 +1,39 @@
 use std::thread::{self, ThreadId};
 
-use crate::{
-    arena::ArenaKey,
-    errno::Errno,
-    scheduler::{Event, Outcome},
-    state::FizzleState,
-};
+use crate::errno::Errno;
+use crate::scheduler::{Event, Outcome};
+use crate::state::FizzleState;
+use crate::GlobalWeak;
 
-use super::process::{ProcessGroupId, ProcessId};
+use super::process::{Pgid, Pid, ProcessInfo};
+use super::thread::Tid;
 
-/// The ID associated with a given thread or process.
-///
-/// Equivalent to a pid or tid.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[repr(transparent)]
-pub struct WorkerId(usize);
-
-impl WorkerId {
-    pub fn from_id(pid: libc::c_int) -> Self {
-        debug_assert!(pid >= 0);
-        Self(pid as usize)
-    }
-
-    pub fn as_id(&self) -> libc::c_int {
-        self.0 as i32
-    }
-
-    /// The PID corresponding to the primary process (e.g., PID 2).
-    pub fn primary() -> Self {
-        // pid 0 and pid 1 are special, so we start with 2
-        Self(2)
-    }
-
-    /// The PID corresponding to the `init` process (e.g., PID 1).
-    pub fn init_process() -> Self {
-        Self(1)
-    }
-}
-
-impl ArenaKey for WorkerId {
-    type Value = WorkerInfo;
-}
 
 /// The unique identifying information for a given thread in a process.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct WorkerInfo {
-    pub process_id: ProcessId,
+#[derive(Clone)]
+pub struct Worker {
+    pub process: GlobalWeak<ProcessInfo>,
     pub thread_id: ThreadId,
 }
 
-impl WorkerInfo {
+impl PartialEq for Worker {
+    fn eq(&self, other: &Self) -> bool {
+        self.thread_id == other.thread_id && match (self.process.upgrade(), other.process.upgrade()) {
+            (Some(p1), Some(p2)) => {
+                p1.borrow().pid == p2.borrow().pid
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Worker {}
+
+impl Worker {
     /// Returns the current running worker.
-    pub fn current(process_id: ProcessId) -> Self {
+    pub fn current(process: GlobalWeak<ProcessInfo>) -> Self {
         Self {
-            process_id,
+            process,
             thread_id: thread::current().id(),
         }
     }
@@ -72,8 +52,7 @@ impl Event for ProcessGetIdEvent {
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let process_id = state.local.process_id;
-        Outcome::Success(state.global.processes.get(&process_id).unwrap().pid.as_id())
+        Outcome::Success(state.local.process_info.borrow().pid.as_raw())
     }
 }
 
@@ -90,49 +69,43 @@ impl Event for ProcessGetParentIdEvent {
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let process_id = state.local.process_id;
-        Outcome::Success(
-            state
-                .global
-                .processes
-                .get(&process_id)
-                .unwrap()
-                .ppid
-                .as_id(),
-        )
+        Outcome::Success(state.local.process_info.borrow().ppid.as_raw())
     }
 }
 
 pub struct ProcessGetGroupIdEvent {
-    pid: Option<WorkerId>,
+    pid: Option<Pid>,
 }
 
 impl ProcessGetGroupIdEvent {
-    pub fn new(pid: Option<WorkerId>) -> Self {
+    pub fn new(pid: Option<Pid>) -> Self {
         Self { pid }
     }
 }
 
 impl Event for ProcessGetGroupIdEvent {
-    type Success = ProcessGroupId;
-    type Error = ();
+    type Success = Pgid;
+    type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let process_id = match self.pid {
-            Some(pid) => state.global.ids.get(&pid).unwrap().process_id,
-            None => state.local.process_id,
-        };
-        Outcome::Success(state.global.processes.get(&process_id).unwrap().pgid)
+        match self.pid {
+            Some(pid) => match state.global.pids.get(&pid) {
+                Some(process) => Outcome::Success(process.borrow().pgid),
+                None => Outcome::Error(Errno::ESRCH),
+            }
+            None => Outcome::Success(state.local.process_info.borrow().pgid),
+        }
+        
     }
 }
 
 pub struct ProcessSetGroupIdEvent {
-    pid: Option<WorkerId>,
-    pgid: ProcessGroupId,
+    pid: Option<Pid>,
+    pgid: Pgid,
 }
 
 impl ProcessSetGroupIdEvent {
-    pub fn new(pid: Option<WorkerId>, pgid: ProcessGroupId) -> Self {
+    pub fn new(pid: Option<Pid>, pgid: Pgid) -> Self {
         Self { pid, pgid }
     }
 }
@@ -142,47 +115,39 @@ impl Event for ProcessSetGroupIdEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let process_id = match self.pid {
-            Some(pid) => state.global.ids.get(&pid).unwrap().process_id,
-            None => state.local.process_id,
-        };
+        if let Some(pid) = self.pid {
+            match state.global.process_groups.get(&self.pgid) {
+                Some(group_pids) => if !group_pids.contains(&pid) {
+                    return Outcome::Error(Errno::EPERM)  
+                }
+                None => return Outcome::Error(Errno::ESRCH),
+            }
 
-        let Some(process_info) = state.global.processes.get_mut(&process_id) else {
-            return Outcome::Error(Errno::ESRCH);
-        };
+            // Setting the process group ID for another PID
+            match state.global.pids.get(&pid) {
+                Some(worker_info) => {
+                    // TODO: check access control
+                    worker_info.borrow_mut().pgid = self.pgid;
+                    Outcome::Success(())
+                }
+                None => Outcome::Error(Errno::ESRCH),
+            }
 
-        if !state.global.process_groups.is_occupied(&self.pgid) {
-            return Outcome::Error(Errno::EPERM);
+        } else {
+            state.local.process_info.borrow_mut().pgid = self.pgid;
+            Outcome::Success(())
         }
-
-        let old_pgid = process_info.pgid;
-        process_info.pgid = self.pgid;
-
-        state
-            .global
-            .process_groups
-            .get_mut(&old_pgid)
-            .unwrap()
-            .remove(&process_id);
-        state
-            .global
-            .process_groups
-            .get_mut(&self.pgid)
-            .unwrap()
-            .insert(process_id);
-
-        Outcome::Success(())
     }
 }
 
 pub struct ThreadGetIdEvent;
 
 impl Event for ThreadGetIdEvent {
-    type Success = WorkerId;
+    type Success = Tid;
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let tid = state.local.tids.get(&thread::current().id()).unwrap();
+        let tid = state.local.thread_tids.get(&thread::current().id()).unwrap();
         Outcome::Success(*tid)
     }
 }

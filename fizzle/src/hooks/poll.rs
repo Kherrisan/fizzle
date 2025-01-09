@@ -2,7 +2,7 @@ use std::slice;
 use std::time::Duration;
 
 use crate::errno::Errno;
-use crate::handlers::descriptor::DescriptorId;
+use crate::handlers::descriptor::Descriptor;
 use crate::handlers::poller::*;
 use crate::handlers::signal::SignalSet;
 use crate::hook_macros;
@@ -241,8 +241,8 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_epoll_ctl(ctx) {
         crate::strace!("epoll_ctl(epfd={}, op={}, fd={}, event={:?}) -> ...", epfd, op, fd, event);
 
-        let epoll_descriptor = DescriptorId::from_raw_fd(epfd);
-        let target_descriptor = DescriptorId::from_raw_fd(fd);
+        let epoll_descriptor = Descriptor::from_raw_fd(epfd);
+        let target_descriptor = Descriptor::from_raw_fd(fd);
 
         let operation = match op {
             libc::EPOLL_CTL_ADD => EpollOperation::Add(*event),
@@ -288,7 +288,7 @@ hook_macros::hook! {
             return -1
         }
 
-        let ep_descriptor = DescriptorId::from_raw_fd(epfd);
+        let ep_descriptor = Descriptor::from_raw_fd(epfd);
 
         let event_info = slice::from_raw_parts_mut(events, maxevents as usize);
         for event in event_info.iter_mut() {
@@ -336,7 +336,7 @@ hook_macros::hook! {
             Some(SignalSet::from_sigset(*sigmask))
         };
 
-        let ep_descriptor = DescriptorId::from_raw_fd(epfd);
+        let ep_descriptor = Descriptor::from_raw_fd(epfd);
 
         let event_info = slice::from_raw_parts_mut(events, maxevents as usize);
         for event in event_info.iter_mut() {
@@ -390,7 +390,7 @@ hook_macros::hook! {
             Some(SignalSet::from_sigset(*sigmask))
         };
 
-        let ep_descriptor = DescriptorId::from_raw_fd(epfd);
+        let ep_descriptor = Descriptor::from_raw_fd(epfd);
 
         let event_info = slice::from_raw_parts_mut(events, maxevents as usize);
         for event in event_info.iter_mut() {
