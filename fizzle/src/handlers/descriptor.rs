@@ -701,7 +701,7 @@ impl Event for StdinReadEvent<'_> {
                     .unwrap()
                     .clone();
 
-                let buf = state.global.fuzz_input.data();
+                let buf = state.global.fuzz_input.as_slice();
                 let buflen = buf.len();
 
                 let mut total_read = 0;

@@ -9,7 +9,6 @@ use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::{FizzleState, SignalDestination};
 
-use super::id::Worker;
 use super::process::{Pgid, Pid};
 use super::thread::Tid;
 
@@ -744,8 +743,7 @@ impl Event for SignalWaitEvent {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match self.state {
             SignalWaitState::Start => {
-                let process_id = std::rc::Rc::downgrade(&state.local.process_info);
-                let worker_id = Worker::current(process_id);
+                let worker_id = state.current_worker();
 
                 // Are there any blocked signals for this thread?
                 let thread_signals = state

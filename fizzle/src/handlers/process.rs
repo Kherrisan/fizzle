@@ -650,7 +650,9 @@ impl Event for ProcessWaitEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let current_worker = state.current_worker();
         let process_info = state.local.process_info.clone();
+
 
         match self.state {
             ProcessWaitState::Start => match self.wait_type {
@@ -665,7 +667,7 @@ impl Event for ProcessWaitEvent {
                     let process_info = std::rc::Rc::downgrade(&state.local.process_info);
                     for child in children {
                         if let Some(child_info) = state.global.pids.get(child) {
-                            child_info.borrow_mut().awaiting_death = Some(Worker::current(process_info.clone()));
+                            child_info.borrow_mut().awaiting_death = Some(current_worker);
                         }
                     }
 
@@ -699,7 +701,7 @@ impl Event for ProcessWaitEvent {
                         return Outcome::Success(None);
                     }
 
-                    let current_worker = Worker::current(std::rc::Rc::downgrade(&state.local.process_info));
+                    let current_worker = state.current_worker();
                     state.global.pids.get_mut(&child_pid).unwrap().borrow_mut().awaiting_death = Some(current_worker);
 
                     // Suspend execution until the child has exited
@@ -723,7 +725,7 @@ impl Event for ProcessWaitEvent {
                         return Outcome::Success(None);
                     }
 
-                    let worker = Worker::current(std::rc::Rc::downgrade(&state.local.process_info));
+                    let worker = state.current_worker();
                     for child in children.iter() {
                         if let Some(child_info) = state.global.pids.get_mut(child) {
                             child_info.borrow_mut().awaiting_death = Some(worker.clone());
@@ -742,7 +744,6 @@ impl Event for ProcessWaitEvent {
                 let children: Vec<_> = proc_info_borrow.children.iter().collect();
                 let mut awaiting = Vec::new();
 
-                let current_worker = Worker::current(std::rc::Rc::downgrade(&state.local.process_info));
                 for child in children {
                     if let Some(child_info) = state.global.pids.get_mut(child) {
                         if let Some(worker) = &child_info.borrow_mut().awaiting_death {

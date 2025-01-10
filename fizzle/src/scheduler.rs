@@ -9,14 +9,12 @@ use std::{cmp, mem, ptr, thread};
 
 use embedded_alloc::TlsfHeap;
 
-use crate::arena::Rc;
 use crate::backend::{ConnectedBackend, FileBackend, FileFeedback, PendingBackend};
 use crate::cell::{PanicOnceCell, SequentialRefCell};
 use crate::constants::{FIZZLE_MAX_FUZZ_ENDPOINTS, FIZZLE_MEMORY_ENV};
 use crate::handlers::file::{CowInfo, FileInfo};
 use crate::handlers::id::Worker;
 use crate::handlers::mutex::MutexStatus;
-use crate::handlers::polled::PolledId;
 use crate::handlers::process::*;
 use crate::handlers::signal::*;
 use crate::handlers::socket::{SocketInfo, SocketState};
@@ -163,6 +161,10 @@ impl Scheduler {
         ctx: &mut FizzleSingleton,
         mut event: T,
     ) -> Result<T::Success, T::Error> {
+
+        // Increment the global time clock
+        Scheduler::increment_time(ctx);
+
         loop {
             // First `acquire()` call for state allocates and instantiates shared memory
             let mut state = ctx.acquire();
@@ -200,24 +202,16 @@ impl Scheduler {
                 Outcome::Yield(Some(duration)) => {
                     log::debug!("Thread being yielded with timeout");
 
-                    if duration.as_millis() <= 1000 {
-                        // TODO: make into constant
-                        // Short enough
-                        drop(state);
-                        ctx.acquire().mark_thread_ready(thread::current().id());
+                    let timestamp = state.global.current_time.saturating_add(duration);
+                    let worker = state.current_worker();
 
-                        Scheduler::yield_worker(ctx, DelegationAction::RunNextWorker);
-                    } else if duration.as_millis() <= 5000 {
-                        // TODO: make into constant
-                        // Long, but not so long as to time out the fuzzer
-                        drop(state);
-                        ctx.acquire()
-                            .mark_thread_delayed_ready(thread::current().id());
+                    state.global.ready.push(ReadyItem {
+                        info: ReadyInfo::Worker(worker),
+                        timestamp,
+                    });
+                    drop(state);
+                    Scheduler::yield_worker(ctx, DelegationAction::RunNextWorker);
 
-                        Scheduler::yield_worker(ctx, DelegationAction::RunNextWorker);
-                    } else {
-                        // Long enough to consider as a permanent timer--just leave
-                    }
                 }
                 Outcome::Pause(src, sem) => {
                     // SAFETY: `state` is never used prior to being dropped, so noalias isn't violated
@@ -248,16 +242,20 @@ impl Scheduler {
         }
     }
 
-    /// Waits for the specified poll event to become available.
-    fn poll_until_ready(ctx: &mut FizzleSingleton, polled_id: Rc<PolledId>) {
+    fn increment_time(ctx: &mut FizzleSingleton) {
         let mut state = ctx.acquire();
-        if !state.polled_is_ready(&polled_id) {
-            let poller_id = state.new_poller();
-            state.register_poller(poller_id.clone(), polled_id);
-            drop(state);
-            Scheduler::yield_worker(ctx, DelegationAction::RunNextWorker);
-            ctx.acquire().delete_poller(poller_id);
-        }
+
+        let idx = state.global.time_fuzz_idx;
+        let increment = if state.global.fuzz_input.is_empty() {
+            20
+        } else {
+            // Randomly between 0 and 31 millisecond offset
+            ((state.global.fuzz_input[idx] ^ 0x7f) / 8) as u64
+        };
+
+        state.global.time_fuzz_idx = (idx + 1) % state.global.fuzz_input.len();
+
+        state.global.current_time += Duration::from_millis(increment);
     }
 
     /// Gives up execution of the current thread until it is rescheduled.
@@ -289,7 +287,7 @@ impl Scheduler {
                         continue 'yielded;
                     };
 
-                    let Some(dst_proc_info) = dst_worker.process.upgrade() else {
+                    let Some(dst_proc_info) = state.global.pids.get(&dst_worker.pid).cloned() else {
                         // The given worker was killed--continue on to the next one
                         continue 'yielded;
                     };
@@ -372,9 +370,13 @@ impl Scheduler {
                         delegation_state = DelegationState::RunNextWorker;
                         continue 'yielded;
 
-                    } else if let Some(ready) = state.global.delayed_ready.pop_front() {
+                    } else if let Some(ready) = state.global.ready_delayed.pop_front() {
+                        let timestamp = state.global.current_time;
                         // There are outstanding delayed workers
-                        state.global.ready.push_back(ready);
+                        state.global.ready.push(ReadyItem {
+                            info: ready,
+                            timestamp,
+                        });
                         delegation_state = DelegationState::RunNextWorker;
                         continue 'yielded;
 
@@ -407,8 +409,6 @@ impl Scheduler {
 
                         // Everything is ready for the next round now
                         Scheduler::round_complete(ctx);
-
-                        // TODO: handle per_round_endpoints here??
 
                         delegation_state = DelegationState::RunNextWorker;
                         continue 'yielded;
@@ -670,7 +670,7 @@ impl Scheduler {
             .map(|plugin_info| plugin_info.module.clone())
             .collect();
         for module in modules {
-            module.borrow_mut().fuzz_round_start(state.global.fuzz_input.data());
+            module.borrow_mut().fuzz_round_start(state.global.fuzz_input.as_slice());
         }
 
         // Gather all plugin endpoints
@@ -802,6 +802,9 @@ impl Scheduler {
             }
         }
 
+        // Deallocate the last buffer
+        state.global.fuzz_input.clear();
+
         // Wait for input from the fuzzing engine...
         // For AFL++, fuzzing input comes from stdin
         #[cfg(feature = "pcr")]
@@ -815,22 +818,20 @@ impl Scheduler {
                 libc::_exit(0); // _exit to avoid `atexit` handlers that would reduce efficiency
             }
 
-            state.global.fuzz_input.clear();
-            let fuzz_buffer = state.global.fuzz_input.remaining_mut();
-
             if crate::__afl_fuzz_ptr.is_null() {
+                panic!("__afl_fuzz_ptr was null--is shared-memory fuzzing enabled?")
+                /*
                 let read_amount =
                     libc::read(0, fuzz_buffer.as_mut_ptr() as *mut libc::c_void, 1048576);
                 *crate::__afl_fuzz_len = (read_amount & u32::MAX as isize) as u32;
                 if read_amount < 0 {
                     panic!("could not read input from stdin")
                 }
+                */
             } else {
                 let afl_buf =
                     slice::from_raw_parts(crate::__afl_fuzz_ptr, *crate::__afl_fuzz_len as usize);
-                for (dst, src) in fuzz_buffer.iter_mut().zip(afl_buf.iter()) {
-                    dst.write(*src);
-                }
+                state.global.fuzz_input.copy_from_slice(afl_buf);
             };
 
             state
@@ -840,31 +841,22 @@ impl Scheduler {
         }
 
         #[cfg(not(feature = "pcr"))]
-        unsafe {
-            let fuzz_buffer = state.global.fuzz_input.remaining_mut();
-            let read_amount = libc::read(0, fuzz_buffer.as_mut_ptr() as *mut libc::c_void, 1048576);
-            if read_amount <= 0 {
-                panic!("could not read input from stdin")
+        loop {
+            state.global.fuzz_input.reserve(16384);
+            let current_len = state.global.fuzz_input.len();
+            unsafe {
+                let start = state.global.fuzz_input.as_mut_ptr().add(current_len);
+                match libc::read(0, start as *mut libc::c_void, 16384) {
+                    ..=-1 => panic!("read() failed on stdin during PCR fuzzing"),
+                    0 => break,
+                    read_amount => {
+                        state.global.fuzz_input.set_len(current_len + read_amount as usize);
+                    }
+                }
             }
-
-            state.global.fuzz_input.did_write(read_amount as usize);
         }
-    }
 
-    fn send_cancellation(ctx: &mut FizzleSingleton, target: libc::pthread_t) {
-        let mut state = ctx.acquire();
-        let thread_id = state.local.pthreads.get(&target).unwrap().id;
-        assert!(state.local.cancelling.replace(thread_id).is_none());
-
-        // Continue this worker once the cancellation is complete
-        let this_worker = state.current_worker_id();
-        state
-            .global
-            .ready
-            .push_front(ReadyInfo::Worker(this_worker));
-        drop(state);
-
-        Scheduler::yield_worker(ctx, DelegationAction::RunThread(thread_id));
+        state.global.time_fuzz_idx = 0;
     }
 
     fn send_signal(
@@ -876,7 +868,7 @@ impl Scheduler {
 
         // Save the current worker
         let mut state = ctx.acquire();
-        let current_worker = state.current_worker_id();
+        let current_worker = state.current_worker();
         let current_pid = state.local.process_info.borrow().pid;
         let dst_pid = match &dst {
             SignalDestination::Process(p) => *p,
@@ -895,10 +887,14 @@ impl Scheduler {
         }
 
         // Once the signal has been received and handled, keep running the worker that sent it
+        // this is Duration::ZERO because it must run first
         state
             .global
             .ready
-            .push_front(ReadyInfo::Worker(current_worker));
+            .push(ReadyItem {
+                info: ReadyInfo::Worker(current_worker),
+                timestamp: Duration::ZERO
+            });
 
         // Add the signal to the global state
         assert!(state.global.signal.replace((dst.clone(), raised_info)).is_none());
@@ -955,7 +951,7 @@ impl Scheduler {
                         current_thread_id
                     );
                 } else {
-                    thread_siginfo.raised[signum as usize].insert(raised_info);
+                    thread_siginfo.raised[signum as usize] = Some(raised_info);
                     if thread_siginfo
                         .sigwait_set
                         .contains(SignalSet::from_signum(signum))
@@ -1084,8 +1080,17 @@ impl Scheduler {
     ///
     /// If no workers are ready, this function will return `None`.
     fn next_ready_worker(state: &mut FizzleState) -> Option<Worker> {
-        while let Some(item) = state.global.ready.pop_front() {
-            match item {
+        while let Some(ReadyItem { info, timestamp }) = state.global.ready.pop() {
+            // TODO: make this timeout value configurable (currentl 10 seconds)
+            if timestamp > state.global.current_time + Duration::from_secs(10) {
+                state.global.ready.push(ReadyItem { info, timestamp });
+                return None
+            }
+            if timestamp > state.global.current_time {
+                state.global.current_time = timestamp;
+            }
+
+            match info {
                 ReadyInfo::Worker(worker_id) => return Some(worker_id),
                 ReadyInfo::Poller(poller_id) => {
                     log::trace!(
@@ -1160,12 +1165,8 @@ impl Scheduler {
 
         // Notify any threads awaiting this thread's death
         if let Some(awaiting_threads) = state.local.awaiting_thread_death.remove(&thread_id) {
-            let process_info = std::rc::Rc::downgrade(&state.local.process_info);
             for thread_id in awaiting_threads {
-                state.global.mark_worker_ready(Worker {
-                    process: process_info.clone(),
-                    thread_id,
-                });
+                state.mark_thread_ready(thread_id);
             }
         }
 
@@ -1321,7 +1322,7 @@ impl Scheduler {
         let awaiting = state
             .local.process_info.borrow_mut().awaiting_death.take();
         if let Some(awaiting_worker) = awaiting { 
-            state.global.mark_worker_ready(awaiting_worker);
+            state.mark_worker_ready(awaiting_worker);
         }
 
         state.global.pids.remove(&pid);
@@ -1359,7 +1360,7 @@ impl Scheduler {
 
     pub fn create_cow(ctx: &mut FizzleSingleton, source: CreateCowSource) {
         let mut state = ctx.acquire();
-        let current_worker = state.current_worker_id();
+        let current_worker = state.current_worker();
         let current_pid = state.local.process_info.borrow().pid;
 
         if current_pid == Pid::PRIMARY {
@@ -1407,7 +1408,10 @@ impl Scheduler {
         } else {
             state.global.create_cow = Some(source.clone());
 
-            state.global.ready.push_front(ReadyInfo::Worker(current_worker));
+            state.global.ready.push(ReadyItem {
+                info: ReadyInfo::Worker(current_worker),
+                timestamp: Duration::ZERO, // Run immediately after this
+            });
 
             let primary_sem = state.global.pids.get(&Pid::PRIMARY).unwrap().borrow().semaphore.clone();
             let current_sem = state.local.process_info.borrow().semaphore.clone();

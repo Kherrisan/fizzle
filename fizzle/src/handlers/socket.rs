@@ -2181,7 +2181,7 @@ impl Event for SocketReadEvent<'_> {
                         let mut total_read = 0;
                         for s in out_slices.iter_mut() {
                             let read = cmp::min(s.len(), state.global.fuzz_input.len() - fuzz_endpoint_info.read_idx);
-                            s.copy_from_slice(&state.global.fuzz_input.data()[fuzz_endpoint_info.read_idx..fuzz_endpoint_info.read_idx + read]);
+                            s.copy_from_slice(&state.global.fuzz_input[fuzz_endpoint_info.read_idx..fuzz_endpoint_info.read_idx + read]);
                             fuzz_endpoint_info.read_idx += read;
                             total_read += read;
                         }
@@ -2194,7 +2194,7 @@ impl Event for SocketReadEvent<'_> {
                         for out_msg in out_msgs.iter_mut() {
                             for s in out_msg.buf.iter_mut() {
                                 let read = cmp::min(s.len(), state.global.fuzz_input.len() - fuzz_endpoint_info.read_idx);
-                                s.copy_from_slice(&state.global.fuzz_input.data()[fuzz_endpoint_info.read_idx..fuzz_endpoint_info.read_idx + read]);
+                                s.copy_from_slice(&state.global.fuzz_input[fuzz_endpoint_info.read_idx..fuzz_endpoint_info.read_idx + read]);
                                 fuzz_endpoint_info.read_idx += read;
                                 total_read += read;
                             }
@@ -2379,7 +2379,7 @@ impl Event for SocketReadEvent<'_> {
                         let mut total_read = 0;
                         for s in out_slices.iter_mut() {
                             let read = cmp::min(s.len(), state.global.fuzz_input.len() - fuzz_endpoint_info.read_idx);
-                            s.copy_from_slice(&state.global.fuzz_input.data()[fuzz_endpoint_info.read_idx..fuzz_endpoint_info.read_idx + read]);
+                            s.copy_from_slice(&state.global.fuzz_input[fuzz_endpoint_info.read_idx..fuzz_endpoint_info.read_idx + read]);
                             fuzz_endpoint_info.read_idx += read;
                             total_read += read;
                         }
@@ -2392,7 +2392,7 @@ impl Event for SocketReadEvent<'_> {
                         for out_msg in out_msgs.iter_mut() {
                             for s in out_msg.buf.iter_mut() {
                                 let read = cmp::min(s.len(), state.global.fuzz_input.len() - fuzz_endpoint_info.read_idx);
-                                s.copy_from_slice(&state.global.fuzz_input.data()[fuzz_endpoint_info.read_idx..fuzz_endpoint_info.read_idx + read]);
+                                s.copy_from_slice(&state.global.fuzz_input[fuzz_endpoint_info.read_idx..fuzz_endpoint_info.read_idx + read]);
                                 fuzz_endpoint_info.read_idx += read;
                                 total_read += read;
                             }

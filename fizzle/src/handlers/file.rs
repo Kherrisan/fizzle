@@ -516,8 +516,8 @@ impl Event for FileReadEvent<'_> {
                     ReadData::Basic(data) => {
                         let mut total_read = 0;
                         for s in data.iter_mut() {
-                            let read = cmp::min(s.len(), state.global.fuzz_input.data().len() - fuzz_endpoint.read_idx);
-                            s.copy_from_slice(&state.global.fuzz_input.data()[fuzz_endpoint.read_idx..fuzz_endpoint.read_idx + read]);
+                            let read = cmp::min(s.len(), state.global.fuzz_input.len() - fuzz_endpoint.read_idx);
+                            s.copy_from_slice(&state.global.fuzz_input[fuzz_endpoint.read_idx..fuzz_endpoint.read_idx + read]);
                             fuzz_endpoint.read_idx += read;
                             total_read += read;
                         }
@@ -528,13 +528,13 @@ impl Event for FileReadEvent<'_> {
                         let mut offset = data.offset.unwrap_or(fuzz_endpoint.read_idx as i64) as usize;
                         let mut total_read = 0;
 
-                        if offset > state.global.fuzz_input.data().len() {
+                        if offset > state.global.fuzz_input.len() {
                             return Outcome::Success(0)
                         }
 
                         for s in data.buf.iter_mut() {
-                            let read = cmp::min(s.len(), state.global.fuzz_input.data().len() - offset);
-                            s.copy_from_slice(&state.global.fuzz_input.data()[offset..offset + read]);
+                            let read = cmp::min(s.len(), state.global.fuzz_input.len() - offset);
+                            s.copy_from_slice(&state.global.fuzz_input[offset..offset + read]);
                             offset += read;
                             total_read += read;
                         }

@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, LinkedList, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, LinkedList, VecDeque};
 use std::io::Write;
 use std::fmt::Debug;
 use std::mem::MaybeUninit;
@@ -815,7 +815,7 @@ impl FizzleState {
 
     /// Creates a new poller for the currently executing worker.
     pub fn new_poller(&mut self) -> Rc<PollerId> {
-        let worker_id = self.current_worker_id();
+        let worker_id = self.current_worker();
 
         self.global
             .pollers
@@ -842,17 +842,11 @@ impl FizzleState {
         let poller = self.global.pollers.get_mut(&poller_id).unwrap();
 
         if poller.deref().in_raised_queue() {
-            // TODO: make queue indexable in future to improve speed here
-
             // Remove the poller from the ready queue, leaving the others in the same order
-            for _ in 0..self.global.ready.len() {
-                let ready = self.global.ready.pop_front().unwrap();
-                if let ReadyInfo::Poller(current_poller_id) = &ready {
-                    if *current_poller_id != poller_id {
-                        self.global.ready.push_back(ready);
-                    }
-                }
-            }
+            self.global.ready.retain(|r| match &r.info {
+                ReadyInfo::Poller(p) => &poller_id != p,
+                ReadyInfo::Worker(_) => true,
+            });
         }
 
         // Remove the poller from each polled instance it was registered to
@@ -866,42 +860,38 @@ impl FizzleState {
         }
     }
 
-    pub fn current_worker_id(&mut self) -> Worker {
+    pub fn mark_thread_ready(&mut self, thread_id: ThreadId) {
+        let pid = self.local.process_info.borrow().pid;
+
+        let timestamp = self.global.current_time;
+        let ready = ReadyInfo::Worker(Worker {
+            pid,
+            thread_id
+        });
+
+        self.global.ready.retain(|r| &r.info != &ready);
+        self.global.ready.push(ReadyItem {
+            timestamp,
+            info: ready,
+        });
+    }
+
+    pub fn mark_worker_ready(&mut self, worker: Worker) {
+        let timestamp = self.global.current_time;
+        let ready = ReadyInfo::Worker(worker);
+
+        self.global.ready.retain(|r| &r.info != &ready);
+        self.global.ready.push(ReadyItem {
+            timestamp,
+            info: ready,
+        });
+    }
+
+    pub fn current_worker(&mut self) -> Worker {
         Worker {
-            process: std::rc::Rc::downgrade(&self.local.process_info),
+            pid: self.local.process_info.borrow().pid,
             thread_id: thread::current().id(),
         }
-    }
-
-    /// Adds a thread from the current process to the back of the `ready` queue.
-    pub fn mark_thread_ready(&mut self, thread_id: ThreadId) {
-        let process = std::rc::Rc::downgrade(&self.local.process_info);
-        self.global.ready.push_back(ReadyInfo::Worker(Worker {
-            process,
-            thread_id,
-        }));
-    }
-
-    /// Adds a thread from the current process to the `delayed_ready` queue.
-    pub fn mark_thread_delayed_ready(&mut self, thread_id: ThreadId) {
-        let process = std::rc::Rc::downgrade(&self.local.process_info);
-        self.global
-            .delayed_ready
-            .push_back(ReadyInfo::Worker(Worker {
-                process,
-                thread_id,
-            }));
-    }
-
-    /// Adds a thread from the current process to the front of the `delayed_ready` queue.
-    pub fn mark_thread_immediately_ready(&mut self, thread_id: ThreadId) {
-        let process = std::rc::Rc::downgrade(&self.local.process_info);
-        self.global
-            .delayed_ready
-            .push_front(ReadyInfo::Worker(Worker {
-                process,
-                thread_id,
-            }));
     }
 }
 
@@ -1005,6 +995,7 @@ impl ProcessLocalState {
 }
 
 pub struct InterprocessState {
+    pub alloc: InterprocessAllocator,
     pub process_locks: GlobalMap<Pid, std::rc::Rc<Semaphore, &'static TlsfHeap>>,
     /// The thread identifier to be executed by the waking process. This is `Some` if and only if
     /// a thread is currently about to be scheduled.
@@ -1063,18 +1054,18 @@ pub struct InterprocessState {
     pub polled_events: KeyedArena<PolledId, PolledInfo, FIZZLE_MAX_POLLED_EVENTS>,
     pub pollers: KeyedArena<PollerId, PollerInfo, FIZZLE_MAX_POLLERS>,
     /// Pollers/Workers that can be immediately scheduled.
-    pub ready: GlobalList<ReadyInfo>,
+    pub ready: BinaryHeap<ReadyItem, &'static TlsfHeap>,
     /// Pollers/Workers that should be scheduled once the system has reached a halted state.
-    pub delayed_ready: GlobalList<ReadyInfo>,
-    pub fuzz_input: Buffer<FIZZLE_MAX_FUZZ_INPUT>,
+    pub ready_delayed: GlobalList<ReadyInfo>,
+    pub fuzz_input: GlobalVec<u8>,
     pub per_round_clients: heapless::Vec<PerRoundClientInfo, FIZZLE_MAX_PER_ROUND_ENDPOINTS>,
     pub per_round_endpoints: GlobalVec<GlobalRc<SocketInfo>>,
     pub fuzz_endpoints: KeyedArena<FuzzEndpointId, FuzzEndpointInfo, FIZZLE_MAX_FUZZ_ENDPOINTS>,
     pub prefuzz_rng: rand::rngs::SmallRng,
     pub current_time: Duration,
+    pub time_fuzz_idx: usize,
     pub uid: libc::uid_t,
     pub gid: libc::gid_t,
-    pub alloc: InterprocessAllocator,
 }
 
 impl InterprocessState {
@@ -1157,7 +1148,6 @@ impl InterprocessState {
             KeyedArena::initialize(ptr::addr_of_mut!((*state).plugins));
             KeyedArena::initialize(ptr::addr_of_mut!((*state).polled_events));
             KeyedArena::initialize(ptr::addr_of_mut!((*state).pollers));
-            *ptr::addr_of_mut!((*state).fuzz_input) = Buffer::new();
             *ptr::addr_of_mut!((*state).per_round_clients) = heapless::Vec::new();
             KeyedArena::initialize(ptr::addr_of_mut!((*state).fuzz_endpoints));
             *ptr::addr_of_mut!((*state).prefuzz_rng) =
@@ -1172,11 +1162,18 @@ impl InterprocessState {
 
             // SAFETY: must happen *after* interprocess allocator has been initialized
             *ptr::addr_of_mut!((*state).per_round_endpoints) = Vec::new_in((*state).alloc.alloc());
+            *ptr::addr_of_mut!((*state).dead_pids) = BTreeMap::new_in((*state).alloc.alloc());
             *ptr::addr_of_mut!((*state).pids) = BTreeMap::new_in((*state).alloc.alloc());
             *ptr::addr_of_mut!((*state).process_groups) = BTreeMap::new_in((*state).alloc.alloc());
             *ptr::addr_of_mut!((*state).process_locks) = BTreeMap::new_in((*state).alloc.alloc());
-            *ptr::addr_of_mut!((*state).delayed_ready) = LinkedList::new_in((*state).alloc.alloc());
-            *ptr::addr_of_mut!((*state).ready) = LinkedList::new_in((*state).alloc.alloc());
+            *ptr::addr_of_mut!((*state).ready) = BinaryHeap::new_in((*state).alloc.alloc());
+            *ptr::addr_of_mut!((*state).ready_delayed) = LinkedList::new_in((*state).alloc.alloc());
+            *ptr::addr_of_mut!((*state).fuzz_input) = Vec::new_in((*state).alloc.alloc());
+
+            *ptr::addr_of_mut!((*state).unix_read_fd) = -1;
+            *ptr::addr_of_mut!((*state).unix_write_fd) = -1;
+            *ptr::addr_of_mut!((*state).create_cow) = None;
+            *ptr::addr_of_mut!((*state).time_fuzz_idx) = 0;
 
             *ptr::addr_of_mut!((*state).next_pid) = Pid::PRIMARY.next();
             &mut (*state)
@@ -1208,7 +1205,11 @@ impl InterprocessState {
             let pollers = polled.pollers.clone();
             for poller in pollers {
                 if !self.pollers.get(&poller).unwrap().in_raised_queue() {
-                    self.ready.push_back(ReadyInfo::Poller(poller.clone()));
+                    let timestamp = self.current_time;
+                    self.ready.push(ReadyItem {
+                        info: ReadyInfo::Poller(poller.clone()),
+                        timestamp,
+                    });
                 }
                 self.pollers
                     .get_mut(&poller)
@@ -1441,11 +1442,6 @@ impl InterprocessState {
             AddressFamily::Unix => TransportAddress::new_unix(SocketAddrUnix::Unnamed),
         }
     }
-
-    /// Marks the given process/thread pair as having further work to execute.
-    pub fn mark_worker_ready(&mut self, worker_id: Worker) {
-        self.ready.push_back(ReadyInfo::Worker(worker_id));
-    }
 }
 
 pub struct InterprocessAllocator {
@@ -1476,8 +1472,33 @@ pub enum PerRoundClientBackend {
     Plugin(Rc<PluginEndpointId>),
 }
 
-// TODO: rename...
 #[derive(Clone)]
+pub struct ReadyItem {
+    pub info: ReadyInfo,
+    pub timestamp: Duration,
+}
+
+impl PartialEq for ReadyItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.timestamp == other.timestamp
+    }
+}
+
+impl Eq for ReadyItem {}
+
+impl PartialOrd for ReadyItem {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ReadyItem {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.timestamp.cmp(&other.timestamp)
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub enum ReadyInfo {
     Poller(Rc<PollerId>),
     Worker(Worker),

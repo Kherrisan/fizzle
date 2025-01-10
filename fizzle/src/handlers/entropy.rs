@@ -32,13 +32,13 @@ impl Event for GetEntropyEvent<'_> {
             let mut idx = 0usize;
             let fuzz_len = state.global.fuzz_input.len();
             while self.buf[idx..].len() > state.global.fuzz_input.len() {
-                self.buf[idx..idx + fuzz_len].copy_from_slice(state.global.fuzz_input.data());
+                self.buf[idx..idx + fuzz_len].copy_from_slice(state.global.fuzz_input.as_slice());
                 idx += fuzz_len;
             }
 
             let rem = self.buf.len() - idx;
             if rem > 0 {
-                self.buf[idx..].copy_from_slice(&state.global.fuzz_input.data()[..rem]);
+                self.buf[idx..].copy_from_slice(&state.global.fuzz_input[..rem]);
             }
 
             Outcome::Success(self.buf.len())

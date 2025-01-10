@@ -3,40 +3,16 @@ use std::thread::{self, ThreadId};
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
-use crate::GlobalWeak;
 
-use super::process::{Pgid, Pid, ProcessInfo};
+use super::process::{Pgid, Pid};
 use super::thread::Tid;
 
 
 /// The unique identifying information for a given thread in a process.
-#[derive(Clone)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Worker {
-    pub process: GlobalWeak<ProcessInfo>,
+    pub pid: Pid,
     pub thread_id: ThreadId,
-}
-
-impl PartialEq for Worker {
-    fn eq(&self, other: &Self) -> bool {
-        self.thread_id == other.thread_id && match (self.process.upgrade(), other.process.upgrade()) {
-            (Some(p1), Some(p2)) => {
-                p1.borrow().pid == p2.borrow().pid
-            }
-            _ => false,
-        }
-    }
-}
-
-impl Eq for Worker {}
-
-impl Worker {
-    /// Returns the current running worker.
-    pub fn current(process: GlobalWeak<ProcessInfo>) -> Self {
-        Self {
-            process,
-            thread_id: thread::current().id(),
-        }
-    }
 }
 
 pub struct ProcessGetIdEvent;

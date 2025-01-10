@@ -339,7 +339,7 @@ impl Event for SemPostEvent {
             };
 
             match sem_info.waiting.pop_front() {
-                Some(worker_id) => state.global.mark_worker_ready(worker_id),
+                Some(worker_id) => state.mark_worker_ready(worker_id),
                 None => sem_info.value += 1,
             }
 
@@ -378,7 +378,7 @@ impl Event for SemWaitEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let current_worker_id = state.current_worker_id();
+        let current_worker_id = state.current_worker();
 
         match self.state {
             SemWaitState::Start => {

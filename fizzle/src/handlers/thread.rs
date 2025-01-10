@@ -497,12 +497,11 @@ impl Event for ThreadCancelEvent {
                 }
 
                 state.local.cancelling = Some(thread_id);
+                let sem = state.local.thread_locks.get(&thread_id).unwrap().clone();
 
                 // This thread will be run after the cancelling thread is
                 state.mark_thread_ready(thread::current().id());
-                // This thread will be run next, at which point it will read the `cancelling` state
-                state.mark_thread_immediately_ready(thread::current().id());
-                Outcome::Yield(None)
+                Outcome::Pause(DelegationSource::Thread, Some(sem))
             }
             ThreadCancelState::Finish => Outcome::Success(()),
         }
