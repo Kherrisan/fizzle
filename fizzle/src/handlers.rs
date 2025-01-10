@@ -30,6 +30,7 @@ pub mod sleep;
 pub mod socket;
 pub mod spinlock;
 pub mod thread;
+pub mod time;
 
 bitflags! {
     #[derive(Debug)]

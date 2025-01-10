@@ -1,14 +1,30 @@
+use crate::handlers::time::GetTimeEvent;
 use crate::hook_macros;
+use crate::scheduler::Scheduler;
 
 hook_macros::hook! {
     unsafe fn time(
         tloc: *mut libc::time_t
-    ) -> libc::time_t => fizzle_time(_ctx) {
-        if !tloc.is_null() {
-            *tloc = 1500000000;
-        }
+    ) -> libc::time_t => fizzle_time(ctx) {
 
-        1500000000
+        crate::strace!("time(tloc={:?}) -> ...", tloc);
+
+        match Scheduler::handle_event(&mut ctx, GetTimeEvent) {
+            Ok(duration) => {
+                let nsecs = duration.as_secs() as libc::time_t;
+
+                if let Some(tloc_mut) = tloc.as_mut() {
+                    *tloc_mut = nsecs;
+                }
+
+                crate::strace!("time(tloc={:?}) -> {}", tloc, nsecs);
+                nsecs
+            },
+            Err(e) => {
+                crate::strace!("time(tloc={:?}) -> -1 ({})", tloc, e);
+                -1
+            },
+        }
     }
 }
 
@@ -59,12 +75,34 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn clock_gettime(
-        _clockid: libc::clockid_t,
-        _tp: *mut libc::timespec
-    ) -> libc::c_int => fizzle_clock_gettime(_ctx) {
-        unimplemented!("clock_gettime()")
+        clockid: libc::clockid_t,
+        tp: *mut libc::timespec
+    ) -> libc::c_int => fizzle_clock_gettime(ctx) {
+
+        crate::strace!("clock_gettime(clockid={}, tp={:?}) -> ...", clockid, tp);
+
+        // TODO: handle different clocks specially
+        match Scheduler::handle_event(&mut ctx, GetTimeEvent) {
+            Ok(duration) => {
+                if let Some(tp_mut) = tp.as_mut() {
+                    *tp_mut = libc::timespec {
+                        tv_sec: duration.as_secs() as i64,
+                        tv_nsec: duration.subsec_nanos() as i64,
+                    };
+                };
+
+                crate::strace!("clock_gettime(clockid={}, tp={:?}) -> 0", clockid, tp);
+                0
+            },
+            Err(e) => {
+                crate::strace!("clock_gettime(clockid={}, tp={:?}) -> -1 ({})", clockid, tp, e);
+                -1
+            },
+        }
     }
 }
+
+// TODO: interpose `daylight`
 
 hook_macros::hook! {
     unsafe fn clock_settime(
@@ -86,10 +124,28 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn gettimeofday(
-        _tv: *mut libc::timeval,
-        _tz: *mut libc::timezone
-    ) -> libc::time_t => fizzle_gettimeofday(_ctx) {
-        unimplemented!("gettimeofday()")
+        tv: *mut libc::timeval,
+        tz: *mut libc::timezone
+    ) -> libc::time_t => fizzle_gettimeofday(ctx) {
+        crate::strace!("gettimeofday(tv={:?}, tz={:?}) -> ...", tv, tz);
+
+        match Scheduler::handle_event(&mut ctx, GetTimeEvent) {
+            Ok(duration) => {
+                if let Some(tv_mut) = tv.as_mut() {
+                    *tv_mut = libc::timeval {
+                        tv_sec: duration.as_secs() as i64,
+                        tv_usec: duration.subsec_micros() as i64,
+                    };
+                };
+
+                crate::strace!("gettimeofday(tv={:?}, tz={:?}) -> 0", tv, tz);
+                0
+            },
+            Err(e) => {
+                crate::strace!("gettimeofday(tv={:?}, tz={:?}) -> -1 ({})", tv, tz, e);
+                -1
+            },
+        }
     }
 }
 

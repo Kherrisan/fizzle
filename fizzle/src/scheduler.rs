@@ -171,7 +171,6 @@ impl Scheduler {
 
             // Run startup commands if needed
             if let Some(main_state) = state.local.main_state.as_mut() {
-                log::info!("Initializing main state startup commands");
                 let mut startup_commands = Vec::new();
                 mem::swap(&mut startup_commands, &mut main_state.onstartup_commands);
                 drop(state);
