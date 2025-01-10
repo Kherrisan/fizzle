@@ -249,10 +249,10 @@ impl Scheduler {
             20
         } else {
             // Randomly between 0 and 31 millisecond offset
-            ((state.global.fuzz_input[idx] ^ 0x7f) / 8) as u64
+            let offset = ((state.global.fuzz_input[idx] ^ 0x7f) / 8) as u64;
+            state.global.time_fuzz_idx = (idx + 1) % state.global.fuzz_input.len();
+            offset
         };
-
-        state.global.time_fuzz_idx = (idx + 1) % state.global.fuzz_input.len();
 
         state.global.current_time += Duration::from_millis(increment);
     }
