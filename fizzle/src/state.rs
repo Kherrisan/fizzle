@@ -25,6 +25,7 @@ use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
 use crate::arena::{KeyedArena, Rc};
+use crate::handlers::time::ItimerInfo;
 use crate::{comptime, GlobalList, GlobalMap, GlobalRc, GlobalSet, GlobalVec};
 use crate::constants::*;
 use crate::errno::Errno;
@@ -196,36 +197,24 @@ impl FizzleState {
             FilePath::from_raw_bytes(env::current_dir().unwrap().as_os_str().as_bytes()).unwrap();
 
         let mut local = ProcessLocalState {
-            thread_locks: Default::default(),
-            main_state: None,
             atexit_handlers: Vec::new(),
-            on_exit_handlers: Vec::new(),
-            cancelling: None,
-            pasture: Default::default(),
-            fds: BTreeMap::new_in(global.alloc.alloc()),
-            dirs: Default::default(),
+            atfork_handlers: Vec::default(),
+            awaiting_thread_death: HashMap::default(),
             barriers: HashMap::default(),
+            cancelling: None,
             condvars: HashMap::default(),
+            dirs: Default::default(),
+            fds: BTreeMap::new_in(global.alloc.alloc()),
             file_objs: HashMap::default(),
+            futex_waiters: HashMap::default(),
+            itimer_prof: None,
+            itimer_real: None,
+            itimer_virtual: None,
+            main_state: None,
             mutexes: HashMap::default(),
             named_semaphores: HashMap::default(),
-            rwlocks: HashMap::default(),
-            semaphores: HashMap::default(),
-            spinlocks: HashMap::default(),
-            thread_tids: Default::default(),
-            tid_threads: Default::default(),
-            pthreads: HashMap::default(),
-            atfork_handlers: Vec::default(),
-            pthread_cleanup: HashMap::default(),
-            pthread_keys: HashMap::default(),
-            pthread_key_values: HashMap::default(),
-            signals: HashMap::default(),
-            futex_waiters: HashMap::default(),
-            terminated_threads: HashSet::default(),
-            working_directory,
-            awaiting_thread_death: HashMap::default(),
-            // Default umask is 0644
-            umask: AccessMode::GROUP_READ | AccessMode::USER_WRITE | AccessMode::USER_EXEC,
+            on_exit_handlers: Vec::new(),
+            pasture: Default::default(),
             process_info: std::rc::Rc::new_in(RefCell::new(ProcessInfo {
                 semaphore: Semaphore::new_rc_in(0, true, global.alloc.alloc()),
                 awaiting_death: None,
@@ -235,6 +224,21 @@ impl FizzleState {
                 signal_handlers: array::from_fn(|_| SigDisposition::Default),
                 children: BTreeSet::new_in(global.alloc.alloc()),
             }), global.alloc.alloc()),
+            pthreads: HashMap::default(),
+            pthread_keys: HashMap::default(),
+            pthread_key_values: HashMap::default(),
+            pthread_cleanup: HashMap::default(),
+            rwlocks: HashMap::default(),
+            semaphores: HashMap::default(),
+            signals: HashMap::default(),
+            spinlocks: HashMap::default(),
+            terminated_threads: HashSet::default(),
+            thread_locks: Default::default(),
+            thread_tids: Default::default(),
+            tid_threads: Default::default(),
+            // Default umask is 0644
+            umask: AccessMode::GROUP_READ | AccessMode::USER_WRITE | AccessMode::USER_EXEC,
+            working_directory,
         };
 
         // TODO: do we need to initialize the INIT Pid?
@@ -845,7 +849,7 @@ impl FizzleState {
             // Remove the poller from the ready queue, leaving the others in the same order
             self.global.ready.retain(|r| match &r.info {
                 ReadyInfo::Poller(p) => &poller_id != p,
-                ReadyInfo::Worker(_) => true,
+                _ => true,
             });
         }
 
@@ -924,35 +928,36 @@ impl Debug for MainProcessState {
 }
 
 pub struct ProcessLocalState {
-    pub thread_locks: FxHashMap<ThreadId, std::rc::Rc<Semaphore, &'static TlsfHeap>>,
-
-    /// Indicates which thread(s) are awaiting the death of a specific thread (via pthread_join)
-    pub awaiting_thread_death: HashMap<ThreadId, Vec<ThreadId>, FxBuildHasher>,
-    /// State associated with the main process (e.g. the first process instantiated with the Fizzle harness).
-    pub main_state: Option<MainProcessState>,
     /// See `atexit()`
     pub atexit_handlers: Vec<AtExitFunction>,
-    /// See `on_exit()`
-    pub on_exit_handlers: Vec<(OnExitFunction, *mut libc::c_void)>,
+    /// See `atfork()`
+    pub atfork_handlers: Vec<AtForkInfo>,
+    /// Indicates which thread(s) are awaiting the death of a specific thread (via pthread_join)
+    pub awaiting_thread_death: HashMap<ThreadId, Vec<ThreadId>, FxBuildHasher>,
+    pub barriers: HashMap<BarrierPtr, BarrierInfo, FxBuildHasher>,
     /// A thread that has received a cancellation request.
     pub cancelling: Option<ThreadId>,
-    pub process_info: GlobalRc<ProcessInfo>,
-    pub fds: GlobalMap<Descriptor, DescriptorInfo>,
-    pub dirs: KeyedArena<DirectoryId, FilePath<MAX_PATH_LEN>, FIZZLE_MAX_DIRS>,
-    pub barriers: HashMap<BarrierPtr, BarrierInfo, FxBuildHasher>,
     pub condvars: HashMap<CondVarPtr, VecDeque<ThreadId>, FxBuildHasher>,
-    pub named_semaphores: HashMap<SemaphorePtr, Rc<SemaphoreId>>,
+    pub dirs: KeyedArena<DirectoryId, FilePath<MAX_PATH_LEN>, FIZZLE_MAX_DIRS>,
+    pub fds: GlobalMap<Descriptor, DescriptorInfo>,
     /// Files specifically designated as being emulated.
     pub file_objs: HashMap<FilePtr, FileObject, FxBuildHasher>,
+    pub futex_waiters: HashMap<FutexPtr, VecDeque<(u32, ThreadId)>, FxBuildHasher>,
+    /// The interval between `ITIMER_REAL` events.
+    pub itimer_real: Option<ItimerInfo>,
+    /// The interval between `ITIMER_VIRTUAL` events.
+    pub itimer_virtual: Option<ItimerInfo>,
+    /// The interval between `ITIMER_PROF` events.
+    pub itimer_prof: Option<ItimerInfo>,
+    /// State associated with the main process (e.g. the first process instantiated with the Fizzle harness).
+    pub main_state: Option<MainProcessState>,
     pub mutexes: HashMap<MutexPtr, MutexInfo, FxBuildHasher>,
-    pub rwlocks: HashMap<RwLockPtr, RwLockInfo, FxBuildHasher>,
-    pub semaphores: HashMap<SemaphorePtr, SemaphoreInfo>,
-    pub spinlocks: HashMap<SpinlockPtr, VecDeque<ThreadId>, FxBuildHasher>,
-    pub thread_tids: HashMap<ThreadId, Tid>,
-    pub tid_threads: HashMap<Tid, ThreadId>,
-    pub pthreads: HashMap<libc::pthread_t, ThreadInfo, FxBuildHasher>,
-    pub atfork_handlers: Vec<AtForkInfo>,
+    pub named_semaphores: HashMap<SemaphorePtr, Rc<SemaphoreId>>,
+    /// See `on_exit()`
+    pub on_exit_handlers: Vec<(OnExitFunction, *mut libc::c_void)>,
     pub pasture: HashMap<CowId, CowInfo>,
+    pub process_info: GlobalRc<ProcessInfo>,
+    pub pthreads: HashMap<libc::pthread_t, ThreadInfo, FxBuildHasher>,
     pub pthread_cleanup: HashMap<ThreadId, VecDeque<PThreadRoutine>, FxBuildHasher>,
     pub pthread_keys: HashMap<libc::pthread_key_t, PThreadRoutine, FxBuildHasher>,
     pub pthread_key_values: HashMap<
@@ -960,9 +965,15 @@ pub struct ProcessLocalState {
         HashMap<ThreadId, *mut libc::c_void, FxBuildHasher>,
         FxBuildHasher,
     >,
-    pub futex_waiters: HashMap<FutexPtr, VecDeque<(u32, ThreadId)>, FxBuildHasher>,
+    pub rwlocks: HashMap<RwLockPtr, RwLockInfo, FxBuildHasher>,
+    pub semaphores: HashMap<SemaphorePtr, SemaphoreInfo>,
     pub signals: HashMap<ThreadId, ThreadSigInfo, FxBuildHasher>,
+    pub spinlocks: HashMap<SpinlockPtr, VecDeque<ThreadId>, FxBuildHasher>,
     pub terminated_threads: HashSet<ThreadId, FxBuildHasher>,
+    /// Per-thread semaphores for synchronization.
+    pub thread_locks: FxHashMap<ThreadId, std::rc::Rc<Semaphore, &'static TlsfHeap>>,
+    pub thread_tids: HashMap<ThreadId, Tid>,
+    pub tid_threads: HashMap<Tid, ThreadId>,
     /// The current default permissions mask of the process.
     pub umask: AccessMode,
     /// The directory that the program is currently executing relative to.
@@ -1502,6 +1513,14 @@ impl Ord for ReadyItem {
 pub enum ReadyInfo {
     Poller(Rc<PollerId>),
     Worker(Worker),
+    Timer(Pid, TimerType),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TimerType {
+    Real,
+    Virtual,
+    Prof
 }
 
 #[derive(Clone)]

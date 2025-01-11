@@ -1,6 +1,10 @@
-use crate::handlers::time::GetTimeEvent;
+use std::time::Duration;
+
+use crate::errno::Errno;
+use crate::handlers::time::{GetItimerEvent, GetTimeEvent, ItimerValue, SetItimerEvent};
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
+use crate::state::TimerType;
 
 hook_macros::hook! {
     unsafe fn time(
@@ -160,28 +164,114 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn alarm(
-        _seconds: libc::c_uint
-    ) -> libc::c_uint => fizzle_alarm(_ctx) {
-        unimplemented!("alarm()");
+        seconds: libc::c_uint
+    ) -> libc::c_uint => fizzle_alarm(ctx) {
+        crate::strace!("alarm(seconds={}) -> ...", seconds);
+
+        // TODO: verify correctness of itimerval values
+
+        let new_value = ItimerValue { interval: Duration::ZERO, val: Duration::from_secs(seconds as u64) };
+
+        match Scheduler::handle_event(&mut ctx, SetItimerEvent::new(TimerType::Real, Some(new_value))) {
+            Ok(old_value) => {
+                crate::strace!("alarm(seconds={}) -> 0", seconds);
+                old_value.val.as_secs() as u32
+            },
+            Err(()) => unreachable!(),
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn setitimer(
-        _which: libc::c_int,
-        _new_value: *mut libc::itimerval,
-        _old_value: *mut libc::itimerval
-    ) -> libc::c_int => fizzle_setitimer(_ctx) {
-        unimplemented!("setitimer()");
+        which: libc::c_int,
+        new_value: *mut libc::itimerval,
+        old_value: *mut libc::itimerval
+    ) -> libc::c_int => fizzle_setitimer(ctx) {
+        crate::strace!("setitimer(which={}, new_value={:?}, old_value={:?}) -> ...", which, new_value, old_value);
+
+        let which_enum = match which {
+            libc::ITIMER_REAL => TimerType::Real,
+            libc::ITIMER_VIRTUAL => TimerType::Virtual,
+            libc::ITIMER_PROF => TimerType::Prof,
+            _ => {
+                crate::strace!("setitimer(which={}, new_value={:?}, old_value={:?}) -> -1 (EINVAL)", which, new_value, old_value);
+                Errno::EINVAL.set_errno();
+                return -1
+            }
+        };
+
+        // TODO: verify correctness of itimerval values
+
+        let new = new_value.as_mut().map(|n| ItimerValue {
+            interval: Duration::from_secs(n.it_interval.tv_sec as u64) + Duration::from_micros(n.it_interval.tv_usec as u64),
+            val: Duration::from_secs(n.it_value.tv_sec as u64) + Duration::from_micros(n.it_value.tv_usec as u64),
+        });
+
+        match Scheduler::handle_event(&mut ctx, SetItimerEvent::new(which_enum, new)) {
+            Ok(timer_val) => {
+                if let Some(val_mut) = old_value.as_mut() {
+                    *val_mut = libc::itimerval {
+                        it_interval: libc::timeval {
+                            tv_sec: timer_val.interval.as_secs() as i64,
+                            tv_usec: timer_val.interval.subsec_micros() as i64,
+                        },
+                        it_value: libc::timeval {
+                            tv_sec: timer_val.val.as_secs() as i64,
+                            tv_usec: timer_val.val.subsec_micros() as i64,
+                        }
+                    };
+                };
+
+                crate::strace!("setitimer(which={}, new_value={:?}, old_value={:?}) -> 0", which, new_value, old_value);
+                0
+            },
+            Err(()) => unreachable!(),
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn getitimer(
-        _which: libc::c_int,
-        _curr_value: *mut libc::itimerval
-    ) -> libc::c_int => fizzle_getitimer(_ctx) {
-        unimplemented!("getitimer()");
+        which: libc::c_int,
+        curr_value: *mut libc::itimerval
+    ) -> libc::c_int => fizzle_getitimer(ctx) {
+        crate::strace!("getitimer(which={}, curr_value={:?}) -> ...", which, curr_value);
+
+        let which_enum = match which {
+            libc::ITIMER_REAL => TimerType::Real,
+            libc::ITIMER_VIRTUAL => TimerType::Virtual,
+            libc::ITIMER_PROF => TimerType::Prof,
+            _ => {
+                crate::strace!("getitimer(which={}, curr_value={:?}) -> -1 (EINVAL)", which, curr_value);
+                Errno::EINVAL.set_errno();
+                return -1
+            }
+        };
+
+        match Scheduler::handle_event(&mut ctx, GetItimerEvent::new(which_enum)) {
+            Ok(timer_val) => {
+                if let Some(val_mut) = curr_value.as_mut() {
+                    *val_mut = libc::itimerval {
+                        it_interval: libc::timeval {
+                            tv_sec: timer_val.interval.as_secs() as i64,
+                            tv_usec: timer_val.interval.subsec_micros() as i64,
+                        },
+                        it_value: libc::timeval {
+                            tv_sec: timer_val.val.as_secs() as i64,
+                            tv_usec: timer_val.val.subsec_micros() as i64,
+                        }
+                    };
+                };
+
+                crate::strace!("getitimer(which={}, curr_value={:?}) -> 0", which, curr_value);
+                0
+            },
+            Err(e) => {
+                crate::strace!("getitimer(which={}, curr_value={:?}) -> -1 ({})", which, curr_value, e);
+                -1
+            },
+        }
     }
 }
 

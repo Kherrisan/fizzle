@@ -13,7 +13,6 @@ use crate::backend::{ConnectedBackend, FileBackend, FileFeedback, PendingBackend
 use crate::cell::{PanicOnceCell, SequentialRefCell};
 use crate::constants::{FIZZLE_MAX_FUZZ_ENDPOINTS, FIZZLE_MEMORY_ENV};
 use crate::handlers::file::{CowInfo, FileInfo};
-use crate::handlers::id::Worker;
 use crate::handlers::mutex::MutexStatus;
 use crate::handlers::process::*;
 use crate::handlers::signal::*;
@@ -51,55 +50,6 @@ impl FizzleSingleton {
     fn new() -> Self {
         FizzleSingleton { _private: () }
     }
-
-    /*
-    /// Creates the FizzleState instance for the given process.
-    ///
-    /// This function is called at most once per process, and is one of the very first instatiations
-    /// Fizzle runs. As such, it contains methods that need to be called on startup (logging, handling
-    /// children, etc.) and must be done prior to any other initialization routines.
-    fn instantiate() -> RefCell<FizzleState> {
-        // Initialize logger to print PID and TID with each message
-        env_logger::Builder::from_default_env()
-            .format(|buf, record| {
-                writeln!(
-                    buf,
-                    "[PID({:8})|{:4?}|{}] {}",
-                    process::id(),
-                    thread::current().id(),
-                    record.level().as_str().to_uppercase(),
-                    record.args()
-                )
-            })
-            .init();
-        log::info!("Logger initialized");
-
-        // Set signal mask to be inherited by all threads/processes of Fizzle
-        unsafe {
-            let new_set = (SignalSet::SIGPIPE | SignalSet::SIGCHLD).to_sigset();
-            let mut old_set = SignalSet::empty().to_sigset();
-            assert_eq!(
-                libc::pthread_sigmask(
-                    libc::SIG_SETMASK,
-                    ptr::addr_of!(new_set),
-                    ptr::addr_of_mut!(old_set)
-                ),
-                0
-            );
-        }
-
-        // Clean up child processes if the parent is ever killed
-        unsafe {
-            assert_eq!(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM), 0);
-        }
-
-        // Allocate and instantiate the FizzleState
-        let ctx = RefCell::new(FizzleState::new());
-
-        log::info!("FizzleSingleton::instantiate() complete");
-        ctx
-    }
-    */
 
     /// Acquires the global shared state for mutable access.
     ///
@@ -263,11 +213,16 @@ impl Scheduler {
     fn yield_worker(ctx: &mut FizzleSingleton, action: DelegationAction) {
         // SAFETY: `state` must not be accessed prior to 'yielded
         let current_thread_id = thread::current().id();
-
         let mut delegation_state = DelegationState::from(action);
-        let mut delegation_source: DelegationSource;
 
+        // TODO: the control flow of this method has become bad. Insanely bad. Tagged loops within
+        // tagged loops??? Variable initializion deep within the control flow of said loops? Add in
+        // the hearty use of `continue`s, `return`s and enum-based return values, and this thing is
+        // a nightmare.
+        //
+        // Need to refactor sometime soon...
         'yielded: loop {
+            let delegation_source: DelegationSource;
             // 1. Perform a delegation action
             let posted_sem = match delegation_state {
                 // The current worker is creating a new thread
@@ -281,44 +236,113 @@ impl Scheduler {
                 DelegationState::RunNextWorker => {
                     let mut state = ctx.acquire();
 
-                    let Some(dst_worker) = Self::next_ready_worker(&mut state) else {
-                        delegation_state = DelegationState::NoMoreWorkers;
-                        continue 'yielded;
+                    let worker_res = 'get_worker: loop {
+                        let Some(ReadyItem { info, timestamp }) = state.global.ready.pop() else {
+                            delegation_state = DelegationState::NoMoreWorkers;
+                            continue 'yielded;
+                        };
+
+                        // TODO: make this timeout value configurable (currently 10 seconds)
+                        if timestamp > state.global.current_time + Duration::from_secs(10) {
+                            state.global.ready.push(ReadyItem { info, timestamp });
+                            delegation_state = DelegationState::NoMoreWorkers;
+                            continue 'yielded;
+                        }
+                        if timestamp > state.global.current_time {
+                            state.global.current_time = timestamp;
+                        }
+
+                        match info {
+                            ReadyInfo::Worker(worker_id) => break 'get_worker Ok(worker_id),
+                            ReadyInfo::Poller(poller_id) => {
+                                log::trace!(
+                                    "Checking if poller {:?} is ready for execution...",
+                                    poller_id
+                                );
+                                let global = &mut state.global;
+
+                                let poller_info = global.pollers.get_mut(&poller_id).unwrap();
+
+                                for polled_id in poller_info.raised_events.iter() {
+                                    let polled_info = global.polled_events.get_mut(&polled_id).unwrap();
+                                    if polled_info.event_raised {
+                                        log::trace!("Poller {:?} is ready for execution", poller_id);
+                                        break 'get_worker Ok(poller_info.worker.clone())
+                                    }
+                                }
+
+                                log::trace!(
+                                    "Poller {:?} is not ready for execution--clearing events",
+                                    poller_id
+                                );
+                                poller_info.raised_events.clear();
+                            }
+                            ReadyInfo::Timer(pid, timer_type) => {
+                                let waking_sem = state.global.pids.get(&pid).unwrap().borrow().semaphore.clone();
+
+                                state.global.signal = Some((
+                                    SignalDestination::Process(pid),
+                                    RaisedSignalInfo::Timer(SigTimerInfo {
+                                        signum: match timer_type {
+                                            TimerType::Real => libc::SIGALRM,
+                                            TimerType::Virtual => libc::SIGVTALRM,
+                                            TimerType::Prof => libc::SIGPROF,
+                                        },
+                                        overrun: 0, // TODO: implement correctly
+                                        timer_id: match timer_type {
+                                            TimerType::Real => libc::ITIMER_REAL,
+                                            TimerType::Virtual => libc::ITIMER_VIRTUAL,
+                                            TimerType::Prof => libc::ITIMER_PROF,
+                                        },
+                                    })
+                                ));
+
+                                break 'get_worker Err(waking_sem)
+                            }
+                        };
                     };
 
-                    let Some(dst_proc_info) = state.global.pids.get(&dst_worker.pid).cloned() else {
-                        // The given worker was killed--continue on to the next one
-                        continue 'yielded;
-                    };
+                    match worker_res {
+                        Ok(dst_worker) => {
+                            let Some(dst_proc_info) = state.global.pids.get(&dst_worker.pid).cloned() else {
+                                // The given worker was killed--continue on to the next one
+                                continue 'yielded;
+                            };
 
-                    let worker_pid = dst_proc_info.borrow().pid;
+                            let worker_pid = dst_proc_info.borrow().pid;
 
-                    log::debug!("Scheduling next worker for execution");
+                            log::debug!("Scheduling next worker for execution");
 
-                    // Give the next process the info it needs to run the correct thread
-                    state.global.waking_id = Some(dst_worker.thread_id);
-                    let local_pid = dst_proc_info.borrow().pid;
+                            // Give the next process the info it needs to run the correct thread
+                            state.global.waking_id = Some(dst_worker.thread_id);
+                            let local_pid = dst_proc_info.borrow().pid;
 
-                    if worker_pid != local_pid {
-                        // Execution needs to move to another process
-                        let sem = dst_proc_info.borrow().semaphore.clone();
-                        drop(state);
-                        delegation_source = DelegationSource::Process;
-                        Some(sem)
+                            if worker_pid != local_pid {
+                                // Execution needs to move to another process
+                                let sem = dst_proc_info.borrow().semaphore.clone();
+                                drop(state);
+                                delegation_source = DelegationSource::Process;
+                                Some(sem)
 
-                    } else if dst_worker.thread_id != current_thread_id {
-                        // Execution needs to move to another thread
-                        let sem = state.local.thread_locks.get(&dst_worker.thread_id).unwrap().clone();
-                        drop(state);
-                        delegation_source = DelegationSource::Thread;
-                        Some(sem)
+                            } else if dst_worker.thread_id != current_thread_id {
+                                // Execution needs to move to another thread
+                                let sem = state.local.thread_locks.get(&dst_worker.thread_id).unwrap().clone();
+                                drop(state);
+                                delegation_source = DelegationSource::Thread;
+                                Some(sem)
 
-                    } else {
-                        state.global.waking_id = None;
-                        drop(state);
+                            } else {
+                                state.global.waking_id = None;
+                                drop(state);
 
-                        delegation_state = DelegationState::RunCurrentWorker;
-                        continue 'yielded;
+                                delegation_state = DelegationState::RunCurrentWorker;
+                                continue 'yielded;
+                            }
+                        }
+                        Err(sem) => {
+                            delegation_source = DelegationSource::Process;
+                            Some(sem)
+                        },
                     }
                 }
                 DelegationState::RunProcess(process_id) => {
@@ -932,6 +956,46 @@ impl Scheduler {
         let proc_siginfo = state.global.pids.get_mut(&current_pid).unwrap();
         let sig_handler = proc_siginfo.borrow().signal_handlers[signum as usize].clone();
 
+        if let RaisedSignalInfo::Timer(timer_info) = &raised_info {
+            // Set itimer to repeat if applicable
+            match timer_info.timer_id {
+                libc::ITIMER_REAL => {
+                    if let Some(real) = &state.local.itimer_real {
+                        let pid = state.local.process_info.borrow().pid;
+                        let current_time = state.global.current_time;
+                        let interval = real.interval;
+                        state.global.ready.push(ReadyItem {
+                            timestamp: current_time.saturating_add(interval),
+                            info: ReadyInfo::Timer(pid, TimerType::Real)
+                        });
+                    }
+                }
+                libc::ITIMER_VIRTUAL => {
+                    if let Some(virt) = &state.local.itimer_virtual {
+                        let pid = state.local.process_info.borrow().pid;
+                        let current_time = state.global.current_time;
+                        let interval = virt.interval;
+                        state.global.ready.push(ReadyItem {
+                            timestamp: current_time.saturating_add(interval),
+                            info: ReadyInfo::Timer(pid, TimerType::Virtual)
+                        });
+                    }
+                }
+                libc::ITIMER_PROF => {
+                    if let Some(prof) = &state.local.itimer_prof {
+                        let pid = state.local.process_info.borrow().pid;
+                        let current_time = state.global.current_time;
+                        let interval = prof.interval;
+                        state.global.ready.push(ReadyItem {
+                            timestamp: current_time.saturating_add(interval),
+                            info: ReadyInfo::Timer(pid, TimerType::Virtual)
+                        });
+                    }
+                }
+                _ => unreachable!("unknown itimer type"),
+            }
+        }
+
         let thread_siginfo = state.local.signals.get_mut(&current_thread_id).unwrap();
 
         match (
@@ -1073,51 +1137,6 @@ impl Scheduler {
         cmd.env("LD_PRELOAD", std::env::var("LD_PRELOAD").unwrap());
         cmd.env(FIZZLE_MEMORY_ENV, std::env::var(FIZZLE_MEMORY_ENV).unwrap());
         cmd.spawn().unwrap();
-    }
-
-    /// Fetches the next available worker with a completed task from Fizzle's state.
-    ///
-    /// If no workers are ready, this function will return `None`.
-    fn next_ready_worker(state: &mut FizzleState) -> Option<Worker> {
-        while let Some(ReadyItem { info, timestamp }) = state.global.ready.pop() {
-            // TODO: make this timeout value configurable (currentl 10 seconds)
-            if timestamp > state.global.current_time + Duration::from_secs(10) {
-                state.global.ready.push(ReadyItem { info, timestamp });
-                return None
-            }
-            if timestamp > state.global.current_time {
-                state.global.current_time = timestamp;
-            }
-
-            match info {
-                ReadyInfo::Worker(worker_id) => return Some(worker_id),
-                ReadyInfo::Poller(poller_id) => {
-                    log::trace!(
-                        "Checking if poller {:?} is ready for execution...",
-                        poller_id
-                    );
-                    let global = &mut state.global;
-
-                    let poller_info = global.pollers.get_mut(&poller_id).unwrap();
-
-                    for polled_id in poller_info.raised_events.iter() {
-                        let polled_info = global.polled_events.get_mut(&polled_id).unwrap();
-                        if polled_info.event_raised {
-                            log::trace!("Poller {:?} is ready for execution", poller_id);
-                            return Some(poller_info.worker.clone());
-                        }
-                    }
-
-                    log::trace!(
-                        "Poller {:?} is not ready for execution--clearing events",
-                        poller_id
-                    );
-                    poller_info.raised_events.clear();
-                }
-            }
-        }
-
-        return None;
     }
 
     /// Terminates the current thread, cleaning up its resources along the way.
