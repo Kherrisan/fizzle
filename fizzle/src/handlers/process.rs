@@ -683,7 +683,7 @@ impl Event for ProcessWaitEvent {
                     }
 
                     // Check to see if SIGCHLD is blocked in this process
-                    if state.local.process_info.borrow().signal_handlers[libc::SIGCHLD as usize] == SigDisposition::Ignore {
+                    if state.local.process_info.borrow().signal_handlers[libc::SIGCHLD as usize - 1] == SigDisposition::Ignore {
                         return Outcome::Error(Errno::ECHILD) // TODO: are these errors correct?
                     }
 

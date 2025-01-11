@@ -567,7 +567,7 @@ impl Event for SignalSetHandlerEvent {
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let mut proc_info_borrow = state.local.process_info.borrow_mut();
-        let handler = &mut proc_info_borrow.signal_handlers[self.signum as usize];
+        let handler = &mut proc_info_borrow.signal_handlers[self.signum as usize - 1];
 
         if let Some(mut tmp_handler) = self.disposition.clone() {
             mem::swap(&mut tmp_handler, handler);
@@ -791,7 +791,7 @@ impl Event for SignalWaitEvent {
 
                 for signal in self.wait_set {
                     if let Some(raised_info) =
-                        siginfo.raised[signal.lowest_signal_value() as usize].take()
+                        siginfo.raised[signal.lowest_signal_value() as usize - 1].take()
                     {
                         return Outcome::Success(raised_info);
                     }
@@ -886,7 +886,7 @@ impl Event for SignalSetSigmaskEvent {
         siginfo.blocked |= new; // Add newly blocked signals
         for signal in unblocked {
             siginfo.blocked -= signal; // Incrementally remove old signals, handling each if necessary
-            if let Some(raised_info) = siginfo.raised[signal.lowest_signal_value() as usize].take()
+            if let Some(raised_info) = siginfo.raised[signal.lowest_signal_value() as usize - 1].take()
             {
                 // This entire function runs for as many times as is needed to handle all signals
                 return Outcome::SendSignal(SignalDestination::Thread(pid, thread::current().id()), raised_info);
@@ -934,8 +934,9 @@ impl Event for SignalSuspendEvent {
 
                 let siginfo = state.local.signals.get_mut(&thread_id).unwrap();
                 for signal in unblocked {
+                    let signal_index = signal.lowest_signal_value().trailing_zeros() as usize;
                     if let Some(raised_info) =
-                        siginfo.raised[signal.lowest_signal_value() as usize].take()
+                        siginfo.raised[signal.lowest_signal_value() as usize - 1].take()
                     {
                         // This entire function runs for as many times as is needed to handle all signals
                         return Outcome::SendSignal(SignalDestination::Thread(pid, thread_id), raised_info);

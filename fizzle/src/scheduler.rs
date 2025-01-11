@@ -596,8 +596,8 @@ impl Scheduler {
                             // None of the threads were ready--assign the (blocked) signal to one of the threads
                             'assigned: {
                                 for siginfo in state.local.signals.values_mut() {
-                                    if siginfo.raised[signum as usize].is_none() {
-                                        siginfo.raised[signum as usize] = Some(raised_info);
+                                    if siginfo.raised[signum as usize - 1].is_none() {
+                                        siginfo.raised[signum as usize - 1] = Some(raised_info);
                                         break 'assigned DelegationState::RunNextWorker;
                                     }
                                 }
@@ -619,8 +619,8 @@ impl Scheduler {
 
                         if siginfo.blocked.contains(SignalSet::from_signum(signum)) {
                             // The signal was blocked--store it (if there's room)
-                            if siginfo.raised[signum as usize].is_none() {
-                                siginfo.raised[signum as usize] = Some(raised_info);
+                            if siginfo.raised[signum as usize - 1].is_none() {
+                                siginfo.raised[signum as usize - 1] = Some(raised_info);
                             } else {
                                 log::warn!(
                                     "Signal {} for TID {:?} was dropped",
@@ -904,7 +904,7 @@ impl Scheduler {
             .get(&dst_pid)
             .unwrap()
             .borrow()
-            .signal_handlers[signum as usize].clone();
+            .signal_handlers[signum as usize - 1].clone();
         if let SigDisposition::Ignore = disposition {
             return; // Ignores the signal without saving it
         }
@@ -954,7 +954,7 @@ impl Scheduler {
         let signum = raised_info.signum();
 
         let proc_siginfo = state.global.pids.get_mut(&current_pid).unwrap();
-        let sig_handler = proc_siginfo.borrow().signal_handlers[signum as usize].clone();
+        let sig_handler = proc_siginfo.borrow().signal_handlers[signum as usize - 1].clone();
 
         if let RaisedSignalInfo::Timer(timer_info) = &raised_info {
             // Set itimer to repeat if applicable
@@ -1005,7 +1005,7 @@ impl Scheduler {
                 .contains(SignalSet::from_signum(signum)),
         ) {
             (_, true) => {
-                if thread_siginfo.raised[signum as usize].is_some() {
+                if thread_siginfo.raised[signum as usize - 1].is_some() {
                     // If there is already a pending signal, the incoming one is dropped
                     log::warn!(
                         "Signal {} for {:?}, {:?} dropped",
@@ -1014,7 +1014,7 @@ impl Scheduler {
                         current_thread_id
                     );
                 } else {
-                    thread_siginfo.raised[signum as usize] = Some(raised_info);
+                    thread_siginfo.raised[signum as usize - 1] = Some(raised_info);
                     if thread_siginfo
                         .sigwait_set
                         .contains(SignalSet::from_signum(signum))
