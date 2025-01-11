@@ -5,7 +5,7 @@ use crate::errno::Errno;
 use crate::handlers::descriptor::{
     f_owner_ex, DescriptorCloseEvent, DescriptorDuplicateEvent, Descriptor, FcntlCommand, FcntlEvent
 };
-use crate::{hook_macros, state, strace};
+use crate::{hook_macros, strace};
 use crate::scheduler::{fizzle_singleton, Scheduler};
 
 hook_macros::hook! {

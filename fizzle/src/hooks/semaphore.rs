@@ -139,7 +139,7 @@ hook_macros::hook! {
 
         crate::strace!("sem_post(sem={:?}) -> ...", sem);
 
-        match Scheduler::handle_event(&mut ctx, SemCloseEvent::new(sem_ptr)) {
+        match Scheduler::handle_event(&mut ctx, SemPostEvent::new(sem_ptr)) {
             Ok(()) => {
                 crate::strace!("sem_post(sem={:?}) -> 0", sem);
                 0

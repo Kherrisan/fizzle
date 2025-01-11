@@ -664,7 +664,6 @@ impl Event for ProcessWaitEvent {
                         return Outcome::Success(None); // TODO: is this correct?
                     }
 
-                    let process_info = std::rc::Rc::downgrade(&state.local.process_info);
                     for child in children {
                         if let Some(child_info) = state.global.pids.get(child) {
                             child_info.borrow_mut().awaiting_death = Some(current_worker);
@@ -737,7 +736,7 @@ impl Event for ProcessWaitEvent {
                     self.state = ProcessWaitState::Finish;
                     Outcome::Yield(None)
                 }
-                WaitType::PidFd(_) => todo!("pid fd not implemented"),
+                WaitType::PidFd(fd) => todo!("pidfd for fd {} not implemented", fd.as_raw_fd()),
             },
             ProcessWaitState::Finish => {
                 let proc_info_borrow = state.local.process_info.borrow();

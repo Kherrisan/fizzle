@@ -1,11 +1,4 @@
-use std::ffi::{CStr, CString};
-use std::ptr;
-
-use fizzle_common::path::FilePath;
-
-use crate::backend::FileBackend;
-use crate::handlers::descriptor::{Descriptor, DescriptorInfo, FdResource};
-use crate::handlers::file::{FileObject, FilePtr};
+use crate::handlers::file::FilePtr;
 use crate::hook_macros;
 
 hook_macros::hook! {
@@ -38,50 +31,10 @@ hook_macros::hook! {
     unsafe fn fdopen(
         fd: libc::c_int,
         mode: *const libc::c_char
-    ) -> *mut libc::FILE => fizzle_fdopen(ctx) {
+    ) -> *mut libc::FILE => fizzle_fdopen(_ctx) {
         log::error!("fdopen() unimplemented");
         libc::fdopen(fd, mode)
 
-        /*
-        let mut state = ctx.acquire();
-
-        let descriptor_id = DescriptorId::from_raw_fd(fd);
-
-        let Some(fd_info) = state.local.fds.get(&descriptor_id) else {
-            log::warn!("file descriptor {} for fdopen() not in Fizzle local fds", fd);
-
-            let p = hook_macros::real!(fdopen)(fd, mode);
-
-            if p.is_null() {
-                log::debug!("fdopen({}, {:?}) -> NULL (errno {})", fd, CStr::from_ptr(mode), *libc::__errno_location());
-            } else {
-                log::debug!("fdopen({}, {:?}) -> {:?}", fd, CStr::from_ptr(mode), p);
-            }
-
-            return p
-            
-        };
-
-        let file = match fd_info.resource {
-            FdResource::File(_) => crate::unique_mem_create() as *mut libc::FILE,
-            _ => {
-                log::debug!("fdopen() called with unusual (non-file) file descriptor");
-                crate::unique_mem_create() as *mut libc::FILE
-            },
-        };
-
-        // TODO: parse and use `mode`
-        let file_id = FilePtr::from(file);
-
-        let None = state.local.file_objs.insert(file_id, FileObject::new(fd)) else {
-            log::error!("Multiple FILE* objects opened for one file descriptor");
-            panic!()
-        };
-
-        log::debug!("fdopen({}, {:?} -> {:?}", fd, CStr::from_ptr(mode), file);
-
-        file
-        */
     }
 }
 
@@ -89,98 +42,9 @@ hook_macros::hook! {
     unsafe fn fopen(
         pathname: *const libc::c_char,
         mode: *const libc::c_char
-    ) -> *mut libc::FILE => fizzle_fopen(ctx) {
+    ) -> *mut libc::FILE => fizzle_fopen(_ctx) {
         log::error!("fopen unimplemented");
         libc::fopen(pathname, mode)
-
-        /*
-        let mut state = ctx.acquire();
-
-        let path = CStr::from_ptr(pathname).to_str().unwrap();
-
-        // NOTE: temporary workaround for programs that check thread count via the status
-        if &path[..6] == "/proc/" && &path[path.len() - 7..] == "/status" {
-            let tmp_path = format!("/tmp/{}-status", libc::getpid());
-
-            let mut data = std::fs::read_to_string(path).unwrap();
-
-            if let Some(mut offset) = data.find("Threads:") {
-                offset += "Threads:".len();
-                let data_slice = &mut data.as_bytes_mut();
-
-                while data_slice[offset] != b'\n' {
-                    data_slice[offset] = b' ';
-                    offset += 1;
-                }
-                data_slice[offset - 1] = b'1';
-            }
-
-            std::fs::write(&tmp_path, data).unwrap();
-            let tmp_cstr = CString::new(tmp_path.as_str()).unwrap();
-            return hook_macros::real!(fopen)(tmp_cstr.as_ptr(), mode)
-        }
-
-        let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
-            log::warn!("fopen() received malformed or oversized filepath \"{}\"", path);
-            log::debug!("fopen(pathname={:?}, mode={:?}) -> NULL (ENAMETOOLONG)", CStr::from_ptr(pathname), CStr::from_ptr(mode));
-            *libc::__errno_location() = libc::ENAMETOOLONG; // TODO: split apart errors from backpathing too much (/../) vs too-long errors
-            return ptr::null_mut() as *mut libc::FILE
-        };
-
-        let path = if relative_path.is_absolute() {
-            relative_path
-
-        } else {
-            let Ok(path) = state.local.working_directory.clone().concat(&relative_path) else {
-                log::warn!("fopen() filepath oversized when converted to absolute path: \"{}\"", path);
-                log::debug!("fopen(pathname={:?}, mode={:?}) -> NULL (ENAMETOOLONG)", CStr::from_ptr(pathname), CStr::from_ptr(mode));
-                *libc::__errno_location() = libc::ENAMETOOLONG;
-                return ptr::null_mut()
-            };
-
-            path
-        };
-
-        let fd = if let Some(file_id) = state.global.file_paths.get(&path) {
-            let file_id = file_id.clone();
-            let fd = crate::create_descriptor();
-            state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
-                close_on_exec: false,
-                nonblocking: false,
-                is_passthrough: false,
-                resource: FdResource::File(file_id),
-            }).unwrap();
-
-            fd
-
-        } else {
-            let fd = libc::open(pathname, 0, 0); // TODO: account for mode here
-            if fd >= 0 {
-                let file_id = state.global.files.allocate(FileBackend::Passthrough).unwrap();
-
-                state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(fd), DescriptorInfo {
-                    close_on_exec: false,
-                    nonblocking: false,
-                    is_passthrough: true,
-                    resource: FdResource::File(file_id),
-                }).unwrap();
-            }
-
-            fd
-        };
-
-        let file = crate::unique_mem_create() as *mut libc::FILE;
-
-        let None = state.local.file_objs.insert(FilePtr::from(file), FileObject::new(fd)) else {
-            log::error!("non-unique virtual file handle allocated in fopen()");
-            panic!()
-        };
-
-        log::debug!("fopen(pathname={:?}, mode={:?}) -> {:?}", CStr::from_ptr(pathname), CStr::from_ptr(mode), file);
-
-        file
-
-        */
     }
 }
 
@@ -189,105 +53,32 @@ hook_macros::hook! {
         pathname: *const libc::c_char,
         mode: *const libc::c_char,
         stream: *mut libc::FILE
-    ) -> *mut libc::FILE => fizzle_freopen(ctx) {
+    ) -> *mut libc::FILE => fizzle_freopen(_ctx) {
         log::error!("freopen() unimplemented");
         libc::freopen(pathname, mode, stream)
-
-        /*
-        let state = ctx.acquire();
-
-        let file_id = FilePtr::from(stream);
-
-        let Some(_file) = state.local.file_objs.get(&file_id) else {
-            log::warn!("file stream {:?} for freopen() not in Fizzle local file streams", stream);
-
-            let p = hook_macros::real!(freopen)(pathname, mode, stream);
-
-            if p.is_null() {
-                log::debug!("freopen({:?}, {:?}, {:?}) -> NULL (errno {})", CStr::from_ptr(pathname), CStr::from_ptr(mode), stream, *libc::__errno_location());
-            } else {
-                log::debug!("freopen({:?}, {:?}, {:?}) -> {:?}", CStr::from_ptr(pathname), CStr::from_ptr(mode), stream, p);
-            }
-
-            return p
-        };
-
-        panic!("freopen() unimplemented")
-        */
     }
 }
 
 hook_macros::hook! {
     unsafe fn fclose(
         stream: *mut libc::FILE
-    ) -> libc::c_int => fizzle_fclose(ctx) {
+    ) -> libc::c_int => fizzle_fclose(_ctx) {
         log::error!("fclose() unimplemented");
         libc::fclose(stream)
-        /*
-        if stream.is_null() {
-            let state = ctx.acquire();
-            let keys: Vec<FilePtr> = state.local.file_objs.keys().cloned().collect();
-            drop(state);
-
-            for key in keys {
-                key.close(&mut ctx).unwrap();
-            }
-            0
-
-        } else {
-            let file_ptr = FilePtr::from(stream);
-
-            match file_ptr.close(&mut ctx) {
-                Ok(_) => 0,
-                Err(FileError::InvalidPtr) => {
-                    log::warn!("FILE* {:?} for fclose() not in Fizzle state", stream);
-
-                    if libc::fclose(stream) == 0 {
-                        log::debug!("fclose(stream={:?}) -> 0", stream);
-                        0
-                    } else {
-                        log::debug!("fclose(stream={:?}) -> -1 (errno {})", stream, *libc::__errno_location());
-                        -1
-                    }
-                }
-                Err(e) => {
-                    *libc::__errno_location() = e.as_os_error();
-                    log::debug!("fclose(stream={:?}) -> -1 ({})", stream, e);
-                    -1
-                }
-            }
-        }
-        */
     }
 }
 
 hook_macros::hook! {
-    unsafe fn fileno(stream: *mut libc::FILE) -> libc::c_int => fizzle_fileno(ctx) {
+    unsafe fn fileno(stream: *mut libc::FILE) -> libc::c_int => fizzle_fileno(_ctx) {
         log::error!("fileno() unimplemented");
         libc::fileno(stream)
-        /*
-        let state = ctx.acquire();
-
-        match state.local.file_objs.get(&FilePtr::from(stream)) {
-            Some(file) => file.fd,
-            None => hook_macros::real!(fileno)(stream),
-        }
-        */
     }
 }
 
 hook_macros::hook! {
-    unsafe fn fflush(stream: *mut libc::FILE) -> libc::c_int => fizzle_fflush(ctx) {
+    unsafe fn fflush(stream: *mut libc::FILE) -> libc::c_int => fizzle_fflush(_ctx) {
         log::error!("fflush() unimplemented");
         libc::fflush(stream)
-        /*
-        let state = ctx.acquire();
-
-        match state.local.file_objs.get(&FilePtr::from(stream)) {
-            Some(_) => 0,
-            None => hook_macros::real!(fflush)(stream),
-        }
-        */
     }
 }
 
@@ -297,18 +88,9 @@ hook_macros::hook! {
         size: libc::size_t,
         nmemb: libc::size_t,
         stream: *mut libc::FILE
-    ) -> libc::size_t => fizzle_fwrite(ctx) {
+    ) -> libc::size_t => fizzle_fwrite(_ctx) {
         log::error!("fwrite() unimplemented");
         libc::fwrite(ptr, size, nmemb, stream)
-        /*
-        let mut state = ctx.acquire();
-
-        let file_id = FilePtr::from(stream);
-        match state.local.file_objs.get_mut(&file_id) {
-            Some(_fd) => unimplemented!("fwrite()"),
-            None => hook_macros::real!(fwrite)(ptr, size, nmemb, stream),
-        }
-        */
     }
 }
 
@@ -318,101 +100,28 @@ hook_macros::hook! {
         size: libc::size_t,
         nmemb: libc::size_t,
         stream: *mut libc::FILE
-    ) -> libc::size_t => fizzle_fread(ctx) {
+    ) -> libc::size_t => fizzle_fread(_ctx) {
         log::error!("fread() unimplemented");
         libc::fread(ptr, size, nmemb, stream)
-        /*
-        let mut state = ctx.acquire();
-
-        let file_id = FilePtr::from(stream);
-        match state.local.file_objs.get_mut(&file_id) {
-            Some(_fd) => unimplemented!("fread()"),
-            None => hook_macros::real!(fread)(ptr, size, nmemb, stream),
-        }
-        */
     }
 }
 
 hook_macros::hook! {
     unsafe fn fgetc(
         stream: *mut libc::FILE
-    ) -> libc::c_int => fizzle_fgetc(ctx) {
+    ) -> libc::c_int => fizzle_fgetc(_ctx) {
         log::error!("fgetc() unimplemented");
         libc::fgetc(stream)
-        /*
-        let state = ctx.acquire();
-
-        let file_id = FilePtr::from(stream);
-
-        let Some(_file) = state.local.file_objs.get(&file_id) else {
-            log::warn!("file stream {:?} for fgetc() not in Fizzle local file streams", stream);
-
-            let c = hook_macros::real!(fgetc)(stream);
-
-            log::debug!("fgetc({:?}) -> {}", stream, c);
-
-            return c
-        };
-
-        unimplemented!("fgetc()")
-        */
     }
 }
-
-/*
-hook_macros::hook! {
-    unsafe fn getc(
-        stream: *mut libc::FILE
-    ) -> libc::c_int => fizzle_getc(ctx) {
-        log::error!("getc() unimplemented");
-        libc::getc(stream)
-        /*
-        let state = ctx.acquire();
-
-        let file_id = FilePtr::from(stream);
-
-        let Some(_file) = state.local.file_objs.get(&file_id) else {
-            log::warn!("file stream {:?} for getc() not in Fizzle local file streams", stream);
-
-            // NOTE: this is hooked for `fgetc()` rather than `getc()` as the latter may be a macro
-            let c = hook_macros::real!(fgetc)(stream);
-
-            log::debug!("getc({:?}) -> {}", stream, c);
-
-            return c
-        };
-
-        panic!("getc() unimplemented")
-        */
-    }
-}
-*/
 
 hook_macros::hook! {
     unsafe fn ungetc(
         c: libc::c_int,
         stream: *mut libc::FILE
-    ) -> libc::c_int => fizzle_ungetc(ctx) {
+    ) -> libc::c_int => fizzle_ungetc(_ctx) {
         log::error!("ungetc() unimplemented");
         libc::ungetc(c, stream)
-
-        /*
-        let state = ctx.acquire();
-
-        let file_id = FilePtr::from(stream);
-
-        let Some(_file) = state.local.file_objs.get(&file_id) else {
-            log::warn!("file stream {:?} for ungetc() not in Fizzle local file streams", stream);
-
-            let ret = hook_macros::real!(ungetc)(c, stream);
-
-            log::debug!("ungetc({}, {:?}) -> {}", c, stream, ret);
-
-            return ret
-        };
-
-        panic!("ungetc() unimplemented")
-        */
     }
 }
 
@@ -420,57 +129,11 @@ hook_macros::hook! {
     unsafe fn fputc(
         c: libc::c_int,
         stream: *mut libc::FILE
-    ) -> libc::c_int => fizzle_fputc(ctx) {
+    ) -> libc::c_int => fizzle_fputc(_ctx) {
         log::error!("fputc() unimplemented");
         libc::fputc(c, stream)
-        /*
-        let state = ctx.acquire();
-
-        let file_id = FilePtr::from(stream);
-
-        let Some(_file) = state.local.file_objs.get(&file_id) else {
-            log::warn!("file stream {:?} for fputc() not in Fizzle local file streams", stream);
-
-            let ret = hook_macros::real!(fputc)(c, stream);
-
-            log::debug!("fputc({}, {:?}) -> {}", c, stream, ret);
-
-            return ret
-        };
-
-        panic!("fputc() unimplemented")
-        */
     }
 }
-
-/*
-hook_macros::hook! {
-    unsafe fn putc(
-        c: libc::c_int,
-        stream: *mut libc::FILE
-    ) -> libc::c_int => fizzle_putc(ctx) {
-        log::error!("pugc() unimplemented");
-        libc::putc(c, stream)
-        /*
-        let state = ctx.acquire();
-
-        let file_id = FilePtr::from(stream);
-
-        let Some(_file) = state.local.file_objs.get(&file_id) else {
-            log::warn!("file stream {:?} for putc() not in Fizzle local file streams", stream);
-
-            let ret = hook_macros::real!(fputc)(c, stream);
-
-            log::debug!("putc({}, {:?}) -> {}", c, stream, ret);
-
-            return ret
-        };
-
-        panic!("putc() unimplemented")
-        */
-    }
-}
-*/
 
 hook_macros::hook! {
     unsafe fn putchar(
@@ -484,26 +147,9 @@ hook_macros::hook! {
     unsafe fn fputs(
         s: *const libc::c_char,
         stream: *mut libc::FILE
-    ) -> libc::c_int => fizzle_fputs(ctx) {
+    ) -> libc::c_int => fizzle_fputs(_ctx) {
         log::error!("fputs() unimplemented");
         libc::fputs(s, stream)
-        /*
-        let state = ctx.acquire();
-
-        let file_id = FilePtr::from(stream);
-
-        let Some(_file) = state.local.file_objs.get(&file_id) else {
-            log::warn!("file stream {:?} for fputs() not in Fizzle local file streams", stream);
-
-            let ret = hook_macros::real!(fputs)(s, stream);
-
-            log::debug!("fputs({:?}, {:?}) -> {}", CStr::from_ptr(s), stream, ret);
-
-            return ret
-        };
-
-        unimplemented!("fputs()")
-        */
     }
 }
 

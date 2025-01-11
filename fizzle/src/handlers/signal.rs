@@ -54,8 +54,6 @@ impl Default for sigval {
     }
 }
 
-type T = libc::siginfo_t;
-
 #[allow(non_camel_case_types)]
 #[repr(C)]
 #[derive(Default)]
@@ -686,6 +684,7 @@ impl Event for SignalSendEvent {
                     }
                 }
 
+                self.state = SignalSendState::SendSignals(destinations);
                 Outcome::Continue
             }
             SignalSendState::SendSignals(destinations) => {
@@ -934,7 +933,6 @@ impl Event for SignalSuspendEvent {
 
                 let siginfo = state.local.signals.get_mut(&thread_id).unwrap();
                 for signal in unblocked {
-                    let signal_index = signal.lowest_signal_value().trailing_zeros() as usize;
                     if let Some(raised_info) =
                         siginfo.raised[signal.lowest_signal_value() as usize - 1].take()
                     {

@@ -1,7 +1,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::thread::ThreadId;
 use std::{ptr, thread};
 
@@ -115,6 +115,7 @@ impl PThreadRoutine {
     }
 }
 
+/*
 /// A hasher that correctly outputs the internal value of a [`ThreadId`] for its hash.
 pub struct ThreadHasher {
     value: u64,
@@ -162,6 +163,7 @@ pub fn index_of_thread(thread: &ThreadId) -> usize {
     thread.hash(&mut hasher);
     hasher.finish() as usize
 }
+*/
 
 #[derive(Clone)]
 #[repr(C)]
@@ -402,8 +404,8 @@ impl Event for ThreadJoinEvent {
                         }
                     }
 
-                    drop(state);
                     Outcome::Yield(None)
+
                 } else {
                     state.local.terminated_threads.remove(&target_thread.id);
                     Outcome::Continue

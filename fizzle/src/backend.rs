@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::LinkedList;
 use std::fmt::Debug;
 
@@ -9,8 +8,8 @@ use crate::handlers::buffer::BufferId;
 use crate::handlers::fuzz_endpoint::FuzzEndpointId;
 use crate::handlers::plugin::PluginEndpointId;
 use crate::handlers::polled::PolledId;
-use crate::handlers::socket::{ConnectionlessMessage, SocketId, SocketInfo};
-use crate::{GlobalVec, GlobalWeak};
+use crate::handlers::socket::{ConnectionlessMessage, SocketInfo};
+use crate::GlobalWeak;
 
 use self::private::Sealed;
 

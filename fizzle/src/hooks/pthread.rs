@@ -232,36 +232,33 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn pthread_tryjoin_np(
-        thread: libc::pthread_t,
-        retval: *mut *mut libc::c_void
+        _thread: libc::pthread_t,
+        _retval: *mut *mut libc::c_void
     ) -> libc::c_int => fizzle_pthread_tryjoin_np(_ctx) {
-        crate::report_strict_failure("`pthread_tryjoin_np` unimplemented");
-        hook_macros::real!(pthread_tryjoin_np)(thread, retval)
+        panic!("`pthread_tryjoin_np` unimplemented");
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_timedjoin_np(
-        thread: libc::pthread_t,
-        retval: *mut *mut libc::c_void,
-        abstime: *const libc::timespec
+        _thread: libc::pthread_t,
+        _retval: *mut *mut libc::c_void,
+        _abstime: *const libc::timespec
     ) -> libc::c_int => fizzle_pthread_timedjoin_np(_ctx) {
 
-        crate::report_strict_failure("`pthread_timedjoin_np` unimplemented");
-        hook_macros::real!(pthread_timedjoin_np)(thread, retval, abstime)
+        panic!("`pthread_timedjoin_np` unimplemented");
     }
 }
 
 hook_macros::hook! {
     unsafe fn pthread_clockjoin_np(
-        thread: libc::pthread_t,
-        retval: *mut *mut libc::c_void,
-        clock_id: *mut libc::clockid_t,
-        abstime: *const libc::timespec
+        _thread: libc::pthread_t,
+        _retval: *mut *mut libc::c_void,
+        _clock_id: *mut libc::clockid_t,
+        _abstime: *const libc::timespec
     ) -> libc::c_int => fizzle_pthread_clockjoin_np(_ctx) {
 
-        crate::report_strict_failure("`pthread_clockjoin_np` unimplemented");
-        hook_macros::real!(pthread_clockjoin_np)(thread, retval, clock_id, abstime)
+        panic!("`pthread_clockjoin_np` unimplemented");
     }
 }
 

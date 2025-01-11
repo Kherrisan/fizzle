@@ -16,8 +16,6 @@ use crate::handlers::signal::*;
 use crate::hook_macros;
 use crate::scheduler::{fizzle_singleton, Scheduler};
 
-const MAX_ARGS: usize = 512;
-
 pub type CloneFunction = unsafe extern "C" fn(*mut libc::c_void) -> libc::c_int;
 
 hook_macros::hook! {

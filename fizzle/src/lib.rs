@@ -79,43 +79,6 @@ pub enum WaitDuration {
     Indefinite,
 }
 
-pub fn report_strict_failure(explanation: &'static str) {
-    debug_assert!(false, "{}", explanation);
-    log::error!("{}", explanation);
-}
-
-/// Converts the given errno value into string representation.
-///
-/// This function acts like `strerrorname_np`, except without the race conditions or platform incompatibilities.
-fn errno_str() -> &'static str {
-    let errno = unsafe { *libc::__errno_location() };
-    match errno {
-        libc::E2BIG => "E2BIG",
-        libc::EACCES => "EACCESS",
-        libc::EADDRINUSE => "EADDRINUSE",
-        libc::EADDRNOTAVAIL => "EADDRNOTAVAIL",
-        libc::EAFNOSUPPORT => "EAFNOSUPPORT",
-        libc::EAGAIN => "EAGAIN",
-        libc::EALREADY => "EALREADY",
-        libc::EBADE => "EBADE",
-        libc::EBADF => "EBADF",
-        libc::EBADFD => "EBADFD",
-        libc::EBADMSG => "EBADMSG",
-        libc::EBADR => "EBADR",
-        libc::EBADRQC => "EBADRQC",
-        libc::EINVAL => "EINVAL",
-        libc::EMFILE => "EMFILE",
-        libc::ENFILE => "ENFILE",
-        libc::ENOBUFS => "ENOBUFS",
-        libc::ENOMEM => "ENOMEM",
-        libc::EPROTONOSUPPORT => "EPROTONOSUPPORT",
-        _ => panic!(
-            "Fizzle internal error: add errno string for errno number {}",
-            errno
-        ),
-    }
-}
-
 /// Creates a new location in memory that is guaranteed to be unique to others.
 /// This is particularly useful in emulating hooks that require a pointer as a return value.
 /// Memory locations should be destroyed with `unique_mem_destroy()` once finished using.
