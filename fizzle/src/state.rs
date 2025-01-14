@@ -39,7 +39,6 @@ use crate::handlers::fuzz_endpoint::{FuzzEndpointId, FuzzEndpointInfo};
 use crate::handlers::id::Worker;
 use crate::handlers::mq::{MqId, MqInfo};
 use crate::handlers::mutex::{MutexInfo, MutexPtr};
-use crate::handlers::pipe::{PipeId, PipeInfo};
 use crate::handlers::plugin::{PluginEndpointId, PluginInfo};
 use crate::handlers::polled::PolledInfo;
 use crate::handlers::poller::PollerInfo;
@@ -1021,7 +1020,6 @@ pub struct InterprocessState {
     pub open_files: KeyedArena<OpenFileId, OpenFileInfo, FIZZLE_MAX_OPEN_FILES>,
     // TODO: BTreeMap would be unwise--SemaphorePath has an expensive `eq` comparison
     pub sem_paths: FnvIndexMap<SemaphorePath, GlobalRc<SemaphoreInfo>, FIZZLE_MAX_NAMED_SEMAPHORES>,
-    pub pipes: KeyedArena<PipeId, PipeInfo, FIZZLE_MAX_PIPES>,
     pub message_queues: KeyedArena<MqId, MqInfo, FIZZLE_MAX_MESSAGE_QUEUES>,
     // TODO: SO_REUSEPORT breaks this...
     pub socket_locations:
@@ -1110,7 +1108,6 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).afl_shmem_initialized) = false;
             *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
             *ptr::addr_of_mut!((*state).sem_paths) = FnvIndexMap::new();
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).pipes));
             KeyedArena::initialize(ptr::addr_of_mut!((*state).message_queues));
             *ptr::addr_of_mut!((*state).socket_locations) = FnvIndexMap::new();
             KeyedArena::initialize(ptr::addr_of_mut!((*state).sockets));

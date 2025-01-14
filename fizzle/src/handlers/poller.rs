@@ -1090,14 +1090,8 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
         },
         */
         FdResource::MessageQueue(_) => todo!(),
-        FdResource::Pipe(pipe_id) => PolledStatus::Pollable(
-            state
-                .global
-                .pipes
-                .get(&pipe_id)
-                .unwrap()
-                .read_polled
-                .clone(),
+        FdResource::Pipe(pipe_info) => PolledStatus::Pollable(
+            pipe_info.borrow().read_polled.clone()
         ),
         FdResource::Stdin => match &state.global.stdio {
             StdioBackend::Passthrough => PolledStatus::ImmediatelyPollable,
@@ -1228,17 +1222,9 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
         },
         */
         FdResource::MessageQueue(_) => todo!(),
-        FdResource::Pipe(pipe_id) => {
-            if let Some(peer_id) = &state.global.pipes.get(&pipe_id).unwrap().peer {
-                PolledStatus::Pollable(
-                    state
-                        .global
-                        .pipes
-                        .get(&peer_id)
-                        .unwrap()
-                        .write_polled
-                        .clone(),
-                )
+        FdResource::Pipe(pipe_info) => {
+            if let Some(peer) = pipe_info.borrow().peer.upgrade() {
+                PolledStatus::Pollable(peer.borrow().write_polled.clone())
             } else {
                 PolledStatus::ImmediatelyPollable
             }

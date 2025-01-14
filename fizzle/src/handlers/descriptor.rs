@@ -62,7 +62,7 @@ pub enum FdResource {
     #[allow(unused)]
     MessageQueue(Rc<MqId>),
     /// Anonymous pipes, such as those created with `pipe()`.
-    Pipe(Rc<PipeId>),
+    Pipe(GlobalRc<PipeInfo>),
     /// The standard input of the parent process (which may be inherited by children).
     Stdin,
     /// The standard output of the parent process. (which may be inherited by children).
@@ -485,9 +485,9 @@ impl Event for DescriptorReadEvent<'_> {
                             self.data.take().unwrap(),
                         ));
                     }
-                    FdResource::Pipe(pipe_id) => {
+                    FdResource::Pipe(pipe_info) => {
                         self.state = DescriptorReadState::Pipe(PipeReadEvent::new(
-                            pipe_id.clone(),
+                            pipe_info.clone(),
                             fd_info.nonblocking,
                             self.data.take().unwrap(),
                         ));
@@ -826,9 +826,9 @@ impl Event for DescriptorWriteEvent<'_> {
                             self.data.take().unwrap(),
                         ));
                     }
-                    FdResource::Pipe(pipe_id) => {
+                    FdResource::Pipe(pipe_info) => {
                         self.state = DescriptorWriteState::Pipe(PipeWriteEvent::new(
-                            pipe_id.clone(),
+                            pipe_info.clone(),
                             fd_info.nonblocking,
                             self.data.take().unwrap(),
                         ));

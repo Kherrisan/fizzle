@@ -1,11 +1,12 @@
 use std::cell::RefCell;
 use std::cmp;
+use std::rc::Weak;
 
 use crate::arena::{ArenaKey, Rc};
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
-use crate::GlobalRc;
+use crate::{GlobalRc, GlobalWeak};
 
 use bitflags::bitflags;
 
@@ -32,7 +33,7 @@ pub struct PipeInfo {
     /// The peer pipe that this pipe is connected to.
     ///
     /// If this value is `None`, then the pipe has broken (e.g., the other end has shut).
-    pub peer: Option<Rc<PipeId>>,
+    pub peer: GlobalWeak<PipeInfo>,
     /// The buffer this pipe reads in data from.
     pub read_buf: Rc<BufferId>,
     pub read_polled: GlobalRc<PolledInfo>,
@@ -89,9 +90,9 @@ impl Event for PipeCreateEvent {
         let fd1 = crate::create_descriptor();
         let fd2 = crate::create_descriptor();
 
-        let first_pipe = PipeInfo {
+        let first_pipe = std::rc::Rc::new_in(RefCell::new(PipeInfo {
             mode,
-            peer: None,
+            peer: Weak::new_in(alloc),
             read_buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
             read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
                 pollers: Vec::new_in(alloc),
@@ -101,13 +102,11 @@ impl Event for PipeCreateEvent {
                 pollers: Vec::new_in(alloc),
                 event_raised: true,
             }), alloc),
-        };
+        }), alloc);
 
-        let first_pipe_id = state.global.pipes.allocate(first_pipe).unwrap();
-
-        let second_pipe = PipeInfo {
+        let second_pipe = std::rc::Rc::new_in(RefCell::new(PipeInfo {
             mode,
-            peer: Some(first_pipe_id.clone()),
+            peer: std::rc::Rc::downgrade(&first_pipe),
             read_buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
             read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
                 pollers: Vec::new_in(alloc),
@@ -117,25 +116,23 @@ impl Event for PipeCreateEvent {
                 pollers: Vec::new_in(alloc),
                 event_raised: true,
             }), alloc),
-        };
-
-        let second_pipe_id = state.global.pipes.allocate(second_pipe).unwrap();
+        }), alloc);
 
         // `unwrap()` guaranteed to succeed--we *just* inserted the pipe
-        state.global.pipes.get_mut(&first_pipe_id).unwrap().peer = Some(second_pipe_id.clone());
+        first_pipe.borrow_mut().peer = std::rc::Rc::downgrade(&second_pipe);
 
         let fd1_info = DescriptorInfo {
             close_on_exec,
             nonblocking,
             is_passthrough: false,
-            resource: FdResource::Pipe(first_pipe_id),
+            resource: FdResource::Pipe(first_pipe),
         };
 
         let fd2_info = DescriptorInfo {
             close_on_exec,
             nonblocking,
             is_passthrough: false,
-            resource: FdResource::Pipe(second_pipe_id),
+            resource: FdResource::Pipe(second_pipe),
         };
 
         let desc1 = Descriptor::from_raw_fd(fd1);
@@ -155,7 +152,7 @@ pub enum PipeReadState {
 }
 
 pub struct PipeReadEvent<'a> {
-    pipe_id: Rc<PipeId>,
+    pipe_info: GlobalRc<PipeInfo>,
     nonblocking: bool,
     data: ReadData<'a>,
     state: PipeReadState,
@@ -163,9 +160,9 @@ pub struct PipeReadEvent<'a> {
 
 impl<'a> PipeReadEvent<'a> {
     #[inline]
-    pub fn new(pipe_id: Rc<PipeId>, nonblocking: bool, data: ReadData<'a>) -> Self {
+    pub fn new(pipe_info: GlobalRc<PipeInfo>, nonblocking: bool, data: ReadData<'a>) -> Self {
         Self {
-            pipe_id,
+            pipe_info,
             nonblocking,
             data,
             state: PipeReadState::Start,
@@ -186,9 +183,8 @@ impl Event for PipeReadEvent<'_> {
 
         match &self.state {
             PipeReadState::Start => {
-                let pipe_info = state.global.pipes.get_mut(&self.pipe_id).unwrap();
-                let peer_is_closed = pipe_info.peer.is_none();
-                let read_polled = pipe_info.read_polled.clone();
+                let peer_is_closed = self.pipe_info.borrow().peer.upgrade().is_none();
+                let read_polled = self.pipe_info.borrow().read_polled.clone();
 
                 if state.polled_is_ready(&read_polled) {
                     self.state = PipeReadState::Finish(None);
@@ -205,18 +201,17 @@ impl Event for PipeReadEvent<'_> {
                     Outcome::Yield(None)
                 }
             }
-            PipeReadState::Finish(poller_id) => {
-                if let Some(poller_id) = poller_id {
-                    state.delete_poller(poller_id.clone());
+            PipeReadState::Finish(poller) => {
+                if let Some(poller) = poller {
+                    state.delete_poller(poller.clone());
                 }
 
-                let pipe_info = state.global.pipes.get_mut(&self.pipe_id).unwrap();
-                let peer_is_closed = pipe_info.peer.is_none();
-                let pipe_mode = pipe_info.mode;
+                let peer_is_closed = self.pipe_info.borrow().peer.upgrade().is_none();
+                let pipe_mode = self.pipe_info.borrow().mode;
 
-                let buffer_id = pipe_info.read_buf.clone();
-                let write_polled = pipe_info.write_polled.clone();
-                let read_polled = pipe_info.read_polled.clone();
+                let buffer_id = self.pipe_info.borrow().read_buf.clone();
+                let write_polled = self.pipe_info.borrow().write_polled.clone();
+                let read_polled = self.pipe_info.borrow().read_polled.clone();
 
                 let buf = state.global.buffers.get_mut(&buffer_id).unwrap();
                 if buf.is_empty() {
@@ -274,7 +269,7 @@ enum PipeWriteState {
 }
 
 pub struct PipeWriteEvent<'a> {
-    pipe_id: Rc<PipeId>,
+    pipe_info: GlobalRc<PipeInfo>,
     nonblocking: bool,
     data: WriteData<'a>,
     data_start: (usize, usize),
@@ -284,9 +279,9 @@ pub struct PipeWriteEvent<'a> {
 
 impl<'a> PipeWriteEvent<'a> {
     #[inline]
-    pub fn new(pipe_id: Rc<PipeId>, nonblocking: bool, data: WriteData<'a>) -> Self {
+    pub fn new(pipe_info: GlobalRc<PipeInfo>, nonblocking: bool, data: WriteData<'a>) -> Self {
         Self {
-            pipe_id,
+            pipe_info,
             nonblocking,
             data,
             data_start: (0, 0),
@@ -311,21 +306,19 @@ impl Event for PipeWriteEvent<'_> {
 
         match &self.state {
             PipeWriteState::Start => {
-                let pipe_info = state.global.pipes.get_mut(&self.pipe_id).unwrap();
-                let write_polled = pipe_info.write_polled.clone();
+                let write_polled = self.pipe_info.borrow().write_polled.clone();
 
-                let Some(peer_id) = pipe_info.peer.clone() else {
+                let Some(peer_info) = self.pipe_info.borrow().peer.upgrade() else {
                     // TODO: send signal here?
                     return Outcome::Error(Errno::EPIPE);
                 };
 
-                let peer_info = state.global.pipes.get(&peer_id).unwrap();
-                let buffer_id = &peer_info.read_buf;
-                let buf = state.global.buffers.get(&buffer_id).unwrap();
-                let pipe_mode = peer_info.mode;
+                let buffer_id = &peer_info.borrow().read_buf;
+                let peer_buf = state.global.buffers.get(&buffer_id).unwrap();
+                let peer_mode = peer_info.borrow().mode;
 
-                if buf.remaining_len() >= 2 + cmp::min(libc::PIPE_BUF, remaining_len)
-                    || pipe_mode == PipeMode::Streamed && state.polled_is_ready(&write_polled)
+                if peer_buf.remaining_len() >= 2 + cmp::min(libc::PIPE_BUF, remaining_len)
+                    || peer_mode == PipeMode::Streamed && state.polled_is_ready(&write_polled)
                 {
                     self.state = PipeWriteState::NextPayload(None);
                     return Outcome::Continue;
@@ -344,24 +337,20 @@ impl Event for PipeWriteEvent<'_> {
                     Outcome::Yield(None)
                 }
             }
-            PipeWriteState::NextPayload(poller_id) => {
-                if let Some(poller_id) = poller_id {
-                    state.delete_poller(poller_id.clone());
+            PipeWriteState::NextPayload(poller) => {
+                if let Some(poller) = poller {
+                    state.delete_poller(poller.clone());
                 }
 
-                let pipe_info = state.global.pipes.get_mut(&self.pipe_id).unwrap();
-                let write_polled = pipe_info.write_polled.clone();
-
-                let Some(peer_id) = state.global.pipes.get(&self.pipe_id).unwrap().peer.clone()
-                else {
+                let write_polled = self.pipe_info.borrow().write_polled.clone();
+                let Some(peer) = self.pipe_info.borrow().peer.upgrade() else {
                     // TODO: send signal here?
                     return Outcome::Error(Errno::EPIPE);
                 };
 
-                let peer_info = state.global.pipes.get(&peer_id).unwrap();
-                let read_polled = peer_info.read_polled.clone();
-                let buffer_id = peer_info.read_buf.clone();
-                let pipe_mode = peer_info.mode;
+                let read_polled = peer.borrow().read_polled.clone();
+                let buffer_id = peer.borrow().read_buf.clone();
+                let pipe_mode = peer.borrow().mode;
                 let buf = state.global.buffers.get_mut(&buffer_id).unwrap();
 
                 if pipe_mode == PipeMode::Direct
