@@ -668,7 +668,7 @@ impl Scheduler {
 
         // Reset fuzz endpoint state (e.g. endpoints configured with the `fuzz` option)
         let mut polled_ready = Vec::new_in(alloc);
-        for endpoint_info in state.global.fuzz_endpoints.values_mut() {
+        for endpoint_info in state.global.fuzz_endpoints.iter_mut() {
             endpoint_info.read_idx = 0;
             polled_ready
                 .push(endpoint_info.read_polled.clone());
@@ -783,13 +783,8 @@ impl Scheduler {
                                 global.raise_polled(&read_polled);
                                 global.raise_polled(&write_polled);
                             }
-                            ConnectedBackend::Fuzz(fuzz_endpoint_id) => {
-                                let read_polled = global
-                                    .fuzz_endpoints
-                                    .get(&fuzz_endpoint_id)
-                                    .unwrap()
-                                    .read_polled
-                                    .clone();
+                            ConnectedBackend::Fuzz(fuzz_endpoint) => {
+                                let read_polled = fuzz_endpoint.borrow().read_polled.clone();
                                 global.raise_polled(&read_polled);
                             }
                             _ => unreachable!(),

@@ -663,13 +663,8 @@ impl Event for StdinReadEvent<'_> {
 
                 Outcome::Success(total_read)
             }
-            (StdinReadState::Start, StdioBackend::Fuzz(fuzz_endpoint_id)) => {
-                let FuzzEndpointInfo { read_polled, .. } = state
-                    .global
-                    .fuzz_endpoints
-                    .get(&fuzz_endpoint_id)
-                    .unwrap()
-                    .clone();
+            (StdinReadState::Start, StdioBackend::Fuzz(fuzz_endpoint)) => {
+                let read_polled = fuzz_endpoint.borrow().read_polled.clone();
 
                 if state.polled_is_ready(&read_polled) {
                     self.state = StdinReadState::Finish(None);
@@ -684,20 +679,15 @@ impl Event for StdinReadEvent<'_> {
                     Outcome::Yield(None)
                 }
             }
-            (StdinReadState::Finish(poller_id), StdioBackend::Fuzz(fuzz_endpoint_id)) => {
-                if let Some(poller_id) = poller_id {
-                    state.delete_poller(poller_id.clone());
+            (StdinReadState::Finish(poller), StdioBackend::Fuzz(fuzz_endpoint)) => {
+                if let Some(poller) = poller {
+                    state.delete_poller(poller.clone());
                 }
 
                 let FuzzEndpointInfo {
                     mut read_idx,
                     read_polled,
-                } = state
-                    .global
-                    .fuzz_endpoints
-                    .get(&fuzz_endpoint_id)
-                    .unwrap()
-                    .clone();
+                } = fuzz_endpoint.borrow().clone();
 
                 let buf = state.global.fuzz_input.as_slice();
                 let buflen = buf.len();
@@ -715,13 +705,8 @@ impl Event for StdinReadEvent<'_> {
                     total_read += data_len;
                 }
 
-                let fuzz_endpoint = state
-                    .global
-                    .fuzz_endpoints
-                    .get_mut(&fuzz_endpoint_id)
-                    .unwrap();
-                fuzz_endpoint.read_idx = read_idx;
-                if fuzz_endpoint.read_idx == buflen {
+                fuzz_endpoint.borrow_mut().read_idx = read_idx;
+                if read_idx == buflen {
                     state.lower_polled(&read_polled);
                 }
 

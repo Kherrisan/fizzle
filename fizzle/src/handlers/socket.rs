@@ -1986,8 +1986,8 @@ impl Event for SocketReadEvent<'_> {
                     ConnectionlessBackend::Feedback(feedback) => {
                         Some(feedback.read_polled.clone())
                     }
-                    ConnectionlessBackend::Fuzz(endpoint_id) => {
-                        Some(state.global.fuzz_endpoints.get(endpoint_id).unwrap().read_polled.clone())
+                    ConnectionlessBackend::Fuzz(endpoint) => {
+                        Some(endpoint.borrow().read_polled.clone())
                     }
                     ConnectionlessBackend::NullSink => None,
                     ConnectionlessBackend::Passthrough => unimplemented!(),
@@ -2167,18 +2167,15 @@ impl Event for SocketReadEvent<'_> {
                     }
                 }
             }
-            (SocketReadState::Finish(_poller_id), SocketState::Connectionless(ConnectionlessSocket { backend: ConnectionlessBackend::Fuzz(fuzz_endpoint_id), .. })) => {
-                let fuzz_endpoint_info = state.global.fuzz_endpoints.get_mut(fuzz_endpoint_id).unwrap();
-
-                fuzz_endpoint_info.read_idx;
+            (SocketReadState::Finish(_poller_id), SocketState::Connectionless(ConnectionlessSocket { backend: ConnectionlessBackend::Fuzz(fuzz_endpoint), .. })) => {
 
                 match &mut self.data {
                     ReadData::Basic(out_slices) => {
                         let mut total_read = 0;
                         for s in out_slices.iter_mut() {
-                            let read = cmp::min(s.len(), state.global.fuzz_input.len() - fuzz_endpoint_info.read_idx);
-                            s.copy_from_slice(&state.global.fuzz_input[fuzz_endpoint_info.read_idx..fuzz_endpoint_info.read_idx + read]);
-                            fuzz_endpoint_info.read_idx += read;
+                            let read = cmp::min(s.len(), state.global.fuzz_input.len() - fuzz_endpoint.borrow().read_idx);
+                            s.copy_from_slice(&state.global.fuzz_input[fuzz_endpoint.borrow().read_idx..fuzz_endpoint.borrow().read_idx + read]);
+                            fuzz_endpoint.borrow_mut().read_idx += read;
                             total_read += read;
                         }
 
@@ -2189,9 +2186,9 @@ impl Event for SocketReadEvent<'_> {
                         let mut total_read = 0;
                         for out_msg in out_msgs.iter_mut() {
                             for s in out_msg.buf.iter_mut() {
-                                let read = cmp::min(s.len(), state.global.fuzz_input.len() - fuzz_endpoint_info.read_idx);
-                                s.copy_from_slice(&state.global.fuzz_input[fuzz_endpoint_info.read_idx..fuzz_endpoint_info.read_idx + read]);
-                                fuzz_endpoint_info.read_idx += read;
+                                let read = cmp::min(s.len(), state.global.fuzz_input.len() - fuzz_endpoint.borrow().read_idx);
+                                s.copy_from_slice(&state.global.fuzz_input[fuzz_endpoint.borrow().read_idx..fuzz_endpoint.borrow().read_idx + read]);
+                                fuzz_endpoint.borrow_mut().read_idx += read;
                                 total_read += read;
                             }
                         }
@@ -2365,18 +2362,15 @@ impl Event for SocketReadEvent<'_> {
                     }
                 }
             }
-            (SocketReadState::Finish(poller_id), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Fuzz(fuzz_endpoint_id), .. })) => {
-                let fuzz_endpoint_info = state.global.fuzz_endpoints.get_mut(fuzz_endpoint_id).unwrap();
-
-                fuzz_endpoint_info.read_idx;
+            (SocketReadState::Finish(poller), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Fuzz(endpoint), .. })) => {
 
                 match &mut self.data {
                     ReadData::Basic(out_slices) => {
                         let mut total_read = 0;
                         for s in out_slices.iter_mut() {
-                            let read = cmp::min(s.len(), state.global.fuzz_input.len() - fuzz_endpoint_info.read_idx);
-                            s.copy_from_slice(&state.global.fuzz_input[fuzz_endpoint_info.read_idx..fuzz_endpoint_info.read_idx + read]);
-                            fuzz_endpoint_info.read_idx += read;
+                            let read = cmp::min(s.len(), state.global.fuzz_input.len() - endpoint.borrow().read_idx);
+                            s.copy_from_slice(&state.global.fuzz_input[endpoint.borrow().read_idx..endpoint.borrow().read_idx + read]);
+                            endpoint.borrow_mut().read_idx += read;
                             total_read += read;
                         }
 
@@ -2387,9 +2381,9 @@ impl Event for SocketReadEvent<'_> {
                         let mut total_read = 0;
                         for out_msg in out_msgs.iter_mut() {
                             for s in out_msg.buf.iter_mut() {
-                                let read = cmp::min(s.len(), state.global.fuzz_input.len() - fuzz_endpoint_info.read_idx);
-                                s.copy_from_slice(&state.global.fuzz_input[fuzz_endpoint_info.read_idx..fuzz_endpoint_info.read_idx + read]);
-                                fuzz_endpoint_info.read_idx += read;
+                                let read = cmp::min(s.len(), state.global.fuzz_input.len() - endpoint.borrow().read_idx);
+                                s.copy_from_slice(&state.global.fuzz_input[endpoint.borrow().read_idx..endpoint.borrow().read_idx + read]);
+                                endpoint.borrow_mut().read_idx += read;
                                 total_read += read;
                             }
                         }

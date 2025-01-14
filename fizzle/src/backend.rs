@@ -4,7 +4,7 @@ use embedded_alloc::TlsfHeap;
 
 use crate::arena::Rc;
 use crate::handlers::buffer::BufferId;
-use crate::handlers::fuzz_endpoint::FuzzEndpointId;
+use crate::handlers::fuzz_endpoint::FuzzEndpointInfo;
 use crate::handlers::plugin::PluginInfo;
 use crate::handlers::polled::PolledInfo;
 use crate::handlers::socket::{ConnectionlessMessage, SocketInfo};
@@ -32,7 +32,7 @@ pub enum IoBackend<R: Clone, F: Clone> {
     /// Indicates that fuzzing input should be passed directly through the I/O Endpoint.
     ///
     /// The `usize` value specifies the index of fuzzed input that has been read to.
-    Fuzz(Rc<FuzzEndpointId>),
+    Fuzz(GlobalRc<FuzzEndpointInfo>),
 }
 
 #[derive(Clone)]

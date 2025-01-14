@@ -1104,14 +1104,8 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
             ),
             StdioBackend::Sink => PolledStatus::NotPollable,
             StdioBackend::NullSink => PolledStatus::ImmediatelyPollable,
-            StdioBackend::Fuzz(fuzz_endpoint_id) => PolledStatus::Pollable(
-                state
-                    .global
-                    .fuzz_endpoints
-                    .get(&fuzz_endpoint_id)
-                    .unwrap()
-                    .read_polled
-                    .clone(),
+            StdioBackend::Fuzz(fuzz_endpoint) => PolledStatus::Pollable(
+                fuzz_endpoint.borrow().read_polled.clone()
             ),
         },
         FdResource::Stdout => PolledStatus::NotPollable,
@@ -1131,14 +1125,8 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                 ),
                 ConnectionlessBackend::Sink => PolledStatus::NotPollable,
                 ConnectionlessBackend::NullSink => PolledStatus::ImmediatelyPollable,
-                ConnectionlessBackend::Fuzz(fuzz_endpoint_id) => PolledStatus::Pollable(
-                    state
-                        .global
-                        .fuzz_endpoints
-                        .get(&fuzz_endpoint_id)
-                        .unwrap()
-                        .read_polled
-                        .clone(),
+                ConnectionlessBackend::Fuzz(fuzz_endpoint) => PolledStatus::Pollable(
+                    fuzz_endpoint.borrow().read_polled.clone()
                 ),
             },
             SocketState::Unassociated(_) => PolledStatus::NotPollable,
@@ -1158,14 +1146,8 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                 ),
                 ConnectedBackend::Sink => PolledStatus::NotPollable,
                 ConnectedBackend::NullSink => PolledStatus::ImmediatelyPollable,
-                ConnectedBackend::Fuzz(fuzz_endpoint_id) => PolledStatus::Pollable(
-                    state
-                        .global
-                        .fuzz_endpoints
-                        .get(&fuzz_endpoint_id)
-                        .unwrap()
-                        .read_polled
-                        .clone(),
+                ConnectedBackend::Fuzz(fuzz_endpoint) => PolledStatus::Pollable(
+                    fuzz_endpoint.borrow().read_polled.clone()
                 ),
             },
         },

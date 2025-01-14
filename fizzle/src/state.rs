@@ -23,7 +23,7 @@ use heapless::FnvIndexMap;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
-use crate::arena::{KeyedArena, Rc};
+use crate::arena::KeyedArena;
 use crate::handlers::time::ItimerInfo;
 use crate::{comptime, GlobalList, GlobalMap, GlobalRc, GlobalSet, GlobalVec};
 use crate::constants::*;
@@ -35,7 +35,7 @@ use crate::handlers::descriptor::{Descriptor, DescriptorInfo, FdResource};
 use crate::handlers::directory::DirectoryId;
 use crate::handlers::file::*;
 use crate::handlers::futex::FutexPtr;
-use crate::handlers::fuzz_endpoint::{FuzzEndpointId, FuzzEndpointInfo};
+use crate::handlers::fuzz_endpoint::FuzzEndpointInfo;
 use crate::handlers::id::Worker;
 use crate::handlers::mutex::{MutexInfo, MutexPtr};
 use crate::handlers::plugin::PluginInfo;
@@ -983,6 +983,11 @@ impl ProcessLocalState {
 pub struct InterprocessState {
     pub afl_shmem_initialized: bool,
     pub alloc: InterprocessAllocator,
+    pub fuzz_endpoints: GlobalVec<FuzzEndpointInfo>,
+    pub fuzz_input: GlobalVec<u8>,
+
+
+
     pub process_locks: GlobalMap<Pid, std::rc::Rc<Semaphore, &'static TlsfHeap>>,
     /// The thread identifier to be executed by the waking process. This is `Some` if and only if
     /// a thread is currently about to be scheduled.
@@ -1035,10 +1040,9 @@ pub struct InterprocessState {
     pub ready: BinaryHeap<ReadyItem, &'static TlsfHeap>,
     /// Pollers/Workers that should be scheduled once the system has reached a halted state.
     pub ready_delayed: GlobalList<ReadyInfo>,
-    pub fuzz_input: GlobalVec<u8>,
+
     pub per_round_clients: heapless::Vec<PerRoundClientInfo, FIZZLE_MAX_PER_ROUND_ENDPOINTS>,
     pub per_round_endpoints: GlobalVec<GlobalRc<SocketInfo>>,
-    pub fuzz_endpoints: KeyedArena<FuzzEndpointId, FuzzEndpointInfo, FIZZLE_MAX_FUZZ_ENDPOINTS>,
     pub prefuzz_rng: rand::rngs::SmallRng,
     pub current_time: Duration,
     pub time_fuzz_idx: usize,
@@ -1093,6 +1097,7 @@ impl InterprocessState {
     fn situate(state: &mut MaybeUninit<InterprocessState>) -> &mut InterprocessState {
         unsafe {
             let state = state.as_mut_ptr();
+
             *ptr::addr_of_mut!((*state).waking_id) = None;
             *ptr::addr_of_mut!((*state).exiting_id) = None;
             *ptr::addr_of_mut!((*state).inherited_state) = None;
@@ -1117,7 +1122,6 @@ impl InterprocessState {
 
             *ptr::addr_of_mut!((*state).stdio) = StdioBackend::Passthrough;
             *ptr::addr_of_mut!((*state).per_round_clients) = heapless::Vec::new();
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).fuzz_endpoints));
             *ptr::addr_of_mut!((*state).prefuzz_rng) =
                 SmallRng::seed_from_u64(0xABAD_5EED_ABAD_5EED_u64); // TODO: enable custom seed loading
             *ptr::addr_of_mut!((*state).current_time) = Duration::from_secs(1735924847); // TODO: set this randomly each fuzzing round
@@ -1142,6 +1146,8 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).unix_write_fd) = -1;
             *ptr::addr_of_mut!((*state).create_cow) = None;
             *ptr::addr_of_mut!((*state).time_fuzz_idx) = 0;
+            *ptr::addr_of_mut!((*state).fuzz_endpoints) = Vec::new_in((*state).alloc.alloc());
+            *ptr::addr_of_mut!((*state).plugins) = Vec::new_in((*state).alloc.alloc());
 
             *ptr::addr_of_mut!((*state).next_pid) = Pid::PRIMARY.next();
             &mut (*state)
@@ -1191,7 +1197,7 @@ impl InterprocessState {
         inode
     }
 
-    pub fn add_fuzz_endpoint(&mut self) -> Rc<FuzzEndpointId> {
+    pub fn add_fuzz_endpoint(&mut self) -> GlobalRc<FuzzEndpointInfo> {
         let alloc = self.alloc.alloc();
 
         let read_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
@@ -1199,12 +1205,10 @@ impl InterprocessState {
             event_raised: false,
         }), alloc);
 
-        self.fuzz_endpoints
-            .allocate(FuzzEndpointInfo {
-                read_polled,
-                read_idx: 0,
-            })
-            .unwrap()
+        std::rc::Rc::new_in(RefCell::new(FuzzEndpointInfo {
+            read_polled,
+            read_idx: 0,
+        }), alloc)
     }
 
     pub fn add_pending_client(
@@ -1453,7 +1457,7 @@ pub struct PerRoundClientInfo {
 
 #[derive(Clone)]
 pub enum PerRoundClientBackend {
-    Fuzz(Rc<FuzzEndpointId>),
+    Fuzz(GlobalRc<FuzzEndpointInfo>),
     Plugin(GlobalRc<PluginInfo>),
 }
 

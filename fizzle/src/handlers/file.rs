@@ -511,23 +511,21 @@ impl Event for FileReadEvent<'_> {
                     ReadData::Socket(_, _) => return Outcome::Error(Errno::ENOTSOCK),
                 }
             },
-            FileBackend::Fuzz(fuzz_endpoint_id) => {
-                let fuzz_endpoint = state.global.fuzz_endpoints.get_mut(&fuzz_endpoint_id).unwrap();
-
+            FileBackend::Fuzz(fuzz_endpoint) => {
                 match &mut self.data {
                     ReadData::Basic(data) => {
                         let mut total_read = 0;
                         for s in data.iter_mut() {
-                            let read = cmp::min(s.len(), state.global.fuzz_input.len() - fuzz_endpoint.read_idx);
-                            s.copy_from_slice(&state.global.fuzz_input[fuzz_endpoint.read_idx..fuzz_endpoint.read_idx + read]);
-                            fuzz_endpoint.read_idx += read;
+                            let read = cmp::min(s.len(), state.global.fuzz_input.len() - fuzz_endpoint.borrow().read_idx);
+                            s.copy_from_slice(&state.global.fuzz_input[fuzz_endpoint.borrow().read_idx..fuzz_endpoint.borrow().read_idx + read]);
+                            fuzz_endpoint.borrow_mut().read_idx += read;
                             total_read += read;
                         }
 
                         Outcome::Success(total_read)
                     },
                     ReadData::File(data) => {
-                        let mut offset = data.offset.unwrap_or(fuzz_endpoint.read_idx as i64) as usize;
+                        let mut offset = data.offset.unwrap_or(fuzz_endpoint.borrow().read_idx as i64) as usize;
                         let mut total_read = 0;
 
                         if offset > state.global.fuzz_input.len() {
@@ -542,7 +540,7 @@ impl Event for FileReadEvent<'_> {
                         }
 
                         if data.offset.is_none() {
-                            fuzz_endpoint.read_idx = offset;
+                            fuzz_endpoint.borrow_mut().read_idx = offset;
                         }
 
                         Outcome::Success(total_read)
