@@ -1,9 +1,11 @@
+use std::cell::RefCell;
 use std::cmp;
 
 use crate::arena::{ArenaKey, Rc};
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
+use crate::GlobalRc;
 
 use bitflags::bitflags;
 
@@ -12,8 +14,8 @@ pub use private::PipeId;
 
 use super::buffer::BufferId;
 use super::descriptor::{Descriptor, DescriptorInfo, FdResource, ReadData, WriteData};
-use super::polled::{PolledId, PolledInfo};
-use super::poller::PollerId;
+use super::polled::PolledInfo;
+use super::poller::PollerInfo;
 
 // This is to forbid access to the SocketId's inner `usize` field.
 mod private {
@@ -22,7 +24,6 @@ mod private {
     pub struct PipeId(usize);
 }
 
-#[derive(Debug)]
 pub struct PipeInfo {
     /// The transmission mode of the packet.
     ///
@@ -34,8 +35,8 @@ pub struct PipeInfo {
     pub peer: Option<Rc<PipeId>>,
     /// The buffer this pipe reads in data from.
     pub read_buf: Rc<BufferId>,
-    pub read_polled: Rc<PolledId>,
-    pub write_polled: Rc<PolledId>,
+    pub read_polled: GlobalRc<PolledInfo>,
+    pub write_polled: GlobalRc<PolledInfo>,
 }
 
 /// The mode of operation by which data is passed over the pipe.
@@ -76,6 +77,7 @@ impl Event for PipeCreateEvent {
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let alloc = state.global.alloc.alloc();
         let nonblocking = self.flags.contains(PipeCreateFlags::NONBLOCK);
         let close_on_exec = self.flags.contains(PipeCreateFlags::CLOEXEC);
         let mode = if self.flags.contains(PipeCreateFlags::DIRECT) {
@@ -91,16 +93,14 @@ impl Event for PipeCreateEvent {
             mode,
             peer: None,
             read_buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
-            read_polled: state
-                .global
-                .polled_events
-                .allocate(PolledInfo::new())
-                .unwrap(),
-            write_polled: state
-                .global
-                .polled_events
-                .allocate(PolledInfo::new_raised())
-                .unwrap(),
+            read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                pollers: Vec::new_in(alloc),
+                event_raised: false,
+            }), alloc),
+            write_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                pollers: Vec::new_in(alloc),
+                event_raised: true,
+            }), alloc),
         };
 
         let first_pipe_id = state.global.pipes.allocate(first_pipe).unwrap();
@@ -109,16 +109,14 @@ impl Event for PipeCreateEvent {
             mode,
             peer: Some(first_pipe_id.clone()),
             read_buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
-            read_polled: state
-                .global
-                .polled_events
-                .allocate(PolledInfo::new())
-                .unwrap(),
-            write_polled: state
-                .global
-                .polled_events
-                .allocate(PolledInfo::new_raised())
-                .unwrap(),
+            read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                pollers: Vec::new_in(alloc),
+                event_raised: false,
+            }), alloc),
+            write_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                pollers: Vec::new_in(alloc),
+                event_raised: true,
+            }), alloc),
         };
 
         let second_pipe_id = state.global.pipes.allocate(second_pipe).unwrap();
@@ -153,7 +151,7 @@ impl Event for PipeCreateEvent {
 
 pub enum PipeReadState {
     Start,
-    Finish(Option<Rc<PollerId>>),
+    Finish(Option<GlobalRc<PollerInfo>>),
 }
 
 pub struct PipeReadEvent<'a> {
@@ -272,7 +270,7 @@ impl Event for PipeReadEvent<'_> {
 
 enum PipeWriteState {
     Start,
-    NextPayload(Option<Rc<PollerId>>),
+    NextPayload(Option<GlobalRc<PollerInfo>>),
 }
 
 pub struct PipeWriteEvent<'a> {

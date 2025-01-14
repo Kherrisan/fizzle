@@ -1,10 +1,11 @@
 use super::descriptor::{Descriptor, ReadData, WriteData};
-use super::polled::PolledId;
-use crate::arena::{ArenaKey, Rc};
+use super::polled::PolledInfo;
+use crate::arena::ArenaKey;
 use crate::constants::FIZZLE_MAX_EPOLL_FDS;
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
+use crate::GlobalRc;
 
 use heapless::FnvIndexMap;
 
@@ -17,18 +18,17 @@ mod private {
     pub struct EpollId(usize);
 }
 
-#[derive(Debug)]
 pub struct EpollInfo {
     pub interests: FnvIndexMap<Descriptor, EpollInterest, FIZZLE_MAX_EPOLL_FDS>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct EpollInterest {
     pub direction: EpollDirection,
     pub user_data: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum EpollDirection {
     None,
     Read(PolledStatus),
@@ -36,9 +36,9 @@ pub enum EpollDirection {
     Both(PolledStatus, PolledStatus),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum PolledStatus {
-    Pollable(Rc<PolledId>),
+    Pollable(GlobalRc<PolledInfo>),
     /// The file descriptor was invalid.
     BadFd,
     /// The requested object will never return polled output (such as attempting to read `stdout`).

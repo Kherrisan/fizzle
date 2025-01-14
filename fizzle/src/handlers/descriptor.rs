@@ -11,7 +11,7 @@ use super::file::*;
 use super::fuzz_endpoint::FuzzEndpointInfo;
 use super::mq::*;
 use super::pipe::*;
-use super::poller::PollerId;
+use super::poller::PollerInfo;
 use super::socket::*;
 use crate::arena::Rc;
 use crate::backend::{ConnectedBackend, StdioBackend};
@@ -36,7 +36,7 @@ impl Descriptor {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct DescriptorInfo {
     /// Whether the file descriptor associated with closes on calls to `exec()`.
     pub close_on_exec: bool,
@@ -48,7 +48,7 @@ pub struct DescriptorInfo {
     pub resource: FdResource,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum FdResource {
     /// Files `open()`ed using O_PATH
     Directory(Rc<DirectoryId>),
@@ -523,7 +523,7 @@ impl Event for DescriptorReadEvent<'_> {
 
 pub enum StdinReadState {
     Start,
-    Finish(Option<Rc<PollerId>>),
+    Finish(Option<GlobalRc<PollerInfo>>),
 }
 
 pub struct StdinReadEvent<'a> {
@@ -869,7 +869,7 @@ impl Event for DescriptorWriteEvent<'_> {
 
 pub enum StdoutWriteState {
     Start,
-    Finish(Option<Rc<PollerId>>),
+    Finish(Option<GlobalRc<PollerInfo>>),
 }
 
 pub struct StdoutWriteEvent<'a> {
@@ -998,7 +998,7 @@ impl Event for StdoutWriteEvent<'_> {
 
 pub enum StderrWriteState {
     Start,
-    Finish(Option<Rc<PollerId>>),
+    Finish(Option<GlobalRc<PollerInfo>>),
 }
 
 pub struct StderrWriteEvent<'a> {

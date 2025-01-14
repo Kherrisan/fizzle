@@ -489,8 +489,6 @@ pub(crate) mod private {
     use crate::handlers::mq::MqId;
     use crate::handlers::pipe::PipeId;
     use crate::handlers::plugin::PluginEndpointId;
-    use crate::handlers::polled::PolledId;
-    use crate::handlers::poller::PollerId;
     use crate::handlers::semaphore::SemaphoreId;
     use crate::handlers::socket::SocketId;
     use std::mem;
@@ -647,30 +645,6 @@ pub(crate) mod private {
 
         fn from_usize(val: usize) -> Self {
             // SAFETY: `PluginEndpointId` is a repr(transparent) usize
-            unsafe { mem::transmute(val) }
-        }
-    }
-
-    impl InnerUsize for PolledId {
-        fn to_usize(&self) -> usize {
-            // SAFETY: `PolledId` is a repr(transparent) usize
-            unsafe { mem::transmute_copy(self) }
-        }
-
-        fn from_usize(val: usize) -> Self {
-            // SAFETY: `PolledId` is a repr(transparent) usize
-            unsafe { mem::transmute(val) }
-        }
-    }
-
-    impl InnerUsize for PollerId {
-        fn to_usize(&self) -> usize {
-            // SAFETY: `PollerId` is a repr(transparent) usize
-            unsafe { mem::transmute_copy(self) }
-        }
-
-        fn from_usize(val: usize) -> Self {
-            // SAFETY: `PollerId` is a repr(transparent) usize
             unsafe { mem::transmute(val) }
         }
     }

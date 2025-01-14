@@ -1,14 +1,17 @@
+use std::cell::RefCell;
 use std::{cmp, os::fd::RawFd};
 
 use crate::arena::{ArenaKey, Rc};
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
+use crate::GlobalRc;
 
 pub use private::EventfdId;
 
-use super::polled::{PolledId, PolledInfo};
-use super::{descriptor::*, poller::PollerId};
+use super::polled::PolledInfo;
+use super::descriptor::*;
+use super::poller::PollerInfo;
 
 // This is to forbid access to the SocketId's inner `usize` field.
 mod private {
@@ -17,10 +20,10 @@ mod private {
     pub struct EventfdId(usize);
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct EventfdInfo {
-    pub read_polled: Rc<PolledId>,
-    pub write_polled: Rc<PolledId>,
+    pub read_polled: GlobalRc<PolledInfo>,
+    pub write_polled: GlobalRc<PolledInfo>,
     pub is_semaphore: bool,
     pub counter: u64,
 }
@@ -57,23 +60,20 @@ impl Event for EventfdCreateEvent {
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let alloc = state.global.alloc.alloc();
+
         let fd = crate::create_descriptor();
 
-        let read_polled = state
-            .global
-            .polled_events
-            .allocate(if self.initial_value == 0 {
-                PolledInfo::new()
-            } else {
-                PolledInfo::new_raised()
-            })
-            .unwrap();
-        let write_polled = state
-            .global
-            .polled_events
-            .allocate(PolledInfo::new_raised())
-            .unwrap();
+        let read_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+            pollers: Vec::new_in(alloc),
+            event_raised: self.initial_value != 0,
+        }), alloc);
 
+        let write_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+            pollers: Vec::new_in(alloc),
+            event_raised: true,
+        }), alloc);
+        
         let eventfd_id = state
             .global
             .event_fds
@@ -104,7 +104,7 @@ impl Event for EventfdCreateEvent {
 
 pub enum EventfdReadState {
     Start,
-    Finish(Option<Rc<PollerId>>),
+    Finish(Option<GlobalRc<PollerInfo>>),
 }
 
 pub struct EventfdReadEvent<'a> {
@@ -207,7 +207,7 @@ impl Event for EventfdReadEvent<'_> {
 
 pub enum EventfdWriteState {
     Start,
-    Finish(Option<Rc<PollerId>>),
+    Finish(Option<GlobalRc<PollerInfo>>),
 }
 
 pub struct EventfdWriteEvent<'a> {

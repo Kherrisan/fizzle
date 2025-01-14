@@ -48,7 +48,6 @@ pub struct OpenFileInfo {
     pub file: Rc<FileId>,
 }
 
-#[derive(Debug)]
 pub struct FileInfo {
     pub path: FilePath<MAX_PATH_LEN>,
     /// The copy-on-write (CoW) shared memory being used to store modifications to the file.

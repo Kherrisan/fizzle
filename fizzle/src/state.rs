@@ -4,7 +4,6 @@ use std::io::Write;
 use std::fmt::Debug;
 use std::mem::MaybeUninit;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
-use std::ops::Deref;
 use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::process::Command;
@@ -44,8 +43,8 @@ use crate::handlers::mq::{MqId, MqInfo};
 use crate::handlers::mutex::{MutexInfo, MutexPtr};
 use crate::handlers::pipe::{PipeId, PipeInfo};
 use crate::handlers::plugin::{PluginEndpointId, PluginInfo};
-use crate::handlers::polled::{PolledId, PolledInfo};
-use crate::handlers::poller::{PollerId, PollerInfo};
+use crate::handlers::polled::PolledInfo;
+use crate::handlers::poller::PollerInfo;
 use crate::handlers::process::*;
 use crate::handlers::rwlock::*;
 use crate::handlers::semaphore::*;
@@ -457,6 +456,8 @@ impl FizzleState {
     }
 
     fn load_config_mappings(&mut self, endpoints: Vec<PluginEndpoint>) {
+        let alloc = self.global.alloc.alloc();
+
         for endpoint in endpoints {
             for _ in 0..endpoint.num_streams {
                 let endpoint_variant = endpoint.endpoint_variant.clone();
@@ -465,16 +466,14 @@ impl FizzleState {
                         self.global.stdio = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => StdioBackend::Feedback(StandardFeedback {
                                 buf: self.global.buffers.allocate(Buffer::new()).unwrap(),
-                                read_polled: self
-                                    .global
-                                    .polled_events
-                                    .allocate(PolledInfo::new())
-                                    .unwrap(),
-                                write_polled: self
-                                    .global    
-                                    .polled_events
-                                    .allocate(PolledInfo::new_raised())
-                                    .unwrap(),
+                                read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                                    pollers: Vec::new_in(alloc),
+                                    event_raised: false,
+                                }), alloc),
+                                write_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                                    pollers: Vec::new_in(alloc),
+                                    event_raised: false,
+                                }), alloc),
                             }),
                             IoEmulationType::Plugin(module_id) => {
                                 StdioBackend::Plugin(self.global.add_plugin(
@@ -797,68 +796,62 @@ impl FizzleState {
     }
 
     /// Indicates whether the given polled event is ready to be acted on.
-    pub fn polled_is_ready(&self, polled_id: &Rc<PolledId>) -> bool {
-        let polled = self.global.polled_events.get(polled_id).unwrap();
-        polled.event_raised
+    pub fn polled_is_ready(&self, polled: &GlobalRc<PolledInfo>) -> bool {
+        polled.borrow().event_raised
     }
 
     /// Marks the given polled event as ready.
     ///
     /// If not already raised, this method will push_back a poller waiting on this polled event
     /// (if such a poller exists).
-    pub fn raise_polled(&mut self, polled_id: &Rc<PolledId>) {
-        self.global.raise_polled(polled_id);
+    pub fn raise_polled(&mut self, polled: &GlobalRc<PolledInfo>) {
+        self.global.raise_polled(polled);
     }
 
     // if buffer is empty, then call this
-    pub fn lower_polled(&mut self, polled_id: &Rc<PolledId>) {
-        let polled = self.global.polled_events.get_mut(polled_id).unwrap();
-        debug_assert!(polled.event_raised);
-        polled.event_raised = false;
+    pub fn lower_polled(&mut self, polled: &GlobalRc<PolledInfo>) {
+        let mut borrow = polled.borrow_mut();
+        debug_assert!(borrow.event_raised);
+        borrow.event_raised = false;
     }
 
     /// Creates a new poller for the currently executing worker.
-    pub fn new_poller(&mut self) -> Rc<PollerId> {
+    pub fn new_poller(&mut self) -> GlobalRc<PollerInfo> {
+        let alloc = self.global.alloc.alloc();
         let worker_id = self.current_worker();
 
-        self.global
-            .pollers
-            .allocate(PollerInfo {
+        std::rc::Rc::new_in(RefCell::new(PollerInfo {
                 worker: worker_id,
-                polled_events: heapless::Vec::new(),
-                raised_events: heapless::FnvIndexSet::new(),
-            })
-            .unwrap()
+                polled_events: Vec::new_in(alloc),
+                raised_events: BTreeSet::new_in(alloc),
+        }), alloc)
     }
 
     /// Registers `poller_id` as waiting on `polled_id`.
-    pub fn register_poller(&mut self, poller_id: Rc<PollerId>, polled_id: Rc<PolledId>) {
-        let poller = self.global.pollers.get_mut(&poller_id).unwrap();
-        poller.polled_events.push(polled_id.clone()).unwrap();
-        let polled = self.global.polled_events.get_mut(&polled_id).unwrap();
-        debug_assert!(!polled.event_raised);
-        polled.pollers.push(poller_id).unwrap();
+    pub fn register_poller(&mut self, poller: GlobalRc<PollerInfo>, polled: GlobalRc<PolledInfo>) {
+        poller.borrow_mut().polled_events.push(polled.clone());
+        let mut polled_borrow = polled.borrow_mut();
+        debug_assert!(!polled_borrow.event_raised);
+        polled_borrow.pollers.push(poller.clone());
     }
 
     // Ugh. This looks like O(n^2)...
     /// Deletes the given poller, removing any references to it from `Polled` objects.
-    pub fn delete_poller(&mut self, poller_id: Rc<PollerId>) {
-        let poller = self.global.pollers.get_mut(&poller_id).unwrap();
+    pub fn delete_poller(&mut self, poller: GlobalRc<PollerInfo>) {
 
-        if poller.deref().in_raised_queue() {
+        if poller.borrow().in_raised_queue() {
             // Remove the poller from the ready queue, leaving the others in the same order
             self.global.ready.retain(|r| match &r.info {
-                ReadyInfo::Poller(p) => &poller_id != p,
+                ReadyInfo::Poller(p) => poller.borrow().worker != p.borrow().worker,
                 _ => true,
             });
         }
 
         // Remove the poller from each polled instance it was registered to
-        for polled_id in poller.polled_events.iter() {
-            let polled = self.global.polled_events.get_mut(&polled_id).unwrap();
-            for i in 0..polled.pollers.len() {
-                if *polled.pollers.get(i).unwrap() == poller_id {
-                    polled.pollers.remove(i);
+        for polled in poller.borrow().polled_events.iter() {
+            for i in 0..polled.borrow().pollers.len() {
+                if polled.borrow().pollers.get(i).unwrap().borrow().worker == poller.borrow().worker {
+                    polled.borrow_mut().pollers.remove(i);
                 }
             }
         }
@@ -899,7 +892,6 @@ impl FizzleState {
     }
 }
 
-#[derive(Debug)]
 pub struct InheritedState {
     pub fds: GlobalMap<Descriptor, DescriptorInfo>,
     pub pid: Pid,
@@ -1062,8 +1054,6 @@ pub struct InterprocessState {
     pub stdio: StdioBackend,
     /// Polling infrastructure
     pub plugins: KeyedArena<PluginEndpointId, PluginInfo, FIZZLE_MAX_PLUGIN_STREAMS>,
-    pub polled_events: KeyedArena<PolledId, PolledInfo, FIZZLE_MAX_POLLED_EVENTS>,
-    pub pollers: KeyedArena<PollerId, PollerInfo, FIZZLE_MAX_POLLERS>,
     /// Pollers/Workers that can be immediately scheduled.
     pub ready: BinaryHeap<ReadyItem, &'static TlsfHeap>,
     /// Pollers/Workers that should be scheduled once the system has reached a halted state.
@@ -1157,8 +1147,6 @@ impl InterprocessState {
 
             *ptr::addr_of_mut!((*state).stdio) = StdioBackend::Passthrough;
             KeyedArena::initialize(ptr::addr_of_mut!((*state).plugins));
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).polled_events));
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).pollers));
             *ptr::addr_of_mut!((*state).per_round_clients) = heapless::Vec::new();
             KeyedArena::initialize(ptr::addr_of_mut!((*state).fuzz_endpoints));
             *ptr::addr_of_mut!((*state).prefuzz_rng) =
@@ -1209,25 +1197,21 @@ impl InterprocessState {
     ///
     /// If not already raised, this method will push_back a poller waiting on this polled event
     /// (if such a poller exists).
-    pub fn raise_polled(&mut self, polled_id: &Rc<PolledId>) {
-        let polled = self.polled_events.get_mut(polled_id).unwrap();
-        if !polled.event_raised {
-            polled.event_raised = true;
-            let pollers = polled.pollers.clone();
-            for poller in pollers {
-                if !self.pollers.get(&poller).unwrap().in_raised_queue() {
+    pub fn raise_polled(&mut self, polled: &GlobalRc<PolledInfo>) {
+        let mut polled_borrow = polled.borrow_mut();
+        if !polled_borrow.event_raised {
+            polled_borrow.event_raised = true;
+            let pollers = &mut polled_borrow.pollers;
+            for poller in pollers.iter() {
+                if !poller.borrow().in_raised_queue() {
                     let timestamp = self.current_time;
                     self.ready.push(ReadyItem {
                         info: ReadyInfo::Poller(poller.clone()),
                         timestamp,
                     });
                 }
-                self.pollers
-                    .get_mut(&poller)
-                    .unwrap()
-                    .raised_events
-                    .insert(polled_id.clone())
-                    .unwrap();
+
+                poller.borrow_mut().raised_events.insert(polled.clone());
             }
         }
     }
@@ -1239,7 +1223,13 @@ impl InterprocessState {
     }
 
     pub fn add_fuzz_endpoint(&mut self) -> Rc<FuzzEndpointId> {
-        let read_polled = self.polled_events.allocate(PolledInfo::new()).unwrap();
+        let alloc = self.alloc.alloc();
+
+        let read_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+            pollers: Vec::new_in(alloc),
+            event_raised: false,
+        }), alloc);
+
         self.fuzz_endpoints
             .allocate(FuzzEndpointInfo {
                 read_polled,
@@ -1254,6 +1244,8 @@ impl InterprocessState {
         rem_addr: TransportAddress,
         backend: PendingBackend,
     ) -> GlobalRc<SocketInfo> {
+        let alloc = self.alloc.alloc();
+
         let client_socket_info = std::rc::Rc::new_in(RefCell::new(SocketInfo {
             fd_count: 0,
             state: SocketState::PendingConnection(PendingSocket {
@@ -1269,8 +1261,11 @@ impl InterprocessState {
         // Add the client to the pending client chain, if applicable
         match self.socket_locations.get_mut(&rem_addr) {
             None => {
-                let polled_id = self.polled_events.allocate(PolledInfo::new()).unwrap();
-                self.socket_locations
+                let polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                    pollers: Vec::new_in(alloc),
+                    event_raised: false,
+                }), alloc);
+                if self.socket_locations
                     .insert(
                         rem_addr,
                         TransportLocationInfo {
@@ -1278,11 +1273,12 @@ impl InterprocessState {
                             bound_sockets: LinkedList::new_in(self.alloc.alloc()),
                             pending: Some(PendingInfo {
                                 client: client_socket_info.clone(),
-                                poll: polled_id,
+                                poll: polled,
                             }),
                         },
-                    )
-                    .unwrap();
+                    ).is_err() {
+                    panic!("failed to insert to socket_locations")
+                }
             }
             Some(location_info) => {
                 match &location_info.pending {
@@ -1310,10 +1306,13 @@ impl InterprocessState {
                         *next_awaiting = Some(client_socket_info.clone());
                     }
                     None => {
-                        let polled_id = self.polled_events.allocate(PolledInfo::new()).unwrap();
+                        let polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                            pollers: Vec::new_in(alloc),
+                            event_raised: false,
+                        }), alloc);
                         location_info.pending = Some(PendingInfo {
                             client: client_socket_info.clone(),
-                            poll: polled_id,
+                            poll: polled,
                         });
                     }
                 }
@@ -1327,10 +1326,6 @@ impl InterprocessState {
                         SocketState::Server(server_info) => {
                             log::debug!("notifying server that pending connection exists...");
                             let connect_poll = server_info.ready_to_connect.clone();
-                            log::debug!(
-                                "connect_poll: {:?}",
-                                self.polled_events.get(&connect_poll).unwrap()
-                            );
                             self.raise_polled(&connect_poll);
                         }
                         _ => unreachable!(),
@@ -1344,15 +1339,20 @@ impl InterprocessState {
 
  
     pub fn add_server(&mut self, transport_addr: TransportAddress, backend: ServerBackend) {
+        let alloc = self.alloc.alloc();
+
         // Create a new polled instance for listeners waiting to accept connections
-        let connect_polled_id = self.polled_events.allocate(PolledInfo::new()).unwrap();
+        let connect_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+            pollers: Vec::new_in(alloc),
+            event_raised: false,
+        }), alloc);
 
         let socket_info = std::rc::Rc::new_in(RefCell::new(SocketInfo {
             fd_count: 0,
             state: SocketState::Server(ServerSocket {
                 backend,
                 connecting: LinkedList::new_in(self.alloc.alloc()),
-                ready_to_connect: connect_polled_id,
+                ready_to_connect: connect_polled,
             }),
             socktype: SocketType::Datagram, // TODO: this (and above) aren't necessarily true
             protocol: transport_addr.protocol(),
@@ -1364,7 +1364,7 @@ impl InterprocessState {
                 let mut bound_sockets = LinkedList::new_in(self.alloc.alloc());
                 bound_sockets.push_back(socket_info);
 
-                self.socket_locations
+                if self.socket_locations
                     .insert(
                         transport_addr.clone(),
                         TransportLocationInfo {
@@ -1372,8 +1372,9 @@ impl InterprocessState {
                             reuse_port: false,
                             bound_sockets,
                         },
-                    )
-                    .unwrap();
+                    ).is_err() {
+                        panic!("failed to insert to socket_locations")
+                    }
             }
             Some(location_info) => {
                 debug_assert!(location_info.bound_sockets.is_empty());
@@ -1387,15 +1388,22 @@ impl InterprocessState {
         endpoint: IoEndpointVariant,
         module: std::rc::Rc<RefCell<dyn PluginObject>>,
     ) -> Rc<PluginEndpointId> {
+        let alloc = self.alloc.alloc();
+
         let stream = self.next_stream_id;
         self.next_stream_id = StreamId::from(usize::from(stream) + 1);
+
         let read_buf = self.buffers.allocate(Buffer::new()).unwrap();
-        let read_polled = self.polled_events.allocate(PolledInfo::new()).unwrap();
+        let read_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+            pollers: Vec::new_in(alloc),
+            event_raised: false,
+        }), alloc);
+
         let write_buf = self.buffers.allocate(Buffer::new()).unwrap();
-        let write_polled = self
-            .polled_events
-            .allocate(PolledInfo::new_raised())
-            .unwrap();
+        let write_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+            pollers: Vec::new_in(alloc),
+            event_raised: true,
+        }), alloc);
 
         self.plugins
             .allocate(PluginInfo {
@@ -1511,7 +1519,7 @@ impl Ord for ReadyItem {
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum ReadyInfo {
-    Poller(Rc<PollerId>),
+    Poller(GlobalRc<PollerInfo>),
     Worker(Worker),
     Timer(Pid, TimerType),
 }

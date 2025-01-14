@@ -1,8 +1,9 @@
-use crate::arena::{ArenaKey, Rc};
+use crate::arena::ArenaKey;
+use crate::GlobalRc;
 
 pub use private::FuzzEndpointId;
 
-use super::polled::PolledId;
+use super::polled::PolledInfo;
 
 // This is to forbid access to the SocketId's inner `usize` field.
 mod private {
@@ -11,9 +12,9 @@ mod private {
     pub struct FuzzEndpointId(usize);
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct FuzzEndpointInfo {
-    pub read_polled: Rc<PolledId>,
+    pub read_polled: GlobalRc<PolledInfo>,
     pub read_idx: usize,
 }
 

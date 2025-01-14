@@ -1,5 +1,4 @@
 use std::collections::LinkedList;
-use std::fmt::Debug;
 
 use embedded_alloc::TlsfHeap;
 
@@ -7,9 +6,9 @@ use crate::arena::Rc;
 use crate::handlers::buffer::BufferId;
 use crate::handlers::fuzz_endpoint::FuzzEndpointId;
 use crate::handlers::plugin::PluginEndpointId;
-use crate::handlers::polled::PolledId;
+use crate::handlers::polled::PolledInfo;
 use crate::handlers::socket::{ConnectionlessMessage, SocketInfo};
-use crate::GlobalWeak;
+use crate::{GlobalRc, GlobalWeak};
 
 use self::private::Sealed;
 
@@ -19,8 +18,8 @@ mod private {
     pub struct Sealed;
 }
 
-#[derive(Clone, Debug)]
-pub enum IoBackend<R: Clone + Debug, F: Clone + Debug> {
+#[derive(Clone)]
+pub enum IoBackend<R: Clone, F: Clone> {
     Passthrough,
     /// Handles I/O regularly.
     Peered(R),
@@ -36,36 +35,36 @@ pub enum IoBackend<R: Clone + Debug, F: Clone + Debug> {
     Fuzz(Rc<FuzzEndpointId>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct StandardFeedback {
     pub buf: Rc<BufferId>,
-    pub read_polled: Rc<PolledId>,
-    pub write_polled: Rc<PolledId>,
+    pub read_polled: GlobalRc<PolledInfo>,
+    pub write_polled: GlobalRc<PolledInfo>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct FileFeedback { }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RegularConnected {
     pub peer: GlobalWeak<SocketInfo>,
     pub recv_buf: Rc<BufferId>,
-    pub read_polled: Rc<PolledId>,
-    pub write_polled: Rc<PolledId>,
+    pub read_polled: GlobalRc<PolledInfo>,
+    pub write_polled: GlobalRc<PolledInfo>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RegularConnectionless {
     pub recv_buf: LinkedList<ConnectionlessMessage, &'static TlsfHeap>,
-    pub read_polled: Rc<PolledId>,
-    pub write_polled: Rc<PolledId>,
+    pub read_polled: GlobalRc<PolledInfo>,
+    pub write_polled: GlobalRc<PolledInfo>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct FeedbackConnectionless {
     pub recv_buf: LinkedList<ConnectionlessMessage, &'static TlsfHeap>,
-    pub read_polled: Rc<PolledId>,
-    pub write_polled: Rc<PolledId>,
+    pub read_polled: GlobalRc<PolledInfo>,
+    pub write_polled: GlobalRc<PolledInfo>,
 }
 
 /// A backend for a Pending socket connection.

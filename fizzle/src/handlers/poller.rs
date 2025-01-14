@@ -1,40 +1,31 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::os::fd::RawFd;
 use std::time::Duration;
 
-use crate::arena::{ArenaKey, Rc};
 use crate::backend::{ConnectedBackend, ConnectionlessBackend, StdioBackend};
-use crate::constants::FIZZLE_MAX_PER_POLLER_QUEUED_EVENTS;
 use crate::errno::Errno;
 use crate::handlers::epoll::{EpollDirection, EpollInterest};
 use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
+use crate::{GlobalRc, GlobalSet, GlobalVec};
 
 use fxhash::FxBuildHasher;
-pub use private::PollerId;
 
 use super::descriptor::{Descriptor, DescriptorInfo, FdResource};
 use super::epoll::{EpollInfo, PolledStatus};
 use super::id::Worker;
-use super::polled::PolledId;
+use super::polled::PolledInfo;
 use super::signal::{SigmaskOp, SignalSet, SignalSetSigmaskEvent};
 use super::socket::SocketState;
 
-// This is to forbid access to the SocketId's inner `usize` field.
-mod private {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    #[repr(transparent)]
-    pub struct PollerId(usize);
-}
-
 pub struct PollerInfo {
     pub worker: Worker,
-    pub polled_events: heapless::Vec<Rc<PolledId>, FIZZLE_MAX_PER_POLLER_QUEUED_EVENTS>,
+    pub polled_events: GlobalVec<GlobalRc<PolledInfo>>,
     /// Polled events that have been raised for the Poller prior to it being evaluated.
     ///
     /// A poller will have raised events if and only if it is in the ready_queue; this invariant is
     /// reflected in the `in_raised_queue()` method defined below.
-    pub raised_events: heapless::FnvIndexSet<Rc<PolledId>, FIZZLE_MAX_PER_POLLER_QUEUED_EVENTS>,
+    pub raised_events: GlobalSet<GlobalRc<PolledInfo>>,
 }
 
 impl PollerInfo {
@@ -43,9 +34,14 @@ impl PollerInfo {
     }
 }
 
-impl ArenaKey for PollerId {
-    type Value = PollerInfo;
+impl PartialEq for PollerInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.worker == other.worker
+    }
 }
+
+impl Eq for PollerInfo {}
+
 
 enum SelectState {
     Start,
@@ -53,9 +49,9 @@ enum SelectState {
     CheckDescriptors,
     CheckDescriptorsFail(Errno),
     EndPoll(
-        Rc<PollerId>,
-        HashMap<RawFd, Rc<PolledId>, FxBuildHasher>,
-        HashMap<RawFd, Rc<PolledId>, FxBuildHasher>,
+        GlobalRc<PollerInfo>,
+        HashMap<RawFd, GlobalRc<PolledInfo>, FxBuildHasher>,
+        HashMap<RawFd, GlobalRc<PolledInfo>, FxBuildHasher>,
     ),
     RevertSigmask(SignalSetSigmaskEvent, Result<usize, Errno>),
 }
@@ -142,11 +138,11 @@ impl Event for SelectEvent<'_> {
                     if let Some(readfds) = &mut self.readfds {
                         if unsafe { libc::FD_ISSET(fd, *readfds) } {
                             match fd_to_pollin(state, fd) {
-                                PolledStatus::Pollable(polled_id) => {
-                                    if !state.polled_is_ready(&polled_id) {
+                                PolledStatus::Pollable(polled) => {
+                                    if !state.polled_is_ready(&polled) {
                                         log::trace!("select(): fd {} was set for reading (Pollable | NotReady)", fd);
                                         unsafe { libc::FD_CLR(fd, *readfds) };
-                                        read_pollers.insert(fd, polled_id);
+                                        read_pollers.insert(fd, polled.clone());
                                     } else {
                                         log::trace!("select(): fd {} was set for reading (Pollable | Ready)", fd);
                                         fd_ready = true;
@@ -228,7 +224,7 @@ impl Event for SelectEvent<'_> {
 
                 let poller_id = state.new_poller();
 
-                let all_pollers: HashSet<Rc<PolledId>, FxBuildHasher> = read_pollers
+                let all_pollers: BTreeSet<GlobalRc<PolledInfo>> = read_pollers
                     .clone()
                     .into_iter()
                     .chain(write_pollers.clone())
@@ -330,9 +326,9 @@ enum PollState {
     CheckDescriptors,
     CheckDescriptorsFail(Errno),
     EndPoll(
-        Rc<PollerId>,
-        HashMap<RawFd, Rc<PolledId>, FxBuildHasher>,
-        HashMap<RawFd, Rc<PolledId>, FxBuildHasher>,
+        GlobalRc<PollerInfo>,
+        HashMap<RawFd, GlobalRc<PolledInfo>, FxBuildHasher>,
+        HashMap<RawFd, GlobalRc<PolledInfo>, FxBuildHasher>,
     ),
     RevertSigmask(SignalSetSigmaskEvent, Result<usize, Errno>),
 }
@@ -492,7 +488,7 @@ impl Event for PollEvent<'_> {
 
                 let poller_id = state.new_poller();
 
-                let all_pollers: HashSet<Rc<PolledId>, FxBuildHasher> = read_pollers
+                let all_pollers: BTreeSet<GlobalRc<PolledInfo>> = read_pollers
                     .clone()
                     .into_iter()
                     .chain(write_pollers.clone())
@@ -700,7 +696,7 @@ impl Event for EpollCtlEvent {
                 };
 
                 let epoll_info = state.global.epolls.get_mut(&epoll_id).unwrap();
-                epoll_info
+                if let Err(_) = epoll_info
                     .interests
                     .insert(
                         self.target_descriptor,
@@ -708,8 +704,9 @@ impl Event for EpollCtlEvent {
                             direction: direction.clone(),
                             user_data: ev.u64,
                         },
-                    )
-                    .unwrap();
+                    ) {
+                    panic!("failed to insert epoll interest")
+                }
 
                 log::trace!(
                     "EPOLL_CTL_ADD called on epoll_fd({}) for fd({})--setting poll mode to {}",
@@ -773,9 +770,9 @@ enum EpollWaitState {
     CheckDescriptors,
     CheckDescriptorsFail(Errno),
     EndPoll(
-        Rc<PollerId>,
-        HashMap<RawFd, Rc<PolledId>, FxBuildHasher>,
-        HashMap<RawFd, Rc<PolledId>, FxBuildHasher>,
+        GlobalRc<PollerInfo>,
+        HashMap<RawFd, GlobalRc<PolledInfo>, FxBuildHasher>,
+        HashMap<RawFd, GlobalRc<PolledInfo>, FxBuildHasher>,
     ),
     RevertSigmask(SignalSetSigmaskEvent, Result<usize, Errno>),
 }
@@ -955,7 +952,7 @@ impl Event for EpollWaitEvent<'_> {
 
                 let poller_id = state.new_poller();
 
-                let all_pollers: HashSet<Rc<PolledId>, FxBuildHasher> = read_pollers
+                let all_pollers: BTreeSet<GlobalRc<PolledInfo>> = read_pollers
                     .clone()
                     .into_iter()
                     .chain(write_pollers.clone())

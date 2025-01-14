@@ -11,7 +11,7 @@ use embedded_alloc::TlsfHeap;
 
 use crate::backend::{ConnectedBackend, FileBackend, FileFeedback, PendingBackend};
 use crate::cell::{PanicOnceCell, SequentialRefCell};
-use crate::constants::{FIZZLE_MAX_FUZZ_ENDPOINTS, FIZZLE_MEMORY_ENV};
+use crate::constants::FIZZLE_MEMORY_ENV;
 use crate::handlers::file::{CowInfo, FileInfo};
 use crate::handlers::mutex::MutexStatus;
 use crate::handlers::process::*;
@@ -253,29 +253,26 @@ impl Scheduler {
                         }
 
                         match info {
-                            ReadyInfo::Worker(worker_id) => break 'get_worker Ok(worker_id),
-                            ReadyInfo::Poller(poller_id) => {
+                            ReadyInfo::Worker(worker) => break 'get_worker Ok(worker),
+                            ReadyInfo::Poller(poller) => {
+                                let worker = poller.borrow().worker;
                                 log::trace!(
-                                    "Checking if poller {:?} is ready for execution...",
-                                    poller_id
+                                    "Checking if {:?} is ready for execution...",
+                                    &worker
                                 );
-                                let global = &mut state.global;
-
-                                let poller_info = global.pollers.get_mut(&poller_id).unwrap();
-
-                                for polled_id in poller_info.raised_events.iter() {
-                                    let polled_info = global.polled_events.get_mut(&polled_id).unwrap();
-                                    if polled_info.event_raised {
-                                        log::trace!("Poller {:?} is ready for execution", poller_id);
-                                        break 'get_worker Ok(poller_info.worker.clone())
+                                
+                                for polled in poller.borrow().raised_events.iter() {
+                                    if polled.borrow().event_raised {
+                                        log::trace!("{:?} is ready for execution", worker);
+                                        break 'get_worker Ok(worker)
                                     }
                                 }
 
                                 log::trace!(
-                                    "Poller {:?} is not ready for execution--clearing events",
-                                    poller_id
+                                    "{:?} is not ready for execution--clearing events",
+                                    worker
                                 );
-                                poller_info.raised_events.clear();
+                                poller.borrow_mut().raised_events.clear();
                             }
                             ReadyInfo::Timer(pid, timer_type) => {
                                 let waking_sem = state.global.pids.get(&pid).unwrap().borrow().semaphore.clone();
@@ -663,16 +660,16 @@ impl Scheduler {
     // TODO: clean this up better
     fn round_complete(ctx: &mut FizzleSingleton) {
         let mut state = ctx.acquire();
+        let alloc = state.global.alloc.alloc();
 
         Scheduler::prepare_fuzz_input(&mut state);
 
         // Reset fuzz endpoint state (e.g. endpoints configured with the `fuzz` option)
-        let mut polled_ready = heapless::Vec::<_, FIZZLE_MAX_FUZZ_ENDPOINTS>::new();
+        let mut polled_ready = Vec::new_in(alloc);
         for endpoint_info in state.global.fuzz_endpoints.values_mut() {
             endpoint_info.read_idx = 0;
             polled_ready
-                .push(endpoint_info.read_polled.clone())
-                .unwrap();
+                .push(endpoint_info.read_polled.clone());
         }
 
         log::debug!(
@@ -740,7 +737,7 @@ impl Scheduler {
                     PerRoundClientBackend::Plugin(plugin_id) => PendingBackend::Plugin(plugin_id),
                 },
             );
-            log::debug!("added pending client {:?}", socket_info);
+            log::debug!("added pending client with local addr {:?}", socket_info.borrow().local_addr);
             state.global.per_round_endpoints.push(socket_info);
         }
 

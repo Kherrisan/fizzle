@@ -9,7 +9,7 @@ use super::thread::Tid;
 
 
 /// The unique identifying information for a given thread in a process.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Worker {
     pub pid: Pid,
     pub thread_id: ThreadId,

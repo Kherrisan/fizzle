@@ -1,4 +1,4 @@
-use crate::arena::{ArenaKey, Rc};
+use crate::arena::ArenaKey;
 use crate::backend::{
     ConnectedBackend, ConnectingBackend, ConnectionlessBackend, PendingBackend, RegularConnected,
     RegularConnectionless, ServerBackend, StandardFeedback,
@@ -25,8 +25,8 @@ use heapless::Entry;
 pub use private::SocketId;
 
 use super::descriptor::*;
-use super::polled::{PolledId, PolledInfo};
-use super::poller::PollerId;
+use super::polled::PolledInfo;
+use super::poller::PollerInfo;
 
 fn get_or_assign_local(socket_info: &mut GlobalRc<SocketInfo>, state: &mut FizzleState) -> TransportAddress {
     let addr = socket_info.borrow().local_addr.clone();
@@ -75,7 +75,7 @@ fn get_or_assign_local(socket_info: &mut GlobalRc<SocketInfo>, state: &mut Fizzl
                             bound_sockets,
                             pending: None,
                         },
-                    ).unwrap();
+                    );
                     break addr;
                 };
 
@@ -100,17 +100,16 @@ mod private {
     pub struct SocketId(usize);
 }
 
-#[derive(Debug)]
 pub struct TransportLocationInfo {
     pub reuse_port: bool,
     pub bound_sockets: GlobalList<GlobalRc<SocketInfo>>,
     pub pending: Option<PendingInfo>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PendingInfo {
     pub client: GlobalRc<SocketInfo>,
-    pub poll: Rc<PolledId>,
+    pub poll: GlobalRc<PolledInfo>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -128,7 +127,6 @@ impl LocalAddress {
     }
 }
 
-#[derive(Debug)]
 pub struct SocketInfo {
     /// The number of file descriptors currently referencing the socket.
     pub fd_count: usize,
@@ -170,7 +168,6 @@ impl SocketInfo {
     }
 }
 
-#[derive(Debug)]
 pub enum SocketState {
     Connectionless(ConnectionlessSocket),
     Unassociated(UnassociatedSocket),
@@ -180,7 +177,6 @@ pub enum SocketState {
     Connected(ConnectedSocket),
 }
 
-#[derive(Debug)]
 pub struct ConnectionlessSocket {
     pub backend: ConnectionlessBackend,
     pub rem_addr: Option<TransportAddress>,
@@ -192,27 +188,24 @@ pub struct UnassociatedSocket {
     reuse_port: bool,
 }
 
-#[derive(Debug)]
 pub struct ServerSocket {
     pub backend: ServerBackend,
     pub connecting: GlobalList<GlobalRc<SocketInfo>>,
-    pub ready_to_connect: Rc<PolledId>,
+    pub ready_to_connect: GlobalRc<PolledInfo>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PendingSocket {
     pub backend: PendingBackend,
     pub next_pending: Option<GlobalRc<SocketInfo>>,
     pub rem_addr: TransportAddress,
 }
 
-#[derive(Debug)]
 pub struct ConnectingSocket {
     pub backend: ConnectingBackend,
-    pub connect_polled: Rc<PolledId>,
+    pub connect_polled: GlobalRc<PolledInfo>,
 }
 
-#[derive(Debug)]
 pub struct ConnectedSocket {
     pub backend: ConnectedBackend,
     pub rem_addr: TransportAddress,
@@ -243,6 +236,7 @@ impl Event for SocketCreateEvent {
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let alloc = state.global.alloc.alloc();
         let fd = Descriptor::from_raw_fd(crate::create_descriptor());
 
         let socket_info = std::rc::Rc::new_in(RefCell::new(SocketInfo {
@@ -255,16 +249,15 @@ impl Event for SocketCreateEvent {
                     SocketState::Unassociated(UnassociatedSocket { reuse_port: false })
                 }
                 SocketType::Datagram => {
-                    let read_polled = state
-                        .global
-                        .polled_events
-                        .allocate(PolledInfo::new())
-                        .unwrap();
-                    let write_polled = state
-                        .global
-                        .polled_events
-                        .allocate(PolledInfo::new())
-                        .unwrap();
+                    let read_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                        pollers: Vec::new_in(alloc),
+                        event_raised: false,
+                    }), alloc);
+
+                    let write_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                        pollers: Vec::new_in(alloc),
+                        event_raised: false,
+                    }), alloc);
 
                     SocketState::Connectionless(ConnectionlessSocket {
                         reuse_port: false,
@@ -303,33 +296,35 @@ impl Event for SocketCreatePairEvent {
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let alloc = state.global.alloc.alloc();
+
         let addr1 = state.global.ephemeral_address(self.domain, self.protocol);
         let fd1 = Descriptor::from_raw_fd(crate::create_descriptor());
         let recv_buf1 = state.global.buffers.allocate(Buffer::new()).unwrap();
-        let read_polled1 = state
-            .global
-            .polled_events
-            .allocate(PolledInfo::new())
-            .unwrap();
-        let write_polled1 = state
-            .global
-            .polled_events
-            .allocate(PolledInfo::new())
-            .unwrap();
+
+        let read_polled1 = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+            pollers: Vec::new_in(alloc),
+            event_raised: false,
+        }), alloc);
+
+        let write_polled1 = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+            pollers: Vec::new_in(alloc),
+            event_raised: false,
+        }), alloc);
 
         let addr2 = state.global.ephemeral_address(self.domain, self.protocol);
         let fd2 = Descriptor::from_raw_fd(crate::create_descriptor());
         let recv_buf2 = state.global.buffers.allocate(Buffer::new()).unwrap();
-        let read_polled2 = state
-            .global
-            .polled_events
-            .allocate(PolledInfo::new())
-            .unwrap();
-        let write_polled2 = state
-            .global
-            .polled_events
-            .allocate(PolledInfo::new())
-            .unwrap();
+
+        let read_polled2 = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+            pollers: Vec::new_in(alloc),
+            event_raised: false,
+        }), alloc);
+
+        let write_polled2 = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+            pollers: Vec::new_in(alloc),
+            event_raised: false,
+        }), alloc);
 
         let socket1 = std::rc::Rc::new_in(RefCell::new(SocketInfo {
             fd_count: 1,
@@ -420,26 +415,30 @@ impl Event for SocketCreatePairEvent {
         let mut bound_sockets = LinkedList::new_in(state.global.alloc.alloc());
         bound_sockets.push_back(socket1);
 
-        state.global.socket_locations.insert(
+        if state.global.socket_locations.insert(
             addr1,
             TransportLocationInfo {
                 reuse_port: false,
                 bound_sockets,
                 pending: None,
             },
-        ).unwrap();
+        ).is_err() {
+            panic!("failed to insert to socket_locations")
+        }
 
         let mut bound_sockets = LinkedList::new_in(state.global.alloc.alloc());
         bound_sockets.push_back(socket2);
 
-        state.global.socket_locations.insert(
+        if state.global.socket_locations.insert(
             addr2,
             TransportLocationInfo {
                 reuse_port: false,
                 bound_sockets,
                 pending: None,
             },
-        ).unwrap();
+        ).is_err() {
+            panic!("failed to insert to socket_locations")
+        }
 
         Outcome::Success((fd1, fd2))
     }
@@ -555,12 +554,13 @@ impl Event for SocketBindEvent {
                 let mut bound_sockets = LinkedList::new_in(state.global.alloc.alloc());
                 bound_sockets.push_back(socket_info.clone());
 
-                v.insert(TransportLocationInfo {
+                if v.insert(TransportLocationInfo {
                     reuse_port,
                     bound_sockets,
                     pending: None,
-                })
-                .unwrap();
+                }).is_err() {
+                    panic!("failed to insert to socket_locations")
+                }
             }
         }
 
@@ -593,6 +593,8 @@ impl Event for SocketListenEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let alloc = state.global.alloc.alloc();
+
         let Some(fd_info) = state.local.fds.get(&self.descriptor_id) else {
             return Outcome::Error(Errno::EBADF);
         };
@@ -611,11 +613,10 @@ impl Event for SocketListenEvent {
         };
 
         // Allocate server context and set up polling
-        let ready_to_connect = state
-            .global
-            .polled_events
-            .allocate(PolledInfo::new())
-            .unwrap();
+        let ready_to_connect = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+            pollers: Vec::new_in(alloc),
+            event_raised: false,
+        }), alloc);
 
         if state
             .global
@@ -643,7 +644,7 @@ impl Event for SocketListenEvent {
 
 pub enum SocketConnectState {
     Start,
-    Finish(Rc<PollerId>),
+    Finish(GlobalRc<PollerInfo>),
 }
 
 pub struct SocketConnectEvent {
@@ -667,6 +668,8 @@ impl Event for SocketConnectEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let alloc = state.global.alloc.alloc();
+
         match &self.state {
             SocketConnectState::Start => {
                 let Some(fd_info) = state.local.fds.get(&self.descriptor_id) else {
@@ -737,11 +740,10 @@ impl Event for SocketConnectEvent {
                                 let server_poll = server_info.ready_to_connect.clone();
                                 state.raise_polled(&server_poll);
 
-                                let client_poll = state
-                                    .global
-                                    .polled_events
-                                    .allocate(PolledInfo::new())
-                                    .unwrap();
+                                let client_poll = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                                    pollers: Vec::new_in(alloc),
+                                    event_raised: false,
+                                }), alloc);
 
                                 server_socket_info.borrow_mut().state =
                                     SocketState::Connecting(ConnectingSocket {
@@ -782,16 +784,14 @@ impl Event for SocketConnectEvent {
                             ServerBackend::Feedback(()) => {
                                 ConnectedBackend::Feedback(StandardFeedback {
                                     buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
-                                    read_polled: state
-                                        .global
-                                        .polled_events
-                                        .allocate(PolledInfo::new())
-                                        .unwrap(),
-                                    write_polled: state
-                                        .global
-                                        .polled_events
-                                        .allocate(PolledInfo::new_raised())
-                                        .unwrap(),
+                                    read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                                        pollers: Vec::new_in(alloc),
+                                        event_raised: false,
+                                    }), alloc),
+                                    write_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                                        pollers: Vec::new_in(alloc),
+                                        event_raised: true,
+                                    }), alloc),
                                 })
                             }
                         };
@@ -842,7 +842,7 @@ impl Event for SocketConnectEvent {
 
 pub enum SocketAcceptState {
     Start,
-    Blocked(Rc<PollerId>),
+    Blocked(GlobalRc<PollerInfo>),
     Finish(GlobalRc<SocketInfo>, TransportAddress),
 }
 
@@ -869,6 +869,8 @@ impl Event for SocketAcceptEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let alloc = state.global.alloc.alloc();
+
         match &self.state {
             SocketAcceptState::Start => {
                 let Some(fd_info) = state.local.fds.get(&self.descriptor_id) else {
@@ -1047,30 +1049,26 @@ impl Event for SocketAcceptEvent {
                     ConnectingBackend::Peered(()) => ConnectedBackend::Peered(RegularConnected {
                         peer: std::rc::Rc::downgrade(&connecting_info),
                         recv_buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
-                        read_polled: state
-                            .global
-                            .polled_events
-                            .allocate(PolledInfo::new())
-                            .unwrap(),
-                        write_polled: state
-                            .global
-                            .polled_events
-                            .allocate(PolledInfo::new_raised())
-                            .unwrap(),
+                        read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                            pollers: Vec::new_in(alloc),
+                            event_raised: false,
+                        }), alloc),
+                        write_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                            pollers: Vec::new_in(alloc),
+                            event_raised: true,
+                        }), alloc),
                     }),
                     ConnectingBackend::Feedback(()) => {
                         ConnectedBackend::Feedback(StandardFeedback {
                             buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
-                            read_polled: state
-                                .global
-                                .polled_events
-                                .allocate(PolledInfo::new())
-                                .unwrap(),
-                            write_polled: state
-                                .global
-                                .polled_events
-                                .allocate(PolledInfo::new_raised())
-                                .unwrap(),
+                            read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                                pollers: Vec::new_in(alloc),
+                                event_raised: false,
+                            }), alloc),
+                            write_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                                pollers: Vec::new_in(alloc),
+                                event_raised: true,
+                            }), alloc),
                         })
                     }
                     ConnectingBackend::Plugin(plugin_id) => {
@@ -1101,16 +1099,14 @@ impl Event for SocketAcceptEvent {
                     let connected_backend = ConnectedBackend::Peered(RegularConnected {
                         peer: std::rc::Rc::downgrade(&accepting_info),
                         recv_buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
-                        read_polled: state
-                            .global
-                            .polled_events
-                            .allocate(PolledInfo::new())
-                            .unwrap(),
-                        write_polled: state
-                            .global
-                            .polled_events
-                            .allocate(PolledInfo::new_raised())
-                            .unwrap(),
+                        read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                            pollers: Vec::new_in(alloc),
+                            event_raised: false,
+                        }), alloc),
+                        write_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                            pollers: Vec::new_in(alloc),
+                            event_raised: true,
+                        }), alloc),
                     });
 
                     connecting_info.borrow_mut().state =
@@ -1951,7 +1947,7 @@ impl Event for SocketSetOptionEvent {
 
 pub enum SocketReadState {
     Start,
-    Finish(Option<Rc<PollerId>>),
+    Finish(Option<GlobalRc<PollerInfo>>),
 }
 
 pub struct SocketReadEvent<'a> {
