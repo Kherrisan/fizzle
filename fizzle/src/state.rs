@@ -498,11 +498,9 @@ impl FizzleState {
                         let current_time = self.global.current_time;
                         let cow = self.allocate_cow();
 
-                        let file_id = match &endpoint.emulation_type {
-                            IoEmulationType::Feedback => self
-                                .global
-                                .files
-                                .allocate(FileInfo {
+                        let file_info = match &endpoint.emulation_type {
+                            IoEmulationType::Feedback => std::rc::Rc::new_in(RefCell::new(
+                                FileInfo {
                                     path: path.clone(),
                                     dev_id: 0xfe01,
                                     backend: FileBackend::Feedback(FileFeedback { }),
@@ -516,16 +514,13 @@ impl FizzleState {
                                     btime: current_time,
                                     mtime: current_time,
                                     ctime: current_time,
-                                })
-                                .unwrap(),
+                                }), alloc),
                             IoEmulationType::Plugin(module_id) => {
                                 let backend = FileBackend::Plugin(self.global.add_plugin(
                                     endpoint.endpoint_variant.clone(),
                                     module_id.clone(),
                                 ));
-                                self.global
-                                    .files
-                                    .allocate(FileInfo {
+                                std::rc::Rc::new_in(RefCell::new(FileInfo {
                                         path: path.clone(),
                                         cow: None,
                                         backend,
@@ -539,13 +534,9 @@ impl FizzleState {
                                         btime: current_time,
                                         mtime: current_time,
                                         ctime: current_time,
-                                    })
-                                    .unwrap()
+                                    }), alloc)
                             }
-                            IoEmulationType::Sink => self
-                                .global
-                                .files
-                                .allocate(FileInfo {
+                            IoEmulationType::Sink => std::rc::Rc::new_in(RefCell::new(FileInfo {
                                     path: path.clone(),
                                     cow: None,
                                     backend: FileBackend::Sink,
@@ -559,12 +550,8 @@ impl FizzleState {
                                     btime: current_time,
                                     mtime: current_time,
                                     ctime: current_time,
-                                })
-                                .unwrap(),
-                            IoEmulationType::NullSink => self
-                                .global
-                                .files
-                                .allocate(FileInfo {
+                                }), alloc),
+                            IoEmulationType::NullSink => std::rc::Rc::new_in(RefCell::new(FileInfo {
                                     path: path.clone(),
                                     cow: None,
                                     backend: FileBackend::NullSink,
@@ -578,40 +565,14 @@ impl FizzleState {
                                     btime: current_time,
                                     mtime: current_time,
                                     ctime: current_time,
-                                })
-                                .unwrap(),
+                                }), alloc),
                             IoEmulationType::Fuzz => {
                                 let fuzz_endpoint_id = self.global.add_fuzz_endpoint();
                                 let cow = self.allocate_cow();
-                                let file_id = self
-                                    .global
-                                    .files
-                                    .allocate(FileInfo {
-                                        path: path.clone(),
-                                        cow: Some(cow),
-                                        backend: FileBackend::Fuzz(fuzz_endpoint_id),
-                                        dev_id: 0xfe01,
-                                        inode,
-                                        mode: AccessMode::all(),
-                                        nlink: 1,
-                                        uid,
-                                        gid,
-                                        atime: current_time,
-                                        btime: current_time,
-                                        mtime: current_time,
-                                        ctime: current_time,
-                                    })
-                                    .unwrap();
-
-                                file_id
-                            }
-                            IoEmulationType::Passthrough => self
-                                .global
-                                .files
-                                .allocate(FileInfo {
+                                let file_info = std::rc::Rc::new_in(RefCell::new(FileInfo {
                                     path: path.clone(),
-                                    cow: None,
-                                    backend: FileBackend::Passthrough,
+                                    cow: Some(cow),
+                                    backend: FileBackend::Fuzz(fuzz_endpoint_id),
                                     dev_id: 0xfe01,
                                     inode,
                                     mode: AccessMode::all(),
@@ -622,11 +583,31 @@ impl FizzleState {
                                     btime: current_time,
                                     mtime: current_time,
                                     ctime: current_time,
-                                })
-                                .unwrap(),
+                                }), alloc);
+
+                                file_info
+                            }
+                            IoEmulationType::Passthrough => std::rc::Rc::new_in(RefCell::new(FileInfo {
+                                path: path.clone(),
+                                cow: None,
+                                backend: FileBackend::Passthrough,
+                                dev_id: 0xfe01,
+                                inode,
+                                mode: AccessMode::all(),
+                                nlink: 1,
+                                uid,
+                                gid,
+                                atime: current_time,
+                                btime: current_time,
+                                mtime: current_time,
+                                ctime: current_time,
+                            }), alloc),
                         };
 
-                        self.global.file_paths.insert(path, file_id).unwrap();
+
+                        if self.global.file_paths.insert(path, file_info).is_err() {
+                            panic!("failed to insert into file_paths")
+                        }
                     }
                     IoEndpointVariant::TcpServer(addr) => {
                         let backend = match &endpoint.emulation_type {
@@ -1035,8 +1016,8 @@ pub struct InterprocessState {
     /// If true, stderr is silently dropped; otherwise it is printed.
     pub mask_stderr: bool,
     pub afl_shmem_initialized: bool,
-    pub file_paths: FnvIndexMap<FilePath<MAX_PATH_LEN>, Rc<FileId>, FIZZLE_MAX_FILE_PATHS>,
-    pub files: KeyedArena<FileId, FileInfo, FIZZLE_MAX_FILES>,
+    // TODO: BTreeMap would be unwise here due to 
+    pub file_paths: FnvIndexMap<FilePath<MAX_PATH_LEN>, GlobalRc<FileInfo>, FIZZLE_MAX_FILE_PATHS>,
     pub open_files: KeyedArena<OpenFileId, OpenFileInfo, FIZZLE_MAX_OPEN_FILES>,
     pub sem_paths: FnvIndexMap<SemaphorePath, Rc<SemaphoreId>, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub semaphores: KeyedArena<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>,
@@ -1128,7 +1109,6 @@ impl InterprocessState {
 
             *ptr::addr_of_mut!((*state).afl_shmem_initialized) = false;
             *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).files));
             *ptr::addr_of_mut!((*state).sem_paths) = FnvIndexMap::new();
             KeyedArena::initialize(ptr::addr_of_mut!((*state).semaphores));
             KeyedArena::initialize(ptr::addr_of_mut!((*state).pipes));

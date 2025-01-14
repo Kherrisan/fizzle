@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::mem::MaybeUninit;
 use std::{cmp, ptr};
 use std::fmt::Display;
@@ -9,13 +10,14 @@ use fizzle_common::io::MAX_PATH_LEN;
 use fizzle_common::path::FilePath;
 use fizzle_common::storage::Buffer;
 
-use crate::arena::{ArenaKey, Rc};
+use crate::arena::ArenaKey;
 use crate::backend::{FileBackend, FileFeedback};
 use crate::constants::FIZZLE_FOPEN_BUFSIZE;
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::{CreateCowSource, FizzleState};
 use crate::handlers::descriptor::*;
+use crate::GlobalRc;
 
 use super::descriptor::{Descriptor, ReadData, WriteData};
 
@@ -42,10 +44,9 @@ impl ArenaKey for OpenFileId {
     type Value = OpenFileInfo;
 }
 
-#[derive(Debug)]
 pub struct OpenFileInfo {
     pub offset: usize,
-    pub file: Rc<FileId>,
+    pub file: GlobalRc<FileInfo>,
 }
 
 pub struct FileInfo {
@@ -298,11 +299,11 @@ impl Event for FileOpenEvent {
 
         match self.state {
             FileOpenState::Start => match state.global.file_paths.get(&path) {
-                Some(file_id) => if self.flags.contains(FileOpenFlags::CREATE | FileOpenFlags::EXCLUSIVE) {
+                Some(file_info) => if self.flags.contains(FileOpenFlags::CREATE | FileOpenFlags::EXCLUSIVE) {
                     Outcome::Error(Errno::EEXIST)
 
-                } else if let Some(cow_id) = state.global.files.get(file_id).unwrap().cow.as_ref() {
-                    match state.local.pasture.get(cow_id) {
+                } else if let Some(cow_id) = file_info.borrow().cow.clone() {
+                    match state.local.pasture.get(&cow_id) {
                         Some(cow_info) => Outcome::Success(cow_info.memfd),
                         None => {
                             self.state = FileOpenState::Finish;
@@ -350,7 +351,7 @@ impl Event for FileOpenEvent {
                         let gid = state.global.gid;
                         let current_time = state.global.current_time;
 
-                        let file_id = state.global.files.allocate(FileInfo {
+                        let file_info = std::rc::Rc::new_in(RefCell::new(FileInfo {
                             path: path.clone(),
                             cow: None,
                             dev_id: 0xfe01, // plausible
@@ -364,8 +365,10 @@ impl Event for FileOpenEvent {
                             btime: current_time,
                             ctime: current_time,
                             mtime: current_time,
-                        }).unwrap();
-                        state.global.file_paths.insert(path, file_id).unwrap();
+                        }), state.global.alloc.alloc());
+                        if state.global.file_paths.insert(path, file_info).is_err() {
+                            panic!("failed to insert to file_paths")
+                        }
 
                         Outcome::Success(fd)
 
@@ -378,8 +381,7 @@ impl Event for FileOpenEvent {
             }
             FileOpenState::Finish => {
                 let file = state.global.file_paths.get(&path).unwrap();
-                let file_info = state.global.files.get(file).unwrap();
-                let cow_id = file_info.cow.unwrap();
+                let cow_id = file.borrow().cow.unwrap();
                 let fd = state.local.pasture.get(&cow_id).unwrap().memfd;
                 Outcome::Success(fd)
             }
@@ -414,16 +416,17 @@ impl Event for FileReadEvent<'_> {
         };
 
         let open_file_info = state.global.open_files.get_mut(open_file_id).unwrap();
-        let file_info = state.global.files.get(&open_file_info.file).unwrap();
+        let file = open_file_info.file.clone();
+        let file_ref = file.borrow();
 
-        match &file_info.backend {
+        match &file_ref.backend {
             FileBackend::Passthrough => todo!(),
             FileBackend::Peered(_) => todo!(),
             FileBackend::Feedback(_) => {
                 // TODO: edit modify time here
                 // file_info.mtime
 
-                let fd = if let Some(cow_id) = file_info.cow {
+                let fd = if let Some(cow_id) = file.borrow().cow {
                     let Some(cow_info) = state.local.pasture.get(&cow_id) else {
                         self.cow_created = true;
                         return Outcome::CreateCow(CreateCowSource::Existing(cow_id));
@@ -578,16 +581,17 @@ impl Event for FileWriteEvent<'_> {
         };
 
         let open_file_info = state.global.open_files.get_mut(open_file_id).unwrap();
-        let file_info = state.global.files.get(&open_file_info.file).unwrap();
+        let file = open_file_info.file.clone();
 
-        match &file_info.backend {
+        let file_ref = file.borrow();
+        match &file_ref.backend {
             FileBackend::Passthrough => todo!(),
             FileBackend::Peered(_) => todo!(),
             FileBackend::Feedback(_) => {
                 // TODO: edit modify time here
                 // file_info.mtime
 
-                let fd = if let Some(cow_id) = file_info.cow {
+                let fd = if let Some(cow_id) = file_ref.cow {
                     let Some(cow_info) = state.local.pasture.get(&cow_id) else {
                         self.cow_created = true;
                         return Outcome::CreateCow(CreateCowSource::Existing(cow_id));
@@ -596,7 +600,7 @@ impl Event for FileWriteEvent<'_> {
                     cow_info.memfd
                 } else {
                     self.cow_created = true;
-                    return Outcome::CreateCow(CreateCowSource::New(file_info.path.clone(), file_info.mode))
+                    return Outcome::CreateCow(CreateCowSource::New(file_ref.path.clone(), file_ref.mode))
                 };
 
                 if self.cow_created {
@@ -802,8 +806,8 @@ impl Event for ChangeOwnerEvent {
 
                 match &fd_info.resource {
                     FdResource::File(open_file_id) => {
-                        let file_id = &state.global.open_files.get(open_file_id).unwrap().file;
-                        state.global.files.get(file_id).unwrap().path.clone()
+                        let file_info = &state.global.open_files.get(open_file_id).unwrap().file;
+                        file_info.borrow().path.clone()
                     }
                     FdResource::Directory(dir) => {
                         state.local.dirs.get(dir).unwrap().clone()
@@ -821,8 +825,8 @@ impl Event for ChangeOwnerEvent {
 
                     match &fd_info.resource {
                         FdResource::File(open_file_id) => {
-                            let file_id = &state.global.open_files.get(open_file_id).unwrap().file;
-                            state.global.files.get(file_id).unwrap().path.clone()
+                            let file_info = &state.global.open_files.get(open_file_id).unwrap().file;
+                            file_info.borrow().path.clone()
                         }
                         FdResource::Directory(dir) => {
                             state.local.dirs.get(dir).unwrap().clone()
@@ -901,8 +905,8 @@ impl Event for ChangeModeEvent {
 
                 match &fd_info.resource {
                     FdResource::File(open_file_id) => {
-                        let file_id = &state.global.open_files.get(open_file_id).unwrap().file;
-                        state.global.files.get(file_id).unwrap().path.clone()
+                        let file_info = &state.global.open_files.get(open_file_id).unwrap().file;
+                        file_info.borrow().path.clone()
                     }
                     FdResource::Directory(dir) => {
                         state.local.dirs.get(dir).unwrap().clone()
@@ -920,8 +924,8 @@ impl Event for ChangeModeEvent {
 
                     match &fd_info.resource {
                         FdResource::File(open_file_id) => {
-                            let file_id = &state.global.open_files.get(open_file_id).unwrap().file;
-                            state.global.files.get(file_id).unwrap().path.clone()
+                            let file_info = &state.global.open_files.get(open_file_id).unwrap().file;
+                            file_info.borrow().path.clone()
                         }
                         FdResource::Directory(dir) => {
                             state.local.dirs.get(dir).unwrap().clone()
@@ -1002,8 +1006,8 @@ impl Event for AccessEvent {
 
                     match &fd_info.resource {
                         FdResource::File(open_file_id) => {
-                            let file_id = &state.global.open_files.get(open_file_id).unwrap().file;
-                            state.global.files.get(file_id).unwrap().path.clone()
+                            let file_info = &state.global.open_files.get(open_file_id).unwrap().file;
+                            file_info.borrow().path.clone()
                         }
                         FdResource::Directory(dir) => {
                             state.local.dirs.get(dir).unwrap().clone()
@@ -1083,8 +1087,8 @@ impl Event for StatEvent<'_> {
 
                 match &fd_info.resource {
                     FdResource::File(open_file_id) => {
-                        let file_id = &state.global.open_files.get(open_file_id).unwrap().file;
-                        state.global.files.get(file_id).unwrap().path.clone()
+                        let file_info = &state.global.open_files.get(open_file_id).unwrap().file;
+                        file_info.borrow().path.clone()
                     }
                     FdResource::Directory(dir) => {
                         state.local.dirs.get(dir).unwrap().clone()
@@ -1102,8 +1106,8 @@ impl Event for StatEvent<'_> {
 
                     match &fd_info.resource {
                         FdResource::File(open_file_id) => {
-                            let file_id = &state.global.open_files.get(open_file_id).unwrap().file;
-                            state.global.files.get(file_id).unwrap().path.clone()
+                            let file_info = &state.global.open_files.get(open_file_id).unwrap().file;
+                            file_info.borrow().path.clone()
                         }
                         FdResource::Directory(dir) => {
                             state.local.dirs.get(dir).unwrap().clone()
@@ -1120,7 +1124,7 @@ impl Event for StatEvent<'_> {
             },
         };
 
-        let file_id = match state.global.file_paths.get(&path) {
+        let file_info = match state.global.file_paths.get(&path) {
             Some(file_id) => file_id,
             None => {
                 if unsafe { libc::access(path.as_cstr().as_ptr(), libc::F_OK) } != 0 {
@@ -1133,7 +1137,8 @@ impl Event for StatEvent<'_> {
                 let gid = state.global.gid;
                 let current_time = state.global.current_time;
 
-                let file_id = state.global.files.allocate(FileInfo {
+
+                let file_info = std::rc::Rc::new_in(RefCell::new(FileInfo {
                     path: path.clone(),
                     cow: None,
                     dev_id: 0xfe01,
@@ -1147,15 +1152,13 @@ impl Event for StatEvent<'_> {
                     mtime: current_time,
                     ctime: current_time, // TODO: edit these
                     backend: FileBackend::Feedback(FileFeedback { }),
-                }).unwrap();
-                state.global.file_paths.insert(path.clone(), file_id);
+                }), state.global.alloc.alloc());
+                state.global.file_paths.insert(path.clone(), file_info);
                 state.global.file_paths.get(&path).unwrap()
             }
         };
 
-        let file_info = state.global.files.get(file_id).unwrap();
-
-        let size = match file_info.cow {
+        let size = match file_info.borrow().cow {
             Some(cow_id) => {
                 let Some(cow_info) = state.local.pasture.get(&cow_id) else {
                     // Fetch CoW ID for this process and retry
@@ -1179,22 +1182,23 @@ impl Event for StatEvent<'_> {
             }
         };
 
-        self.stat_buf.st_atime = file_info.atime.as_secs() as i64;
-        self.stat_buf.st_atime_nsec = file_info.atime.subsec_nanos() as i64;
+        let file_ref = file_info.borrow();
+        self.stat_buf.st_atime = file_ref.atime.as_secs() as i64;
+        self.stat_buf.st_atime_nsec = file_ref.atime.subsec_nanos() as i64;
         self.stat_buf.st_blksize = 4096;
         self.stat_buf.st_blocks = (size / 4096) as i64 + 1;
-        self.stat_buf.st_ctime = file_info.ctime.as_secs() as i64;
-        self.stat_buf.st_ctime_nsec = file_info.ctime.subsec_nanos() as i64;
-        self.stat_buf.st_dev = file_info.dev_id;
-        self.stat_buf.st_gid = file_info.gid;
-        self.stat_buf.st_ino = file_info.inode;
-        self.stat_buf.st_mode = file_info.mode.bits();
-        self.stat_buf.st_mtime = file_info.mtime.as_secs() as i64;
-        self.stat_buf.st_mtime_nsec = file_info.mtime.subsec_nanos() as i64;
-        self.stat_buf.st_nlink = file_info.nlink as u64;
+        self.stat_buf.st_ctime = file_ref.ctime.as_secs() as i64;
+        self.stat_buf.st_ctime_nsec = file_ref.ctime.subsec_nanos() as i64;
+        self.stat_buf.st_dev = file_ref.dev_id;
+        self.stat_buf.st_gid = file_ref.gid;
+        self.stat_buf.st_ino = file_ref.inode;
+        self.stat_buf.st_mode = file_ref.mode.bits();
+        self.stat_buf.st_mtime = file_ref.mtime.as_secs() as i64;
+        self.stat_buf.st_mtime_nsec = file_ref.mtime.subsec_nanos() as i64;
+        self.stat_buf.st_nlink = file_ref.nlink as u64;
         self.stat_buf.st_rdev = 0;
         self.stat_buf.st_size = size as i64;
-        self.stat_buf.st_uid = file_info.uid;
+        self.stat_buf.st_uid = file_ref.uid;
 
         Outcome::Success(())           
     }
@@ -1288,8 +1292,8 @@ impl Event for RenameEvent {
 
                     match &fd_info.resource {
                         FdResource::File(open_file_id) => {
-                            let file_id = &state.global.open_files.get(open_file_id).unwrap().file;
-                            state.global.files.get(file_id).unwrap().path.clone()
+                            let file_info = &state.global.open_files.get(open_file_id).unwrap().file;
+                            file_info.borrow().path.clone()
                         }
                         FdResource::Directory(dir) => {
                             state.local.dirs.get(dir).unwrap().clone()
@@ -1311,8 +1315,8 @@ impl Event for RenameEvent {
 
                     match &fd_info.resource {
                         FdResource::File(open_file_id) => {
-                            let file_id = &state.global.open_files.get(open_file_id).unwrap().file;
-                            state.global.files.get(file_id).unwrap().path.clone()
+                            let file_info = &state.global.open_files.get(open_file_id).unwrap().file;
+                            file_info.borrow().path.clone()
                         }
                         FdResource::Directory(dir) => {
                             state.local.dirs.get(dir).unwrap().clone()
@@ -1329,13 +1333,13 @@ impl Event for RenameEvent {
             },
         };
 
-        if let Some(new_file_id) = state.global.file_paths.get(&newpath) {
-            if let Some(cow_id) = state.global.files.get(new_file_id).unwrap().cow {
+        if let Some(new_file_info) = state.global.file_paths.get(&newpath) {
+            if let Some(cow_id) = new_file_info.borrow().cow {
                 // TODO: what to do here?
             };
         }
 
-        if let Some(old_file_id) = state.global.file_paths.get(&oldpath) {
+        if let Some(old_file_info) = state.global.file_paths.get(&oldpath) {
             // TODO: what to do here?
         }
 
@@ -1345,17 +1349,21 @@ impl Event for RenameEvent {
 
         let replace_file_id = state.global.file_paths.remove(&newpath);
 
-        let Some(move_file_id) = state.global.file_paths.remove(&oldpath) else {
+        let Some(move_file_info) = state.global.file_paths.remove(&oldpath) else {
             return Outcome::Error(Errno::ENOENT) // TODO: fix error code
         };
 
-        state.global.file_paths.insert(newpath.clone(), move_file_id.clone()).unwrap();
-        state.global.files.get_mut(&move_file_id).unwrap().path = newpath;
+        if state.global.file_paths.insert(newpath.clone(), move_file_info.clone()).is_err() {
+            panic!("failed to insert to file_paths")
+        }
+        move_file_info.borrow_mut().path = newpath;
 
         if self.flags.contains(RenameFlags::RENAME_EXCHANGE) {
-            if let Some(file_id) = replace_file_id {
-                state.global.file_paths.insert(oldpath.clone(), file_id.clone()).unwrap();
-                state.global.files.get_mut(&file_id).unwrap().path = oldpath;
+            if let Some(file_info) = replace_file_id {
+                if state.global.file_paths.insert(oldpath.clone(), file_info.clone()).is_err() {
+                    panic!("failed to insert to file_paths")
+                }
+                file_info.borrow_mut().path = oldpath;
             }
         }
 

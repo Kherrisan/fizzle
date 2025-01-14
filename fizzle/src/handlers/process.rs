@@ -507,7 +507,7 @@ impl Event for ProcessExecEvent {
                         // TODO: must be opened read-only with O_PATH set and execute permissions
 
                         let open_file = state.global.open_files.get(&open_file_id).unwrap();
-                        let path = &state.global.files.get(&open_file.file).unwrap().path;
+                        let path = &open_file.file.borrow().path;
 
                         let cmd = path.data().as_ptr() as *const libc::c_char;
 

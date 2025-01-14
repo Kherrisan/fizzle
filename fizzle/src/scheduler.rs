@@ -1,5 +1,5 @@
 use core::slice;
-use std::cell::RefMut;
+use std::cell::{RefCell, RefMut};
 use std::collections::BTreeMap;
 use std::os::fd::RawFd;
 use std::process::Command;
@@ -514,8 +514,7 @@ impl Scheduler {
                         let uid = state.global.uid;
                         let gid = state.global.gid;
 
-
-                        let file_id = state.global.files.allocate(FileInfo {
+                        let file_info = std::rc::Rc::new_in(RefCell::new(FileInfo {
                             path: path.clone(),
                             cow: Some(cow_id),
                             dev_id: 0xfe01,
@@ -529,9 +528,12 @@ impl Scheduler {
                             btime: current_time,
                             mtime: current_time,
                             ctime: current_time,
-                        }).unwrap();
+                        }), state.global.alloc.alloc());
 
-                        state.global.file_paths.insert(path.clone(), file_id).unwrap();
+                        if state.global.file_paths.insert(path.clone(), file_info).is_err() {
+                            panic!("failed to add to file_paths")
+                        }
+
                         let fd = state.local.pasture.get(&cow_id).unwrap().memfd;
 
                         copy_to_shmem(fd, &path);
@@ -1393,7 +1395,7 @@ impl Scheduler {
                     let gid = state.global.gid;
 
                     if !state.global.file_paths.contains_key(&path) {
-                        let file_id = state.global.files.allocate(FileInfo {
+                        let file_info = std::rc::Rc::new_in(RefCell::new(FileInfo {
                             path: path.clone(),
                             cow: Some(cow_id),
                             dev_id: 0xfe01,
@@ -1407,12 +1409,14 @@ impl Scheduler {
                             btime: current_time,
                             mtime: current_time,
                             ctime: current_time,
-                        }).unwrap();
+                        }), state.global.alloc.alloc());
 
-                        state.global.file_paths.insert(path.clone(), file_id).unwrap();
+                        if state.global.file_paths.insert(path.clone(), file_info).is_err() {
+                            panic!("failed to insert to file_paths")
+                        }
                     } else {
-                        let file_id = state.global.file_paths.get(&path).unwrap().clone();
-                        state.global.files.get_mut(&file_id).unwrap().cow = Some(cow_id);
+                        let file_info = state.global.file_paths.get(&path).unwrap().clone();
+                        file_info.borrow_mut().cow = Some(cow_id);
                     }
 
                     let memfd = state.local.pasture.get(&cow_id).unwrap().memfd;
@@ -1442,8 +1446,8 @@ impl Scheduler {
             let cow_id = match source {
                 CreateCowSource::Existing(cow_id) => cow_id,
                 CreateCowSource::New(path, _mode) => {
-                    let file_id = state.global.file_paths.get(&path).unwrap();
-                    state.global.files.get(file_id).unwrap().cow.unwrap()
+                    let file_info = state.global.file_paths.get(&path).unwrap();
+                    file_info.borrow().cow.unwrap()
                 }
             };
 
