@@ -712,8 +712,8 @@ impl Scheduler {
 
         // Reset plugin endpoint state
         for (read_buf, write_buf, read_polled, write_polled) in plugin_info_ids {
-            state.global.buffers.get_mut(&read_buf).unwrap().clear();
-            state.global.buffers.get_mut(&write_buf).unwrap().clear();
+            write_buf.borrow_mut().clear();
+            read_buf.borrow_mut().clear();
             state.lower_polled(&read_polled);
             state.raise_polled(&write_polled);
         }

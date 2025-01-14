@@ -582,24 +582,22 @@ impl Event for StdinReadEvent<'_> {
                 let read_polled = feedback.read_polled.clone();
                 let write_polled = feedback.write_polled.clone();
 
-                let buffer_id = feedback.buf.clone();
-
-                let buf = state.global.buffers.get_mut(&buffer_id).unwrap();
+                let buf = feedback.buf.clone();
                 let mut total_read = 0;
 
                 for slice in iovec.iter_mut() {
-                    if buf.is_empty() {
+                    if buf.borrow().is_empty() {
                         break;
                     }
 
-                    let data_len = cmp::min(buf.len(), slice.len());
-                    slice[..data_len].copy_from_slice(&buf.data()[..data_len]);
+                    let data_len = cmp::min(buf.borrow().len(), slice.len());
+                    slice[..data_len].copy_from_slice(&buf.borrow().data()[..data_len]);
 
-                    buf.did_read(data_len);
+                    buf.borrow_mut().did_read(data_len);
                     total_read += data_len;
                 }
 
-                if buf.is_empty() {
+                if buf.borrow().is_empty() {
                     state.lower_polled(&read_polled);
                 }
                 state.raise_polled(&write_polled);
@@ -627,25 +625,23 @@ impl Event for StdinReadEvent<'_> {
                     state.delete_poller(poller.clone());
                 }
 
-                let buffer_id = plugin_info.borrow().write_buf.clone();
+                let buf = plugin_info.borrow().write_buf.clone();
                 let read_polled = plugin_info.borrow().read_polled.clone();
-
-                let buf = state.global.buffers.get_mut(&buffer_id).unwrap();
                 let mut total_read = 0;
 
                 for slice in iovec.iter_mut() {
-                    if buf.is_empty() {
+                    if buf.borrow().is_empty() {
                         break;
                     }
 
-                    let data_len = cmp::min(buf.len(), slice.len());
-                    slice[..data_len].copy_from_slice(&buf.data()[..data_len]);
+                    let data_len = cmp::min(buf.borrow().len(), slice.len());
+                    slice[..data_len].copy_from_slice(&buf.borrow().data()[..data_len]);
 
-                    buf.did_read(data_len);
+                    buf.borrow_mut().did_read(data_len);
                     total_read += data_len;
                 }
 
-                if buf.is_empty() {
+                if buf.borrow().is_empty() {
                     state.lower_polled(&read_polled);
                 }
 
@@ -908,20 +904,19 @@ impl Event for StdoutWriteEvent<'_> {
                     state.delete_poller(poller_id.clone());
                 }
 
-                let buffer_id = feedback.buf.clone();
+                let buf = feedback.buf.clone();
                 let write_polled = feedback.write_polled.clone();
                 let read_polled = feedback.read_polled.clone();
 
-                let buf = state.global.buffers.get_mut(&buffer_id).unwrap();
                 let mut total_written = 0;
                 for slice in iovec {
-                    if buf.is_full() {
+                    if buf.borrow().is_full() {
                         break;
                     }
-                    total_written += buf.write(slice);
+                    total_written += buf.borrow_mut().write(slice);
                 }
 
-                if buf.is_full() {
+                if buf.borrow().is_full() {
                     state.lower_polled(&write_polled);
                 }
                 state.raise_polled(&read_polled);
@@ -949,14 +944,13 @@ impl Event for StdoutWriteEvent<'_> {
                     state.delete_poller(poller.clone());
                 }
 
-                let buffer_id = plugin_info.borrow().write_buf.clone();
-                let buf = state.global.buffers.get_mut(&buffer_id).unwrap();
+                let buf = plugin_info.borrow().write_buf.clone();
                 let mut total_written = 0;
                 for slice in iovec {
-                    if buf.is_full() {
+                    if buf.borrow().is_full() {
                         break;
                     }
-                    total_written += buf.write(slice);
+                    total_written += buf.borrow_mut().write(slice);
                 }
 
                 Outcome::Success(total_written)

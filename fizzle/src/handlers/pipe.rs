@@ -2,7 +2,8 @@ use std::cell::RefCell;
 use std::cmp;
 use std::rc::Weak;
 
-use crate::arena::{ArenaKey, Rc};
+use crate::arena::ArenaKey;
+use crate::constants::FIZZLE_BUFFER_LENGTH;
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
@@ -13,7 +14,6 @@ use bitflags::bitflags;
 use fizzle_common::storage::Buffer;
 pub use private::PipeId;
 
-use super::buffer::BufferId;
 use super::descriptor::{Descriptor, DescriptorInfo, FdResource, ReadData, WriteData};
 use super::polled::PolledInfo;
 use super::poller::PollerInfo;
@@ -35,7 +35,7 @@ pub struct PipeInfo {
     /// If this value is `None`, then the pipe has broken (e.g., the other end has shut).
     pub peer: GlobalWeak<PipeInfo>,
     /// The buffer this pipe reads in data from.
-    pub read_buf: Rc<BufferId>,
+    pub read_buf: GlobalRc<Buffer<FIZZLE_BUFFER_LENGTH>>,
     pub read_polled: GlobalRc<PolledInfo>,
     pub write_polled: GlobalRc<PolledInfo>,
 }
@@ -93,7 +93,7 @@ impl Event for PipeCreateEvent {
         let first_pipe = std::rc::Rc::new_in(RefCell::new(PipeInfo {
             mode,
             peer: Weak::new_in(alloc),
-            read_buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
+            read_buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc),
             read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
                 pollers: Vec::new_in(alloc),
                 event_raised: false,
@@ -107,7 +107,7 @@ impl Event for PipeCreateEvent {
         let second_pipe = std::rc::Rc::new_in(RefCell::new(PipeInfo {
             mode,
             peer: std::rc::Rc::downgrade(&first_pipe),
-            read_buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
+            read_buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc),
             read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
                 pollers: Vec::new_in(alloc),
                 event_raised: false,
@@ -209,12 +209,12 @@ impl Event for PipeReadEvent<'_> {
                 let peer_is_closed = self.pipe_info.borrow().peer.upgrade().is_none();
                 let pipe_mode = self.pipe_info.borrow().mode;
 
-                let buffer_id = self.pipe_info.borrow().read_buf.clone();
+                let buf = self.pipe_info.borrow().read_buf.clone();
+                let mut buf_mut = buf.borrow_mut();
                 let write_polled = self.pipe_info.borrow().write_polled.clone();
                 let read_polled = self.pipe_info.borrow().read_polled.clone();
 
-                let buf = state.global.buffers.get_mut(&buffer_id).unwrap();
-                if buf.is_empty() {
+                if buf.borrow().is_empty() {
                     assert!(peer_is_closed);
                     // TODO: sigpipe to self?
                     return Outcome::Success(0);
@@ -223,10 +223,10 @@ impl Event for PipeReadEvent<'_> {
                 let total_read = match pipe_mode {
                     PipeMode::Direct => {
                         let mut packet_len_bytes = [0u8; 2];
-                        assert_eq!(buf.read(packet_len_bytes.as_mut_slice()), 2);
+                        assert_eq!(buf_mut.read(packet_len_bytes.as_mut_slice()), 2);
                         let packet_len = u16::from_be_bytes(packet_len_bytes) as usize;
 
-                        let packet = &buf.data()[..packet_len];
+                        let packet = &buf_mut.data()[..packet_len];
                         let mut total_read = 0;
                         for slice in iovec.iter_mut() {
                             let v_read = cmp::min(packet.len() - total_read, slice.len());
@@ -234,11 +234,11 @@ impl Event for PipeReadEvent<'_> {
                             total_read += v_read;
                         }
 
-                        buf.did_read(total_read);
+                        buf.borrow_mut().did_read(total_read);
                         total_read
                     }
                     PipeMode::Streamed => {
-                        let packet = buf.data();
+                        let packet = buf_mut.data();
                         let mut total_read = 0;
                         for slice in iovec.iter_mut() {
                             let v_read = cmp::min(packet.len() - total_read, slice.len());
@@ -246,13 +246,13 @@ impl Event for PipeReadEvent<'_> {
                             total_read += v_read;
                         }
 
-                        buf.did_read(total_read);
+                        buf_mut.did_read(total_read);
 
                         total_read
                     }
                 };
 
-                if buf.is_empty() {
+                if buf.borrow().is_empty() {
                     state.lower_polled(&read_polled);
                 }
                 state.raise_polled(&write_polled);
@@ -313,11 +313,10 @@ impl Event for PipeWriteEvent<'_> {
                     return Outcome::Error(Errno::EPIPE);
                 };
 
-                let buffer_id = &peer_info.borrow().read_buf;
-                let peer_buf = state.global.buffers.get(&buffer_id).unwrap();
+                let peer_buf = peer_info.borrow().read_buf.clone();
                 let peer_mode = peer_info.borrow().mode;
 
-                if peer_buf.remaining_len() >= 2 + cmp::min(libc::PIPE_BUF, remaining_len)
+                if peer_buf.borrow().remaining_len() >= 2 + cmp::min(libc::PIPE_BUF, remaining_len)
                     || peer_mode == PipeMode::Streamed && state.polled_is_ready(&write_polled)
                 {
                     self.state = PipeWriteState::NextPayload(None);
@@ -349,12 +348,11 @@ impl Event for PipeWriteEvent<'_> {
                 };
 
                 let read_polled = peer.borrow().read_polled.clone();
-                let buffer_id = peer.borrow().read_buf.clone();
+                let buf = peer.borrow().read_buf.clone();
                 let pipe_mode = peer.borrow().mode;
-                let buf = state.global.buffers.get_mut(&buffer_id).unwrap();
 
                 if pipe_mode == PipeMode::Direct
-                    && buf.remaining_len() < 2 + cmp::min(libc::PIPE_BUF, remaining_len)
+                    && buf.borrow().remaining_len() < 2 + cmp::min(libc::PIPE_BUF, remaining_len)
                 {
                     // Invariant: a nonblocking socket will never continue to this state unless
                     // there is sufficient data
@@ -375,7 +373,7 @@ impl Event for PipeWriteEvent<'_> {
                         let payload_len = cmp::min(remaining_len, libc::PIPE_BUF);
                         let payload_len_bytes = (payload_len as u16).to_be_bytes();
 
-                        assert_eq!(buf.write(payload_len_bytes.as_slice()), 2);
+                        assert_eq!(buf.borrow_mut().write(payload_len_bytes.as_slice()), 2);
 
                         let mut total_written = 0;
 
@@ -387,7 +385,7 @@ impl Event for PipeWriteEvent<'_> {
                             };
 
                             let cap = cmp::min(payload_len - total_written, slice.len());
-                            let written = buf.write(&slice[..cap]);
+                            let written = buf.borrow_mut().write(&slice[..cap]);
                             total_written += written;
 
                             if written < slice.len() {
@@ -400,7 +398,7 @@ impl Event for PipeWriteEvent<'_> {
                     PipeMode::Streamed => {
                         let mut total_written = 0;
                         for slice in iovec.iter() {
-                            let written = buf.write(slice);
+                            let written = buf.borrow_mut().write(slice);
                             total_written += written;
                         }
 
@@ -414,9 +412,9 @@ impl Event for PipeWriteEvent<'_> {
 
                 let buf_is_full = match pipe_mode {
                     PipeMode::Direct => {
-                        buf.remaining_len() < 2 + cmp::min(libc::PIPE_BUF, remaining)
+                        buf.borrow_mut().remaining_len() < 2 + cmp::min(libc::PIPE_BUF, remaining)
                     }
-                    PipeMode::Streamed => buf.is_full(),
+                    PipeMode::Streamed => buf.borrow().is_full(),
                 };
 
                 if buf_is_full {

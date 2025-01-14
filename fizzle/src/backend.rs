@@ -1,9 +1,9 @@
 use std::collections::LinkedList;
 
 use embedded_alloc::TlsfHeap;
+use fizzle_common::storage::Buffer;
 
-use crate::arena::Rc;
-use crate::handlers::buffer::BufferId;
+use crate::constants::FIZZLE_BUFFER_LENGTH;
 use crate::handlers::fuzz_endpoint::FuzzEndpointInfo;
 use crate::handlers::plugin::PluginInfo;
 use crate::handlers::polled::PolledInfo;
@@ -37,7 +37,7 @@ pub enum IoBackend<R: Clone, F: Clone> {
 
 #[derive(Clone)]
 pub struct StandardFeedback {
-    pub buf: Rc<BufferId>,
+    pub buf: GlobalRc<Buffer<FIZZLE_BUFFER_LENGTH>>,
     pub read_polled: GlobalRc<PolledInfo>,
     pub write_polled: GlobalRc<PolledInfo>,
 }
@@ -48,7 +48,7 @@ pub struct FileFeedback { }
 #[derive(Clone)]
 pub struct RegularConnected {
     pub peer: GlobalWeak<SocketInfo>,
-    pub recv_buf: Rc<BufferId>,
+    pub recv_buf: GlobalRc<Buffer<FIZZLE_BUFFER_LENGTH>>,
     pub read_polled: GlobalRc<PolledInfo>,
     pub write_polled: GlobalRc<PolledInfo>,
 }

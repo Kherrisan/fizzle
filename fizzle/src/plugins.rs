@@ -69,40 +69,39 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
             stream_id: plugin_info.stream,
         };
 
-        let write_buf_id = plugin_info.write_buf.clone();
+        let write_buf = plugin_info.write_buf.clone();
         let write_polled = plugin_info.write_polled.clone();
-        let read_buf_id = plugin_info.read_buf.clone();
+        let read_buf = plugin_info.read_buf.clone();
         let read_polled = plugin_info.read_polled.clone();
 
         // Check read end
-        let write_buf = state.global.buffers.get_mut(&write_buf_id).unwrap();
-        if plugin_module.borrow().can_read(&context) && !write_buf.is_empty() {
+        if plugin_module.borrow().can_read(&context) && !write_buf.borrow().is_empty() {
             log::debug!("plugin module context {:?} can be read", &context);
             plugin_activated = true;
-            match plugin_module.borrow_mut().read(write_buf.data(), &context) {
+            match plugin_module.borrow_mut().read(write_buf.borrow().data(), &context) {
                 Ok(0) => unimplemented!(),
                 Err(_) => unimplemented!(),
                 Ok(amount) => {
                     log::debug!("plugin module read {} bytes", amount);
-                    write_buf.did_read(amount);
-                    if write_buf.is_empty() {
+                    write_buf.borrow_mut().did_read(amount);
+                    if write_buf.borrow().is_empty() {
                         lower_write = true;
                     }
                 }
             }
         }
 
+        let mut read_buf_mut = read_buf.borrow_mut();
         // Check write end
-        let read_buf = state.global.buffers.get_mut(&read_buf_id).unwrap();
-        if plugin_module.borrow().can_write(&context) && !read_buf.is_full() {
+        if plugin_module.borrow().can_write(&context) && !read_buf_mut.is_full() {
             log::debug!("plugin module context {:?} can write", &context);
             plugin_activated = true;
-            match plugin_module.borrow_mut().write(read_buf.remaining_mut(), &context) {
+            match plugin_module.borrow_mut().write(read_buf_mut.remaining_mut(), &context) {
                 Ok(0) => unimplemented!(),
                 Err(_) => unimplemented!(),
                 Ok(amount) => {
                     log::debug!("plugin module wrote {} bytes", amount);
-                    read_buf.did_write(amount);
+                    read_buf_mut.did_write(amount);
                     raise_read = true;
                 }
             }

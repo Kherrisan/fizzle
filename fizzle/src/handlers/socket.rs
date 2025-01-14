@@ -302,7 +302,7 @@ impl Event for SocketCreatePairEvent {
 
         let addr1 = state.global.ephemeral_address(self.domain, self.protocol);
         let fd1 = Descriptor::from_raw_fd(crate::create_descriptor());
-        let recv_buf1 = state.global.buffers.allocate(Buffer::new()).unwrap();
+        let recv_buf1 = std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc);
 
         let read_polled1 = std::rc::Rc::new_in(RefCell::new(PolledInfo {
             pollers: Vec::new_in(alloc),
@@ -316,7 +316,7 @@ impl Event for SocketCreatePairEvent {
 
         let addr2 = state.global.ephemeral_address(self.domain, self.protocol);
         let fd2 = Descriptor::from_raw_fd(crate::create_descriptor());
-        let recv_buf2 = state.global.buffers.allocate(Buffer::new()).unwrap();
+        let recv_buf2 = std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc);
 
         let read_polled2 = std::rc::Rc::new_in(RefCell::new(PolledInfo {
             pollers: Vec::new_in(alloc),
@@ -784,7 +784,7 @@ impl Event for SocketConnectEvent {
                             ServerBackend::NullSink => ConnectedBackend::NullSink,
                             ServerBackend::Feedback(()) => {
                                 ConnectedBackend::Feedback(StandardFeedback {
-                                    buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
+                                    buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc),
                                     read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
                                         pollers: Vec::new_in(alloc),
                                         event_raised: false,
@@ -1049,7 +1049,7 @@ impl Event for SocketAcceptEvent {
                     ConnectingBackend::Passthrough => unreachable!(),
                     ConnectingBackend::Peered(()) => ConnectedBackend::Peered(RegularConnected {
                         peer: std::rc::Rc::downgrade(&connecting_info),
-                        recv_buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
+                        recv_buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc),
                         read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
                             pollers: Vec::new_in(alloc),
                             event_raised: false,
@@ -1061,7 +1061,7 @@ impl Event for SocketAcceptEvent {
                     }),
                     ConnectingBackend::Feedback(()) => {
                         ConnectedBackend::Feedback(StandardFeedback {
-                            buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
+                            buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc),
                             read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
                                 pollers: Vec::new_in(alloc),
                                 event_raised: false,
@@ -1098,7 +1098,7 @@ impl Event for SocketAcceptEvent {
 
                     let connected_backend = ConnectedBackend::Peered(RegularConnected {
                         peer: std::rc::Rc::downgrade(&accepting_info),
-                        recv_buf: state.global.buffers.allocate(Buffer::new()).unwrap(),
+                        recv_buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc),
                         read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
                             pollers: Vec::new_in(alloc),
                             event_raised: false,
@@ -2238,17 +2238,16 @@ impl Event for SocketReadEvent<'_> {
             (SocketReadState::Finish(_poller_id), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Peered(regular), .. })) => {
                 match &mut self.data {
                     ReadData::Basic(data) => {
-                        let buffer_id = regular.recv_buf.clone();
-                        let buffer = state.global.buffers.get_mut(&buffer_id).unwrap();
+                        let buf = regular.recv_buf.clone();
                         
                         let mut idx = 0;
                         for s in data.iter_mut() {
-                            let read = cmp::min(s.len(), buffer.len() - idx);
-                            s.copy_from_slice(&buffer.data()[idx..idx + read]);
+                            let read = cmp::min(s.len(), buf.borrow().len() - idx);
+                            s.copy_from_slice(&buf.borrow().data()[idx..idx + read]);
                             idx += read;
                         }
 
-                        buffer.did_read(idx);
+                        buf.borrow_mut().did_read(idx);
 
                         Outcome::Success(idx)
                     },
@@ -2256,8 +2255,7 @@ impl Event for SocketReadEvent<'_> {
                     ReadData::Socket(out_msgs, _socket_flags) => {
                         // TODO: blocking incorrectly handled here (see the MSG_WAITFORONE flag in `man 2 recvmmsg`)
 
-                        let buffer_id = regular.recv_buf.clone();
-                        let buffer = state.global.buffers.get_mut(&buffer_id).unwrap();
+                        let buf = regular.recv_buf.clone();
 
                         let mut msg_count = 0;
                         for out_msg in out_msgs.iter_mut() {
@@ -2268,12 +2266,12 @@ impl Event for SocketReadEvent<'_> {
 
                             let mut total_read = 0;
                             for s in out_msg.buf.iter_mut() {
-                                let read = cmp::min(buffer.len() - total_read, s.len());
-                                s.copy_from_slice(&buffer.data()[total_read..total_read + read]);
+                                let read = cmp::min(buf.borrow().len() - total_read, s.len());
+                                s.copy_from_slice(&buf.borrow().data()[total_read..total_read + read]);
                                 total_read += read;
                             }
 
-                            buffer.did_read(total_read);
+                            buf.borrow_mut().did_read(total_read);
 
                             *out_msg.buflen = total_read as u32;
 
@@ -2285,15 +2283,14 @@ impl Event for SocketReadEvent<'_> {
                 }
             }
             (SocketReadState::Finish(_poller_id), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Feedback(feedback), .. })) => {
-                let buffer_id = feedback.buf.clone();
-                let buffer = state.global.buffers.get_mut(&buffer_id).unwrap();
+                let buf = feedback.buf.clone();
 
                 match &mut self.data {
                     ReadData::Basic(out_data) => {
                         let mut idx = 0;
                         for s in out_data.iter_mut() {
-                            let read = cmp::min(s.len(), buffer.len() - idx);
-                            s.copy_from_slice(&buffer.data()[idx..idx + read]);
+                            let read = cmp::min(s.len(), buf.borrow().len() - idx);
+                            s.copy_from_slice(&buf.borrow().data()[idx..idx + read]);
                             idx += read;
                         }
 
@@ -2312,12 +2309,12 @@ impl Event for SocketReadEvent<'_> {
 
                             let mut total_read = 0;
                             for s in out_msg.buf.iter_mut() {
-                                let read = cmp::min(buffer.len() - total_read, s.len());
-                                s.copy_from_slice(&buffer.data()[total_read..total_read + read]);
+                                let read = cmp::min(buf.borrow().len() - total_read, s.len());
+                                s.copy_from_slice(&buf.borrow().data()[total_read..total_read + read]);
                                 total_read += read;
                             }
 
-                            buffer.did_read(total_read);
+                            buf.borrow_mut().did_read(total_read);
                             *out_msg.buflen = total_read as u32;
 
                             msg_count += 1;

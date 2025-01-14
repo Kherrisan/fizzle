@@ -461,7 +461,7 @@ impl FizzleState {
                     IoEndpointVariant::Stdio => {
                         self.global.stdio = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => StdioBackend::Feedback(StandardFeedback {
-                                buf: self.global.buffers.allocate(Buffer::new()).unwrap(),
+                                buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc),
                                 read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
                                     pollers: Vec::new_in(alloc),
                                     event_raised: false,
@@ -1034,7 +1034,6 @@ pub struct InterprocessState {
     // TODO: SO_REUSEPORT breaks this...
     pub socket_locations:
         FnvIndexMap<TransportAddress, TransportLocationInfo, FIZZLE_MAX_SOCKADDRS>,
-    pub buffers: KeyedArena<BufferId, Buffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
     pub stdio: StdioBackend,
     /// Pollers/Workers that can be immediately scheduled.
     pub ready: BinaryHeap<ReadyItem, &'static TlsfHeap>,
@@ -1116,7 +1115,6 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
             *ptr::addr_of_mut!((*state).sem_paths) = FnvIndexMap::new();
             *ptr::addr_of_mut!((*state).socket_locations) = FnvIndexMap::new();
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).buffers));
 
             KeyedArena::initialize(ptr::addr_of_mut!((*state).open_files));
 
@@ -1366,13 +1364,13 @@ impl InterprocessState {
         let stream = self.next_stream_id;
         self.next_stream_id = StreamId::from(usize::from(stream) + 1);
 
-        let read_buf = self.buffers.allocate(Buffer::new()).unwrap();
+        let read_buf = std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc);
         let read_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
             pollers: Vec::new_in(alloc),
             event_raised: false,
         }), alloc);
 
-        let write_buf = self.buffers.allocate(Buffer::new()).unwrap();
+        let write_buf = std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc);
         let write_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
             pollers: Vec::new_in(alloc),
             event_raised: true,

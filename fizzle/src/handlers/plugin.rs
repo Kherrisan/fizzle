@@ -1,10 +1,13 @@
 use std::cell::RefCell;
 
-use crate::{arena::{ArenaKey, Rc}, GlobalRc};
+use crate::arena::ArenaKey;
+use crate::constants::FIZZLE_BUFFER_LENGTH;
+use crate::GlobalRc;
 
+use fizzle_common::storage::Buffer;
 use fizzle_plugin::{IoEndpointVariant, PluginObject, StreamId};
 
-use super::{buffer::BufferId, polled::PolledInfo};
+use super::polled::PolledInfo;
 
 pub use private::PluginEndpointId;
 
@@ -22,9 +25,9 @@ pub struct PluginInfo {
     pub stream: StreamId,
     /// The plugin module to read/write from.
     pub module: std::rc::Rc<RefCell<dyn PluginObject>>,
-    pub read_buf: Rc<BufferId>,
+    pub read_buf: GlobalRc<Buffer<FIZZLE_BUFFER_LENGTH>>,
     pub read_polled: GlobalRc<PolledInfo>,
-    pub write_buf: Rc<BufferId>,
+    pub write_buf: GlobalRc<Buffer<FIZZLE_BUFFER_LENGTH>>,
     pub write_polled: GlobalRc<PolledInfo>,
 }
 
