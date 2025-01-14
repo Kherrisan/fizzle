@@ -12,7 +12,7 @@ use super::descriptor::{Descriptor, ReadData, WriteData};
 
 // This is to forbid access to the SocketId's inner `usize` field.
 mod private {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
     #[repr(transparent)]
     pub struct DirectoryId(usize);
 }

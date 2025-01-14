@@ -33,7 +33,6 @@ use crate::handlers::buffer::BufferId;
 use crate::handlers::condvar::CondVarPtr;
 use crate::handlers::descriptor::{Descriptor, DescriptorInfo, FdResource};
 use crate::handlers::directory::DirectoryId;
-use crate::handlers::eventfd::{EventfdId, EventfdInfo};
 use crate::handlers::file::*;
 use crate::handlers::futex::FutexPtr;
 use crate::handlers::fuzz_endpoint::{FuzzEndpointId, FuzzEndpointInfo};
@@ -201,7 +200,7 @@ impl FizzleState {
             barriers: HashMap::default(),
             cancelling: None,
             condvars: HashMap::default(),
-            dirs: Default::default(),
+            dirs: BTreeMap::new(),
             fds: BTreeMap::new_in(global.alloc.alloc()),
             file_objs: HashMap::default(),
             futex_waiters: HashMap::default(),
@@ -929,7 +928,7 @@ pub struct ProcessLocalState {
     /// A thread that has received a cancellation request.
     pub cancelling: Option<ThreadId>,
     pub condvars: HashMap<CondVarPtr, VecDeque<ThreadId>, FxBuildHasher>,
-    pub dirs: KeyedArena<DirectoryId, FilePath<MAX_PATH_LEN>, FIZZLE_MAX_DIRS>,
+    pub dirs: BTreeMap<DirectoryId, FilePath<MAX_PATH_LEN>>,
     pub fds: GlobalMap<Descriptor, DescriptorInfo>,
     /// Files specifically designated as being emulated.
     pub file_objs: HashMap<FilePtr, FileObject, FxBuildHasher>,
