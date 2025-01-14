@@ -53,7 +53,7 @@ pub enum FdResource {
     /// Files `open()`ed using O_PATH
     Directory(Rc<DirectoryId>),
     /// Epoll descriptors.
-    Epoll(Rc<EpollId>),
+    Epoll(GlobalRc<EpollInfo>),
     /// Event file descriptor.
     EventFd(Rc<EventfdId>),
     /// Files that are accessed via the virtual filesystem.

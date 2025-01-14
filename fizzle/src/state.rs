@@ -33,7 +33,6 @@ use crate::handlers::buffer::BufferId;
 use crate::handlers::condvar::CondVarPtr;
 use crate::handlers::descriptor::{Descriptor, DescriptorInfo, FdResource};
 use crate::handlers::directory::DirectoryId;
-use crate::handlers::epoll::{EpollId, EpollInfo};
 use crate::handlers::eventfd::{EventfdId, EventfdInfo};
 use crate::handlers::file::*;
 use crate::handlers::futex::FutexPtr;
@@ -1037,7 +1036,6 @@ pub struct InterprocessState {
     /// If true, stderr is silently dropped; otherwise it is printed.
     pub mask_stderr: bool,
     pub afl_shmem_initialized: bool,
-    pub epolls: KeyedArena<EpollId, EpollInfo, FIZZLE_MAX_EPOLLS>,
     pub event_fds: KeyedArena<EventfdId, EventfdInfo, FIZZLE_MAX_EVENTFDS>,
     pub file_paths: FnvIndexMap<FilePath<MAX_PATH_LEN>, Rc<FileId>, FIZZLE_MAX_FILE_PATHS>,
     pub files: KeyedArena<FileId, FileInfo, FIZZLE_MAX_FILES>,
@@ -1131,8 +1129,6 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).next_inode) = 1_000_000;
 
             *ptr::addr_of_mut!((*state).afl_shmem_initialized) = false;
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).epolls));
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).event_fds));
             *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
             KeyedArena::initialize(ptr::addr_of_mut!((*state).files));
             *ptr::addr_of_mut!((*state).sem_paths) = FnvIndexMap::new();

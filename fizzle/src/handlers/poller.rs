@@ -1,4 +1,5 @@
-use std::collections::{BTreeSet, HashMap};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::os::fd::RawFd;
 use std::time::Duration;
 
@@ -593,20 +594,18 @@ impl Event for EpollCreateEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let alloc = state.global.alloc.alloc();
+
         let fd = Descriptor::from_raw_fd(crate::create_descriptor());
-        let epoll_id = state
-            .global
-            .epolls
-            .allocate(EpollInfo {
-                interests: Default::default(),
-            })
-            .unwrap();
+        let epoll = std::rc::Rc::new_in(RefCell::new(EpollInfo {
+            interests: BTreeMap::new_in(alloc),
+        }), alloc);
 
         state.local.fds.insert(fd, DescriptorInfo {
             close_on_exec: self.cloexec,
             nonblocking: false,
             is_passthrough: false,
-            resource: FdResource::Epoll(epoll_id),
+            resource: FdResource::Epoll(epoll),
         });
 
         Outcome::Success(fd)
@@ -653,7 +652,7 @@ impl Event for EpollCtlEvent {
             return Outcome::Error(Errno::EBADF);
         };
 
-        let FdResource::Epoll(epoll_id) = epfd_info.resource.clone() else {
+        let FdResource::Epoll(epoll) = epfd_info.resource.clone() else {
             return Outcome::Error(Errno::EINVAL);
         };
 
@@ -666,12 +665,10 @@ impl Event for EpollCtlEvent {
             // TODO: this used to ignore rather than erroring to handle a magma issue
         };
 
-        let epoll_info = state.global.epolls.get_mut(&epoll_id).unwrap();
-
         match self.op {
             EpollOperation::Add(ev) => {
                 let target_fd = self.target_descriptor.as_raw_fd();
-                if epoll_info.interests.contains_key(&self.target_descriptor) {
+                if epoll.borrow().interests.contains_key(&self.target_descriptor) {
                     return Outcome::Error(Errno::EEXIST);
                 }
 
@@ -695,8 +692,7 @@ impl Event for EpollCtlEvent {
                     }
                 };
 
-                let epoll_info = state.global.epolls.get_mut(&epoll_id).unwrap();
-                if let Err(_) = epoll_info
+                epoll.borrow_mut()
                     .interests
                     .insert(
                         self.target_descriptor,
@@ -704,9 +700,7 @@ impl Event for EpollCtlEvent {
                             direction: direction.clone(),
                             user_data: ev.u64,
                         },
-                    ) {
-                    panic!("failed to insert epoll interest")
-                }
+                    );
 
                 log::trace!(
                     "EPOLL_CTL_ADD called on epoll_fd({}) for fd({})--setting poll mode to {}",
@@ -723,7 +717,7 @@ impl Event for EpollCtlEvent {
                 Outcome::Success(())
             }
             EpollOperation::Delete => {
-                if let Some(_) = epoll_info.interests.remove(&self.target_descriptor) {
+                if let Some(_) = epoll.borrow_mut().interests.remove(&self.target_descriptor) {
                     Outcome::Success(())
                 } else {
                     Outcome::Error(Errno::ENOENT)
@@ -750,8 +744,8 @@ impl Event for EpollCtlEvent {
                     }
                 };
 
-                let epoll_info = state.global.epolls.get_mut(&epoll_id).unwrap();
-                let Some(interest) = epoll_info.interests.get_mut(&self.target_descriptor) else {
+                let mut epoll_mut = epoll.borrow_mut();
+                let Some(interest) = epoll_mut.interests.get_mut(&self.target_descriptor) else {
                     return Outcome::Error(Errno::ENOENT);
                 };
 
@@ -853,13 +847,11 @@ impl Event for EpollWaitEvent<'_> {
                     return Outcome::Error(Errno::EBADF);
                 };
 
-                let FdResource::Epoll(epoll_id) = epfd_info.resource.clone() else {
+                let FdResource::Epoll(epoll) = epfd_info.resource.clone() else {
                     return Outcome::Error(Errno::EINVAL);
                 };
 
-                let epoll_info = state.global.epolls.get(&epoll_id).unwrap();
-
-                for (target_descriptor, interest) in epoll_info.interests.iter() {
+                for (target_descriptor, interest) in epoll.borrow().interests.iter() {
                     let mut fd_ready = false;
                     let fd = target_descriptor.as_raw_fd();
                     let direction = &interest.direction;
@@ -868,13 +860,13 @@ impl Event for EpollWaitEvent<'_> {
                         direction
                     {
                         match status {
-                            PolledStatus::Pollable(polled_id) => {
-                                if !state.polled_is_ready(polled_id) {
+                            PolledStatus::Pollable(polled) => {
+                                if !state.polled_is_ready(polled) {
                                     log::trace!(
                                         "`poll`: fd {} was set for reading (Pollable | NotReady)",
                                         fd
                                     );
-                                    read_pollers.insert(fd, polled_id.clone());
+                                    read_pollers.insert(fd, polled.clone());
                                 } else {
                                     log::trace!(
                                         "`poll`: fd {} was set for reading (Pollable | Ready)",
@@ -984,14 +976,13 @@ impl Event for EpollWaitEvent<'_> {
                     return Outcome::Error(Errno::EBADF);
                 };
 
-                let FdResource::Epoll(epoll_id) = epfd_info.resource.clone() else {
+                let FdResource::Epoll(epoll) = epfd_info.resource.clone() else {
                     return Outcome::Error(Errno::EINVAL);
                 };
 
-                let epoll_info = state.global.epolls.get(&epoll_id).unwrap();
                 let mut write_idx = 0;
 
-                for (target_descriptor, interest) in epoll_info.interests.iter() {
+                for (target_descriptor, interest) in epoll.borrow().interests.iter() {
                     let mut fd_is_ready = false;
                     let fd = target_descriptor.as_raw_fd();
 

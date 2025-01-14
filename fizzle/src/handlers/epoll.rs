@@ -1,25 +1,13 @@
 use super::descriptor::{Descriptor, ReadData, WriteData};
 use super::polled::PolledInfo;
-use crate::arena::ArenaKey;
-use crate::constants::FIZZLE_MAX_EPOLL_FDS;
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
-use crate::GlobalRc;
+use crate::{GlobalMap, GlobalRc};
 
-use heapless::FnvIndexMap;
-
-pub use private::EpollId;
-
-// This is to forbid access to the SocketId's inner `usize` field.
-mod private {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    #[repr(transparent)]
-    pub struct EpollId(usize);
-}
 
 pub struct EpollInfo {
-    pub interests: FnvIndexMap<Descriptor, EpollInterest, FIZZLE_MAX_EPOLL_FDS>,
+    pub interests: GlobalMap<Descriptor, EpollInterest>,
 }
 
 #[derive(Clone)]
@@ -45,10 +33,6 @@ pub enum PolledStatus {
     NotPollable,
     /// The requested object will immediately return polled output (such as writing to `stderr`).
     ImmediatelyPollable,
-}
-
-impl ArenaKey for EpollId {
-    type Value = EpollInfo;
 }
 
 pub struct EpollReadEvent<'a> {
