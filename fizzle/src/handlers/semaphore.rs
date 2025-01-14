@@ -6,27 +6,13 @@ use std::fmt::Display;
 use bitflags::bitflags;
 use fizzle_common::path::SemaphorePath;
 
-use crate::arena::ArenaKey;
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
 use crate::WaitDuration;
 
-pub use private::SemaphoreId;
-
 use super::file::AccessMode;
 use super::id::Worker;
-
-// This is to forbid access to the SocketId's inner `usize` field.
-mod private {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    #[repr(transparent)]
-    pub struct SemaphoreId(usize);
-}
-
-impl ArenaKey for SemaphoreId {
-    type Value = SemaphoreInfo;
-}
 
 pub struct SemaphoreInfo {
     pub refs: usize,
@@ -49,8 +35,6 @@ impl SemaphorePtr {
         self.0 as *mut libc::sem_t // TODO: breaks provenance guarantees
     }
 }
-
-impl SemaphoreId {}
 
 pub struct SemInitEvent {
     sem: SemaphorePtr,

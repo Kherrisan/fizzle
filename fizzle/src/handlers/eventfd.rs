@@ -1,13 +1,10 @@
 use std::cell::RefCell;
 use std::{cmp, os::fd::RawFd};
 
-use crate::arena::ArenaKey;
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
 use crate::GlobalRc;
-
-pub use private::EventfdId;
 
 use super::polled::PolledInfo;
 use super::descriptor::*;
@@ -26,10 +23,6 @@ pub struct EventfdInfo {
     pub write_polled: GlobalRc<PolledInfo>,
     pub is_semaphore: bool,
     pub counter: u64,
-}
-
-impl ArenaKey for EventfdId {
-    type Value = EventfdInfo;
 }
 
 pub struct EventfdCreateEvent {

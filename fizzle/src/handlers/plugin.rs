@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 
-use crate::arena::ArenaKey;
 use crate::constants::FIZZLE_BUFFER_LENGTH;
 use crate::GlobalRc;
 
@@ -31,6 +30,3 @@ pub struct PluginInfo {
     pub write_polled: GlobalRc<PolledInfo>,
 }
 
-impl ArenaKey for PluginEndpointId {
-    type Value = PluginInfo;
-}

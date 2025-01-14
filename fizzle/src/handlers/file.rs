@@ -10,7 +10,6 @@ use fizzle_common::io::MAX_PATH_LEN;
 use fizzle_common::path::FilePath;
 use fizzle_common::storage::Buffer;
 
-use crate::arena::ArenaKey;
 use crate::backend::{FileBackend, FileFeedback};
 use crate::constants::FIZZLE_FOPEN_BUFSIZE;
 use crate::errno::Errno;
@@ -21,10 +20,6 @@ use crate::GlobalRc;
 
 use super::descriptor::{Descriptor, ReadData, WriteData};
 
-pub use private::FileId;
-
-pub use private::OpenFileId;
-
 // This is to forbid access to the SocketId's inner `usize` field.
 mod private {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -34,14 +29,6 @@ mod private {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     #[repr(transparent)]
     pub struct OpenFileId(usize);
-}
-
-impl ArenaKey for FileId {
-    type Value = FileInfo;
-}
-
-impl ArenaKey for OpenFileId {
-    type Value = OpenFileInfo;
 }
 
 pub struct OpenFileInfo {
@@ -248,16 +235,12 @@ impl Event for FileOpenEvent {
                 path
 
             } else {
-                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&Descriptor::from_raw_fd(*dirfd)).cloned() else {
+                let Some(DescriptorInfo { resource: FdResource::Directory(dir), .. }) = state.local.fds.get(&Descriptor::from_raw_fd(*dirfd)).cloned() else {
                     log::debug!("`openat` called with unrecognized file descriptor");
                     return Outcome::Error(Errno::ENOTDIR)
                 };
 
-                let Some(dir_path) = state.local.dirs.get(&dir_id) else {
-                    return Outcome::Error(Errno::EBADFD)
-                };
-
-                let Ok(path) = dir_path.clone().concat(&path) else {
+                let Ok(path) = dir.borrow().path.clone().concat(&path) else {
                     panic!("filepath too long to concat")
                 };
 
@@ -411,12 +394,11 @@ impl Event for FileReadEvent<'_> {
             return Outcome::Error(Errno::get_errno())
         };
 
-        let FdResource::File(open_file_id) = &fd_info.resource else {
+        let FdResource::File(open_file) = &fd_info.resource else {
             unreachable!("non-file fd passed to FileReadEvent")
         };
 
-        let open_file_info = state.global.open_files.get_mut(open_file_id).unwrap();
-        let file = open_file_info.file.clone();
+        let file = open_file.borrow().file.clone();
         let file_ref = file.borrow();
 
         match &file_ref.backend {
@@ -442,10 +424,10 @@ impl Event for FileReadEvent<'_> {
                     let offset = unsafe { libc::lseek(self.fd.as_raw_fd(), 0, libc::SEEK_CUR) };
                     assert!(offset >= 0);
 
-                    open_file_info.offset = offset as usize;
+                    open_file.borrow_mut().offset = offset as usize;
                 }
 
-                let offset = open_file_info.offset;
+                let offset = open_file.borrow().offset;
 
                 match &mut self.data {
                     ReadData::Basic(data) => {
@@ -458,14 +440,14 @@ impl Event for FileReadEvent<'_> {
                             return Outcome::Error(e)
                         }
 
-                        open_file_info.offset += read as usize;
+                        open_file.borrow_mut().offset += read as usize;
 
                         Outcome::Success(read as usize)
                     }
                     ReadData::File(file_read_data) => {
                         // TODO: handle flags
                         let data = &mut file_read_data.buf;
-                        let offset = file_read_data.offset.unwrap_or(open_file_info.offset as i64);
+                        let offset = file_read_data.offset.unwrap_or(open_file.borrow().offset as i64);
                         let read = unsafe {
                             libc::preadv(fd, data.as_mut_ptr() as *const libc::iovec, data.len() as i32, offset as i64)
                         };
@@ -475,7 +457,7 @@ impl Event for FileReadEvent<'_> {
                             return Outcome::Error(e)
                         }
 
-                        open_file_info.offset += read as usize;
+                        open_file.borrow_mut().offset += read as usize;
 
                         Outcome::Success(read as usize)
                     }
@@ -574,12 +556,11 @@ impl Event for FileWriteEvent<'_> {
             return Outcome::Error(Errno::get_errno())
         };
 
-        let FdResource::File(open_file_id) = &fd_info.resource else {
+        let FdResource::File(open_file) = &fd_info.resource else {
             unreachable!("non-file fd passed to FileReadEvent")
         };
 
-        let open_file_info = state.global.open_files.get_mut(open_file_id).unwrap();
-        let file = open_file_info.file.clone();
+        let file = open_file.borrow().file.clone();
 
         let file_ref = file.borrow();
         match &file_ref.backend {
@@ -606,10 +587,10 @@ impl Event for FileWriteEvent<'_> {
                     let offset = unsafe { libc::lseek(self.fd.as_raw_fd(), 0, libc::SEEK_CUR) };
                     assert!(offset >= 0);
 
-                    open_file_info.offset = offset as usize;
+                    open_file.borrow_mut().offset = offset as usize;
                 }
 
-                let offset = open_file_info.offset;
+                let offset = open_file.borrow().offset;
 
                 match &self.data {
                     WriteData::Basic(data) => {
@@ -622,14 +603,14 @@ impl Event for FileWriteEvent<'_> {
                             return Outcome::Error(e)
                         }
 
-                        open_file_info.offset += written as usize;
+                        open_file.borrow_mut().offset += written as usize;
 
                         Outcome::Success(written as usize)
                     }
                     WriteData::File(file_read_data) => {
                         // TODO: handle flags
                         let data = &file_read_data.buf;
-                        let offset = file_read_data.offset.unwrap_or(open_file_info.offset as i64);
+                        let offset = file_read_data.offset.unwrap_or(open_file.borrow().offset as i64);
                         let written = unsafe {
                             libc::pwritev(fd, data.as_ptr() as *const libc::iovec, data.len() as i32, offset as i64)
                         };
@@ -639,7 +620,7 @@ impl Event for FileWriteEvent<'_> {
                             return Outcome::Error(e)
                         }
 
-                        open_file_info.offset += written as usize;
+                        open_file.borrow_mut().offset += written as usize;
 
                         Outcome::Success(written as usize)
                     }
@@ -735,16 +716,12 @@ impl Event for ChangeDirectoryEvent {
                 }
             },
             ChangeDirectorySource::Directory(dirfd) => {
-                let Some(DescriptorInfo { resource: FdResource::Directory(dir_id), .. }) = state.local.fds.get(&Descriptor::from_raw_fd(*dirfd)) else {
+                let Some(DescriptorInfo { resource: FdResource::Directory(dir), .. }) = state.local.fds.get(&Descriptor::from_raw_fd(*dirfd)) else {
                     log::debug!("`fchdir` called with unrecognized fd");
                     return Outcome::Error(Errno::EBADF)
                 };
 
-                let Some(path) = state.local.dirs.get(dir_id) else {
-                    panic!("inconsistent fizzle state in directory fds for `fchdir`");
-                };
-
-                state.local.working_directory = path.clone();
+                state.local.working_directory = dir.borrow().path.clone();
                 Outcome::Success(())
             }
         }
@@ -803,12 +780,13 @@ impl Event for ChangeOwnerEvent {
                 };
 
                 match &fd_info.resource {
-                    FdResource::File(open_file_id) => {
-                        let file_info = &state.global.open_files.get(open_file_id).unwrap().file;
-                        file_info.borrow().path.clone()
+                    FdResource::File(open_file) => {
+                        let file_info = open_file.borrow().file.clone();
+                        let path = file_info.borrow().path.clone();
+                        path
                     }
                     FdResource::Directory(dir) => {
-                        state.local.dirs.get(dir).unwrap().clone()
+                        dir.borrow().path.clone()
                     }
                     _ => return Outcome::Error(Errno::EBADF)
                 }
@@ -822,12 +800,13 @@ impl Event for ChangeOwnerEvent {
                     };
 
                     match &fd_info.resource {
-                        FdResource::File(open_file_id) => {
-                            let file_info = &state.global.open_files.get(open_file_id).unwrap().file;
-                            file_info.borrow().path.clone()
+                        FdResource::File(open_file) => {
+                            let file_info = open_file.borrow().file.clone();
+                            let path = file_info.borrow().path.clone();
+                            path
                         }
                         FdResource::Directory(dir) => {
-                            state.local.dirs.get(dir).unwrap().clone()
+                            dir.borrow().path.clone()
                         }
                         _ => return Outcome::Error(Errno::EBADF)
                     }
@@ -902,12 +881,11 @@ impl Event for ChangeModeEvent {
                 };
 
                 match &fd_info.resource {
-                    FdResource::File(open_file_id) => {
-                        let file_info = &state.global.open_files.get(open_file_id).unwrap().file;
-                        file_info.borrow().path.clone()
+                    FdResource::File(open_file) => {
+                        open_file.borrow().file.borrow().path.clone()
                     }
                     FdResource::Directory(dir) => {
-                        state.local.dirs.get(dir).unwrap().clone()
+                        dir.borrow().path.clone()
                     }
                     _ => return Outcome::Error(Errno::EBADF)
                 }
@@ -921,12 +899,11 @@ impl Event for ChangeModeEvent {
                     };
 
                     match &fd_info.resource {
-                        FdResource::File(open_file_id) => {
-                            let file_info = &state.global.open_files.get(open_file_id).unwrap().file;
-                            file_info.borrow().path.clone()
+                        FdResource::File(open_file) => {
+                            open_file.borrow().file.borrow().path.clone()
                         }
                         FdResource::Directory(dir) => {
-                            state.local.dirs.get(dir).unwrap().clone()
+                            dir.borrow().path.clone()
                         }
                         _ => return Outcome::Error(Errno::EBADF)
                     }
@@ -1003,12 +980,11 @@ impl Event for AccessEvent {
                     };
 
                     match &fd_info.resource {
-                        FdResource::File(open_file_id) => {
-                            let file_info = &state.global.open_files.get(open_file_id).unwrap().file;
-                            file_info.borrow().path.clone()
+                        FdResource::File(open_file) => {
+                            open_file.borrow().file.borrow().path.clone()
                         }
                         FdResource::Directory(dir) => {
-                            state.local.dirs.get(dir).unwrap().clone()
+                            dir.borrow().path.clone()
                         }
                         _ => return Outcome::Error(Errno::EBADF)
                     }
@@ -1084,12 +1060,11 @@ impl Event for StatEvent<'_> {
                 };
 
                 match &fd_info.resource {
-                    FdResource::File(open_file_id) => {
-                        let file_info = &state.global.open_files.get(open_file_id).unwrap().file;
-                        file_info.borrow().path.clone()
+                    FdResource::File(open_file) => {
+                        open_file.borrow().file.borrow().path.clone()
                     }
                     FdResource::Directory(dir) => {
-                        state.local.dirs.get(dir).unwrap().clone()
+                        dir.borrow().path.clone()
                     }
                     _ => return Outcome::Error(Errno::EBADF)
                 }
@@ -1103,12 +1078,11 @@ impl Event for StatEvent<'_> {
                     };
 
                     match &fd_info.resource {
-                        FdResource::File(open_file_id) => {
-                            let file_info = &state.global.open_files.get(open_file_id).unwrap().file;
-                            file_info.borrow().path.clone()
+                        FdResource::File(open_file) => {
+                            open_file.borrow().file.borrow().path.clone()
                         }
                         FdResource::Directory(dir) => {
-                            state.local.dirs.get(dir).unwrap().clone()
+                            dir.borrow().path.clone()
                         }
                         _ => return Outcome::Error(Errno::EBADF)
                     }
@@ -1289,12 +1263,11 @@ impl Event for RenameEvent {
                     };
 
                     match &fd_info.resource {
-                        FdResource::File(open_file_id) => {
-                            let file_info = &state.global.open_files.get(open_file_id).unwrap().file;
-                            file_info.borrow().path.clone()
+                        FdResource::File(open_file) => {
+                            open_file.borrow().file.borrow().path.clone()
                         }
                         FdResource::Directory(dir) => {
-                            state.local.dirs.get(dir).unwrap().clone()
+                            dir.borrow().path.clone()
                         }
                         _ => return Outcome::Error(Errno::EBADF)
                     }
@@ -1312,12 +1285,11 @@ impl Event for RenameEvent {
                     };
 
                     match &fd_info.resource {
-                        FdResource::File(open_file_id) => {
-                            let file_info = &state.global.open_files.get(open_file_id).unwrap().file;
-                            file_info.borrow().path.clone()
+                        FdResource::File(open_file) => {
+                            open_file.borrow().file.borrow().path.clone()
                         }
                         FdResource::Directory(dir) => {
-                            state.local.dirs.get(dir).unwrap().clone()
+                            dir.borrow().path.clone()
                         }
                         _ => return Outcome::Error(Errno::EBADF)
                     }

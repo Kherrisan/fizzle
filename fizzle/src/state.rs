@@ -23,16 +23,13 @@ use heapless::FnvIndexMap;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
-use crate::arena::KeyedArena;
 use crate::handlers::time::ItimerInfo;
 use crate::{comptime, GlobalList, GlobalMap, GlobalRc, GlobalSet, GlobalVec};
 use crate::constants::*;
 use crate::errno::Errno;
 use crate::handlers::barrier::{BarrierInfo, BarrierPtr};
-use crate::handlers::buffer::BufferId;
 use crate::handlers::condvar::CondVarPtr;
 use crate::handlers::descriptor::{Descriptor, DescriptorInfo, FdResource};
-use crate::handlers::directory::DirectoryId;
 use crate::handlers::file::*;
 use crate::handlers::futex::FutexPtr;
 use crate::handlers::fuzz_endpoint::FuzzEndpointInfo;
@@ -198,7 +195,6 @@ impl FizzleState {
             barriers: HashMap::default(),
             cancelling: None,
             condvars: HashMap::default(),
-            dirs: BTreeMap::new(),
             fds: BTreeMap::new_in(global.alloc.alloc()),
             file_objs: HashMap::default(),
             futex_waiters: HashMap::default(),
@@ -913,7 +909,6 @@ pub struct ProcessLocalState {
     /// A thread that has received a cancellation request.
     pub cancelling: Option<ThreadId>,
     pub condvars: HashMap<CondVarPtr, VecDeque<ThreadId>, FxBuildHasher>,
-    pub dirs: BTreeMap<DirectoryId, FilePath<MAX_PATH_LEN>>,
     pub fds: GlobalMap<Descriptor, DescriptorInfo>,
     /// Files specifically designated as being emulated.
     pub file_objs: HashMap<FilePtr, FileObject, FxBuildHasher>,
@@ -1028,7 +1023,6 @@ pub struct InterprocessState {
 
     // TODO: BTreeMap would be unwise--FilePath has an expensive `eq` comparison
     pub file_paths: FnvIndexMap<FilePath<MAX_PATH_LEN>, GlobalRc<FileInfo>, FIZZLE_MAX_FILE_PATHS>,
-    pub open_files: KeyedArena<OpenFileId, OpenFileInfo, FIZZLE_MAX_OPEN_FILES>,
     // TODO: BTreeMap would be unwise--SemaphorePath has an expensive `eq` comparison
     pub sem_paths: FnvIndexMap<SemaphorePath, GlobalRc<SemaphoreInfo>, FIZZLE_MAX_NAMED_SEMAPHORES>,
     // TODO: SO_REUSEPORT breaks this...
@@ -1116,7 +1110,6 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).sem_paths) = FnvIndexMap::new();
             *ptr::addr_of_mut!((*state).socket_locations) = FnvIndexMap::new();
 
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).open_files));
 
             *ptr::addr_of_mut!((*state).stdio) = StdioBackend::Passthrough;
             *ptr::addr_of_mut!((*state).per_round_clients) = heapless::Vec::new();

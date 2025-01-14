@@ -2,7 +2,6 @@ use std::cell::RefCell;
 use std::cmp;
 use std::rc::Weak;
 
-use crate::arena::ArenaKey;
 use crate::constants::FIZZLE_BUFFER_LENGTH;
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
@@ -47,10 +46,6 @@ pub enum PipeMode {
     Direct,
     /// Performs I/O as if data is a constant stream.
     Streamed,
-}
-
-impl ArenaKey for PipeId {
-    type Value = PipeInfo;
 }
 
 bitflags! {

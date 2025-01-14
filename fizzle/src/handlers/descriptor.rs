@@ -13,7 +13,6 @@ use super::mq::*;
 use super::pipe::*;
 use super::poller::PollerInfo;
 use super::socket::*;
-use crate::arena::Rc;
 use crate::backend::{ConnectedBackend, StdioBackend};
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
@@ -51,16 +50,16 @@ pub struct DescriptorInfo {
 #[derive(Clone)]
 pub enum FdResource {
     /// Files `open()`ed using O_PATH
-    Directory(Rc<DirectoryId>),
+    Directory(GlobalRc<DirectoryInfo>),
     /// Epoll descriptors.
     Epoll(GlobalRc<EpollInfo>),
     /// Event file descriptor.
     EventFd(GlobalRc<EventfdInfo>),
     /// Files that are accessed via the virtual filesystem.
-    File(Rc<OpenFileId>),
+    File(GlobalRc<OpenFileInfo>),
     /// Cross-process message queues.
     #[allow(unused)]
-    MessageQueue(Rc<MqId>),
+    MessageQueue(GlobalRc<MqId>),
     /// Anonymous pipes, such as those created with `pipe()`.
     Pipe(GlobalRc<PipeInfo>),
     /// The standard input of the parent process (which may be inherited by children).

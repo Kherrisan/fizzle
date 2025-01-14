@@ -1,4 +1,4 @@
-use std::{hash::Hash, ptr};
+use std::ptr;
 
 use crate::{GlobalRc, GlobalVec};
 use super::poller::PollerInfo;

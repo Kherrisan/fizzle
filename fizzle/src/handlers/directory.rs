@@ -1,24 +1,14 @@
-use crate::arena::ArenaKey;
+use fizzle_common::io::MAX_PATH_LEN;
+use fizzle_common::path::FilePath;
+
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
 
-use fizzle_common::io::MAX_PATH_LEN;
-use fizzle_common::path::FilePath;
-
-pub use private::DirectoryId;
-
 use super::descriptor::{Descriptor, ReadData, WriteData};
 
-// This is to forbid access to the SocketId's inner `usize` field.
-mod private {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-    #[repr(transparent)]
-    pub struct DirectoryId(usize);
-}
-
-impl ArenaKey for DirectoryId {
-    type Value = FilePath<MAX_PATH_LEN>;
+pub struct DirectoryInfo {
+    pub path: FilePath<MAX_PATH_LEN>,
 }
 
 pub struct DirectoryReadEvent<'a> {

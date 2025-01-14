@@ -1,4 +1,3 @@
-use crate::arena::ArenaKey;
 use crate::backend::{
     ConnectedBackend, ConnectingBackend, ConnectionlessBackend, PendingBackend, RegularConnected,
     RegularConnectionless, ServerBackend, StandardFeedback,
@@ -22,7 +21,6 @@ use embedded_alloc::TlsfHeap;
 use fizzle_common::io::{AddressFamily, SockAddr, SocketType, TransportAddress, TransportProtocol};
 use fizzle_common::storage::Buffer;
 use heapless::Entry;
-pub use private::SocketId;
 
 use super::descriptor::*;
 use super::polled::PolledInfo;
@@ -93,13 +91,6 @@ fn get_or_assign_local(socket_info: &mut GlobalRc<SocketInfo>, state: &mut Fizzl
             }
         }
     }
-}
-
-// This is to forbid access to the SocketId's inner `usize` field.
-mod private {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    #[repr(transparent)]
-    pub struct SocketId(usize);
 }
 
 pub struct TransportLocationInfo {
@@ -212,10 +203,6 @@ pub struct ConnectedSocket {
     pub backend: ConnectedBackend,
     pub rem_addr: TransportAddress,
     pub peer_closed: bool,
-}
-
-impl ArenaKey for SocketId {
-    type Value = SocketInfo;
 }
 
 #[derive(Debug, Clone)]

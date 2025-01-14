@@ -5,7 +5,6 @@
 
 // extern crate libc;
 
-mod arena;
 mod backend;
 mod cell;
 mod comptime;

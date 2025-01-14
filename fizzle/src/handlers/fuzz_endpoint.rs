@@ -1,4 +1,3 @@
-use crate::arena::ArenaKey;
 use crate::GlobalRc;
 
 pub use private::FuzzEndpointId;
@@ -16,10 +15,6 @@ mod private {
 pub struct FuzzEndpointInfo {
     pub read_polled: GlobalRc<PolledInfo>,
     pub read_idx: usize,
-}
-
-impl ArenaKey for FuzzEndpointId {
-    type Value = FuzzEndpointInfo;
 }
 
 impl FuzzEndpointId {}

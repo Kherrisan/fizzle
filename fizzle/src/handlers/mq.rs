@@ -1,7 +1,6 @@
 use crate::errno::Errno;
-use crate::scheduler::Event;
+use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
-use crate::{arena::ArenaKey, scheduler::Outcome};
 
 pub use private::MqId;
 
@@ -16,10 +15,6 @@ mod private {
 
 #[derive(Debug)]
 pub struct MqInfo {}
-
-impl ArenaKey for MqId {
-    type Value = MqInfo;
-}
 
 pub struct MqReadEvent<'a> {
     fd: Descriptor,

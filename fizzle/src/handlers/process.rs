@@ -499,15 +499,14 @@ impl Event for ProcessExecEvent {
 
                 match state.local.fds.get(&descriptor) {
                     Some(fd_info) => {
-                        let FdResource::File(open_file_id) = &fd_info.resource else {
+                        let FdResource::File(open_file) = &fd_info.resource else {
                             state.global.inherited_state = None;
                             return Outcome::Error(Errno::EINVAL);
                         };
 
                         // TODO: must be opened read-only with O_PATH set and execute permissions
 
-                        let open_file = state.global.open_files.get(&open_file_id).unwrap();
-                        let path = &open_file.file.borrow().path;
+                        let path = open_file.borrow().file.borrow().path.clone();
 
                         let cmd = path.data().as_ptr() as *const libc::c_char;
 
