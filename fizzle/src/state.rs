@@ -923,7 +923,7 @@ pub struct ProcessLocalState {
     /// State associated with the main process (e.g. the first process instantiated with the Fizzle harness).
     pub main_state: Option<MainProcessState>,
     pub mutexes: HashMap<MutexPtr, MutexInfo, FxBuildHasher>,
-    pub named_semaphores: HashMap<SemaphorePtr, Rc<SemaphoreId>>,
+    pub named_semaphores: HashMap<SemaphorePtr, GlobalRc<SemaphoreInfo>>,
     /// See `on_exit()`
     pub on_exit_handlers: Vec<(OnExitFunction, *mut libc::c_void)>,
     pub pasture: HashMap<CowId, CowInfo>,
@@ -1016,11 +1016,11 @@ pub struct InterprocessState {
     /// If true, stderr is silently dropped; otherwise it is printed.
     pub mask_stderr: bool,
     pub afl_shmem_initialized: bool,
-    // TODO: BTreeMap would be unwise here due to 
+    // TODO: BTreeMap would be unwise--FilePath has an expensive `eq` comparison
     pub file_paths: FnvIndexMap<FilePath<MAX_PATH_LEN>, GlobalRc<FileInfo>, FIZZLE_MAX_FILE_PATHS>,
     pub open_files: KeyedArena<OpenFileId, OpenFileInfo, FIZZLE_MAX_OPEN_FILES>,
-    pub sem_paths: FnvIndexMap<SemaphorePath, Rc<SemaphoreId>, FIZZLE_MAX_NAMED_SEMAPHORES>,
-    pub semaphores: KeyedArena<SemaphoreId, SemaphoreInfo, FIZZLE_MAX_NAMED_SEMAPHORES>,
+    // TODO: BTreeMap would be unwise--SemaphorePath has an expensive `eq` comparison
+    pub sem_paths: FnvIndexMap<SemaphorePath, GlobalRc<SemaphoreInfo>, FIZZLE_MAX_NAMED_SEMAPHORES>,
     pub pipes: KeyedArena<PipeId, PipeInfo, FIZZLE_MAX_PIPES>,
     pub message_queues: KeyedArena<MqId, MqInfo, FIZZLE_MAX_MESSAGE_QUEUES>,
     // TODO: SO_REUSEPORT breaks this...
@@ -1110,7 +1110,6 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).afl_shmem_initialized) = false;
             *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
             *ptr::addr_of_mut!((*state).sem_paths) = FnvIndexMap::new();
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).semaphores));
             KeyedArena::initialize(ptr::addr_of_mut!((*state).pipes));
             KeyedArena::initialize(ptr::addr_of_mut!((*state).message_queues));
             *ptr::addr_of_mut!((*state).socket_locations) = FnvIndexMap::new();

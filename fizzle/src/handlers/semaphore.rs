@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::CStr;
 use std::fmt::Display;
@@ -161,21 +162,16 @@ impl Event for SemOpenEvent<'_> {
             let sem = unsafe { crate::unique_mem_create() } as *mut libc::sem_t;
             let semaphore_ptr = SemaphorePtr::from(sem);
 
-            let sem_id = state
-                .global
-                .semaphores
-                .allocate(SemaphoreInfo {
-                    refs: 1,
-                    unlinked: false,
-                    value: value as usize,
-                    waiting: VecDeque::new(),
-                })
-                .unwrap();
-
-            state.local.named_semaphores.insert(semaphore_ptr, sem_id);
+            let sem_info = std::rc::Rc::new_in(RefCell::new(SemaphoreInfo {
+                refs: 1,
+                unlinked: false,
+                value: value as usize,
+                waiting: VecDeque::new(),               
+            }), state.global.alloc.alloc());
+            state.local.named_semaphores.insert(semaphore_ptr, sem_info);
 
             Outcome::Success(semaphore_ptr)
-        } else if let Some(sem_id) = state.global.sem_paths.get(&sem_path).cloned() {
+        } else if let Some(sem_info) = state.global.sem_paths.get(&sem_path).cloned() {
             // Open existing semaphore
 
             let sem = unsafe { crate::unique_mem_create() } as *mut libc::sem_t;
@@ -184,11 +180,10 @@ impl Event for SemOpenEvent<'_> {
             state
                 .local
                 .named_semaphores
-                .insert(semaphore_ptr, sem_id.clone())
+                .insert(semaphore_ptr, sem_info.clone())
                 .unwrap();
 
-            let sem_ctx = state.global.semaphores.get_mut(&sem_id).unwrap();
-            sem_ctx.refs += 1;
+            sem_info.borrow_mut().refs += 1;
 
             Outcome::Success(semaphore_ptr)
         } else {
@@ -251,7 +246,7 @@ impl Event for SemCloseEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let Some(sem_id) = state.local.named_semaphores.remove(&self.sem) else {
+        let Some(sem_info) = state.local.named_semaphores.remove(&self.sem) else {
             return Outcome::Error(Errno::EINVAL);
         };
 
@@ -259,14 +254,13 @@ impl Event for SemCloseEvent {
             crate::unique_mem_destroy(self.sem.to_mut_ptr().cast::<libc::c_void>());
         }
 
-        let Some(sem_ctx) = state.global.semaphores.get_mut(&sem_id) else {
-            panic!("inconsistent fizzle state--named semaphore without global context in `sem_close()`");
-        };
-
-        sem_ctx.refs -= 1;
-        if sem_ctx.refs == 0 && sem_ctx.unlinked {
+        sem_info.borrow_mut().refs -= 1;
+        // This happens automatically with Rc now.
+        /*
+        if sem_info_mut.refs == 0 && sem_info_mut.unlinked {
             state.global.semaphores.downref(&sem_id);
         }
+        */
 
         return Outcome::Success(());
     }
@@ -291,21 +285,12 @@ impl Event for SemUnlinkEvent<'_> {
             return Outcome::Error(Errno::EINVAL);
         };
 
-        let Some(sem_id) = state.global.sem_paths.remove(&sem_path) else {
+        let Some(sem_info) = state.global.sem_paths.remove(&sem_path) else {
             log::warn!("`sem_unlink` called on nonexistent named semaphore");
             return Outcome::Error(Errno::ENOENT);
         };
 
-        let Some(sem_info) = state.global.semaphores.get_mut(&sem_id) else {
-            panic!("inconsistent Fizzle state--named semaphore without global context in `sem_unlink()`")
-        };
-
-        sem_info.unlinked = true;
-        if sem_info.refs == 0 {
-            assert!(sem_info.waiting.is_empty(), "inconsistent Fizzle state--named semaphore wait queue not empty after `sem_unlink()`");
-        } else {
-            state.global.semaphores.upref(&sem_id);
-        }
+        sem_info.borrow_mut().unlinked = true;
 
         Outcome::Success(())
     }
@@ -333,14 +318,12 @@ impl Event for SemPostEvent {
             }
 
             Outcome::Success(())
-        } else if let Some(semaphore_id) = state.local.named_semaphores.get(&self.sem).cloned() {
-            let Some(sem_info) = state.global.semaphores.get_mut(&semaphore_id) else {
-                panic!("inconsistent fizzle state--named semaphore without global context in `sem_post()`");
-            };
+        } else if let Some(sem_info) = state.local.named_semaphores.get(&self.sem).cloned() {
 
-            match sem_info.waiting.pop_front() {
+            let mut sem_mut = sem_info.borrow_mut();
+            match sem_mut.waiting.pop_front() {
                 Some(worker_id) => state.mark_worker_ready(worker_id),
-                None => sem_info.value += 1,
+                None => sem_mut.value += 1,
             }
 
             Outcome::Success(())
