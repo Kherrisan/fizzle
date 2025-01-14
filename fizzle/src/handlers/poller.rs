@@ -1057,14 +1057,8 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
     };
     match &fd_info.resource {
         FdResource::Epoll(_) => panic!("polling an epoll descriptor not supported"),
-        FdResource::EventFd(eventfd_id) => PolledStatus::Pollable(
-            state
-                .global
-                .event_fds
-                .get(&eventfd_id)
-                .unwrap()
-                .read_polled
-                .clone(),
+        FdResource::EventFd(eventfd) => PolledStatus::Pollable(
+            eventfd.borrow().read_polled.clone()
         ),
         FdResource::Directory(_) => PolledStatus::NotPollable,
         FdResource::File(_file_id) => PolledStatus::ImmediatelyPollable, // Polling a file is not generally supported
@@ -1208,14 +1202,8 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
     };
     match &fd_info.resource {
         FdResource::Epoll(_) => panic!("polling an epoll descriptor not supported"),
-        FdResource::EventFd(eventfd_id) => PolledStatus::Pollable(
-            state
-                .global
-                .event_fds
-                .get(&eventfd_id)
-                .unwrap()
-                .write_polled
-                .clone(),
+        FdResource::EventFd(eventfd) => PolledStatus::Pollable(
+            eventfd.borrow().write_polled.clone()
         ),
         FdResource::Directory(_) => PolledStatus::NotPollable,
         FdResource::File(_file_id) => PolledStatus::ImmediatelyPollable,

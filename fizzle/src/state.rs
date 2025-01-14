@@ -1036,7 +1036,6 @@ pub struct InterprocessState {
     /// If true, stderr is silently dropped; otherwise it is printed.
     pub mask_stderr: bool,
     pub afl_shmem_initialized: bool,
-    pub event_fds: KeyedArena<EventfdId, EventfdInfo, FIZZLE_MAX_EVENTFDS>,
     pub file_paths: FnvIndexMap<FilePath<MAX_PATH_LEN>, Rc<FileId>, FIZZLE_MAX_FILE_PATHS>,
     pub files: KeyedArena<FileId, FileInfo, FIZZLE_MAX_FILES>,
     pub open_files: KeyedArena<OpenFileId, OpenFileInfo, FIZZLE_MAX_OPEN_FILES>,

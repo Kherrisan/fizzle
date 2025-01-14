@@ -55,7 +55,7 @@ pub enum FdResource {
     /// Epoll descriptors.
     Epoll(GlobalRc<EpollInfo>),
     /// Event file descriptor.
-    EventFd(Rc<EventfdId>),
+    EventFd(GlobalRc<EventfdInfo>),
     /// Files that are accessed via the virtual filesystem.
     File(Rc<OpenFileId>),
     /// Cross-process message queues.
@@ -466,9 +466,9 @@ impl Event for DescriptorReadEvent<'_> {
                             self.data.take().unwrap(),
                         ));
                     }
-                    FdResource::EventFd(eventfd_id) => {
+                    FdResource::EventFd(eventfd) => {
                         self.state = DescriptorReadState::Eventfd(EventfdReadEvent::new(
-                            eventfd_id.clone(),
+                            eventfd.clone(),
                             fd_info.nonblocking,
                             self.data.take().unwrap(),
                         ));

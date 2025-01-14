@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::{cmp, os::fd::RawFd};
 
-use crate::arena::{ArenaKey, Rc};
+use crate::arena::ArenaKey;
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
@@ -74,16 +74,12 @@ impl Event for EventfdCreateEvent {
             event_raised: true,
         }), alloc);
         
-        let eventfd_id = state
-            .global
-            .event_fds
-            .allocate(EventfdInfo {
-                read_polled,
-                write_polled,
-                is_semaphore: self.is_semaphore,
-                counter: self.initial_value as u64,
-            })
-            .unwrap();
+        let eventfd = std::rc::Rc::new_in(RefCell::new(EventfdInfo {
+            read_polled,
+            write_polled,
+            is_semaphore: self.is_semaphore,
+            counter: self.initial_value as u64,
+        }), alloc);
 
         state
             .local
@@ -94,7 +90,7 @@ impl Event for EventfdCreateEvent {
                     close_on_exec: self.close_on_exec,
                     nonblocking: self.nonblocking,
                     is_passthrough: false,
-                    resource: FdResource::EventFd(eventfd_id),
+                    resource: FdResource::EventFd(eventfd),
                 },
             );
 
@@ -108,7 +104,7 @@ pub enum EventfdReadState {
 }
 
 pub struct EventfdReadEvent<'a> {
-    eventfd_id: Rc<EventfdId>,
+    eventfd: GlobalRc<EventfdInfo>,
     nonblocking: bool,
     data: ReadData<'a>,
     state: EventfdReadState,
@@ -116,9 +112,9 @@ pub struct EventfdReadEvent<'a> {
 
 impl<'a> EventfdReadEvent<'a> {
     #[inline]
-    pub fn new(eventfd_id: Rc<EventfdId>, nonblocking: bool, data: ReadData<'a>) -> Self {
+    pub fn new(eventfd: GlobalRc<EventfdInfo>, nonblocking: bool, data: ReadData<'a>) -> Self {
         Self {
-            eventfd_id,
+            eventfd,
             nonblocking,
             data,
             state: EventfdReadState::Start,
@@ -139,9 +135,9 @@ impl Event for EventfdReadEvent<'_> {
 
         match &self.state {
             EventfdReadState::Start => {
-                let eventfd = state.global.event_fds.get(&self.eventfd_id).unwrap();
-                let old_counter = eventfd.counter;
-                let read_polled = eventfd.read_polled.clone();
+                let eventfd = self.eventfd.clone();
+                let old_counter = eventfd.borrow().counter;
+                let read_polled = eventfd.borrow().read_polled.clone();
 
                 if old_counter > 0 {
                     self.state = EventfdReadState::Finish(None);
@@ -156,21 +152,18 @@ impl Event for EventfdReadEvent<'_> {
                     Outcome::Yield(None)
                 }
             }
-            EventfdReadState::Finish(poller_id) => {
-                if let Some(poller_id) = poller_id {
-                    state.delete_poller(poller_id.clone());
+            EventfdReadState::Finish(poller) => {
+                if let Some(poller) = poller {
+                    state.delete_poller(poller.clone());
                 }
 
-                let eventfd = state.global.event_fds.get(&self.eventfd_id).unwrap();
-                let is_semaphore = eventfd.is_semaphore;
-                let read_polled = eventfd.read_polled.clone();
-                let write_polled = eventfd.write_polled.clone();
-
-                let eventfd = state.global.event_fds.get_mut(&self.eventfd_id).unwrap();
-
+                let eventfd = self.eventfd.clone();
+                let is_semaphore = eventfd.borrow().is_semaphore;
+                let read_polled = eventfd.borrow().read_polled.clone();
+                let write_polled = eventfd.borrow().write_polled.clone();
                 let ret: u64 = match is_semaphore {
                     true => 1,
-                    false => eventfd.counter,
+                    false => eventfd.borrow().counter,
                 };
 
                 let event_val_bytes = ret.to_ne_bytes();
@@ -189,12 +182,12 @@ impl Event for EventfdReadEvent<'_> {
                 }
 
                 if is_semaphore {
-                    eventfd.counter -= 1;
+                    eventfd.borrow_mut().counter -= 1;
                 } else {
-                    eventfd.counter = 0;
+                    eventfd.borrow_mut().counter = 0;
                 }
 
-                if eventfd.counter == 0 {
+                if eventfd.borrow().counter == 0 {
                     state.lower_polled(&read_polled);
                 }
                 state.raise_polled(&write_polled);
@@ -211,7 +204,7 @@ pub enum EventfdWriteState {
 }
 
 pub struct EventfdWriteEvent<'a> {
-    eventfd_id: Rc<EventfdId>,
+    eventfd: GlobalRc<EventfdInfo>,
     nonblocking: bool,
     data: WriteData<'a>,
     state: EventfdWriteState,
@@ -219,9 +212,9 @@ pub struct EventfdWriteEvent<'a> {
 
 impl<'a> EventfdWriteEvent<'a> {
     #[inline]
-    pub fn new(eventfd_id: Rc<EventfdId>, nonblocking: bool, data: WriteData<'a>) -> Self {
+    pub fn new(eventfd: GlobalRc<EventfdInfo>, nonblocking: bool, data: WriteData<'a>) -> Self {
         Self {
-            eventfd_id,
+            eventfd,
             nonblocking,
             data,
             state: EventfdWriteState::Start,
@@ -261,9 +254,9 @@ impl Event for EventfdWriteEvent<'_> {
                     return Outcome::Error(Errno::EINVAL);
                 }
 
-                let eventfd = state.global.event_fds.get(&self.eventfd_id).unwrap();
-                let current_counter = eventfd.counter;
-                let write_polled = eventfd.write_polled.clone();
+                let eventfd = self.eventfd.clone();
+                let current_counter = eventfd.borrow().counter;
+                let write_polled = eventfd.borrow().write_polled.clone();
 
                 if current_counter.checked_add(increment + 1).is_none() {
                     if self.nonblocking {
@@ -286,6 +279,7 @@ impl Event for EventfdWriteEvent<'_> {
                     state.delete_poller(poller_id.clone());
                 }
 
+                let eventfd = self.eventfd.clone();
                 let mut event_val_bytes = [0u8; 8];
                 let mut event_val_idx = 0;
                 for slice in iovec.iter() {
@@ -297,10 +291,9 @@ impl Event for EventfdWriteEvent<'_> {
 
                 let increment = u64::from_ne_bytes(event_val_bytes);
 
-                let eventfd = state.global.event_fds.get(&self.eventfd_id).unwrap();
-                let current_counter = eventfd.counter;
-                let read_polled = eventfd.read_polled.clone();
-                let write_polled = eventfd.write_polled.clone();
+                let current_counter = eventfd.borrow().counter;
+                let read_polled = eventfd.borrow().read_polled.clone();
+                let write_polled = eventfd.borrow().write_polled.clone();
 
                 // The following code is designed very specifically to handle polling for arbitrary
                 // `increment` values. Specifically, an application may choose to increment an
@@ -347,12 +340,7 @@ impl Event for EventfdWriteEvent<'_> {
                     }
                 };
 
-                state
-                    .global
-                    .event_fds
-                    .get_mut(&self.eventfd_id)
-                    .unwrap()
-                    .counter = new_counter;
+                eventfd.borrow_mut().counter = new_counter;
 
                 if new_counter == u64::MAX - 1 {
                     state.lower_polled(&write_polled);
