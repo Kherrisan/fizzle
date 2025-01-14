@@ -37,9 +37,8 @@ use crate::handlers::file::*;
 use crate::handlers::futex::FutexPtr;
 use crate::handlers::fuzz_endpoint::{FuzzEndpointId, FuzzEndpointInfo};
 use crate::handlers::id::Worker;
-use crate::handlers::mq::{MqId, MqInfo};
 use crate::handlers::mutex::{MutexInfo, MutexPtr};
-use crate::handlers::plugin::{PluginEndpointId, PluginInfo};
+use crate::handlers::plugin::PluginInfo;
 use crate::handlers::polled::PolledInfo;
 use crate::handlers::poller::PollerInfo;
 use crate::handlers::process::*;
@@ -47,7 +46,7 @@ use crate::handlers::rwlock::*;
 use crate::handlers::semaphore::*;
 use crate::handlers::signal::*;
 use crate::handlers::socket::{
-    LocalAddress, PendingInfo, PendingSocket, ServerSocket, SocketId, SocketInfo, SocketState,
+    LocalAddress, PendingInfo, PendingSocket, ServerSocket, SocketInfo, SocketState,
     TransportLocationInfo,
 };
 use crate::handlers::spinlock::SpinlockPtr;
@@ -642,7 +641,7 @@ impl FizzleState {
                         let source_address = self.global
                             .ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
-                            self.global.per_round_clients
+                            if self.global.per_round_clients
                                 .push(PerRoundClientInfo {
                                     source_address,
                                     target_address,
@@ -656,7 +655,9 @@ impl FizzleState {
                                         _ => unreachable!(),
                                     },
                                 })
-                                .unwrap();
+                                .is_err() {
+                                    panic!("could not add to per-round clients")
+                                }
                         } else {
                             self.global.add_pending_client(source_address, target_address, backend);
                         }
@@ -695,7 +696,7 @@ impl FizzleState {
                         let source_address = self.global
                             .ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
-                            self.global.per_round_clients
+                            if self.global.per_round_clients
                                 .push(PerRoundClientInfo {
                                     source_address,
                                     target_address,
@@ -709,7 +710,9 @@ impl FizzleState {
                                         _ => unreachable!(),
                                     },
                                 })
-                                .unwrap();
+                                .is_err() {
+                                    panic!("could not add to per-round endpoint clients")
+                                }
                         } else {
                             self.global.add_pending_client(source_address, target_address, backend);
                         }
@@ -748,7 +751,7 @@ impl FizzleState {
                         let source_address = self.global
                             .ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
-                            self.global.per_round_clients
+                            if self.global.per_round_clients
                                 .push(PerRoundClientInfo {
                                     source_address,
                                     target_address,
@@ -762,7 +765,9 @@ impl FizzleState {
                                         _ => unreachable!(),
                                     },
                                 })
-                                .unwrap();
+                                .is_err() {
+                                    panic!("could not add to per_round_clients")
+                                }
                         } else {
                             self.global.add_pending_client(source_address, target_address, backend);
                         }
@@ -976,6 +981,7 @@ impl ProcessLocalState {
 }
 
 pub struct InterprocessState {
+    pub afl_shmem_initialized: bool,
     pub alloc: InterprocessAllocator,
     pub process_locks: GlobalMap<Pid, std::rc::Rc<Semaphore, &'static TlsfHeap>>,
     /// The thread identifier to be executed by the waking process. This is `Some` if and only if
@@ -1001,20 +1007,20 @@ pub struct InterprocessState {
     pub pids: GlobalMap<Pid, GlobalRc<ProcessInfo>>,
     /// Information on a process that has died but not yet been reaped.
     pub dead_pids: GlobalMap<Pid, SigChildInfo>,
-
-    pub process_groups: GlobalMap<Pgid, GlobalSet<Pid>>,
     pub next_inode: libc::ino_t,
     /// The number of rounds to run fuzzing when executing in Persistent mode.
     pub persistent_rounds: usize,
-    /// The next StreamId available to be assigned to an emulated stream.
-    pub next_stream_id: StreamId,
+
+    pub mask_stderr: bool,
 
     pub next_cow_id: CowId,
     /// The next ephemeral port to be assigned to a socket.
     pub next_ephemeral_port: u16,
-    /// If true, stderr is silently dropped; otherwise it is printed.
-    pub mask_stderr: bool,
-    pub afl_shmem_initialized: bool,
+    /// The next StreamId available to be assigned to an emulated stream.
+    pub next_stream_id: StreamId,
+    pub process_groups: GlobalMap<Pgid, GlobalSet<Pid>>,
+    pub plugins: GlobalVec<PluginInfo>,
+
     // TODO: BTreeMap would be unwise--FilePath has an expensive `eq` comparison
     pub file_paths: FnvIndexMap<FilePath<MAX_PATH_LEN>, GlobalRc<FileInfo>, FIZZLE_MAX_FILE_PATHS>,
     pub open_files: KeyedArena<OpenFileId, OpenFileInfo, FIZZLE_MAX_OPEN_FILES>,
@@ -1023,11 +1029,8 @@ pub struct InterprocessState {
     // TODO: SO_REUSEPORT breaks this...
     pub socket_locations:
         FnvIndexMap<TransportAddress, TransportLocationInfo, FIZZLE_MAX_SOCKADDRS>,
-    pub sockets: KeyedArena<SocketId, SocketInfo, FIZZLE_MAX_SOCKETS>,
     pub buffers: KeyedArena<BufferId, Buffer<FIZZLE_BUFFER_LENGTH>, FIZZLE_MAX_BUFFERS>,
     pub stdio: StdioBackend,
-    /// Polling infrastructure
-    pub plugins: KeyedArena<PluginEndpointId, PluginInfo, FIZZLE_MAX_PLUGIN_STREAMS>,
     /// Pollers/Workers that can be immediately scheduled.
     pub ready: BinaryHeap<ReadyItem, &'static TlsfHeap>,
     /// Pollers/Workers that should be scheduled once the system has reached a halted state.
@@ -1108,13 +1111,11 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
             *ptr::addr_of_mut!((*state).sem_paths) = FnvIndexMap::new();
             *ptr::addr_of_mut!((*state).socket_locations) = FnvIndexMap::new();
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).sockets));
             KeyedArena::initialize(ptr::addr_of_mut!((*state).buffers));
 
             KeyedArena::initialize(ptr::addr_of_mut!((*state).open_files));
 
             *ptr::addr_of_mut!((*state).stdio) = StdioBackend::Passthrough;
-            KeyedArena::initialize(ptr::addr_of_mut!((*state).plugins));
             *ptr::addr_of_mut!((*state).per_round_clients) = heapless::Vec::new();
             KeyedArena::initialize(ptr::addr_of_mut!((*state).fuzz_endpoints));
             *ptr::addr_of_mut!((*state).prefuzz_rng) =
@@ -1355,7 +1356,7 @@ impl InterprocessState {
         &mut self,
         endpoint: IoEndpointVariant,
         module: std::rc::Rc<RefCell<dyn PluginObject>>,
-    ) -> Rc<PluginEndpointId> {
+    ) -> GlobalRc<PluginInfo> {
         let alloc = self.alloc.alloc();
 
         let stream = self.next_stream_id;
@@ -1373,8 +1374,7 @@ impl InterprocessState {
             event_raised: true,
         }), alloc);
 
-        self.plugins
-            .allocate(PluginInfo {
+        std::rc::Rc::new_in(RefCell::new(PluginInfo {
                 endpoint,
                 stream,
                 module,
@@ -1382,8 +1382,7 @@ impl InterprocessState {
                 read_polled,
                 write_buf,
                 write_polled,
-            })
-            .unwrap()
+            }), alloc)
     }
 
     /// Assigns the next available ephemeral address.
@@ -1446,17 +1445,16 @@ impl InterprocessAllocator {
     }
 }
 
-#[derive(Debug)]
 pub struct PerRoundClientInfo {
     pub source_address: TransportAddress,
     pub target_address: TransportAddress,
     pub backend: PerRoundClientBackend,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum PerRoundClientBackend {
     Fuzz(Rc<FuzzEndpointId>),
-    Plugin(Rc<PluginEndpointId>),
+    Plugin(GlobalRc<PluginInfo>),
 }
 
 #[derive(Clone)]

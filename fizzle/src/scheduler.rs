@@ -688,7 +688,7 @@ impl Scheduler {
         let modules: Vec<_> = state
             .global
             .plugins
-            .values()
+            .iter()
             .map(|plugin_info| plugin_info.module.clone())
             .collect();
         for module in modules {
@@ -699,7 +699,7 @@ impl Scheduler {
         let plugin_info_ids: Vec<_> = state
             .global
             .plugins
-            .values()
+            .iter()
             .map(|plugin_info| {
                 (
                     plugin_info.read_buf.clone(),
@@ -777,10 +777,9 @@ impl Scheduler {
 
                         // Now raise all applicable poll events so the reader discovers the peer is closed
                         match connected.backend.clone() {
-                            ConnectedBackend::Plugin(plugin_id) => {
-                                let plugin = global.plugins.get(&plugin_id).unwrap();
-                                let read_polled = plugin.read_polled.clone();
-                                let write_polled = plugin.write_polled.clone();
+                            ConnectedBackend::Plugin(plugin_info) => {
+                                let read_polled = plugin_info.borrow().read_polled.clone();
+                                let write_polled = plugin_info.borrow().write_polled.clone();
                                 global.raise_polled(&read_polled);
                                 global.raise_polled(&write_polled);
                             }
@@ -797,14 +796,15 @@ impl Scheduler {
                         }
                     }
 
-                    global
+                    if global
                         .per_round_clients
                         .push(PerRoundClientInfo {
                             source_address,
                             target_address,
                             backend: client_backend,
-                        })
-                        .unwrap();
+                        }).is_err() {
+                            panic!("failed to insert to per_round_clients")
+                        }
                 }
                 _ => unreachable!(),
             }

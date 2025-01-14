@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 use std::mem::MaybeUninit;
 use std::time::Duration;
-use std::{array, mem, ptr, thread};
+use std::{mem, ptr, thread};
 
 use bitflags::bitflags;
 
@@ -515,34 +515,6 @@ pub struct ThreadSigInfo {
     pub sigwait_set: SignalSet,
     pub sigsuspend: bool,
     pub interrupted: bool,
-}
-
-impl ThreadSigInfo {
-    /// Inherits the set of blocked signals from another thread.
-    pub fn inherit(sigmask: SignalSet) -> Self {
-        Self {
-            raised: array::from_fn(|_| None), // Raised signals are not inherited
-            blocked: sigmask,                 // Blocked signals are inherited
-            sigwait_set: SignalSet::empty(),
-            sigsuspend: false,
-            interrupted: false,
-        }
-    }
-
-    pub fn new(sigmask: Option<SignalSet>) -> Self {
-        let blocked = match sigmask {
-            Some(s) => s,
-            None => SignalSet::empty(),
-        };
-
-        Self {
-            raised: array::from_fn(|_| None), // TODO: check all these
-            blocked,
-            sigwait_set: SignalSet::empty(),
-            sigsuspend: false,
-            interrupted: false,
-        }
-    }
 }
 
 pub struct SignalSetHandlerEvent {

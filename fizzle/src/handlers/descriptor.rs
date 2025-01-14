@@ -606,9 +606,8 @@ impl Event for StdinReadEvent<'_> {
 
                 Outcome::Success(total_read)
             }
-            (StdinReadState::Start, StdioBackend::Plugin(plugin_id)) => {
-                let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
-                let read_polled = plugin_info.read_polled.clone();
+            (StdinReadState::Start, StdioBackend::Plugin(plugin_info)) => {
+                let read_polled = plugin_info.borrow().read_polled.clone();
 
                 if state.polled_is_ready(&read_polled) {
                     self.state = StdinReadState::Finish(None);
@@ -623,14 +622,13 @@ impl Event for StdinReadEvent<'_> {
                     Outcome::Yield(None)
                 }
             }
-            (StdinReadState::Finish(poller_id), StdioBackend::Plugin(plugin_id)) => {
-                if let Some(poller_id) = poller_id {
-                    state.delete_poller(poller_id.clone());
+            (StdinReadState::Finish(poller), StdioBackend::Plugin(plugin_info)) => {
+                if let Some(poller) = poller {
+                    state.delete_poller(poller.clone());
                 }
 
-                let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
-                let buffer_id = plugin_info.write_buf.clone();
-                let read_polled = plugin_info.read_polled.clone();
+                let buffer_id = plugin_info.borrow().write_buf.clone();
+                let read_polled = plugin_info.borrow().read_polled.clone();
 
                 let buf = state.global.buffers.get_mut(&buffer_id).unwrap();
                 let mut total_read = 0;
@@ -945,9 +943,8 @@ impl Event for StdoutWriteEvent<'_> {
 
                 Outcome::Success(total_written)
             }
-            (StdoutWriteState::Start, StdioBackend::Plugin(plugin_id)) => {
-                let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
-                let write_polled = plugin_info.write_polled.clone();
+            (StdoutWriteState::Start, StdioBackend::Plugin(plugin_info)) => {
+                let write_polled = plugin_info.borrow().write_polled.clone();
 
                 if state.polled_is_ready(&write_polled) {
                     self.state = StdoutWriteState::Finish(None);
@@ -962,13 +959,12 @@ impl Event for StdoutWriteEvent<'_> {
                     Outcome::Yield(None)
                 }
             }
-            (StdoutWriteState::Finish(poller_id), StdioBackend::Plugin(plugin_id)) => {
-                if let Some(poller_id) = poller_id {
-                    state.delete_poller(poller_id.clone());
+            (StdoutWriteState::Finish(poller), StdioBackend::Plugin(plugin_info)) => {
+                if let Some(poller) = poller {
+                    state.delete_poller(poller.clone());
                 }
 
-                let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
-                let buffer_id = plugin_info.write_buf.clone();
+                let buffer_id = plugin_info.borrow().write_buf.clone();
                 let buf = state.global.buffers.get_mut(&buffer_id).unwrap();
                 let mut total_written = 0;
                 for slice in iovec {

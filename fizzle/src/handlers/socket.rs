@@ -68,14 +68,16 @@ fn get_or_assign_local(socket_info: &mut GlobalRc<SocketInfo>, state: &mut Fizzl
                     let mut bound_sockets = LinkedList::new_in(state.global.alloc.alloc());
                     bound_sockets.push_back(socket_info.clone());
 
-                    state.global.socket_locations.insert(
+                    if state.global.socket_locations.insert(
                         addr.clone(),
                         TransportLocationInfo {
                             reuse_port,
                             bound_sockets,
                             pending: None,
                         },
-                    );
+                    ).is_err() {
+                        panic!("failed to insert to socket_locations")
+                    }
                     break addr;
                 };
 
@@ -767,11 +769,10 @@ impl Event for SocketConnectEvent {
                                     }
                                 }
                             }
-                            ServerBackend::Plugin(plugin_id) => {
+                            ServerBackend::Plugin(plugin_info) => {
                                 // Create new plugin
-                                let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
-                                let endpoint = plugin_info.endpoint.clone();
-                                let module = plugin_info.module.clone();
+                                let endpoint = plugin_info.borrow().endpoint.clone();
+                                let module = plugin_info.borrow().module.clone();
                                 let connect_plugin_id =
                                     state.global.add_plugin(endpoint, module);
                                 ConnectedBackend::Plugin(connect_plugin_id)
@@ -1071,10 +1072,9 @@ impl Event for SocketAcceptEvent {
                             }), alloc),
                         })
                     }
-                    ConnectingBackend::Plugin(plugin_id) => {
-                        let plugin_info = state.global.plugins.get(&plugin_id).unwrap();
-                        let endpoint = plugin_info.endpoint.clone();
-                        let module = plugin_info.module.clone();
+                    ConnectingBackend::Plugin(plugin_info) => {
+                        let endpoint = plugin_info.borrow().endpoint.clone();
+                        let module = plugin_info.borrow().module.clone();
                         let connect_plugin_id = state.global.add_plugin(endpoint, module);
                         ConnectedBackend::Plugin(connect_plugin_id)
                     }
@@ -1992,8 +1992,8 @@ impl Event for SocketReadEvent<'_> {
                     ConnectionlessBackend::NullSink => None,
                     ConnectionlessBackend::Passthrough => unimplemented!(),
                     ConnectionlessBackend::Sink => None,
-                    ConnectionlessBackend::Plugin(plugin_id) => {
-                        Some(state.global.plugins.get(plugin_id).unwrap().read_polled.clone())
+                    ConnectionlessBackend::Plugin(plugin_info) => {
+                        Some(plugin_info.borrow().read_polled.clone())
                     }
                 };
 
@@ -2209,8 +2209,8 @@ impl Event for SocketReadEvent<'_> {
                     ConnectedBackend::Feedback(feedback) => {
                         Some(feedback.read_polled.clone())
                     }
-                    ConnectedBackend::Plugin(plugin_id) => {
-                        Some(state.global.plugins.get(plugin_id).unwrap().read_polled.clone())
+                    ConnectedBackend::Plugin(plugin_info) => {
+                        Some(plugin_info.borrow().read_polled.clone())
                     }
                     ConnectedBackend::Sink => None,
                     ConnectedBackend::NullSink => None,

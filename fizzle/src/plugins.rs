@@ -59,7 +59,7 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
     let mut write = Vec::new();
 
     // TODO: turn this into an iterator in the future
-    for plugin_info in state.global.plugins.values() {
+    for plugin_info in state.global.plugins.iter() {
         let mut raise_read = false;
         let mut lower_write = false;
 

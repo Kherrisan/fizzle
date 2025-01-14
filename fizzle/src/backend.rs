@@ -5,7 +5,7 @@ use embedded_alloc::TlsfHeap;
 use crate::arena::Rc;
 use crate::handlers::buffer::BufferId;
 use crate::handlers::fuzz_endpoint::FuzzEndpointId;
-use crate::handlers::plugin::PluginEndpointId;
+use crate::handlers::plugin::PluginInfo;
 use crate::handlers::polled::PolledInfo;
 use crate::handlers::socket::{ConnectionlessMessage, SocketInfo};
 use crate::{GlobalRc, GlobalWeak};
@@ -26,7 +26,7 @@ pub enum IoBackend<R: Clone, F: Clone> {
     /// `read()`s will return whatever was written by prior `write()`s--acts as a virtual FIFO queue.
     Feedback(F),
     /// Uses the plugin specified by `PluginEndpointId` to decide `read()`/`write()` behavior.
-    Plugin(Rc<PluginEndpointId>),
+    Plugin(GlobalRc<PluginInfo>),
     Sink,
     NullSink,
     /// Indicates that fuzzing input should be passed directly through the I/O Endpoint.

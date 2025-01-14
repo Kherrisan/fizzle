@@ -1099,14 +1099,8 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
             StdioBackend::Feedback(feedback) => {
                 PolledStatus::Pollable(feedback.read_polled.clone())
             }
-            StdioBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                state
-                    .global
-                    .plugins
-                    .get(&plugin_id)
-                    .unwrap()
-                    .read_polled
-                    .clone(),
+            StdioBackend::Plugin(plugin_info) => PolledStatus::Pollable(
+                plugin_info.borrow().read_polled.clone()
             ),
             StdioBackend::Sink => PolledStatus::NotPollable,
             StdioBackend::NullSink => PolledStatus::ImmediatelyPollable,
@@ -1132,14 +1126,8 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                 ConnectionlessBackend::Feedback(feedback) => {
                     PolledStatus::Pollable(feedback.read_polled.clone())
                 }
-                ConnectionlessBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                    state
-                        .global
-                        .plugins
-                        .get(&plugin_id)
-                        .unwrap()
-                        .read_polled
-                        .clone(),
+                ConnectionlessBackend::Plugin(plugin_info) => PolledStatus::Pollable(
+                    plugin_info.borrow().read_polled.clone()
                 ),
                 ConnectionlessBackend::Sink => PolledStatus::NotPollable,
                 ConnectionlessBackend::NullSink => PolledStatus::ImmediatelyPollable,
@@ -1165,14 +1153,8 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                 ConnectedBackend::Feedback(feedback) => {
                     PolledStatus::Pollable(feedback.read_polled.clone())
                 }
-                ConnectedBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                    state
-                        .global
-                        .plugins
-                        .get(&plugin_id)
-                        .unwrap()
-                        .read_polled
-                        .clone(),
+                ConnectedBackend::Plugin(plugin_info) => PolledStatus::Pollable(
+                    plugin_info.borrow().read_polled.clone()
                 ),
                 ConnectedBackend::Sink => PolledStatus::NotPollable,
                 ConnectedBackend::NullSink => PolledStatus::ImmediatelyPollable,
@@ -1236,14 +1218,8 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
             StdioBackend::Feedback(feedback) => {
                 PolledStatus::Pollable(feedback.write_polled.clone())
             }
-            StdioBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                state
-                    .global
-                    .plugins
-                    .get(&plugin_id)
-                    .unwrap()
-                    .write_polled
-                    .clone(),
+            StdioBackend::Plugin(plugin_info) => PolledStatus::Pollable(
+                plugin_info.borrow().write_polled.clone()
             ),
             StdioBackend::Sink => PolledStatus::ImmediatelyPollable,
             StdioBackend::NullSink => PolledStatus::ImmediatelyPollable,
@@ -1257,14 +1233,8 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                 ConnectionlessBackend::Feedback(feedback) => {
                     PolledStatus::Pollable(feedback.write_polled.clone())
                 }
-                ConnectionlessBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                    state
-                        .global
-                        .plugins
-                        .get(&plugin_id)
-                        .unwrap()
-                        .write_polled
-                        .clone(),
+                ConnectionlessBackend::Plugin(plugin_info) => PolledStatus::Pollable(
+                    plugin_info.borrow().write_polled.clone()
                 ),
                 ConnectionlessBackend::Sink => PolledStatus::ImmediatelyPollable,
                 ConnectionlessBackend::NullSink => PolledStatus::ImmediatelyPollable,
@@ -1298,14 +1268,8 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                 ConnectedBackend::Feedback(feedback) => {
                     PolledStatus::Pollable(feedback.write_polled.clone())
                 }
-                ConnectedBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                    state
-                        .global
-                        .plugins
-                        .get(&plugin_id)
-                        .unwrap()
-                        .write_polled
-                        .clone(),
+                ConnectedBackend::Plugin(plugin_info) => PolledStatus::Pollable(
+                    plugin_info.borrow().write_polled.clone()
                 ),
                 ConnectedBackend::Sink => PolledStatus::ImmediatelyPollable,
                 ConnectedBackend::NullSink => PolledStatus::ImmediatelyPollable,
