@@ -291,6 +291,8 @@ impl Event for ThreadCreateEvent {
                 // Let the scheduler know we have more to execute once the new thread is done.
                 state.mark_thread_ready(thread::current().id());
 
+                let thread_sem = state.local.thread_locks.get(&thread::current().id()).unwrap().clone();
+
                 let res = unsafe {
                     libc::pthread_create(
                         self.pthread,
@@ -305,7 +307,7 @@ impl Event for ThreadCreateEvent {
 
                 match res {
                     // The newly-created thread executes now, so this thread pauses
-                    0.. => Outcome::Pause(DelegationSource::Thread, None),
+                    0.. => Outcome::Pause(DelegationSource::Thread(thread_sem), None),
                     // Thread creation failed
                     ..=-1 => Outcome::Error(Errno::get_errno()),
                 }
@@ -471,12 +473,13 @@ impl Event for ThreadCancelEvent {
                     return Outcome::Success(());
                 }
 
+                let curr_thread_sem = state.local.thread_locks.get(&thread::current().id()).unwrap().clone();
                 state.local.cancelling = Some(thread_id);
                 let sem = state.local.thread_locks.get(&thread_id).unwrap().clone();
 
                 // This thread will be run after the cancelling thread is
                 state.mark_thread_ready(thread::current().id());
-                Outcome::Pause(DelegationSource::Thread, Some(sem))
+                Outcome::Pause(DelegationSource::Thread(curr_thread_sem), Some(sem))
             }
             ThreadCancelState::Finish => Outcome::Success(()),
         }

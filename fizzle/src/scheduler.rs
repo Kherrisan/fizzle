@@ -218,15 +218,23 @@ impl Scheduler {
 
             // Run startup commands if needed
             if let Some(main_state) = state.local.main_state.as_mut() {
-                let mut startup_commands = Vec::new();
-                mem::swap(&mut startup_commands, &mut main_state.onstartup_commands);
-                drop(state);
+                if !main_state.onstartup_commands.is_empty() {
+                    let mut startup_commands = Vec::new();
+                    mem::swap(&mut startup_commands, &mut main_state.onstartup_commands);
 
-                while let Some(onstartup) = startup_commands.pop() {
-                    log::info!("`Scheduler::run_subprocess()` called for startup command {:?}", onstartup);
-                    Scheduler::run_subprocess(ctx, onstartup);
-                    log::info!("`Scheduler::run_subprocess()` complete.");
+                    let curr_proc_sem = state.local.process_info.borrow().semaphore.clone();
+                    drop(state);
+
+                    while let Some(onstartup) = startup_commands.pop() {
+                        log::info!("`Scheduler::run_subprocess()` called for startup command {:?}", onstartup);
+                        Scheduler::run_subprocess(ctx, onstartup);
+                        Scheduler::yield_worker(ctx, DelegationAction::PauseCurrentWorker(DelegationSource::Process(curr_proc_sem.clone()), None));
+                        log::info!("`Scheduler::run_subprocess()` complete.");
+                    }
+                } else {
+                    drop(state);
                 }
+
             } else {
                 drop(state);
             }
@@ -332,6 +340,7 @@ impl Scheduler {
                 // The current worker is delegating execution to whatever is available
                 DelegationState::RunNextWorker => {
                     let mut state = ctx.acquire();
+                    let curr_proc_sem = state.local.process_info.borrow().semaphore.clone();
 
                     let worker_res = 'get_worker: loop {
                         let Some(ReadyItem { info, timestamp }) = state.global.ready.pop() else {
@@ -415,14 +424,15 @@ impl Scheduler {
                                 // Execution needs to move to another process
                                 let sem = dst_proc_info.borrow().semaphore.clone();
                                 drop(state);
-                                delegation_source = DelegationSource::Process;
+                                delegation_source = DelegationSource::Process(curr_proc_sem);
                                 Some(sem)
 
                             } else if dst_worker.thread_id != current_thread_id {
                                 // Execution needs to move to another thread
+                                let curr_thread_sem = state.local.thread_locks.get(&thread::current().id()).unwrap().clone();
                                 let sem = state.local.thread_locks.get(&dst_worker.thread_id).unwrap().clone();
                                 drop(state);
-                                delegation_source = DelegationSource::Thread;
+                                delegation_source = DelegationSource::Thread(curr_thread_sem);
                                 Some(sem)
 
                             } else {
@@ -434,24 +444,27 @@ impl Scheduler {
                             }
                         }
                         Err(sem) => {
-                            delegation_source = DelegationSource::Process;
+                            delegation_source = DelegationSource::Process(curr_proc_sem);
                             Some(sem)
                         },
                     }
                 }
                 DelegationState::RunProcess(process_id) => {
                     // Immediately awaken the specified process (used during cancellation)
-                    delegation_source = DelegationSource::Process;
+
                     let state = ctx.acquire();
                     let sem = state.global.pids.get(&process_id).unwrap().borrow().semaphore.clone();
+                    let curr_proc_sem = state.local.process_info.borrow().semaphore.clone();
+                    delegation_source = DelegationSource::Process(curr_proc_sem);
                     drop(state);
                     Some(sem)
                 }
                 DelegationState::RunThread(thread_id) => {
                     // Immediately awaken the specified thread (used during cancellation)
-                    delegation_source = DelegationSource::Thread;
                     let state = ctx.acquire();
                     let sem = state.local.thread_locks.get(&thread_id).unwrap().clone();
+                    let curr_thread_sem = state.local.thread_locks.get(&thread::current().id()).unwrap().clone();
+                    delegation_source = DelegationSource::Thread(curr_thread_sem);
                     drop(state);
                     Some(sem)
                 }
@@ -462,13 +475,14 @@ impl Scheduler {
                     let local_proc_info = state.local.process_info.clone();
                     let pid = local_proc_info.borrow().pid;
                     let main_sem = state.global.pids.get(&Pid::PRIMARY).unwrap().borrow().semaphore.clone();
+                    let curr_proc_sem = state.local.process_info.borrow().semaphore.clone();
 
                     drop(state);
 
                     // No more workers means it's time for plugins to execute
                     if pid != Pid::PRIMARY {
                         // Execution needs to be moved to the main process
-                        delegation_source = DelegationSource::Process;
+                        delegation_source = DelegationSource::Process(curr_proc_sem);
                         Some(main_sem)
 
                     } else {
@@ -506,11 +520,12 @@ impl Scheduler {
                         .pop()
                     {
                         // Not all `onready` subprocesses have been spawned
+                        let curr_proc_sem = state.local.process_info.borrow().semaphore.clone();
 
                         // Safety: this drop MUST occur before `run_subprocess()`
                         drop(state);
                         Scheduler::run_subprocess(ctx, onready);
-                        delegation_source = DelegationSource::Process;
+                        delegation_source = DelegationSource::Process(curr_proc_sem);
                         None
 
                     } else if !state.global.per_round_endpoints.is_empty() {
@@ -538,8 +553,9 @@ impl Scheduler {
                     let mut state = ctx.acquire();
 
                     if thread_id != thread::current().id() {
+                        let curr_thread_sem = state.local.thread_locks.get(&thread::current().id()).unwrap().clone();
                         state.global.signal = Some((SignalDestination::Thread(pid, thread_id), signal));
-                        delegation_source = DelegationSource::Thread;
+                        delegation_source = DelegationSource::Thread(curr_thread_sem);
                         let sem = state.local.thread_locks.get(&thread_id).unwrap().clone();
                         drop(state);
                         Some(sem)
@@ -560,28 +576,18 @@ impl Scheduler {
 
             // 2. Suspend execution
 
-            let sem = match delegation_source {
-                DelegationSource::Thread => {
-                    let state = ctx.acquire();
-                    let sem = state.local.thread_locks.get(&thread::current().id()).unwrap().clone();
-                    drop(state);
-                    sem
-                }
-                DelegationSource::Process => {
-                    let state = ctx.acquire();
-                    let sem = state.local.process_info.borrow().semaphore.clone();
-                    drop(state);
-                    sem
-                }
+            let waiting_sem = match delegation_source {
+                DelegationSource::Thread(sem) => sem,
+                DelegationSource::Process(sem) => sem,
             };
 
             // Awaken the next thread to be run
-            if let Some(sem) = posted_sem {
-                sem.post();
+            if let Some(posting_sem) = posted_sem {
+                posting_sem.post();
             }
 
             // Wait until our semaphore is awakened
-            sem.wait();
+            waiting_sem.wait();
 
             // 3. Determine next delegation action based on global state
             // NOTE: delegation_state SHOULD NOT be relied on here.
@@ -1650,10 +1656,10 @@ impl<'a> From<DelegationAction> for DelegationState {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum DelegationSource {
-    Thread,
-    Process,
+    Thread(std::rc::Rc<Semaphore, &'static TlsfHeap>),
+    Process(std::rc::Rc<Semaphore, &'static TlsfHeap>),
 }
 
 #[derive(Clone, Debug)]

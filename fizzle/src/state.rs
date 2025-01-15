@@ -977,7 +977,6 @@ pub struct InterprocessState {
     pub afl_shmem_initialized: bool,
     pub fuzz_endpoints: GlobalVec<FuzzEndpointInfo>,
     pub fuzz_input: GlobalVec<u8>,
-
     pub process_locks: GlobalMap<Pid, std::rc::Rc<Semaphore, &'static TlsfHeap>>,
     /// The thread identifier to be executed by the waking process. This is `Some` if and only if
     /// a thread is currently about to be scheduled.

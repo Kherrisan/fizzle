@@ -197,6 +197,8 @@ impl Event for ProcessForkEvent {
                 // Let the scheduler know we have more to execute once the new thread is done.
                 state.mark_thread_ready(thread::current().id());
 
+                let parent_sem = state.local.process_info.borrow().semaphore.clone();
+
                 let pid = unsafe { libc::fork() };
 
                 // SAFETY: parent process must not use `state` after here
@@ -333,7 +335,7 @@ impl Event for ProcessForkEvent {
                     // The parent process pauses for the child to run
                     1.. => {
                         self.state = ProcessForkState::RunPostHandlers(parent_handlers, pid);
-                        Outcome::Pause(DelegationSource::Process, None)
+                        Outcome::Pause(DelegationSource::Process(parent_sem), None)
                     }
                     // Process creation failed--should be seen as fatal within fuzzing context
                     ..=-1 => panic!(
