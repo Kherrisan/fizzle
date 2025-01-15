@@ -88,7 +88,7 @@ impl<T> PanicOnceCell<T> {
         } else {
             // 2nd MSB set: initialization complete
             unsafe {
-                &*(self.inner.get() as *mut T)
+                &*(self.inner.get().cast_const().cast::<T>())
             }
         }
     }
