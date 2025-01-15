@@ -1,7 +1,6 @@
 use std::alloc::{Allocator, Global};
 use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
-use std::ptr;
 use std::rc::Rc;
 
 unsafe fn raw(s: &Semaphore) -> *mut libc::sem_t {

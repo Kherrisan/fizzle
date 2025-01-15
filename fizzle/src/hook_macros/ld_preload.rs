@@ -1,18 +1,13 @@
 // Uses code from `redhook` project, available under BSD 2-Clause License
 
 #[link(name = "dl")]
-extern "C" {
-    fn dlsym(handle: *const libc::c_void, symbol: *const libc::c_char) -> *const libc::c_void;
+unsafe extern "C" {
+    unsafe fn dlsym(handle: *const libc::c_void, symbol: *const libc::c_char) -> *const libc::c_void;
 }
 
 pub unsafe fn dlsym_next(symbol: &'static str) -> *const u8 {
     let ptr = dlsym(libc::RTLD_NEXT, symbol.as_ptr().cast::<libc::c_char>());
-    if ptr.is_null() {
-        panic!(
-            "LD_PRELOAD: Unable to find underlying function for {}",
-            symbol
-        );
-    }
+    assert!(!ptr.is_null(), "dlsym: unable to find underlying function for {}", symbol);
     ptr.cast::<u8>()
 }
 
@@ -25,53 +20,36 @@ macro_rules! hook {
 
         impl $real_fn {
             fn get(&self) -> unsafe extern fn ( $($v : $t),* ) -> $r {
-                use ::std::sync::Once;
+                use std::cell::OnceCell;
 
-                static mut REAL: *const u8 = std::ptr::null();
-                static mut ONCE: Once = Once::new();
+                std::thread_local! {
+                    static REAL: OnceCell<*const u8> = OnceCell::new();
+                }
 
                 unsafe {
-                    ONCE.call_once(|| {
-                        REAL = $crate::hook_macros::ld_preload::dlsym_next(concat!(stringify!($real_fn), "\0"));
-                    });
-                    ::std::mem::transmute(REAL)
+                    std::mem::transmute(REAL.with(|cell| {
+                        *cell.get_or_init(|| {
+                            crate::hook_macros::ld_preload::dlsym_next(concat!(stringify!($real_fn), "\0"))
+                        })
+                    }))
                 }
             }
 
             #[no_mangle]
-            pub unsafe extern fn $real_fn ( $($v : $t),* ) -> $r {
+            pub unsafe extern "C" fn $real_fn ( $($v : $t),* ) -> $r {
                 ::std::panic::catch_unwind(|| {
                     if crate::state::has_entered_handler() {
                         return $real_fn.get() ( $($v),* )
                     }
+                    
                     crate::state::set_entered_handler(true);
-
-                    let should_log = match stringify!($real_fn) {
-                        "pthread_mutex_init" | "pthread_rwlock_init" | "pthread_rwlock_rdlock" | "pthread_mutex_lock" | "pthread_mutex_unlock" | "pthread_rwlock_unlock" | "pthread_rwlock_wrlock" | "pthread_setspecific" | "pthread_getspecific" => false,
-                        _ => true,
-                    };
-
-                    if should_log {
-                        log::trace!(
-                            "invoked function {}",
-                            stringify!($real_fn)
-                        );
-                    }
-
                     let res = {
                         $hook_fn ( $($v),*)
                     };
-
-                    if should_log {
-                        log::trace!(
-                            "Function {} returned {:?}", // TODO: add process info in the future
-                            stringify!($real_fn),
-                            res
-                        );
-                    }
-
                     crate::state::set_entered_handler(false);
+
                     res
+
                 }).unwrap_or_else(|_| {
                     std::process::abort(); // Panic unwind hook already prints out stack info
                 })
@@ -80,7 +58,10 @@ macro_rules! hook {
 
         pub unsafe fn $hook_fn ( $($v : $t),*) -> $r {
             #[allow(unused_mut)]
-            let mut $state = crate::scheduler::fizzle_singleton();
+            let mut $state = unsafe {
+                crate::scheduler::fizzle_singleton()
+            };
+
             $body
         }
     };
@@ -90,6 +71,8 @@ macro_rules! hook {
         $crate::hook! { unsafe fn $real_fn ( $($v : $t),* ) -> () => $hook_fn ( $state ) $body }
     };
 }
+
+use std::cell::OnceCell;
 
 pub(crate) use hook;
 
@@ -102,15 +85,31 @@ macro_rules! real {
 pub(crate) use real;
 
 pub fn real_syscall() -> extern "C" fn(libc::c_long, ...) -> libc::c_long {
-    use ::std::sync::Once;
-
-    static mut REAL: *const u8 = 0 as *const u8;
-    static mut ONCE: Once = Once::new();
+    std::thread_local! {
+        static REAL: OnceCell<*const u8> = OnceCell::new();
+    }
 
     unsafe {
-        ONCE.call_once(|| {
-            REAL = crate::hook_macros::ld_preload::dlsym_next(concat!("syscall", "\0"));
-        });
-        ::std::mem::transmute(REAL)
+        std::mem::transmute(REAL.with(|cell| {
+            *cell.get_or_init(|| {
+                dlsym_next("syscall\0")
+            })
+        }))
     }
 }
+
+/*
+pub fn real_fcntl() -> extern "C" fn(libc::c_long, ...) -> libc::c_long {
+    std::thread_local! {
+        static REAL: OnceCell<*const u8> = OnceCell::new();
+    }
+
+    unsafe {
+        std::mem::transmute(REAL.with(|cell| {
+            *cell.get_or_init(|| {
+                dlsym_next("syscall\0")
+            })
+        }))
+    }
+}
+*/
