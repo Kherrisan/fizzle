@@ -11,7 +11,7 @@ use embedded_alloc::TlsfHeap;
 
 use crate::backend::{ConnectedBackend, FileBackend, FileFeedback, PendingBackend};
 use crate::cell::{PanicOnceCell, SequentialRefCell};
-use crate::constants::{FIZZLE_ALLOC_ENV, FIZZLE_HEAP_SIZE, FIZZLE_MEMORY_ENV, FIZZLE_SINGLEPROCESS_ENV};
+use crate::constants::{FIZZLE_ALLOC_ENV, FIZZLE_ALLOC_OFFSET_ENV, FIZZLE_HEAP_SIZE, FIZZLE_MEMORY_ENV, FIZZLE_SINGLEPROCESS_ENV};
 use crate::errno::Errno;
 use crate::handlers::file::{CowInfo, FileInfo};
 use crate::handlers::mutex::MutexStatus;
@@ -117,9 +117,14 @@ pub fn fizzle_alloc() -> &'static TlsfHeap {
                     }
                 };
 
+                let alloc_offset = match env::var(FIZZLE_ALLOC_OFFSET_ENV) {
+                    Ok(var) => var.parse::<usize>().unwrap() as *mut libc::c_void,
+                    Err(_) => ptr::null_mut(),
+                };
+
                 let loc = unsafe {
                     libc::mmap(
-                        ptr::null_mut(),
+                        alloc_offset,
                         size,
                         libc::PROT_READ | libc::PROT_WRITE,
                         libc::MAP_SHARED,
@@ -130,6 +135,10 @@ pub fn fizzle_alloc() -> &'static TlsfHeap {
 
                 if loc == libc::MAP_FAILED {
                     panic!("failed to mmap InterprocessAllocator memory: {}", Errno::get_errno());
+                }
+
+                if alloc_offset.is_null() {
+                    env::set_var(FIZZLE_ALLOC_OFFSET_ENV, (alloc_offset as usize).to_string());
                 }
 
                 loc.cast::<InterprocessAllocator>()
@@ -226,6 +235,11 @@ impl Scheduler {
                     drop(state);
 
                     while let Some(onstartup) = startup_commands.pop() {
+                        let mut state = ctx.acquire();
+                        let current_worker = state.current_worker();
+                        state.global.ready_delayed.push_back(ReadyInfo::Worker(current_worker));
+                        drop(state);
+
                         log::info!("`Scheduler::run_subprocess()` called for startup command {:?}", onstartup);
                         Scheduler::run_subprocess(ctx, onstartup);
                         Scheduler::yield_worker(ctx, DelegationAction::PauseCurrentWorker(DelegationSource::Process(curr_proc_sem.clone()), None));
