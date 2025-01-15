@@ -52,30 +52,29 @@ pub unsafe fn fizzle_singleton() -> FizzleSingleton {
 pub fn fizzle_alloc() -> &'static TlsfHeap {
     &FIZZLE_ALLOC
         .get_or_init(|| {
-            let size = mem::size_of::<InterprocessState>();
+            let size = mem::size_of::<InterprocessAllocator>();
             let is_singleprocess =
                 matches!(env::var(FIZZLE_SINGLEPROCESS_ENV), Ok(s) if s.as_str() == "1");
 
             let location = if is_singleprocess {
-                unsafe {
-                    let loc = libc::mmap(
-                        ptr::null_mut(),
-                        size,
-                        libc::PROT_READ | libc::PROT_WRITE,
-                        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                        -1,
-                        0,
-                    );
+                let loc = unsafe { libc::mmap(
+                    ptr::null_mut(),
+                    size,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )};
 
-                    if loc == libc::MAP_FAILED {
-                        panic!(
-                            "failed to mmap global memory (errno {})",
-                            *libc::__errno_location()
-                        )
-                    }
-
-                    loc as *mut InterprocessAllocator
+                if loc == libc::MAP_FAILED {
+                    panic!(
+                        "failed to mmap InterprocessAllocator memory (errno {})",
+                        Errno::get_errno()
+                    )
                 }
+
+                loc as *mut InterprocessAllocator
+
             } else {
                 // Shared memory doesn't play well with the forkserver, so we need to make sure that
                 // processes are forked *before* any shared memory is created.
@@ -86,12 +85,10 @@ pub fn fizzle_alloc() -> &'static TlsfHeap {
 
                 let memfd = match env::var(FIZZLE_ALLOC_ENV) {
                     Ok(var) => {
-                        log::debug!("attaching to already-created shared memory");
                         let memfd: RawFd = var.parse().unwrap();
                         memfd
                     }
                     Err(_) => {
-                        log::debug!("allocating public shared memory object...");
                         let filename = format!("/Fizzle_Alloc{}\0", process::id());
 
                         let fd = unsafe {
@@ -105,17 +102,16 @@ pub fn fizzle_alloc() -> &'static TlsfHeap {
                         }
 
                         let memfd = unsafe { libc::dup(fd) };
-                        assert!(memfd >= 0, "dup() failed during interprocess file creation: {}", Errno::get_errno());
+                        assert!(memfd >= 0, "dup() failed during InterprocessAllocator creation: {}", Errno::get_errno());
 
                         unsafe {
                             assert_eq!(libc::close(fd), 0);
                         }
 
-                        log::debug!("allocated public shared memory object with fd {}", memfd);
                         env::set_var(FIZZLE_ALLOC_ENV, memfd.to_string());
 
                         let ret = unsafe { libc::ftruncate(memfd, size as i64) };
-                        assert_eq!(ret, 0, "ftruncate() failed for interprocess memory: {}", Errno::get_errno());
+                        assert_eq!(ret, 0, "ftruncate() failed for InterprocessAllocator memory: {}", Errno::get_errno());
 
                         memfd
                     }
@@ -133,14 +129,14 @@ pub fn fizzle_alloc() -> &'static TlsfHeap {
                 };
 
                 if loc == libc::MAP_FAILED {
-                    panic!("failed to mmap global memory: {}", Errno::get_errno());
+                    panic!("failed to mmap InterprocessAllocator memory: {}", Errno::get_errno());
                 }
 
                 loc as *mut InterprocessAllocator
             };
 
             unsafe {
-                *&raw mut (*location).heap = TlsfHeap::empty();
+                *(&raw mut (*location).heap) = TlsfHeap::empty();
                 (*location).heap.init((&raw const (*location).heap_memory) as usize, FIZZLE_HEAP_SIZE);
                 &*(location as *const InterprocessAllocator)
             }
