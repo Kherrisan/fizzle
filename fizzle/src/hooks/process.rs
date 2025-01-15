@@ -7,7 +7,7 @@ use std::ffi::{CStr, CString};
 
 use fizzle_common::path::FilePath;
 
-use crate::constants::FIZZLE_MEMORY_ENV;
+use crate::constants::{FIZZLE_ALLOC_ENV, FIZZLE_MEMORY_ENV};
 use crate::errno::Errno;
 use crate::handlers::descriptor::Descriptor;
 use crate::handlers::id::*;
@@ -236,6 +236,14 @@ pub unsafe extern "C" fn execle(
         ))
         .unwrap(),
     );
+    env.push(
+        CString::new(format!(
+            "{}={}",
+            FIZZLE_ALLOC_ENV,
+            env::var(FIZZLE_ALLOC_ENV).unwrap()
+        ))
+        .unwrap(),
+    );
 
     let file_cstr = unsafe { CStr::from_ptr(pathname) };
 
@@ -384,6 +392,7 @@ hook_macros::hook! {
 
         env.push(CString::new(format!("LD_PRELOAD={}", env::var("LD_PRELOAD").unwrap())).unwrap());
         env.push(CString::new(format!("{}={}", FIZZLE_MEMORY_ENV, env::var(FIZZLE_MEMORY_ENV).unwrap())).unwrap());
+        env.push(CString::new(format!("{}={}", FIZZLE_ALLOC_ENV, env::var(FIZZLE_ALLOC_ENV).unwrap())).unwrap());
 
         let file_cstr = unsafe { CStr::from_ptr(pathname) };
 
@@ -438,6 +447,7 @@ hook_macros::hook! {
 
         env.push(CString::new(format!("LD_PRELOAD={}", env::var("LD_PRELOAD").unwrap())).unwrap());
         env.push(CString::new(format!("{}={}", FIZZLE_MEMORY_ENV, env::var(FIZZLE_MEMORY_ENV).unwrap())).unwrap());
+        env.push(CString::new(format!("{}={}", FIZZLE_ALLOC_ENV, env::var(FIZZLE_ALLOC_ENV).unwrap())).unwrap());
 
         let file_cstr = unsafe { CStr::from_ptr(pathname) };
 
@@ -500,6 +510,7 @@ hook_macros::hook! {
 
         env.push(CString::new(format!("LD_PRELOAD={}", env::var("LD_PRELOAD").unwrap())).unwrap());
         env.push(CString::new(format!("{}={}", FIZZLE_MEMORY_ENV, env::var(FIZZLE_MEMORY_ENV).unwrap())).unwrap());
+        env.push(CString::new(format!("{}={}", FIZZLE_ALLOC_ENV, env::var(FIZZLE_ALLOC_ENV).unwrap())).unwrap());
 
         crate::strace!("fexecve(fd={}, args={:?}, env={:?}) -> ...", fd, args, env);
 
@@ -542,6 +553,7 @@ hook_macros::hook! {
 
         env.push(CString::new(format!("LD_PRELOAD={}", env::var("LD_PRELOAD").unwrap())).unwrap());
         env.push(CString::new(format!("{}={}", FIZZLE_MEMORY_ENV, env::var(FIZZLE_MEMORY_ENV).unwrap())).unwrap());
+        env.push(CString::new(format!("{}={}", FIZZLE_ALLOC_ENV, env::var(FIZZLE_ALLOC_ENV).unwrap())).unwrap());
 
         let file_cstr = unsafe { CStr::from_ptr(file) };
 
@@ -572,12 +584,15 @@ hook_macros::hook! {
      unsafe fn system(command: *const libc::c_char) -> libc::c_int => fizzle_system(_ctx) {
         // env is inherited, so no variables need to be defined
         let fizzle_memory = env::var(FIZZLE_MEMORY_ENV).unwrap();
+        let fizzle_alloc = env::var(FIZZLE_ALLOC_ENV).unwrap();
         let ld_preload = env::var("LD_PRELOAD").unwrap();
 
         env::remove_var(FIZZLE_MEMORY_ENV);
+        env::remove_var(FIZZLE_ALLOC_ENV);
         env::remove_var("LD_PRELOAD");
         let res = hook_macros::real!(system)(command); // `system` commands are executed without any Fizzle harness
         env::set_var("LD_PRELOAD", ld_preload);
+        env::set_var(FIZZLE_ALLOC_ENV, fizzle_alloc);
         env::set_var(FIZZLE_MEMORY_ENV, fizzle_memory);
 
         res

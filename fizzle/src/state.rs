@@ -24,6 +24,7 @@ use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
 use crate::handlers::time::ItimerInfo;
+use crate::scheduler::fizzle_alloc;
 use crate::{comptime, GlobalList, GlobalMap, GlobalRc, GlobalSet, GlobalVec};
 use crate::constants::*;
 use crate::errno::Errno;
@@ -195,7 +196,7 @@ impl FizzleState {
             barriers: HashMap::default(),
             cancelling: None,
             condvars: HashMap::default(),
-            fds: BTreeMap::new_in(global.alloc.alloc()),
+            fds: BTreeMap::new_in(fizzle_alloc()),
             file_objs: HashMap::default(),
             futex_waiters: HashMap::default(),
             itimer_prof: None,
@@ -207,14 +208,14 @@ impl FizzleState {
             on_exit_handlers: Vec::new(),
             pasture: Default::default(),
             process_info: std::rc::Rc::new_in(RefCell::new(ProcessInfo {
-                semaphore: Semaphore::new_rc_in(0, true, global.alloc.alloc()),
+                semaphore: Semaphore::new_rc_in(0, true, fizzle_alloc()),
                 awaiting_death: None,
                 pid: Pid::PRIMARY,
                 ppid: Pid::INIT,
                 pgid: Pgid::from_pid(Pid::PRIMARY),
                 signal_handlers: array::from_fn(|_| SigDisposition::Default),
-                children: BTreeSet::new_in(global.alloc.alloc()),
-            }), global.alloc.alloc()),
+                children: BTreeSet::new_in(fizzle_alloc()),
+            }), fizzle_alloc()),
             pthreads: HashMap::default(),
             pthread_keys: HashMap::default(),
             pthread_key_values: HashMap::default(),
@@ -273,7 +274,7 @@ impl FizzleState {
             mem::swap(&mut local.fds, &mut inherited_state.fds);
 
             let sigmask = inherited_state.sigmask;
-            local.thread_locks.insert(thread::current().id(), Semaphore::new_rc_in(0, true, global.alloc.alloc()));
+            local.thread_locks.insert(thread::current().id(), Semaphore::new_rc_in(0, true, fizzle_alloc()));
             local.initialize_thread(Tid::from_raw(pid.as_raw()), Some(sigmask));
 
         } else {
@@ -283,7 +284,7 @@ impl FizzleState {
 
             global.pids.insert(pid, local.process_info.clone());
 
-            let mut pid_set = BTreeSet::new_in(global.alloc.alloc());
+            let mut pid_set = BTreeSet::new_in(fizzle_alloc());
             pid_set.insert(pid);
             global.process_groups.insert(pgid, pid_set);
 
@@ -308,11 +309,11 @@ impl FizzleState {
                 resource: FdResource::Stderr,
             });
 
-            local.thread_locks.insert(thread::current().id(), Semaphore::new_rc_in(0, true, global.alloc.alloc()));
+            local.thread_locks.insert(thread::current().id(), Semaphore::new_rc_in(0, true, fizzle_alloc()));
             local.initialize_thread(tid, None);
         }
 
-        global.process_locks.insert(local.process_info.borrow().pid, Semaphore::new_rc_in(0, true, global.alloc.alloc()));
+        global.process_locks.insert(local.process_info.borrow().pid, Semaphore::new_rc_in(0, true, fizzle_alloc()));
 
         let mut state = Self { local, global };
 
@@ -448,8 +449,6 @@ impl FizzleState {
     }
 
     fn load_config_mappings(&mut self, endpoints: Vec<PluginEndpoint>) {
-        let alloc = self.global.alloc.alloc();
-
         for endpoint in endpoints {
             for _ in 0..endpoint.num_streams {
                 let endpoint_variant = endpoint.endpoint_variant.clone();
@@ -457,15 +456,15 @@ impl FizzleState {
                     IoEndpointVariant::Stdio => {
                         self.global.stdio = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => StdioBackend::Feedback(StandardFeedback {
-                                buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc),
+                                buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc()),
                                 read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
-                                    pollers: Vec::new_in(alloc),
+                                    pollers: Vec::new_in(fizzle_alloc()),
                                     event_raised: false,
-                                }), alloc),
+                                }), fizzle_alloc()),
                                 write_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
-                                    pollers: Vec::new_in(alloc),
+                                    pollers: Vec::new_in(fizzle_alloc()),
                                     event_raised: false,
-                                }), alloc),
+                                }), fizzle_alloc()),
                             }),
                             IoEmulationType::Plugin(module_id) => {
                                 StdioBackend::Plugin(self.global.add_plugin(
@@ -508,7 +507,7 @@ impl FizzleState {
                                     btime: current_time,
                                     mtime: current_time,
                                     ctime: current_time,
-                                }), alloc),
+                                }), fizzle_alloc()),
                             IoEmulationType::Plugin(module_id) => {
                                 let backend = FileBackend::Plugin(self.global.add_plugin(
                                     endpoint.endpoint_variant.clone(),
@@ -528,7 +527,7 @@ impl FizzleState {
                                         btime: current_time,
                                         mtime: current_time,
                                         ctime: current_time,
-                                    }), alloc)
+                                    }), fizzle_alloc())
                             }
                             IoEmulationType::Sink => std::rc::Rc::new_in(RefCell::new(FileInfo {
                                     path: path.clone(),
@@ -544,7 +543,7 @@ impl FizzleState {
                                     btime: current_time,
                                     mtime: current_time,
                                     ctime: current_time,
-                                }), alloc),
+                                }), fizzle_alloc()),
                             IoEmulationType::NullSink => std::rc::Rc::new_in(RefCell::new(FileInfo {
                                     path: path.clone(),
                                     cow: None,
@@ -559,7 +558,7 @@ impl FizzleState {
                                     btime: current_time,
                                     mtime: current_time,
                                     ctime: current_time,
-                                }), alloc),
+                                }), fizzle_alloc()),
                             IoEmulationType::Fuzz => {
                                 let fuzz_endpoint_id = self.global.add_fuzz_endpoint();
                                 let cow = self.allocate_cow();
@@ -577,7 +576,7 @@ impl FizzleState {
                                     btime: current_time,
                                     mtime: current_time,
                                     ctime: current_time,
-                                }), alloc);
+                                }), fizzle_alloc());
 
                                 file_info
                             }
@@ -595,7 +594,7 @@ impl FizzleState {
                                 btime: current_time,
                                 mtime: current_time,
                                 ctime: current_time,
-                            }), alloc),
+                            }), fizzle_alloc()),
                         };
 
 
@@ -796,14 +795,13 @@ impl FizzleState {
 
     /// Creates a new poller for the currently executing worker.
     pub fn new_poller(&mut self) -> GlobalRc<PollerInfo> {
-        let alloc = self.global.alloc.alloc();
         let worker_id = self.current_worker();
 
         std::rc::Rc::new_in(RefCell::new(PollerInfo {
                 worker: worker_id,
-                polled_events: Vec::new_in(alloc),
-                raised_events: BTreeSet::new_in(alloc),
-        }), alloc)
+                polled_events: Vec::new_in(fizzle_alloc()),
+                raised_events: BTreeSet::new_in(fizzle_alloc()),
+        }), fizzle_alloc())
     }
 
     /// Registers `poller_id` as waiting on `polled_id`.
@@ -977,11 +975,8 @@ impl ProcessLocalState {
 
 pub struct InterprocessState {
     pub afl_shmem_initialized: bool,
-    pub alloc: InterprocessAllocator,
     pub fuzz_endpoints: GlobalVec<FuzzEndpointInfo>,
     pub fuzz_input: GlobalVec<u8>,
-
-
 
     pub process_locks: GlobalMap<Pid, std::rc::Rc<Semaphore, &'static TlsfHeap>>,
     /// The thread identifier to be executed by the waking process. This is `Some` if and only if
@@ -1002,7 +997,7 @@ pub struct InterprocessState {
     pub unix_read_fd: RawFd,
     /// The write end of the Unix socket pair used to pass file descriptors between processes.
     pub unix_write_fd: RawFd,
-    
+
     pub next_pid: Pid,
     pub pids: GlobalMap<Pid, GlobalRc<ProcessInfo>>,
     /// Information on a process that has died but not yet been reaped.
@@ -1119,26 +1114,22 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).uid) = 1000; // TODO: make this configurable
             *ptr::addr_of_mut!((*state).gid) = 1000; // TODO: make this configurable
 
-            // Initialize interprocess allocator
-            *ptr::addr_of_mut!((*state).alloc.heap) = TlsfHeap::empty();
-            (*ptr::addr_of_mut!((*state).alloc.heap)).init((ptr::addr_of_mut!((*state).alloc.heap_memory)) as usize, FIZZLE_HEAP_SIZE);
-
             // SAFETY: must happen *after* interprocess allocator has been initialized
-            *ptr::addr_of_mut!((*state).per_round_endpoints) = Vec::new_in((*state).alloc.alloc());
-            *ptr::addr_of_mut!((*state).dead_pids) = BTreeMap::new_in((*state).alloc.alloc());
-            *ptr::addr_of_mut!((*state).pids) = BTreeMap::new_in((*state).alloc.alloc());
-            *ptr::addr_of_mut!((*state).process_groups) = BTreeMap::new_in((*state).alloc.alloc());
-            *ptr::addr_of_mut!((*state).process_locks) = BTreeMap::new_in((*state).alloc.alloc());
-            *ptr::addr_of_mut!((*state).ready) = BinaryHeap::new_in((*state).alloc.alloc());
-            *ptr::addr_of_mut!((*state).ready_delayed) = LinkedList::new_in((*state).alloc.alloc());
-            *ptr::addr_of_mut!((*state).fuzz_input) = Vec::new_in((*state).alloc.alloc());
+            *ptr::addr_of_mut!((*state).per_round_endpoints) = Vec::new_in(fizzle_alloc());
+            *ptr::addr_of_mut!((*state).dead_pids) = BTreeMap::new_in(fizzle_alloc());
+            *ptr::addr_of_mut!((*state).pids) = BTreeMap::new_in(fizzle_alloc());
+            *ptr::addr_of_mut!((*state).process_groups) = BTreeMap::new_in(fizzle_alloc());
+            *ptr::addr_of_mut!((*state).process_locks) = BTreeMap::new_in(fizzle_alloc());
+            *ptr::addr_of_mut!((*state).ready) = BinaryHeap::new_in(fizzle_alloc());
+            *ptr::addr_of_mut!((*state).ready_delayed) = LinkedList::new_in(fizzle_alloc());
+            *ptr::addr_of_mut!((*state).fuzz_input) = Vec::new_in(fizzle_alloc());
 
             *ptr::addr_of_mut!((*state).unix_read_fd) = -1;
             *ptr::addr_of_mut!((*state).unix_write_fd) = -1;
             *ptr::addr_of_mut!((*state).create_cow) = None;
             *ptr::addr_of_mut!((*state).time_fuzz_idx) = 0;
-            *ptr::addr_of_mut!((*state).fuzz_endpoints) = Vec::new_in((*state).alloc.alloc());
-            *ptr::addr_of_mut!((*state).plugins) = Vec::new_in((*state).alloc.alloc());
+            *ptr::addr_of_mut!((*state).fuzz_endpoints) = Vec::new_in(fizzle_alloc());
+            *ptr::addr_of_mut!((*state).plugins) = Vec::new_in(fizzle_alloc());
 
             *ptr::addr_of_mut!((*state).next_pid) = Pid::PRIMARY.next();
             &mut (*state)
@@ -1189,17 +1180,15 @@ impl InterprocessState {
     }
 
     pub fn add_fuzz_endpoint(&mut self) -> GlobalRc<FuzzEndpointInfo> {
-        let alloc = self.alloc.alloc();
-
         let read_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
-            pollers: Vec::new_in(alloc),
+            pollers: Vec::new_in(fizzle_alloc()),
             event_raised: false,
-        }), alloc);
+        }), fizzle_alloc());
 
         std::rc::Rc::new_in(RefCell::new(FuzzEndpointInfo {
             read_polled,
             read_idx: 0,
-        }), alloc)
+        }), fizzle_alloc())
     }
 
     pub fn add_pending_client(
@@ -1208,8 +1197,6 @@ impl InterprocessState {
         rem_addr: TransportAddress,
         backend: PendingBackend,
     ) -> GlobalRc<SocketInfo> {
-        let alloc = self.alloc.alloc();
-
         let client_socket_info = std::rc::Rc::new_in(RefCell::new(SocketInfo {
             fd_count: 0,
             state: SocketState::PendingConnection(PendingSocket {
@@ -1220,21 +1207,21 @@ impl InterprocessState {
             socktype: SocketType::Datagram,
             protocol: src_addr.protocol(),
             local_addr: LocalAddress::Assigned(src_addr.addr().clone()),
-        }), self.alloc.alloc());
+        }), fizzle_alloc());
 
         // Add the client to the pending client chain, if applicable
         match self.socket_locations.get_mut(&rem_addr) {
             None => {
                 let polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
-                    pollers: Vec::new_in(alloc),
+                    pollers: Vec::new_in(fizzle_alloc()),
                     event_raised: false,
-                }), alloc);
+                }), fizzle_alloc());
                 if self.socket_locations
                     .insert(
                         rem_addr,
                         TransportLocationInfo {
                             reuse_port: false,
-                            bound_sockets: LinkedList::new_in(self.alloc.alloc()),
+                            bound_sockets: LinkedList::new_in(fizzle_alloc()),
                             pending: Some(PendingInfo {
                                 client: client_socket_info.clone(),
                                 poll: polled,
@@ -1271,9 +1258,9 @@ impl InterprocessState {
                     }
                     None => {
                         let polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
-                            pollers: Vec::new_in(alloc),
+                            pollers: Vec::new_in(fizzle_alloc()),
                             event_raised: false,
-                        }), alloc);
+                        }), fizzle_alloc());
                         location_info.pending = Some(PendingInfo {
                             client: client_socket_info.clone(),
                             poll: polled,
@@ -1303,29 +1290,27 @@ impl InterprocessState {
 
  
     pub fn add_server(&mut self, transport_addr: TransportAddress, backend: ServerBackend) {
-        let alloc = self.alloc.alloc();
-
         // Create a new polled instance for listeners waiting to accept connections
         let connect_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
-            pollers: Vec::new_in(alloc),
+            pollers: Vec::new_in(fizzle_alloc()),
             event_raised: false,
-        }), alloc);
+        }), fizzle_alloc());
 
         let socket_info = std::rc::Rc::new_in(RefCell::new(SocketInfo {
             fd_count: 0,
             state: SocketState::Server(ServerSocket {
                 backend,
-                connecting: LinkedList::new_in(self.alloc.alloc()),
+                connecting: LinkedList::new_in(fizzle_alloc()),
                 ready_to_connect: connect_polled,
             }),
             socktype: SocketType::Datagram, // TODO: this (and above) aren't necessarily true
             protocol: transport_addr.protocol(),
             local_addr: LocalAddress::Assigned(transport_addr.addr().clone()),
-        }), self.alloc.alloc());
+        }), fizzle_alloc());
         
         match self.socket_locations.get_mut(&transport_addr) {
             None => {
-                let mut bound_sockets = LinkedList::new_in(self.alloc.alloc());
+                let mut bound_sockets = LinkedList::new_in(fizzle_alloc());
                 bound_sockets.push_back(socket_info);
 
                 if self.socket_locations
@@ -1352,22 +1337,20 @@ impl InterprocessState {
         endpoint: IoEndpointVariant,
         module: std::rc::Rc<RefCell<dyn PluginObject>>,
     ) -> GlobalRc<PluginInfo> {
-        let alloc = self.alloc.alloc();
-
         let stream = self.next_stream_id;
         self.next_stream_id = StreamId::from(usize::from(stream) + 1);
 
-        let read_buf = std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc);
+        let read_buf = std::rc::Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc());
         let read_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
-            pollers: Vec::new_in(alloc),
+            pollers: Vec::new_in(fizzle_alloc()),
             event_raised: false,
-        }), alloc);
+        }), fizzle_alloc());
 
-        let write_buf = std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc);
+        let write_buf = std::rc::Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc());
         let write_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
-            pollers: Vec::new_in(alloc),
+            pollers: Vec::new_in(fizzle_alloc()),
             event_raised: true,
-        }), alloc);
+        }), fizzle_alloc());
 
         std::rc::Rc::new_in(RefCell::new(PluginInfo {
                 endpoint,
@@ -1377,7 +1360,7 @@ impl InterprocessState {
                 read_polled,
                 write_buf,
                 write_polled,
-            }), alloc)
+            }), fizzle_alloc())
     }
 
     /// Assigns the next available ephemeral address.
@@ -1426,18 +1409,8 @@ impl InterprocessState {
 }
 
 pub struct InterprocessAllocator {
-    heap: TlsfHeap,
-    heap_memory: [MaybeUninit<u8>; FIZZLE_HEAP_SIZE],
-}
-
-impl InterprocessAllocator {
-    pub fn alloc<'a>(&'a self) -> &'static TlsfHeap {
-        // Safety: `self.heap` is never mutably referenced outside of initialization, and lives
-        // until the end of the program. This means that static shared references to it are safe.
-        unsafe {
-            mem::transmute::<&'a TlsfHeap, &'static TlsfHeap>(&self.heap)
-        }
-    }
+    pub heap: TlsfHeap,
+    pub heap_memory: [MaybeUninit<u8>; FIZZLE_HEAP_SIZE],
 }
 
 pub struct PerRoundClientInfo {
@@ -1503,3 +1476,4 @@ pub enum CreateCowSource {
     New(FilePath<256>, AccessMode),
     Existing(CowId),
 }
+

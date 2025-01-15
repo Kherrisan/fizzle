@@ -2,16 +2,17 @@ use core::slice;
 use std::cell::{RefCell, RefMut};
 use std::collections::BTreeMap;
 use std::os::fd::RawFd;
-use std::process::Command;
+use std::process::{self, Command};
 use std::thread::ThreadId;
 use std::time::Duration;
-use std::{cmp, mem, ptr, thread};
+use std::{cmp, env, mem, ptr, thread};
 
 use embedded_alloc::TlsfHeap;
 
 use crate::backend::{ConnectedBackend, FileBackend, FileFeedback, PendingBackend};
 use crate::cell::{PanicOnceCell, SequentialRefCell};
-use crate::constants::FIZZLE_MEMORY_ENV;
+use crate::constants::{FIZZLE_ALLOC_ENV, FIZZLE_HEAP_SIZE, FIZZLE_MEMORY_ENV, FIZZLE_SINGLEPROCESS_ENV};
+use crate::errno::Errno;
 use crate::handlers::file::{CowInfo, FileInfo};
 use crate::handlers::mutex::MutexStatus;
 use crate::handlers::process::*;
@@ -23,6 +24,8 @@ use crate::state;
 use crate::state::*;
 
 static FIZZLE_STATE: PanicOnceCell<SequentialRefCell<FizzleState>> = PanicOnceCell::new();
+
+static FIZZLE_ALLOC: PanicOnceCell<&'static InterprocessAllocator> = PanicOnceCell::new();
 
 pub struct FizzleSingleton {
     /// Empty private field to ensure `FizzleSingleton` isn't constructed outside of
@@ -44,6 +47,104 @@ pub struct FizzleSingleton {
 /// to another thread acquiring the global state.
 pub unsafe fn fizzle_singleton() -> FizzleSingleton {
     FizzleSingleton::new()
+}
+
+pub fn fizzle_alloc() -> &'static TlsfHeap {
+    &FIZZLE_ALLOC
+        .get_or_init(|| {
+            let size = mem::size_of::<InterprocessState>();
+            let is_singleprocess =
+                matches!(env::var(FIZZLE_SINGLEPROCESS_ENV), Ok(s) if s.as_str() == "1");
+
+            let location = if is_singleprocess {
+                unsafe {
+                    let loc = libc::mmap(
+                        ptr::null_mut(),
+                        size,
+                        libc::PROT_READ | libc::PROT_WRITE,
+                        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                        -1,
+                        0,
+                    );
+
+                    if loc == libc::MAP_FAILED {
+                        panic!(
+                            "failed to mmap global memory (errno {})",
+                            *libc::__errno_location()
+                        )
+                    }
+
+                    loc as *mut InterprocessAllocator
+                }
+            } else {
+                // Shared memory doesn't play well with the forkserver, so we need to make sure that
+                // processes are forked *before* any shared memory is created.
+                #[cfg(feature = "afl")]
+                unsafe {
+                    crate::__afl_manual_init();
+                }
+
+                let memfd = match env::var(FIZZLE_ALLOC_ENV) {
+                    Ok(var) => {
+                        log::debug!("attaching to already-created shared memory");
+                        let memfd: RawFd = var.parse().unwrap();
+                        memfd
+                    }
+                    Err(_) => {
+                        log::debug!("allocating public shared memory object...");
+                        let filename = format!("/Fizzle_Alloc{}\0", process::id());
+
+                        let fd = unsafe {
+                            libc::shm_open(filename.as_ptr() as *const i8, libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, libc::S_IRUSR | libc::S_IWUSR)
+                        };
+
+                        assert!(fd >= 0, "shm_open() failed: {}", Errno::get_errno());
+
+                        unsafe {
+                            assert_eq!(libc::shm_unlink(filename.as_ptr() as *const i8), 0, "shm_unlink() failed: {}", Errno::get_errno());
+                        }
+
+                        let memfd = unsafe { libc::dup(fd) };
+                        assert!(memfd >= 0, "dup() failed during interprocess file creation: {}", Errno::get_errno());
+
+                        unsafe {
+                            assert_eq!(libc::close(fd), 0);
+                        }
+
+                        log::debug!("allocated public shared memory object with fd {}", memfd);
+                        env::set_var(FIZZLE_ALLOC_ENV, memfd.to_string());
+
+                        let ret = unsafe { libc::ftruncate(memfd, size as i64) };
+                        assert_eq!(ret, 0, "ftruncate() failed for interprocess memory: {}", Errno::get_errno());
+
+                        memfd
+                    }
+                };
+
+                let loc = unsafe {
+                    libc::mmap(
+                        ptr::null_mut(),
+                        size,
+                        libc::PROT_READ | libc::PROT_WRITE,
+                        libc::MAP_SHARED,
+                        memfd,
+                        0
+                    )
+                };
+
+                if loc == libc::MAP_FAILED {
+                    panic!("failed to mmap global memory: {}", Errno::get_errno());
+                }
+
+                loc as *mut InterprocessAllocator
+            };
+
+            unsafe {
+                *&raw mut (*location).heap = TlsfHeap::empty();
+                (*location).heap.init((&raw const (*location).heap_memory) as usize, FIZZLE_HEAP_SIZE);
+                &*(location as *const InterprocessAllocator)
+            }
+        }).heap
 }
 
 impl FizzleSingleton {
@@ -528,7 +629,7 @@ impl Scheduler {
                             btime: current_time,
                             mtime: current_time,
                             ctime: current_time,
-                        }), state.global.alloc.alloc());
+                        }), fizzle_alloc());
 
                         if state.global.file_paths.insert(path.clone(), file_info).is_err() {
                             panic!("failed to add to file_paths")
@@ -662,12 +763,11 @@ impl Scheduler {
     // TODO: clean this up better
     fn round_complete(ctx: &mut FizzleSingleton) {
         let mut state = ctx.acquire();
-        let alloc = state.global.alloc.alloc();
 
         Scheduler::prepare_fuzz_input(&mut state);
 
         // Reset fuzz endpoint state (e.g. endpoints configured with the `fuzz` option)
-        let mut polled_ready = Vec::new_in(alloc);
+        let mut polled_ready = Vec::new_in(fizzle_alloc());
         for endpoint_info in state.global.fuzz_endpoints.iter_mut() {
             endpoint_info.read_idx = 0;
             polled_ready
@@ -1120,7 +1220,7 @@ impl Scheduler {
         let pgid = Pgid::from_pid(new_pid);
 
         state.global.inherited_state = Some(InheritedState {
-            fds: BTreeMap::new_in(state.global.alloc.alloc()),
+            fds: BTreeMap::new_in(fizzle_alloc()),
             pid: new_pid,
             ppid,
             pgid,
@@ -1130,6 +1230,7 @@ impl Scheduler {
 
         cmd.env("LD_PRELOAD", std::env::var("LD_PRELOAD").unwrap());
         cmd.env(FIZZLE_MEMORY_ENV, std::env::var(FIZZLE_MEMORY_ENV).unwrap());
+        cmd.env(FIZZLE_ALLOC_ENV, std::env::var(FIZZLE_ALLOC_ENV).unwrap());
         cmd.spawn().unwrap();
     }
 
@@ -1404,7 +1505,7 @@ impl Scheduler {
                             btime: current_time,
                             mtime: current_time,
                             ctime: current_time,
-                        }), state.global.alloc.alloc());
+                        }), fizzle_alloc());
 
                         if state.global.file_paths.insert(path.clone(), file_info).is_err() {
                             panic!("failed to insert to file_paths")

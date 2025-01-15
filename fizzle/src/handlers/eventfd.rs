@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::{cmp, os::fd::RawFd};
 
 use crate::errno::Errno;
-use crate::scheduler::{Event, Outcome};
+use crate::scheduler::{fizzle_alloc, Event, Outcome};
 use crate::state::FizzleState;
 use crate::GlobalRc;
 
@@ -53,26 +53,24 @@ impl Event for EventfdCreateEvent {
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let alloc = state.global.alloc.alloc();
-
         let fd = crate::create_descriptor();
 
         let read_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
-            pollers: Vec::new_in(alloc),
+            pollers: Vec::new_in(fizzle_alloc()),
             event_raised: self.initial_value != 0,
-        }), alloc);
+        }), fizzle_alloc());
 
         let write_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
-            pollers: Vec::new_in(alloc),
+            pollers: Vec::new_in(fizzle_alloc()),
             event_raised: true,
-        }), alloc);
+        }), fizzle_alloc());
         
         let eventfd = std::rc::Rc::new_in(RefCell::new(EventfdInfo {
             read_polled,
             write_polled,
             is_semaphore: self.is_semaphore,
             counter: self.initial_value as u64,
-        }), alloc);
+        }), fizzle_alloc());
 
         state
             .local

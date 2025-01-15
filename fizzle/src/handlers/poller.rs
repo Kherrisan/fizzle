@@ -6,7 +6,7 @@ use std::time::Duration;
 use crate::backend::{ConnectedBackend, ConnectionlessBackend, StdioBackend};
 use crate::errno::Errno;
 use crate::handlers::epoll::{EpollDirection, EpollInterest};
-use crate::scheduler::{Event, Outcome};
+use crate::scheduler::{fizzle_alloc, Event, Outcome};
 use crate::state::FizzleState;
 use crate::{GlobalRc, GlobalSet, GlobalVec};
 
@@ -594,12 +594,10 @@ impl Event for EpollCreateEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let alloc = state.global.alloc.alloc();
-
         let fd = Descriptor::from_raw_fd(crate::create_descriptor());
         let epoll = std::rc::Rc::new_in(RefCell::new(EpollInfo {
-            interests: BTreeMap::new_in(alloc),
-        }), alloc);
+            interests: BTreeMap::new_in(fizzle_alloc()),
+        }), fizzle_alloc());
 
         state.local.fds.insert(fd, DescriptorInfo {
             close_on_exec: self.cloexec,

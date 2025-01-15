@@ -13,7 +13,7 @@ use fizzle_common::path::FilePath;
 use crate::GlobalSet;
 use crate::errno::Errno;
 use crate::handlers::signal::SigDisposition;
-use crate::scheduler::{fizzle_singleton, DelegationSource, Event, Outcome, TerminationMethod};
+use crate::scheduler::{fizzle_alloc, fizzle_singleton, DelegationSource, Event, Outcome, TerminationMethod};
 use crate::semaphore::Semaphore;
 use crate::state::{set_entered_handler, FizzleState, InheritedState};
 
@@ -228,11 +228,11 @@ impl Event for ProcessForkEvent {
                             pid,
                             ppid,
                             pgid,
-                            semaphore: Semaphore::new_rc_in(0, true, state.global.alloc.alloc()),
+                            semaphore: Semaphore::new_rc_in(0, true, fizzle_alloc()),
                             signal_handlers,
                             awaiting_death: None,
-                            children: BTreeSet::new_in(state.global.alloc.alloc()),
-                        }), state.global.alloc.alloc());
+                            children: BTreeSet::new_in(fizzle_alloc()),
+                        }), fizzle_alloc());
 
                         let process_info = state.local.process_info.clone();
                         state.global.pids.insert(pid, process_info);

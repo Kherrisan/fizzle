@@ -4,14 +4,13 @@ use std::rc::Weak;
 
 use crate::constants::FIZZLE_BUFFER_LENGTH;
 use crate::errno::Errno;
-use crate::scheduler::{Event, Outcome};
+use crate::scheduler::{fizzle_alloc, Event, Outcome};
 use crate::state::FizzleState;
 use crate::{GlobalRc, GlobalWeak};
 
 use bitflags::bitflags;
 
 use fizzle_common::storage::Buffer;
-pub use private::PipeId;
 
 use super::descriptor::{Descriptor, DescriptorInfo, FdResource, ReadData, WriteData};
 use super::polled::PolledInfo;
@@ -73,7 +72,6 @@ impl Event for PipeCreateEvent {
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let alloc = state.global.alloc.alloc();
         let nonblocking = self.flags.contains(PipeCreateFlags::NONBLOCK);
         let close_on_exec = self.flags.contains(PipeCreateFlags::CLOEXEC);
         let mode = if self.flags.contains(PipeCreateFlags::DIRECT) {
@@ -87,31 +85,31 @@ impl Event for PipeCreateEvent {
 
         let first_pipe = std::rc::Rc::new_in(RefCell::new(PipeInfo {
             mode,
-            peer: Weak::new_in(alloc),
-            read_buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc),
+            peer: Weak::new_in(fizzle_alloc()),
+            read_buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc()),
             read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
-                pollers: Vec::new_in(alloc),
+                pollers: Vec::new_in(fizzle_alloc()),
                 event_raised: false,
-            }), alloc),
+            }), fizzle_alloc()),
             write_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
-                pollers: Vec::new_in(alloc),
+                pollers: Vec::new_in(fizzle_alloc()),
                 event_raised: true,
-            }), alloc),
-        }), alloc);
+            }), fizzle_alloc()),
+        }), fizzle_alloc());
 
         let second_pipe = std::rc::Rc::new_in(RefCell::new(PipeInfo {
             mode,
             peer: std::rc::Rc::downgrade(&first_pipe),
-            read_buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc),
+            read_buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc()),
             read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
-                pollers: Vec::new_in(alloc),
+                pollers: Vec::new_in(fizzle_alloc()),
                 event_raised: false,
-            }), alloc),
+            }), fizzle_alloc()),
             write_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
-                pollers: Vec::new_in(alloc),
+                pollers: Vec::new_in(fizzle_alloc()),
                 event_raised: true,
-            }), alloc),
-        }), alloc);
+            }), fizzle_alloc()),
+        }), fizzle_alloc());
 
         // `unwrap()` guaranteed to succeed--we *just* inserted the pipe
         first_pipe.borrow_mut().peer = std::rc::Rc::downgrade(&second_pipe);

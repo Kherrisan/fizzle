@@ -7,7 +7,7 @@ use bitflags::bitflags;
 use fizzle_common::path::SemaphorePath;
 
 use crate::errno::Errno;
-use crate::scheduler::{Event, Outcome};
+use crate::scheduler::{fizzle_alloc, Event, Outcome};
 use crate::state::FizzleState;
 use crate::WaitDuration;
 
@@ -151,7 +151,7 @@ impl Event for SemOpenEvent<'_> {
                 unlinked: false,
                 value: value as usize,
                 waiting: VecDeque::new(),               
-            }), state.global.alloc.alloc());
+            }), fizzle_alloc());
             state.local.named_semaphores.insert(semaphore_ptr, sem_info);
 
             Outcome::Success(semaphore_ptr)

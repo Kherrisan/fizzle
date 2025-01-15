@@ -8,7 +8,7 @@ use std::{ptr, thread};
 use fxhash::FxBuildHasher;
 
 use crate::errno::Errno;
-use crate::scheduler::{fizzle_singleton, DelegationSource, Event, Outcome, Scheduler, TerminationMethod};
+use crate::scheduler::{fizzle_alloc, fizzle_singleton, DelegationSource, Event, Outcome, Scheduler, TerminationMethod};
 use crate::semaphore::Semaphore;
 use crate::state::{set_entered_handler, FizzleState};
 
@@ -191,9 +191,8 @@ extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void {
     // already run for this process (otherwise how could this pt_wrapper_fn be called?).
     let mut state = ctx.acquire();
     let tid = state.global.next_tid();
-    let alloc = state.global.alloc.alloc();
-
-    state.local.thread_locks.insert(thread::current().id(), Semaphore::new_rc_in(0, true, alloc));
+    
+    state.local.thread_locks.insert(thread::current().id(), Semaphore::new_rc_in(0, true, fizzle_alloc()));
     state.local.initialize_thread(tid, wrapped_arg.sigmask);
     drop(state);
 

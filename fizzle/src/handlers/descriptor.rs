@@ -15,7 +15,7 @@ use super::poller::PollerInfo;
 use super::socket::*;
 use crate::backend::{ConnectedBackend, StdioBackend};
 use crate::errno::Errno;
-use crate::scheduler::{Event, Outcome};
+use crate::scheduler::{fizzle_alloc, Event, Outcome};
 use crate::state::FizzleState;
 use crate::GlobalRc;
 
@@ -116,7 +116,7 @@ impl Event for DescriptorCloseEvent {
                         if let ConnectedBackend::Peered(peer_info) = &mut connected.backend {
                             // TODO: do we take the peer's socket ID here so that we can set peer_closed = true on it?
                             // TODO: do we raise the poll of the peer here?
-                            peer_info.peer = Weak::new_in(state.global.alloc.alloc());
+                            peer_info.peer = Weak::new_in(fizzle_alloc());
                         }
                     }
                 }

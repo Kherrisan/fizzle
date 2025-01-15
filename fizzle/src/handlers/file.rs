@@ -13,7 +13,7 @@ use fizzle_common::storage::Buffer;
 use crate::backend::{FileBackend, FileFeedback};
 use crate::constants::FIZZLE_FOPEN_BUFSIZE;
 use crate::errno::Errno;
-use crate::scheduler::{Event, Outcome};
+use crate::scheduler::{fizzle_alloc, Event, Outcome};
 use crate::state::{CreateCowSource, FizzleState};
 use crate::handlers::descriptor::*;
 use crate::GlobalRc;
@@ -348,7 +348,7 @@ impl Event for FileOpenEvent {
                             btime: current_time,
                             ctime: current_time,
                             mtime: current_time,
-                        }), state.global.alloc.alloc());
+                        }), fizzle_alloc());
                         if state.global.file_paths.insert(path, file_info).is_err() {
                             panic!("failed to insert to file_paths")
                         }
@@ -1124,7 +1124,7 @@ impl Event for StatEvent<'_> {
                     mtime: current_time,
                     ctime: current_time, // TODO: edit these
                     backend: FileBackend::Feedback(FileFeedback { }),
-                }), state.global.alloc.alloc());
+                }), fizzle_alloc());
                 state.global.file_paths.insert(path.clone(), file_info);
                 state.global.file_paths.get(&path).unwrap()
             }

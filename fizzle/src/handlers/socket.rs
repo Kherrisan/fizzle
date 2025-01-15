@@ -7,7 +7,7 @@ use crate::constants::{
     FIZZLE_SOMAXCONN,
 };
 use crate::errno::Errno;
-use crate::scheduler::{Event, Outcome};
+use crate::scheduler::{fizzle_alloc, Event, Outcome};
 use crate::state::FizzleState;
 use crate::{GlobalList, GlobalRc};
 use std::cell::RefCell;
@@ -63,7 +63,7 @@ fn get_or_assign_local(socket_info: &mut GlobalRc<SocketInfo>, state: &mut Fizzl
                 };
 
                 let Some(location_info) = state.global.socket_locations.get_mut(&addr) else {
-                    let mut bound_sockets = LinkedList::new_in(state.global.alloc.alloc());
+                    let mut bound_sockets = LinkedList::new_in(fizzle_alloc());
                     bound_sockets.push_back(socket_info.clone());
 
                     if state.global.socket_locations.insert(
@@ -225,7 +225,6 @@ impl Event for SocketCreateEvent {
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let alloc = state.global.alloc.alloc();
         let fd = Descriptor::from_raw_fd(crate::create_descriptor());
 
         let socket_info = std::rc::Rc::new_in(RefCell::new(SocketInfo {
@@ -239,19 +238,19 @@ impl Event for SocketCreateEvent {
                 }
                 SocketType::Datagram => {
                     let read_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
-                        pollers: Vec::new_in(alloc),
+                        pollers: Vec::new_in(fizzle_alloc()),
                         event_raised: false,
-                    }), alloc);
+                    }), fizzle_alloc());
 
                     let write_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
-                        pollers: Vec::new_in(alloc),
+                        pollers: Vec::new_in(fizzle_alloc()),
                         event_raised: false,
-                    }), alloc);
+                    }), fizzle_alloc());
 
                     SocketState::Connectionless(ConnectionlessSocket {
                         reuse_port: false,
                         backend: ConnectionlessBackend::Peered(RegularConnectionless {
-                            recv_buf: LinkedList::new_in(state.global.alloc.alloc()),
+                            recv_buf: LinkedList::new_in(fizzle_alloc()),
                             read_polled,
                             write_polled,
                         }),
@@ -259,7 +258,7 @@ impl Event for SocketCreateEvent {
                     })
                 }
             },
-        }), state.global.alloc.alloc());
+        }), fizzle_alloc());
 
         state.local.fds.insert(fd, DescriptorInfo {
             close_on_exec: self.cloexec,
@@ -285,35 +284,33 @@ impl Event for SocketCreatePairEvent {
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let alloc = state.global.alloc.alloc();
-
         let addr1 = state.global.ephemeral_address(self.domain, self.protocol);
         let fd1 = Descriptor::from_raw_fd(crate::create_descriptor());
-        let recv_buf1 = std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc);
+        let recv_buf1 = std::rc::Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc());
 
         let read_polled1 = std::rc::Rc::new_in(RefCell::new(PolledInfo {
-            pollers: Vec::new_in(alloc),
+            pollers: Vec::new_in(fizzle_alloc()),
             event_raised: false,
-        }), alloc);
+        }), fizzle_alloc());
 
         let write_polled1 = std::rc::Rc::new_in(RefCell::new(PolledInfo {
-            pollers: Vec::new_in(alloc),
+            pollers: Vec::new_in(fizzle_alloc()),
             event_raised: false,
-        }), alloc);
+        }), fizzle_alloc());
 
         let addr2 = state.global.ephemeral_address(self.domain, self.protocol);
         let fd2 = Descriptor::from_raw_fd(crate::create_descriptor());
-        let recv_buf2 = std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc);
+        let recv_buf2 = std::rc::Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc());
 
         let read_polled2 = std::rc::Rc::new_in(RefCell::new(PolledInfo {
-            pollers: Vec::new_in(alloc),
+            pollers: Vec::new_in(fizzle_alloc()),
             event_raised: false,
-        }), alloc);
+        }), fizzle_alloc());
 
         let write_polled2 = std::rc::Rc::new_in(RefCell::new(PolledInfo {
-            pollers: Vec::new_in(alloc),
+            pollers: Vec::new_in(fizzle_alloc()),
             event_raised: false,
-        }), alloc);
+        }), fizzle_alloc());
 
         let socket1 = std::rc::Rc::new_in(RefCell::new(SocketInfo {
             fd_count: 1,
@@ -324,7 +321,7 @@ impl Event for SocketCreatePairEvent {
                 SocketType::SeqPacket | SocketType::Stream => {
                     SocketState::Connected(ConnectedSocket {
                         backend: ConnectedBackend::Peered(RegularConnected {
-                            peer: Weak::new_in(state.global.alloc.alloc()),
+                            peer: Weak::new_in(fizzle_alloc()),
                             recv_buf: recv_buf1,
                             read_polled: read_polled1,
                             write_polled: write_polled1,
@@ -336,14 +333,14 @@ impl Event for SocketCreatePairEvent {
                 SocketType::Datagram => SocketState::Connectionless(ConnectionlessSocket {
                     reuse_port: false,
                     backend: ConnectionlessBackend::Peered(RegularConnectionless {
-                        recv_buf: LinkedList::new_in(state.global.alloc.alloc()),
+                        recv_buf: LinkedList::new_in(fizzle_alloc()),
                         read_polled: read_polled1,
                         write_polled: write_polled1,
                     }),
                     rem_addr: Some(addr2.clone()),
                 }),
             },
-        }), state.global.alloc.alloc());
+        }), fizzle_alloc());
 
         let socket1_weak = std::rc::Rc::downgrade(&socket1);
 
@@ -368,14 +365,14 @@ impl Event for SocketCreatePairEvent {
                 SocketType::Datagram => SocketState::Connectionless(ConnectionlessSocket {
                     reuse_port: false,
                     backend: ConnectionlessBackend::Peered(RegularConnectionless {
-                        recv_buf: LinkedList::new_in(state.global.alloc.alloc()),
+                        recv_buf: LinkedList::new_in(fizzle_alloc()),
                         read_polled: read_polled2,
                         write_polled: write_polled2,
                     }),
                     rem_addr: Some(addr1.clone()),
                 }),
             },
-        }), state.global.alloc.alloc());
+        }), fizzle_alloc());
 
         let socket2_weak = std::rc::Rc::downgrade(&socket2);
 
@@ -401,7 +398,7 @@ impl Event for SocketCreatePairEvent {
             resource: FdResource::Socket(socket2.clone()),
         });
 
-        let mut bound_sockets = LinkedList::new_in(state.global.alloc.alloc());
+        let mut bound_sockets = LinkedList::new_in(fizzle_alloc());
         bound_sockets.push_back(socket1);
 
         if state.global.socket_locations.insert(
@@ -415,7 +412,7 @@ impl Event for SocketCreatePairEvent {
             panic!("failed to insert to socket_locations")
         }
 
-        let mut bound_sockets = LinkedList::new_in(state.global.alloc.alloc());
+        let mut bound_sockets = LinkedList::new_in(fizzle_alloc());
         bound_sockets.push_back(socket2);
 
         if state.global.socket_locations.insert(
@@ -540,7 +537,7 @@ impl Event for SocketBindEvent {
                 }
             }
             Entry::Vacant(v) => {
-                let mut bound_sockets = LinkedList::new_in(state.global.alloc.alloc());
+                let mut bound_sockets = LinkedList::new_in(fizzle_alloc());
                 bound_sockets.push_back(socket_info.clone());
 
                 if v.insert(TransportLocationInfo {
@@ -582,8 +579,6 @@ impl Event for SocketListenEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let alloc = state.global.alloc.alloc();
-
         let Some(fd_info) = state.local.fds.get(&self.descriptor_id) else {
             return Outcome::Error(Errno::EBADF);
         };
@@ -603,9 +598,9 @@ impl Event for SocketListenEvent {
 
         // Allocate server context and set up polling
         let ready_to_connect = std::rc::Rc::new_in(RefCell::new(PolledInfo {
-            pollers: Vec::new_in(alloc),
+            pollers: Vec::new_in(fizzle_alloc()),
             event_raised: false,
-        }), alloc);
+        }), fizzle_alloc());
 
         if state
             .global
@@ -623,7 +618,7 @@ impl Event for SocketListenEvent {
 
         socket_info.borrow_mut().state = SocketState::Server(ServerSocket {
             backend: ServerBackend::Peered(()),
-            connecting: LinkedList::new_in(state.global.alloc.alloc()),
+            connecting: LinkedList::new_in(fizzle_alloc()),
             ready_to_connect,
         });
 
@@ -657,8 +652,6 @@ impl Event for SocketConnectEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let alloc = state.global.alloc.alloc();
-
         match &self.state {
             SocketConnectState::Start => {
                 let Some(fd_info) = state.local.fds.get(&self.descriptor_id) else {
@@ -730,9 +723,9 @@ impl Event for SocketConnectEvent {
                                 state.raise_polled(&server_poll);
 
                                 let client_poll = std::rc::Rc::new_in(RefCell::new(PolledInfo {
-                                    pollers: Vec::new_in(alloc),
+                                    pollers: Vec::new_in(fizzle_alloc()),
                                     event_raised: false,
-                                }), alloc);
+                                }), fizzle_alloc());
 
                                 server_socket_info.borrow_mut().state =
                                     SocketState::Connecting(ConnectingSocket {
@@ -771,15 +764,15 @@ impl Event for SocketConnectEvent {
                             ServerBackend::NullSink => ConnectedBackend::NullSink,
                             ServerBackend::Feedback(()) => {
                                 ConnectedBackend::Feedback(StandardFeedback {
-                                    buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc),
+                                    buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc()),
                                     read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
-                                        pollers: Vec::new_in(alloc),
+                                        pollers: Vec::new_in(fizzle_alloc()),
                                         event_raised: false,
-                                    }), alloc),
+                                    }), fizzle_alloc()),
                                     write_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
-                                        pollers: Vec::new_in(alloc),
+                                        pollers: Vec::new_in(fizzle_alloc()),
                                         event_raised: true,
-                                    }), alloc),
+                                    }), fizzle_alloc()),
                                 })
                             }
                         };
@@ -857,8 +850,6 @@ impl Event for SocketAcceptEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let alloc = state.global.alloc.alloc();
-
         match &self.state {
             SocketAcceptState::Start => {
                 let Some(fd_info) = state.local.fds.get(&self.descriptor_id) else {
@@ -1036,27 +1027,27 @@ impl Event for SocketAcceptEvent {
                     ConnectingBackend::Passthrough => unreachable!(),
                     ConnectingBackend::Peered(()) => ConnectedBackend::Peered(RegularConnected {
                         peer: std::rc::Rc::downgrade(&connecting_info),
-                        recv_buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc),
+                        recv_buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc()),
                         read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
-                            pollers: Vec::new_in(alloc),
+                            pollers: Vec::new_in(fizzle_alloc()),
                             event_raised: false,
-                        }), alloc),
+                        }), fizzle_alloc()),
                         write_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
-                            pollers: Vec::new_in(alloc),
+                            pollers: Vec::new_in(fizzle_alloc()),
                             event_raised: true,
-                        }), alloc),
+                        }), fizzle_alloc()),
                     }),
                     ConnectingBackend::Feedback(()) => {
                         ConnectedBackend::Feedback(StandardFeedback {
-                            buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc),
+                            buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc()),
                             read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
-                                pollers: Vec::new_in(alloc),
+                                pollers: Vec::new_in(fizzle_alloc()),
                                 event_raised: false,
-                            }), alloc),
+                            }), fizzle_alloc()),
                             write_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
-                                pollers: Vec::new_in(alloc),
+                                pollers: Vec::new_in(fizzle_alloc()),
                                 event_raised: true,
-                            }), alloc),
+                            }), fizzle_alloc()),
                         })
                     }
                     ConnectingBackend::Plugin(plugin_info) => {
@@ -1081,19 +1072,19 @@ impl Event for SocketAcceptEvent {
                             backend: accepting_backend,
                             peer_closed: false,
                         }),
-                    }), state.global.alloc.alloc());
+                    }), fizzle_alloc());
 
                     let connected_backend = ConnectedBackend::Peered(RegularConnected {
                         peer: std::rc::Rc::downgrade(&accepting_info),
-                        recv_buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), alloc),
+                        recv_buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc()),
                         read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
-                            pollers: Vec::new_in(alloc),
+                            pollers: Vec::new_in(fizzle_alloc()),
                             event_raised: false,
-                        }), alloc),
+                        }), fizzle_alloc()),
                         write_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
-                            pollers: Vec::new_in(alloc),
+                            pollers: Vec::new_in(fizzle_alloc()),
                             event_raised: true,
-                        }), alloc),
+                        }), fizzle_alloc()),
                     });
 
                     connecting_info.borrow_mut().state =
