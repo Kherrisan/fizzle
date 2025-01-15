@@ -1008,7 +1008,7 @@ impl Event for StderrWriteEvent<'_> {
             Outcome::Success(total)
         } else {
             let res = unsafe {
-                libc::writev(2, iovec.as_ptr() as *const libc::iovec, iovec.len() as i32)
+                libc::writev(2, iovec.as_ptr().cast::<libc::iovec>(), iovec.len() as i32)
             };
             match res {
                 0.. => Outcome::Success(res as usize),

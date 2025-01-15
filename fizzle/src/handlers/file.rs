@@ -432,7 +432,7 @@ impl Event for FileReadEvent<'_> {
                 match &mut self.data {
                     ReadData::Basic(data) => {
                         let read = unsafe {
-                            libc::preadv(fd, data.as_mut_ptr() as *const libc::iovec, data.len() as i32, offset as i64)
+                            libc::preadv(fd, data.as_mut_ptr() .cast::<libc::iovec>(), data.len() as i32, offset as i64)
                         };
                         if read < 0 {
                             let e = Errno::get_errno();
@@ -449,7 +449,7 @@ impl Event for FileReadEvent<'_> {
                         let data = &mut file_read_data.buf;
                         let offset = file_read_data.offset.unwrap_or(open_file.borrow().offset as i64);
                         let read = unsafe {
-                            libc::preadv(fd, data.as_mut_ptr() as *const libc::iovec, data.len() as i32, offset as i64)
+                            libc::preadv(fd, data.as_mut_ptr().cast::<libc::iovec>(), data.len() as i32, offset as i64)
                         };
                         if read < 0 {
                             let e = Errno::get_errno();
@@ -595,7 +595,7 @@ impl Event for FileWriteEvent<'_> {
                 match &self.data {
                     WriteData::Basic(data) => {
                         let written = unsafe {
-                            libc::pwritev(fd, data.as_ptr() as *const libc::iovec, data.len() as i32, offset as i64)
+                            libc::pwritev(fd, data.as_ptr().cast::<libc::iovec>(), data.len() as i32, offset as i64)
                         };
                         if written < 0 {
                             let e = Errno::get_errno();
@@ -612,7 +612,7 @@ impl Event for FileWriteEvent<'_> {
                         let data = &file_read_data.buf;
                         let offset = file_read_data.offset.unwrap_or(open_file.borrow().offset as i64);
                         let written = unsafe {
-                            libc::pwritev(fd, data.as_ptr() as *const libc::iovec, data.len() as i32, offset as i64)
+                            libc::pwritev(fd, data.as_ptr().cast::<libc::iovec>(), data.len() as i32, offset as i64)
                         };
                         if written < 0 {
                             let e = Errno::get_errno();
@@ -1139,7 +1139,7 @@ impl Event for StatEvent<'_> {
 
                 unsafe {
                     let mut stat: MaybeUninit<libc::stat> = MaybeUninit::uninit();
-                    assert_eq!(libc::fstat(cow_info.memfd, ptr::addr_of_mut!(stat) as *mut libc::stat), 0);
+                    assert_eq!(libc::fstat(cow_info.memfd, ptr::addr_of_mut!(stat).cast::<libc::stat>()), 0);
                     let stat = stat.assume_init();
                     stat.st_size as usize
                 }
@@ -1147,7 +1147,7 @@ impl Event for StatEvent<'_> {
             None => {
                 unsafe {
                     let mut stat: MaybeUninit<libc::stat> = MaybeUninit::uninit();
-                    assert_eq!(libc::stat(path.as_cstr().as_ptr(), ptr::addr_of_mut!(stat) as *mut libc::stat), 0);
+                    assert_eq!(libc::stat(path.as_cstr().as_ptr(), ptr::addr_of_mut!(stat).cast::<libc::stat>()), 0);
                     let stat = stat.assume_init();
                     stat.st_size as usize
                 }

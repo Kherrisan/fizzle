@@ -59,7 +59,7 @@ impl<T> PanicOnceCell<T> {
         } else {
             // 2nd MSB set: initialization complete
             unsafe {
-                Some(&*(self.inner.get() as *const T))
+                Some(&*(self.inner.get().cast_const().cast::<T>()))
             }
         }
     }
@@ -78,7 +78,7 @@ impl<T> PanicOnceCell<T> {
             self.state.fetch_xor(0b0000_0010, Ordering::AcqRel);
 
             unsafe {
-                &*(self.inner.get() as *const T)
+                &*(self.inner.get().cast_const().cast::<T>())
             }
 
         } else if state == 0b0000_0001 {

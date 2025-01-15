@@ -90,7 +90,7 @@ pub fn copy_to_shmem(memfd: RawFd, path: &FilePath<MAX_PATH_LEN>) {
 
     let stat_data = unsafe {
         let mut stat_buf: MaybeUninit<libc::stat> = MaybeUninit::uninit();
-        if libc::fstat(in_fd, ptr::addr_of_mut!(stat_buf) as *mut libc::stat) != 0 {
+        if libc::fstat(in_fd, ptr::addr_of_mut!(stat_buf).cast::<libc::stat>()) != 0 {
             panic!("failed to copy file to shared memory--fstat filure: {}", Errno::get_errno())
         }
         stat_buf.assume_init()
@@ -247,7 +247,7 @@ impl FizzleState {
 
         let mut unix_fds: [RawFd; 2] = [0; 2];
         let res = unsafe {
-            libc::socketpair(libc::AF_UNIX, libc::SOCK_DGRAM, 0, unix_fds.as_mut_ptr() as *mut i32)
+            libc::socketpair(libc::AF_UNIX, libc::SOCK_DGRAM, 0, unix_fds.as_mut_ptr().cast::<i32>())
         };
         assert_eq!(res, 0, "failed to create unix socketpair() for passing file descriptors across processes");
 
@@ -379,7 +379,7 @@ impl FizzleState {
                     )
                 }
 
-                return &mut *(location as *mut MaybeUninit<InterprocessState>);
+                return &mut *(location.cast::<MaybeUninit<InterprocessState>>());
             }
         }
 
@@ -425,7 +425,7 @@ impl FizzleState {
         }
 
         unsafe {
-            &mut *(location as *mut MaybeUninit<InterprocessState>)
+            &mut *(location.cast::<MaybeUninit<InterprocessState>>())
         }
     }
 
@@ -1043,13 +1043,13 @@ impl InterprocessState {
         let filename = format!("/Fizzle_Interprocess{}\0", process::id());
 
         let fd = unsafe {
-            libc::shm_open(filename.as_ptr() as *const i8, libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, libc::S_IRUSR | libc::S_IWUSR)
+            libc::shm_open(filename.as_ptr().cast::<i8>(), libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, libc::S_IRUSR | libc::S_IWUSR)
         };
 
         assert!(fd >= 0, "shm_open() failed: {}", Errno::get_errno());
 
         unsafe {
-            assert_eq!(libc::shm_unlink(filename.as_ptr() as *const i8), 0, "shm_unlink() failed: {}", Errno::get_errno());
+            assert_eq!(libc::shm_unlink(filename.as_ptr().cast::<i8>()), 0, "shm_unlink() failed: {}", Errno::get_errno());
         }
 
         let non_cloexec_fd = unsafe { libc::dup(fd) };
@@ -1066,13 +1066,13 @@ impl InterprocessState {
         let filename = format!("/Fizzle_Process{}_CoW{}\0", process::id(), usize::from(id));
 
         let fd = unsafe {
-            libc::shm_open(filename.as_ptr() as *const i8, libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, libc::S_IRUSR | libc::S_IWUSR)
+            libc::shm_open(filename.as_ptr().cast::<i8>(), libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, libc::S_IRUSR | libc::S_IWUSR)
         };
 
         assert!(fd >= 0, "shm_open() failed: {}", Errno::get_errno());
 
         unsafe {
-            assert_eq!(libc::shm_unlink(filename.as_ptr() as *const i8), 0, "shm_unlink() failed: {}", Errno::get_errno());
+            assert_eq!(libc::shm_unlink(filename.as_ptr().cast::<i8>()), 0, "shm_unlink() failed: {}", Errno::get_errno());
         }
 
         fd

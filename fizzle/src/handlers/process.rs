@@ -441,7 +441,7 @@ impl Event for ProcessExecEvent {
 
         match &self.cmd_location {
             ExecLocation::File(f) => {
-                let cmd = f.data().as_ptr() as *const libc::c_char;
+                let cmd = f.data().as_ptr().cast::<libc::c_char>();
                 match &self.env {
                     Some(e) => {
                         let envp: [*const libc::c_char; 128] = array::from_fn(|i| {
@@ -462,7 +462,7 @@ impl Event for ProcessExecEvent {
                 }
             }
             ExecLocation::ShellFile(f) => {
-                let cmd = f.data().as_ptr() as *const libc::c_char;
+                let cmd = f.data().as_ptr().cast::<libc::c_char>();
                 match &self.env {
                     Some(e) => {
                         let envp: [*const libc::c_char; 128] = array::from_fn(|i| {
@@ -508,7 +508,7 @@ impl Event for ProcessExecEvent {
 
                         let path = open_file.borrow().file.borrow().path.clone();
 
-                        let cmd = path.data().as_ptr() as *const libc::c_char;
+                        let cmd = path.data().as_ptr().cast::<libc::c_char>();
 
                         unsafe {
                             libc::execve(cmd, argp.as_ptr(), envp.as_ptr());

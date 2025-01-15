@@ -1,5 +1,4 @@
 pub mod barrier;
-pub mod buffer;
 pub mod condvar;
 pub mod descriptor;
 pub mod directory;

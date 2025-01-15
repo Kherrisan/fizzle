@@ -78,13 +78,10 @@ impl Semaphore {
 
         // TODO: is this sound? Run Miri...
         unsafe {
-            // Initialize the UnsafeCell
-            (ptr::addr_of_mut!((*sem.as_mut_ptr()).inner)
-                as *mut UnsafeCell<MaybeUninit<libc::sem_t>>)
-                .write(UnsafeCell::new(MaybeUninit::uninit()));
+            let sem_ptr = (&raw mut (*sem.as_mut_ptr()).inner).cast::<libc::sem_t>();
             // Initialize the `sem_t` contained within the UnsafeCell
             assert_eq!(
-                libc::sem_init((*sem.as_mut_ptr()).inner.get(), access, value),
+                libc::sem_init(sem_ptr, access, value),
                 0
             );
             // UnsafeCell<libc::sem_t> is now fully initialized

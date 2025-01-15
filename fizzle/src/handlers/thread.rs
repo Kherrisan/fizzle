@@ -185,7 +185,7 @@ extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void {
     // SAFETY: only one ctx at the time (so that it in turn enforces only one `state` alias at a time...)
     let mut ctx = unsafe { fizzle_singleton() };
 
-    let wrapped_arg = unsafe { (arg as *mut PTCreateWrapper).as_mut().unwrap() };
+    let wrapped_arg = unsafe { (arg.cast::<PTCreateWrapper>()).as_mut().unwrap() };
 
     // SAFETY: the FizzleState can be acquired here because we know startup initialization has
     // already run for this process (otherwise how could this pt_wrapper_fn be called?).
@@ -227,7 +227,7 @@ impl ThreadCreateEvent {
             false => {
                 // TODO: 
                 let sigmask = Self::get_attr_sigmask(attrs);
-                Self::clear_attr_sigmask(attrs as *mut libc::pthread_attr_t); // TODO: BUG: undefined behavior--fix
+                Self::clear_attr_sigmask(attrs.cast::<libc::pthread_attr_t>()); // TODO: BUG: undefined behavior--fix
                 Some(SignalSet::from_sigset(sigmask))
             }
         };
@@ -260,32 +260,6 @@ impl ThreadCreateEvent {
             state: ThreadCreateState::Start,
         }
     }
-
-    /*
-    fn get_attr_sigmask(attrs: *const libc::pthread_attr_t) -> libc::sigset_t {
-        let mut set = MaybeUninit::<libc::sigset_t>::uninit();
-
-        unsafe {
-            assert_eq!(
-                pthread_attr_getsigmask_np(attrs, ptr::addr_of_mut!(set) as *mut libc::sigset_t),
-                0
-            );
-            set.assume_init()
-        }
-    }
-
-    fn clear_attr_sigmask(attrs: *mut libc::pthread_attr_t) {
-        let mut set = MaybeUninit::<libc::sigset_t>::uninit();
-        let set = unsafe {
-            libc::sigemptyset(set.as_mut_ptr());
-            set.assume_init()
-        };
-
-        unsafe {
-            assert_eq!(pthread_attr_setsigmask_np(attrs, ptr::addr_of!(set)), 0);
-        }
-    }
-    */
 }
 
 impl Event for ThreadCreateEvent {
@@ -322,7 +296,7 @@ impl Event for ThreadCreateEvent {
                         self.pthread,
                         self.attrs,
                         pt_wrapper_fn,
-                        ptr::addr_of_mut!(self.wrapper) as *mut libc::c_void,
+                        (&raw mut self.wrapper).cast::<libc::c_void>(),
                     )
                 };
                 // SAFETY: `state` must not be used after here

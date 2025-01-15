@@ -135,32 +135,6 @@ impl Event for RwLockDestroyEvent {
             }
             None => {
                 panic!("[UB] `pthread_rwlock_destroy` called on uninitialized rwlock")
-                /*
-                static RWLOCK_INIT: libc::pthread_rwlock_t = libc::PTHREAD_RWLOCK_INITIALIZER;
-
-                // We need to find out if this lock is statically-initialized
-                unsafe {
-                    if libc::memcmp(self.rwlock.to_mut_ptr() as *const libc::c_void, ptr::addr_of!(RWLOCK_INIT) as *const libc::c_void, mem::size_of::<libc::pthread_rwlock_t>()) != 0 {
-
-                    }
-                }
-
-                let Some(kind) = static_mutex_kind(self.lock) else {
-                    return Outcome::Error(Errno::EINVAL) // TODO: is this einval correct?
-                };
-
-                // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                let mut mutex_info = MutexInfo::new(kind, MutexRobustness::Stalled);
-                mutex_info.queued_threads.push_back(thread::current().id());
-
-                v.insert(mutex_info);
-                return Outcome::Continue // Go to Finish state
-
-                let res = libc::pthread_rwlock_trywrlock(lock);
-                if res < 0 {
-                    panic!("[UB] `pthread_rwlock_destroy` called on uninitialized rwlock")
-                }
-                */
             }
         };
 
@@ -209,8 +183,8 @@ impl Event for RwLockReadEvent {
                         // We need to find out if this lock is statically-initialized
                         unsafe {
                             if libc::memcmp(
-                                self.rwlock.to_mut_ptr() as *const libc::c_void,
-                                ptr::addr_of!(RWLOCK_INIT) as *const libc::c_void,
+                                self.rwlock.to_mut_ptr().cast::<libc::c_void>(),
+                                ptr::addr_of!(RWLOCK_INIT).cast::<libc::c_void>(),
                                 mem::size_of::<libc::pthread_rwlock_t>(),
                             ) != 0
                             {
@@ -340,8 +314,8 @@ impl Event for RwLockWriteEvent {
                         // We need to find out if this lock is statically-initialized
                         unsafe {
                             if libc::memcmp(
-                                self.rwlock.to_mut_ptr() as *const libc::c_void,
-                                ptr::addr_of!(RWLOCK_INIT) as *const libc::c_void,
+                                self.rwlock.to_mut_ptr().cast::<libc::c_void>(),
+                                ptr::addr_of!(RWLOCK_INIT).cast::<libc::c_void>(),
                                 mem::size_of::<libc::pthread_rwlock_t>(),
                             ) != 0
                             {

@@ -67,25 +67,25 @@ pub struct siginfo_t {
 
 impl siginfo_t {
     unsafe fn variant_kill(&mut self) -> &mut siginfo_kill {
-        &mut *(self as *mut siginfo_t as *mut siginfo_kill)
+        &mut *(ptr::from_mut(self).cast::<siginfo_kill>())
     }
 
     unsafe fn variant_sigqueue(&mut self) -> &mut siginfo_sigqueue {
-        &mut *(self as *mut siginfo_t as *mut siginfo_sigqueue)
+        &mut *(ptr::from_mut(self).cast::<siginfo_sigqueue>())
     }
 
     unsafe fn variant_timer(&mut self) -> &mut siginfo_timer {
-        &mut *(self as *mut siginfo_t as *mut siginfo_timer)
+        &mut *(ptr::from_mut(self).cast::<siginfo_timer>())
     }
 
     unsafe fn variant_sigchld(&mut self) -> &mut sifields_sigchld {
-        &mut (*(self as *mut siginfo_t as *mut siginfo_f))
+        &mut (*(ptr::from_mut(self).cast::<siginfo_f>()))
             .sifields
             .sigchld
     }
 
     unsafe fn variant_poll(&mut self) -> &mut siginfo_poll {
-        &mut *(self as *mut siginfo_t as *mut siginfo_poll)
+        &mut *(ptr::from_mut(self).cast::<siginfo_poll>())
     }
 
     pub fn from_raised(raised_info: RaisedSignalInfo) -> Self {

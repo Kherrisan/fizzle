@@ -11,7 +11,7 @@ hook_macros::hook! {
         flags: libc::c_uint
     ) -> libc::ssize_t => fizzle_getrandom(ctx) {
         crate::strace!("getrandom(buf={:?}, buflen={}, flags={}) -> ...", buf, buflen, flags);
-        let s = slice::from_raw_parts_mut(buf as *mut u8, buflen);
+        let s = slice::from_raw_parts_mut(buf.cast::<u8>(), buflen);
         match Scheduler::handle_event(&mut ctx, GetEntropyEvent::new(s)) {
             Ok(len) => {
                 crate::strace!("getrandom(buf={:?}, buflen={}, flags={}) -> {:.16?}", buf, buflen, flags, &s[..len]);
@@ -85,7 +85,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn arc4random_buf(buf: *mut libc::c_void, n: libc::size_t) => fizzle_arc4random_buf(ctx) {
         crate::strace!("arc4random_buf(buf={:?}, n={}) -> ...", buf, n);
-        let s = slice::from_raw_parts_mut(buf as *mut u8, n);
+        let s = slice::from_raw_parts_mut(buf.cast::<u8>(), n);
         match Scheduler::handle_event(&mut ctx, GetEntropyEvent::new(s)) {
             Ok(len) if len < n => unreachable!(),
             Ok(_) => {

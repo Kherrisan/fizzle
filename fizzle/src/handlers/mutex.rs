@@ -318,22 +318,22 @@ pub fn static_mutex_kind(mutex: MutexPtr) -> Option<MutexKind> {
     // We need to find out if this lock is statically-initialized
     unsafe {
         if libc::memcmp(
-            mutex.to_mut_ptr() as *const libc::c_void,
-            ptr::addr_of!(FAST_INIT) as *const libc::c_void,
+            mutex.to_mut_ptr().cast::<libc::c_void>(),
+            ptr::addr_of!(FAST_INIT).cast::<libc::c_void>(),
             mem::size_of::<libc::pthread_mutex_t>(),
         ) == 0
         {
             Some(MutexKind::Fast)
         } else if libc::memcmp(
-            mutex.to_mut_ptr() as *const libc::c_void,
-            ptr::addr_of!(RECURSIVE_INIT) as *const libc::c_void,
+            mutex.to_mut_ptr().cast::<libc::c_void>(),
+            ptr::addr_of!(RECURSIVE_INIT).cast::<libc::c_void>(),
             mem::size_of::<libc::pthread_mutex_t>(),
         ) == 0
         {
             Some(MutexKind::Recursive)
         } else if libc::memcmp(
-            mutex.to_mut_ptr() as *const libc::c_void,
-            ptr::addr_of!(ERRORCHECK_INIT) as *const libc::c_void,
+            mutex.to_mut_ptr().cast::<libc::c_void>(),
+            ptr::addr_of!(ERRORCHECK_INIT).cast::<libc::c_void>(),
             mem::size_of::<libc::pthread_mutex_t>(),
         ) == 0
         {

@@ -143,7 +143,7 @@ impl Event for SemOpenEvent<'_> {
 
             // TODO: we ignore access `mode` permissions here
 
-            let sem = unsafe { crate::unique_mem_create() } as *mut libc::sem_t;
+            let sem = unsafe { crate::unique_mem_create() }.cast::<libc::sem_t>();
             let semaphore_ptr = SemaphorePtr::from(sem);
 
             let sem_info = std::rc::Rc::new_in(RefCell::new(SemaphoreInfo {
@@ -158,7 +158,7 @@ impl Event for SemOpenEvent<'_> {
         } else if let Some(sem_info) = state.global.sem_paths.get(&sem_path).cloned() {
             // Open existing semaphore
 
-            let sem = unsafe { crate::unique_mem_create() } as *mut libc::sem_t;
+            let sem = unsafe { crate::unique_mem_create() }.cast::<libc::sem_t>();
             let semaphore_ptr = SemaphorePtr::from(sem);
 
             state

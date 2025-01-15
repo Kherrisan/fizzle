@@ -73,7 +73,7 @@ pub fn fizzle_alloc() -> &'static TlsfHeap {
                     )
                 }
 
-                loc as *mut InterprocessAllocator
+                loc.cast::<InterprocessAllocator>()
 
             } else {
                 // Shared memory doesn't play well with the forkserver, so we need to make sure that
@@ -92,13 +92,13 @@ pub fn fizzle_alloc() -> &'static TlsfHeap {
                         let filename = format!("/Fizzle_Alloc{}\0", process::id());
 
                         let fd = unsafe {
-                            libc::shm_open(filename.as_ptr() as *const i8, libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, libc::S_IRUSR | libc::S_IWUSR)
+                            libc::shm_open(filename.as_ptr().cast::<i8>(), libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, libc::S_IRUSR | libc::S_IWUSR)
                         };
 
                         assert!(fd >= 0, "shm_open() failed: {}", Errno::get_errno());
 
                         unsafe {
-                            assert_eq!(libc::shm_unlink(filename.as_ptr() as *const i8), 0, "shm_unlink() failed: {}", Errno::get_errno());
+                            assert_eq!(libc::shm_unlink(filename.as_ptr().cast::<i8>()), 0, "shm_unlink() failed: {}", Errno::get_errno());
                         }
 
                         let memfd = unsafe { libc::dup(fd) };
@@ -132,13 +132,13 @@ pub fn fizzle_alloc() -> &'static TlsfHeap {
                     panic!("failed to mmap InterprocessAllocator memory: {}", Errno::get_errno());
                 }
 
-                loc as *mut InterprocessAllocator
+                loc.cast::<InterprocessAllocator>()
             };
 
             unsafe {
                 *(&raw mut (*location).heap) = TlsfHeap::empty();
                 (*location).heap.init((&raw const (*location).heap_memory) as usize, FIZZLE_HEAP_SIZE);
-                &*(location as *const InterprocessAllocator)
+                &*(location.cast_const())
             }
         }).heap
 }
@@ -654,7 +654,7 @@ impl Scheduler {
                     msg_namelen: 0,
                     msg_iov: ptr::null_mut(),
                     msg_iovlen: 0,
-                    msg_control: control.as_mut_ptr() as *mut libc::c_void,
+                    msg_control: control.as_mut_ptr().cast::<libc::c_void>(),
                     msg_controllen: control.len(),
                     msg_flags: 0,
                 };
@@ -935,7 +935,7 @@ impl Scheduler {
                 panic!("__afl_fuzz_ptr was null--is shared-memory fuzzing enabled?")
                 /*
                 let read_amount =
-                    libc::read(0, fuzz_buffer.as_mut_ptr() as *mut libc::c_void, 1048576);
+                    libc::read(0, fuzz_buffer.as_mut_ptr().cast::<libc::c_void>(), 1048576);
                 *crate::__afl_fuzz_len = (read_amount & u32::MAX as isize) as u32;
                 if read_amount < 0 {
                     panic!("could not read input from stdin")
@@ -959,7 +959,7 @@ impl Scheduler {
             let current_len = state.global.fuzz_input.len();
             unsafe {
                 let start = state.global.fuzz_input.as_mut_ptr().add(current_len);
-                match libc::read(0, start as *mut libc::c_void, 16384) {
+                match libc::read(0, start.cast::<libc::c_void>(), 16384) {
                     ..=-1 => panic!("read() failed on stdin during PCR fuzzing"),
                     0 => break,
                     read_amount => {
@@ -1550,7 +1550,7 @@ impl Scheduler {
                 msg_namelen: 0,
                 msg_iov: ptr::null_mut(),
                 msg_iovlen: 0,
-                msg_control: msg.as_mut_ptr() as *mut libc::c_void,
+                msg_control: msg.as_mut_ptr().cast::<libc::c_void>(),
                 msg_controllen: 1024,
                 msg_flags: 0,
             };
