@@ -876,12 +876,17 @@ impl Event for StdoutWriteEvent<'_> {
 
         let WriteData::Basic(iovec) = self.data else {
             unreachable!(
-                "internal error--buffer other than WriteData::Basic passed to StdoutWriteEent"
+                "internal error--buffer other than WriteData::Basic passed to StdoutWriteEvent"
             );
         };
 
         match (&self.state, state.global.stdio.clone()) {
-            (_, StdioBackend::Passthrough | StdioBackend::Peered(_)) => unreachable!(),
+            (_, StdioBackend::Passthrough) => {
+                log::info!("Data written to stdout"); // TODO: include actual data
+                let total_len = iovec.iter().map(|s| s.len()).sum();
+                Outcome::Success(total_len)
+            }
+            (_, StdioBackend::Peered(_)) => unreachable!(),
             (StdoutWriteState::Start, crate::backend::IoBackend::Feedback(feedback)) => {
                 let write_polled = feedback.write_polled.clone();
 
