@@ -6,6 +6,7 @@ pub mod entropy;
 pub mod epoll;
 pub mod eventfd;
 pub mod file;
+pub mod filestream;
 pub mod futex;
 pub mod fuzz_endpoint;
 pub mod id;

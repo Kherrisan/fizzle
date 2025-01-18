@@ -23,6 +23,7 @@ use heapless::FnvIndexMap;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
+use crate::handlers::filestream::{FileObject, FilePtr};
 use crate::handlers::time::ItimerInfo;
 use crate::scheduler::fizzle_alloc;
 use crate::{comptime, GlobalList, GlobalMap, GlobalRc, GlobalSet, GlobalVec};

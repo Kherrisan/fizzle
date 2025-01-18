@@ -3,7 +3,7 @@ pub mod dir;
 pub mod entropy;
 pub mod eventfd;
 pub mod fd;
-pub mod file;
+pub mod filestream;
 pub mod filesystem;
 pub mod io;
 pub mod io_uring;

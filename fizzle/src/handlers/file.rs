@@ -8,10 +8,8 @@ use std::time::Duration;
 use bitflags::bitflags;
 use fizzle_common::io::MAX_PATH_LEN;
 use fizzle_common::path::FilePath;
-use fizzle_common::storage::Buffer;
 
 use crate::backend::{FileBackend, FileFeedback};
-use crate::constants::FIZZLE_FOPEN_BUFSIZE;
 use crate::errno::Errno;
 use crate::scheduler::{fizzle_alloc, Event, Outcome};
 use crate::state::{CreateCowSource, FizzleState};
@@ -19,17 +17,6 @@ use crate::handlers::descriptor::*;
 use crate::GlobalRc;
 
 use super::descriptor::{Descriptor, ReadData, WriteData};
-
-// This is to forbid access to the SocketId's inner `usize` field.
-mod private {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    #[repr(transparent)]
-    pub struct FileId(usize);
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    #[repr(transparent)]
-    pub struct OpenFileId(usize);
-}
 
 pub struct OpenFileInfo {
     pub offset: usize,
@@ -95,15 +82,6 @@ pub struct CowInfo {
     pub memfd: RawFd,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FilePtr(usize);
-
-impl From<*mut libc::FILE> for FilePtr {
-    fn from(value: *mut libc::FILE) -> Self {
-        FilePtr(value as usize)
-    }
-}
-
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct AccessMode: libc::mode_t {
@@ -134,23 +112,6 @@ impl Display for AccessMode {
             (self.bits() >> 3) & 7,
             self.bits() & 7
         ))
-    }
-}
-
-#[derive(Debug)]
-pub struct FileObject {
-    pub fd: RawFd,
-    pub read_buf: Buffer<FIZZLE_FOPEN_BUFSIZE>,
-    pub write_buf: Buffer<FIZZLE_FOPEN_BUFSIZE>,
-}
-
-impl FileObject {
-    pub fn new(fd: RawFd) -> Self {
-        Self {
-            fd,
-            read_buf: Buffer::new(),
-            write_buf: Buffer::new(),
-        }
     }
 }
 
