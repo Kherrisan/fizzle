@@ -1,10 +1,10 @@
 
 # To learn more about how to define values in TOML, see https://toml.io/en/v1.0.0
 
-[[process]]
-path = "/bin/bash"
-args = ["-e", "-h"]
-when = "onstartup"
+# [[process]]
+# path = "/bin/bash"
+# args = ["-e", "-h"]
+# when = "onstartup"
 
 
 # Potential improvements (Seaver)
