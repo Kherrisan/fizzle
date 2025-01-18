@@ -23,7 +23,7 @@ use heapless::FnvIndexMap;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
-use crate::handlers::filestream::{FileObject, FilePtr};
+use crate::handlers::filestream::{FileObject, FilePtr, FileStreamBuffer, FileStreamSource};
 use crate::handlers::time::ItimerInfo;
 use crate::scheduler::fizzle_alloc;
 use crate::{comptime, GlobalList, GlobalMap, GlobalRc, GlobalSet, GlobalVec};
@@ -313,6 +313,31 @@ impl FizzleState {
             local.thread_locks.insert(thread::current().id(), Semaphore::new_rc_in(0, true, fizzle_alloc()));
             local.initialize_thread(tid, None);
         }
+
+        let stdin_ptr = FilePtr::from_raw(unsafe { crate::stdin }).unwrap();
+        let stdout_ptr = FilePtr::from_raw(unsafe { crate::stdout }).unwrap();
+        let stderr_ptr = FilePtr::from_raw(unsafe { crate::stderr }).unwrap();
+
+        local.file_objs.insert(stdin_ptr, FileObject {
+            source: FileStreamSource::Descriptor(0),
+            buf: FileStreamBuffer::Internal(Vec::new()),
+            err: false,
+            eof: false,
+        });
+
+        local.file_objs.insert(stdout_ptr, FileObject {
+            source: FileStreamSource::Descriptor(1),
+            buf: FileStreamBuffer::Internal(Vec::new()),
+            err: false,
+            eof: false,
+        });
+
+        local.file_objs.insert(stderr_ptr, FileObject {
+            source: FileStreamSource::Descriptor(1),
+            buf: FileStreamBuffer::Internal(Vec::new()),
+            err: false,
+            eof: false,
+        });
 
         global.process_locks.insert(local.process_info.borrow().pid, Semaphore::new_rc_in(0, true, fizzle_alloc()));
 
