@@ -367,16 +367,55 @@ hook_macros::hook! {
     unsafe fn fputc(
         c: libc::c_int,
         stream: *mut libc::FILE
-    ) -> libc::c_int => fizzle_fputc(_ctx) {
-        panic!("fputc() unimplemented")
+    ) -> libc::c_int => fizzle_fputc(ctx) {
+        crate::strace!("fputc(c={}, stream={:?}) -> ...", c, stream);
+        let c = c as u8;
+
+        let Some(stream_ptr) = FilePtr::from_raw(stream) else {
+            crate::strace!("fputc(c={}, stream={:?}) -> ...", c, stream);
+            Errno::EINVAL.set_errno();
+            return libc::EOF
+        };
+
+        let io_slice = IoSlice::new(slice::from_ref(&c));
+    
+        match Scheduler::handle_event(&mut ctx, FileStreamWriteEvent::new(stream_ptr, &io_slice, 1)) {
+            Ok(written) => {
+                crate::strace!("fputc(c={:?}, stream={:?}) -> {}", c, stream, written);
+                written.try_into().unwrap()
+            }
+            Err(e) => {
+                crate::strace!("fputc(c={:?}, stream={:?}) -> EOF ({})", c, stream, e);
+                e.set_errno(); // TODO: this doesn't need to be set
+                libc::EOF
+            }
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn putchar(
-        _c: libc::c_int
-    ) -> libc::c_int => fizzle_putchar(_ctx) {
-        panic!("putchar() unimplemented")
+        c: libc::c_int
+    ) -> libc::c_int => fizzle_putchar(ctx) {
+        crate::strace!("putchar(c={}) -> ...", c);
+
+        let c = c as u8;
+
+        let stream_ptr = FilePtr::from_raw(unsafe { crate::stdout }).unwrap();
+
+        let io_slice = IoSlice::new(slice::from_ref(&c));
+    
+        match Scheduler::handle_event(&mut ctx, FileStreamWriteEvent::new(stream_ptr, &io_slice, 1)) {
+            Ok(written) => {
+                crate::strace!("putchar(c={:?}) -> {}", c, written);
+                written.try_into().unwrap()
+            }
+            Err(e) => {
+                crate::strace!("putchar(c={:?}) -> EOF ({})", c, e);
+                e.set_errno(); // TODO: this doesn't need to be set
+                libc::EOF
+            }
+        }
     }
 }
 
@@ -384,16 +423,59 @@ hook_macros::hook! {
     unsafe fn fputs(
         s: *const libc::c_char,
         stream: *mut libc::FILE
-    ) -> libc::c_int => fizzle_fputs(_ctx) {
-        panic!("fputs() unimplemented")
+    ) -> libc::c_int => fizzle_fputs(ctx) {
+        crate::strace!("fputs(s={:?}, stream={:?}) -> ...", s, stream);
+
+        let Some(stream_ptr) = FilePtr::from_raw(stream) else {
+            crate::strace!("fputs(s={:?}, stream={:?}) -> EOF (EINVAL)", s, stream);
+            Errno::EINVAL.set_errno();
+            return libc::EOF
+        };
+
+        let cstr = unsafe { CStr::from_ptr(s) };
+        let buf = cstr.to_bytes();
+
+        let io_slice = IoSlice::new(buf);
+    
+        match Scheduler::handle_event(&mut ctx, FileStreamWriteEvent::new(stream_ptr, &io_slice, 1)) {
+            Ok(written) => {
+                crate::strace!("fputs(s={:?}, stream={:?}) -> {}", s, stream, written);
+                written.try_into().unwrap()
+            }
+            Err(e) => {
+                crate::strace!("fputs(s={:?}, stream={:?}) -> EOF ({})", s, stream, e);
+                e.set_errno(); // TODO: this doesn't need to be set
+                libc::EOF
+            }
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn puts(
         s: *const libc::c_char
-    ) -> libc::c_int => fizzle_puts(_ctx) {
-        panic!("puts() unimplemented");
+    ) -> libc::c_int => fizzle_puts(ctx) {
+        crate::strace!("puts(s={:?}) -> ...", s);
+
+        let stream_ptr = FilePtr::from_raw(unsafe { crate::stdout }).unwrap();
+
+        let cstr = unsafe { CStr::from_ptr(s) };
+        let mut buf = Vec::from(cstr.to_bytes());
+        buf.push(b'\n');
+
+        let io_slice = IoSlice::new(buf.as_slice());
+    
+        match Scheduler::handle_event(&mut ctx, FileStreamWriteEvent::new(stream_ptr, &io_slice, 1)) {
+            Ok(written) => {
+                crate::strace!("puts(s={:?}) -> {}", s, written);
+                written.try_into().unwrap()
+            }
+            Err(e) => {
+                crate::strace!("puts(s={:?}) -> EOF ({})", s, e);
+                e.set_errno(); // TODO: this doesn't need to be set
+                libc::EOF
+            }
+        }
     }
 }
 
