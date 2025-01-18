@@ -309,7 +309,7 @@ impl Event for FileStreamWriteEvent<'_> {
 
                 if self.chunk_size != 1 {
                     // TODO: chunks cannot be partially written; this needs to be implemented
-                    unimplemented!("`fwrite()` with member size > 1")
+                    log::warn!("`fwrite()` with member size > 1 not fully implemented--partial writes may occur")
                 }
 
                 match local.file_objs.get_mut(&self.stream) {
@@ -346,7 +346,13 @@ impl Event for FileStreamWriteEvent<'_> {
                     None => panic!("UB: `fileno()` called on invalid stream pointer"),
                 }
             }
-            FileStreamWriteState::Descriptor(ev) => ev.run(state), // TODO: add divisor once self.chunk_size > 1 implemented
+            FileStreamWriteState::Descriptor(ev) => {
+                let mut res = ev.run(state);
+                if let Outcome::Success(u) = &mut res {
+                    *u /= self.chunk_size;
+                }
+                res
+            } 
         }
     }
 }
@@ -384,7 +390,7 @@ impl Event for FileStreamReadEvent<'_> {
 
                 if self.chunk_size != 1 {
                     // TODO: chunks cannot be partially written; this needs to be implemented
-                    unimplemented!("`fwrite()` with member size > 1")
+                    log::warn!("`fread()` with member size > 1 not fully implemented--partial reads may occur")
                 }
 
                 match local.file_objs.get_mut(&self.stream) {
