@@ -137,7 +137,7 @@ pub fn fizzle_alloc() -> &'static TlsfHeap {
                     panic!("failed to mmap InterprocessAllocator memory: {}", Errno::get_errno());
                 }
 
-                if alloc_offset.is_null() {
+                if !alloc_offset.is_null() {
                     env::set_var(FIZZLE_ALLOC_OFFSET_ENV, (alloc_offset as usize).to_string());
                 }
 
