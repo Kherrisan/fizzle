@@ -42,11 +42,17 @@ pub enum FileStreamBuffer {
 
 pub struct FileStreamMode {
     pub flags: FileOpenFlags,
+    pub input_mode: FileInputMode,
     pub no_cancellation: bool,
     pub cloexec: bool,
     pub read_mmap: bool,
     pub exclusive_create: bool,
     pub charset: Option<String>,
+}
+
+pub enum FileInputMode {
+    Binary,
+    Text,
 }
 
 impl FileStreamMode {
@@ -57,25 +63,68 @@ impl FileStreamMode {
         let mut read_mmap = false;
         let mut exclusive_create = false;
         let mut charset = None;
+        let mut input_mode = FileInputMode::Text;
 
         let flags = match bytes.next()? {
-            b'r' => if bytes.peek() == Some(&b'+') {
-                bytes.next();
-                FileOpenFlags::READWRITE
-            } else {
-                FileOpenFlags::READONLY
+            b'r' => {
+                match bytes.peek() {
+                    Some(&b'b') => {
+                        bytes.next();
+                        input_mode = FileInputMode::Binary;
+                    }
+                    Some(&b't') => {
+                        bytes.next();
+                        input_mode = FileInputMode::Text;
+                    }
+                    _ => (),
+                }
+
+                if bytes.peek() == Some(&b'+') {
+                    bytes.next();
+                    FileOpenFlags::READWRITE
+                } else {
+                    FileOpenFlags::READONLY
+                }
             }
-            b'w' => if bytes.peek() == Some(&b'+') {
-                bytes.next();
-                FileOpenFlags::READWRITE | FileOpenFlags::CREATE | FileOpenFlags::TRUNC
-            } else {
-                FileOpenFlags::WRITEONLY | FileOpenFlags::CREATE | FileOpenFlags::TRUNC
+            b'w' => {
+                match bytes.peek() {
+                    Some(&b'b') => {
+                        bytes.next();
+                        input_mode = FileInputMode::Binary;
+                    }
+                    Some(&b't') => {
+                        bytes.next();
+                        input_mode = FileInputMode::Text;
+                    }
+                    _ => (),
+                }
+
+                if bytes.peek() == Some(&b'+') {
+                    bytes.next();
+                    FileOpenFlags::READWRITE | FileOpenFlags::CREATE | FileOpenFlags::TRUNC
+                } else {
+                    FileOpenFlags::WRITEONLY | FileOpenFlags::CREATE | FileOpenFlags::TRUNC
+                }
             }
-            b'a' => if bytes.peek() == Some(&b'+') {
-                bytes.next();
-                FileOpenFlags::READWRITE | FileOpenFlags::CREATE | FileOpenFlags::APPEND
-            } else {
-                FileOpenFlags::WRITEONLY | FileOpenFlags::CREATE | FileOpenFlags::APPEND
+            b'a' => {
+                match bytes.peek() {
+                    Some(&b'b') => {
+                        bytes.next();
+                        input_mode = FileInputMode::Binary;
+                    }
+                    Some(&b't') => {
+                        bytes.next();
+                        input_mode = FileInputMode::Text;
+                    }
+                    _ => (),
+                }
+
+                if bytes.peek() == Some(&b'+') {
+                    bytes.next();
+                    FileOpenFlags::READWRITE | FileOpenFlags::CREATE | FileOpenFlags::APPEND
+                } else {
+                    FileOpenFlags::WRITEONLY | FileOpenFlags::CREATE | FileOpenFlags::APPEND
+                }
             }
             _ => return None,
         };
@@ -105,6 +154,7 @@ impl FileStreamMode {
 
         return Some(FileStreamMode {
             flags,
+            input_mode,
             no_cancellation,
             cloexec,
             read_mmap,
