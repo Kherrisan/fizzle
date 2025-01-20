@@ -138,7 +138,7 @@ pub fn fizzle_alloc() -> &'static TlsfHeap {
                 }
 
                 if alloc_offset.is_null() {
-                    env::set_var(FIZZLE_ALLOC_OFFSET_ENV, (loc as usize).to_string());
+                    env::set_var(FIZZLE_ALLOC_OFFSET_ENV, loc.addr().to_string());
                 }
 
                 loc.cast::<InterprocessAllocator>()
