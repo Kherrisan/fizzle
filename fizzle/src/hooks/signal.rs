@@ -159,12 +159,13 @@ hook_macros::hook! {
         act: *const libc::sigaction,
         oldact: *mut libc::sigaction
     ) -> libc::c_int => fizzle_sigaction(ctx) {
+        crate::strace!("sigaction(signum={}, act={:?}, oldact={:?}) -> ...", signum, act, oldact);
+
         if signum <= 0 || signum > 32 || signum == libc::SIGKILL || signum == libc::SIGSTOP {
+            crate::strace!("sigaction(signum={}, act={:?}, oldact={:?}) -> -1 (ERRNO)", signum, act, oldact);
             Errno::EINVAL.set_errno();
             return -1
         }
-
-        crate::strace!("sigaction(signum={}, act={:?}, oldact={:?}) -> ...", signum, act, oldact);
 
         let new_handler = if let Some(act) = unsafe { act.as_ref() } {
             let flags = act.sa_flags;

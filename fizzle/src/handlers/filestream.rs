@@ -482,7 +482,7 @@ impl Event for FileStreamReadEvent<'_> {
                 let res = ev.run(state);
                 self.state = FileStreamReadState::Descriptor(ev);
                 res
-            }, 
+            },
             FileStreamReadState::Invalid => unreachable!(),
         }
     }

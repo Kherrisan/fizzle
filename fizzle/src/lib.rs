@@ -24,6 +24,7 @@ pub(crate) use hook_macros::hook;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, LinkedList};
+use std::ffi::VaList;
 use std::os::fd::RawFd;
 use std::ptr;
 use std::time::Duration;
@@ -38,7 +39,7 @@ pub type GlobalSet<K> = BTreeSet<K, &'static TlsfHeap>;
 
 pub type GlobalBox<T> = Box<T, &'static TlsfHeap>;
 
-extern "C" {
+unsafe extern "C" {
     #[cfg(feature = "afl")]
     pub fn __afl_manual_init();
 
@@ -58,13 +59,12 @@ extern "C" {
     #[cfg(feature = "pcr")]
     pub static mut __afl_sharedmem_fuzzing: libc::c_int;
 
-    #[allow(unused)]
+    pub fn vasprintf(strp: *mut *mut libc::c_char, fmt: *const libc::c_char, ap: VaList) -> libc::c_int;
+
     static mut stdin: *mut libc::FILE;
 
-    #[allow(unused)]
     static mut stdout: *mut libc::FILE;
 
-    #[allow(unused)]
     static mut stderr: *mut libc::FILE;
 }
 
