@@ -415,7 +415,13 @@ impl Event for ProcessExecEvent {
         let ppid = process_info.borrow().ppid;
         let pgid = process_info.borrow().pgid;
         let fds = state.local.fds.clone();
-        let signal_handlers = process_info.borrow().signal_handlers.clone();
+        // From `man signal(7)`:
+        // "During an execve(2), the dispositions of handled signals are reset to the default; the
+        // dispositions of ignored signals are left unchanged."
+        let signal_handlers = process_info.borrow().signal_handlers.clone().map(|handler| match handler {
+            SigDisposition::Ignore => SigDisposition::Ignore,
+            _ => SigDisposition::Default,
+        });
         
         let sigmask = state
             .local
