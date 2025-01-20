@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
-use crate::state::{FizzleState, ReadyInfo, ReadyItem, TimerType};
+use crate::state::{FizzleState, ReadyInfo, ScheduledItem, TimerType};
 
 pub struct ItimerInfo {
     pub interval: Duration,
@@ -62,7 +62,7 @@ impl Event for GetItimerEvent {
         });
 
         let val = match ready {
-            Some(ReadyItem { timestamp, .. }) => {
+            Some(ScheduledItem { timestamp, .. }) => {
                 current_time.saturating_sub(*timestamp)
             }
             None => Duration::ZERO,
@@ -122,7 +122,7 @@ impl Event for SetItimerEvent {
         });
 
         let val = match ready {
-            Some(ReadyItem { timestamp, .. }) => {
+            Some(ScheduledItem { timestamp, .. }) => {
                 current_time.saturating_sub(*timestamp)
             }
             None => Duration::ZERO,
@@ -149,7 +149,7 @@ impl Event for SetItimerEvent {
 
             if !timestamp.is_zero() {
                 // Add the new timer
-                state.global.ready.push(ReadyItem { info: ReadyInfo::Timer(current_pid, self.which), timestamp });
+                state.global.ready.push(ScheduledItem { info: ReadyInfo::Timer(current_pid, self.which), timestamp });
             }
         };
 

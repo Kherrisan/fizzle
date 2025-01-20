@@ -870,7 +870,7 @@ impl FizzleState {
         });
 
         self.global.ready.retain(|r| &r.info != &ready);
-        self.global.ready.push(ReadyItem {
+        self.global.ready.push(ScheduledItem {
             timestamp,
             info: ready,
         });
@@ -881,7 +881,7 @@ impl FizzleState {
         let ready = ReadyInfo::Worker(worker);
 
         self.global.ready.retain(|r| &r.info != &ready);
-        self.global.ready.push(ReadyItem {
+        self.global.ready.push(ScheduledItem {
             timestamp,
             info: ready,
         });
@@ -1045,12 +1045,11 @@ pub struct InterprocessState {
     pub file_paths: FnvIndexMap<FilePath<MAX_PATH_LEN>, GlobalRc<FileInfo>, FIZZLE_MAX_FILE_PATHS>,
     // TODO: BTreeMap would be unwise--SemaphorePath has an expensive `eq` comparison
     pub sem_paths: FnvIndexMap<SemaphorePath, GlobalRc<SemaphoreInfo>, FIZZLE_MAX_NAMED_SEMAPHORES>,
-    // TODO: SO_REUSEPORT breaks this...
     pub socket_locations:
         FnvIndexMap<TransportAddress, TransportLocationInfo, FIZZLE_MAX_SOCKADDRS>,
     pub stdio: StdioBackend,
     /// Pollers/Workers that can be immediately scheduled.
-    pub ready: BinaryHeap<ReadyItem, &'static TlsfHeap>,
+    pub ready: BinaryHeap<ScheduledItem, &'static TlsfHeap>,
     /// Pollers/Workers that should be scheduled once the system has reached a halted state.
     pub ready_delayed: GlobalList<ReadyInfo>,
 
@@ -1187,7 +1186,7 @@ impl InterprocessState {
             for poller in pollers.iter() {
                 if !poller.borrow().in_raised_queue() {
                     let timestamp = self.current_time;
-                    self.ready.push(ReadyItem {
+                    self.ready.push(ScheduledItem {
                         info: ReadyInfo::Poller(poller.clone()),
                         timestamp,
                     });
@@ -1451,26 +1450,26 @@ pub enum PerRoundClientBackend {
 }
 
 #[derive(Clone)]
-pub struct ReadyItem {
+pub struct ScheduledItem {
     pub info: ReadyInfo,
     pub timestamp: Duration,
 }
 
-impl PartialEq for ReadyItem {
+impl PartialEq for ScheduledItem {
     fn eq(&self, other: &Self) -> bool {
         self.timestamp == other.timestamp
     }
 }
 
-impl Eq for ReadyItem {}
+impl Eq for ScheduledItem {}
 
-impl PartialOrd for ReadyItem {
+impl PartialOrd for ScheduledItem {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Ord for ReadyItem {
+impl Ord for ScheduledItem {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.timestamp.cmp(&other.timestamp)
     }

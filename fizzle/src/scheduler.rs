@@ -273,7 +273,7 @@ impl Scheduler {
                     let timestamp = state.global.current_time.saturating_add(duration);
                     let worker = state.current_worker();
 
-                    state.global.ready.push(ReadyItem {
+                    state.global.ready.push(ScheduledItem {
                         info: ReadyInfo::Worker(worker),
                         timestamp,
                     });
@@ -357,14 +357,14 @@ impl Scheduler {
                     let curr_proc_sem = state.local.process_info.borrow().semaphore.clone();
 
                     let worker_res = 'get_worker: loop {
-                        let Some(ReadyItem { info, timestamp }) = state.global.ready.pop() else {
+                        let Some(ScheduledItem { info, timestamp }) = state.global.ready.pop() else {
                             delegation_state = DelegationState::NoMoreWorkers;
                             continue 'yielded;
                         };
 
                         // TODO: make this timeout value configurable (currently 10 seconds)
                         if timestamp > state.global.current_time + Duration::from_secs(10) {
-                            state.global.ready.push(ReadyItem { info, timestamp });
+                            state.global.ready.push(ScheduledItem { info, timestamp });
                             delegation_state = DelegationState::NoMoreWorkers;
                             continue 'yielded;
                         }
@@ -518,7 +518,7 @@ impl Scheduler {
                     } else if let Some(ready) = state.global.ready_delayed.pop_front() {
                         let timestamp = state.global.current_time;
                         // There are outstanding delayed workers
-                        state.global.ready.push(ReadyItem {
+                        state.global.ready.push(ScheduledItem {
                             info: ready,
                             timestamp,
                         });
@@ -1024,7 +1024,7 @@ impl Scheduler {
         state
             .global
             .ready
-            .push(ReadyItem {
+            .push(ScheduledItem {
                 info: ReadyInfo::Worker(current_worker),
                 timestamp: Duration::ZERO
             });
@@ -1074,7 +1074,7 @@ impl Scheduler {
                         let pid = state.local.process_info.borrow().pid;
                         let current_time = state.global.current_time;
                         let interval = real.interval;
-                        state.global.ready.push(ReadyItem {
+                        state.global.ready.push(ScheduledItem {
                             timestamp: current_time.saturating_add(interval),
                             info: ReadyInfo::Timer(pid, TimerType::Real)
                         });
@@ -1085,7 +1085,7 @@ impl Scheduler {
                         let pid = state.local.process_info.borrow().pid;
                         let current_time = state.global.current_time;
                         let interval = virt.interval;
-                        state.global.ready.push(ReadyItem {
+                        state.global.ready.push(ScheduledItem {
                             timestamp: current_time.saturating_add(interval),
                             info: ReadyInfo::Timer(pid, TimerType::Virtual)
                         });
@@ -1096,7 +1096,7 @@ impl Scheduler {
                         let pid = state.local.process_info.borrow().pid;
                         let current_time = state.global.current_time;
                         let interval = prof.interval;
-                        state.global.ready.push(ReadyItem {
+                        state.global.ready.push(ScheduledItem {
                             timestamp: current_time.saturating_add(interval),
                             info: ReadyInfo::Timer(pid, TimerType::Virtual)
                         });
@@ -1539,7 +1539,7 @@ impl Scheduler {
         } else {
             state.global.create_cow = Some(source.clone());
 
-            state.global.ready.push(ReadyItem {
+            state.global.ready.push(ScheduledItem {
                 info: ReadyInfo::Worker(current_worker),
                 timestamp: Duration::ZERO, // Run immediately after this
             });
