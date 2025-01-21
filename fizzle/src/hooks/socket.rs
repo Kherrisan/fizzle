@@ -34,6 +34,7 @@ hook_macros::hook! {
             libc::SOCK_STREAM => SocketType::Stream,
             libc::SOCK_SEQPACKET => SocketType::SeqPacket,
             libc::SOCK_DGRAM => SocketType::Datagram,
+            libc::SOCK_RAW => SocketType::Raw,
             _ => unimplemented!("unsupported socket type {}", socktype),
         };
 
