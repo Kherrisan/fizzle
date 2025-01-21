@@ -26,6 +26,7 @@ hook_macros::hook! {
             libc::AF_INET => AddressFamily::Ipv4,
             libc::AF_INET6 => AddressFamily::Ipv6,
             libc::AF_UNIX => AddressFamily::Unix,
+            libc::AF_NETLINK => AddressFamily::Netlink,
             _ => unimplemented!("unsupported socket domain {}", domain),
         };
 
