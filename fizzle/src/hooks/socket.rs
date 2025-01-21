@@ -140,13 +140,13 @@ hook_macros::hook! {
         // SAFETY: caller ensures addr points to a valid buffer of `adderlen` bytes.
         let addr_bytes = slice::from_raw_parts(addr as *const u8, addrlen as usize);
 
+        crate::strace!("bind(fd={}, addr={:?}, addrlen={} ({:?})) -> ...", fd, addr, addrlen, addr_bytes);
+
         let Ok(sockaddr) = SockAddr::decode(addr_bytes) else {
             crate::strace!("bind(fd={}, addr={:?}, addrlen={} ({:?})) -> -1 (EINVAL)", fd, addr, addrlen, addr_bytes);
             Errno::EINVAL.set_errno();
             return -1
         };
-
-        crate::strace!("bind(fd={}, addr={:?}, addrlen={} ({:?})) -> ...", fd, addr, addrlen, sockaddr);
 
         match Scheduler::handle_event(&mut ctx, SocketBindEvent::new(Descriptor::from_raw_fd(fd), sockaddr.clone())) {
             Ok(()) => {
