@@ -471,7 +471,7 @@ hook_macros::hook! {
             (libc::SOL_TCP, libc::TCP_NODELAY | libc::TCP_MAXSEG | libc::TCP_USER_TIMEOUT | libc::TCP_FASTOPEN) => {
                 return 0
             }
-            (libc::SOL_TCP, libc::TCP_KEEPIDLE | libc::TCP_KEEPCNT) => return 0,
+            (libc::SOL_TCP, libc::TCP_KEEPIDLE | libc::TCP_KEEPCNT | libc::TCP_KEEPINTVL) => return 0,
             (libc::SOL_TCP, _) => {
                 panic!("Unrecognized socket option: SOL_TCP, optname {}", optname);
             }
