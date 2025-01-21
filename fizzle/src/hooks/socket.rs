@@ -547,6 +547,9 @@ hook_macros::hook! {
             (libc::SOL_IPV6, libc::IPV6_V6ONLY) => {
                 return 0 // Ignore received value
             }
+            (libc::SOL_IPV6, libc::IPV6_RECVPKTINFO) => {
+                return 0 // ignore received value TODO: implement for recvmsg()
+            }
             (libc::SOL_IPV6, _) => {
                 log::error!("unrecognized SOL_IP6 option {}", optname);
                 panic!("Unrecognized socket option: SOL_IPV6, optname {}", optname)
