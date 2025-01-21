@@ -1503,7 +1503,7 @@ pub enum TimerType {
     Prof
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum SignalDestination {
     Process(Pid),
     Thread(Pid, ThreadId),

@@ -300,6 +300,7 @@ impl Scheduler {
                 }
                 Outcome::SendSignal(destination, raised_info) => {
                     drop(state);
+                    log::info!("sening signal to {:?}", destination);
                     Scheduler::send_signal(ctx, destination, raised_info);
                 }
                 Outcome::CreateCow(create_cow) => {
@@ -1029,8 +1030,11 @@ impl Scheduler {
             .borrow()
             .signal_handlers[signum as usize - 1].clone();
         if let SigDisposition::Ignore = disposition {
+            log::info!("Signal {} received and ignored", signum);
             return; // Ignores the signal without saving it
         }
+
+        log::info!("Singal {} received", signum);
 
         // Once the signal has been received and handled, keep running the worker that sent it
         // this is Duration::ZERO because it must run first
