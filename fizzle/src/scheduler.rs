@@ -362,8 +362,8 @@ impl Scheduler {
                             continue 'yielded;
                         };
 
-                        // TODO: make this timeout value configurable (currently 10 seconds)
-                        if timestamp > state.global.current_time + Duration::from_secs(10) {
+                        // TODO: make this timeout value configurable (currently 2 seconds)
+                        if timestamp > state.global.current_time + Duration::from_secs(2) {
                             state.global.ready.push(ScheduledItem { info, timestamp });
                             delegation_state = DelegationState::NoMoreWorkers;
                             continue 'yielded;
