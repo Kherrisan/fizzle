@@ -263,7 +263,7 @@ impl Event for SocketCreateEvent {
         state.local.fds.insert(fd, DescriptorInfo {
             close_on_exec: self.cloexec,
             nonblocking: self.nonblocking,
-            is_passthrough: false,
+            is_passthrough: self.domain == AddressFamily::Netlink, // TODO: implement Netlink routines
             resource: FdResource::Socket(socket_info),
         });
 
