@@ -1440,6 +1440,7 @@ impl InterprocessState {
                 )
             }
             AddressFamily::Unix => TransportAddress::new_unix(SocketAddrUnix::Unnamed),
+            AddressFamily::Netlink => unreachable!(),
         }
     }
 }

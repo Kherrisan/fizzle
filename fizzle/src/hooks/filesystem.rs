@@ -230,6 +230,9 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_chdir(ctx) {
         strace!("chdir(path={:?}) -> ...", path);
 
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::chdir(path) };
+
         let Ok(filepath) = FilePath::from_cstr(CStr::from_ptr(path)) else {
             *libc::__errno_location() = libc::EINVAL;
             return -1
@@ -255,6 +258,9 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_fchdir(ctx) {
         strace!("fchdir(fd={}) -> ...", fd);
 
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::fchdir(fd) };
+
         match Scheduler::handle_event(&mut ctx, ChangeDirectoryEvent::new(ChangeDirectorySource::Directory(fd))) {
             Ok(()) => {
                 strace!("fchdir(fd={}) -> 0", fd);
@@ -271,8 +277,11 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn chroot(
-        _path: *const libc::c_char
+        path: *const libc::c_char
     ) -> libc::c_int => fizzle_chroot(_ctx) {
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::chroot(path) };
+
         panic!("`chroot` not implemented for fizzle virtual fs")
     }
 }
@@ -286,6 +295,9 @@ hook_macros::hook! {
         group: libc::gid_t
     ) -> libc::c_int => fizzle_chown(ctx) {
         strace!("chown(pathname={:?}, owner={}, group={}) -> ...", pathname, owner, group);
+
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::chown(pathname, owner, group) };
 
         let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
             Errno::EINVAL.set_errno();
@@ -312,6 +324,9 @@ hook_macros::hook! {
         mode: libc::mode_t
     ) -> libc::c_int => fizzle_chmod(ctx) {
         strace!("chmod(pathname={:?}, mode={}) -> ...", pathname, mode);
+
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::chmod(pathname, mode) };
 
         let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
             strace!("chmod(pathname={:?}, mode={}) -> -1 (EINVAL)", pathname, mode);
@@ -341,6 +356,9 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_fchown(ctx) {
         strace!("fchown(fd={}, owner={}, group={}) -> ...", fd, owner, group);
 
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::fchown(fd, owner, group) };
+
         match Scheduler::handle_event(&mut ctx, ChangeOwnerEvent::new(ChangeOwnerSource::Descriptor(fd), owner, group, ChangeOwnerFlags::empty())) {
             Ok(()) => {
                 strace!("fchown(fd={:?}, owner={}, group={}) -> 0", fd, owner, group);
@@ -361,6 +379,9 @@ hook_macros::hook! {
         mode: libc::mode_t
     ) -> libc::c_int => fizzle_fchmod(ctx) {
         strace!("fchmod(fd={:?}, mode={}) -> ...", fd, mode);
+
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::fchmod(fd, mode) };
 
         match Scheduler::handle_event(&mut ctx, ChangeModeEvent::new(ChangeModeSource::Descriptor(fd), mode, ChangeModeFlags::empty())) {
             Ok(()) => {
@@ -385,6 +406,9 @@ hook_macros::hook! {
         flags: libc::c_int
     ) -> libc::c_int => fizzle_fchownat(ctx) {
         strace!("fchownat(dirfd={}, pathname={:?}, owner={}, group={}, flags={}) -> ...", dirfd, pathname, owner, group, flags);
+
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::fchownat(dirfd, pathname, owner, group, flags) };
 
         let Some(chown_flags) = ChangeOwnerFlags::from_bits(flags) else {
             strace!("fchownat(dirfd={}, pathname={:?}, owner={}, group={}, flags={}) -> -1 (EINVAL)", dirfd, pathname, owner, group, flags);
@@ -421,6 +445,9 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_fchmodat(ctx) {
         strace!("fchmodat(dirfd={:?}, pathname={:?}, mode={}, flags={}) -> ...", dirfd, pathname, mode, flags);
 
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::fchmodat(dirfd, pathname, mode, flags) };
+
         let Some(chmod_flags) = ChangeModeFlags::from_bits(flags) else {
             strace!("fchmodat(dirfd={:?}, pathname={:?}, mode={}, flags={}) -> -1 (EINVAL)", dirfd, pathname, mode, flags);
             Errno::EINVAL.set_errno();
@@ -455,6 +482,9 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_lchown(ctx) {
         strace!("lchown(pathname={:?}, owner={}, group={}) -> ...", pathname, owner, group);
 
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::lchown(pathname, owner, group) };
+
         let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
             strace!("lchown(pathname={:?}, owner={}, group={}) -> -1 (EINVAL)", pathname, owner, group);
             Errno::EINVAL.set_errno();
@@ -481,6 +511,9 @@ hook_macros::hook! {
         mode: libc::c_int
     ) -> libc::c_int => fizzle_access(ctx) {
         strace!("access(pathname={:?}, mode={}) -> ...", pathname, mode);
+
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::access(pathname, mode) };
 
         let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
             strace!("access(pathname={:?}, mode={}) -> -1 (EINVAL)", pathname, mode);
@@ -510,6 +543,9 @@ hook_macros::hook! {
         flags: libc::c_int
     ) -> libc::c_int => fizzle_faccessat(ctx) {
         strace!("faccessat(dirfd={}, pathname={:?}, mode={}, flags={}) -> ...", dirfd, pathname, mode, flags);
+
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::faccessat(dirfd, pathname, mode, flags) };
 
         let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
             strace!("faccessat(dirfd={}, pathname={:?}, mode={}, flags={}) -> -1 (EINVAL)", dirfd, pathname, mode, flags);
@@ -665,36 +701,47 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn statvfs(
-        _path: *mut libc::c_char,
-        _buf: *mut libc::statvfs
-    ) => fizzle_statvfs(_ctx) {
+        path: *mut libc::c_char,
+        buf: *mut libc::statvfs
+    ) -> libc::c_int => fizzle_statvfs(_ctx) {
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::statvfs(path, buf) };
+
         unimplemented!("statvfs()")
     }
 }
 
 hook_macros::hook! {
     unsafe fn fstatvfs(
-        _fd: libc::c_int,
-        _buf: *mut libc::statvfs
-    ) => fizzle_fstatvfs(_ctx) {
+        fd: libc::c_int,
+        buf: *mut libc::statvfs
+    ) -> libc::c_int => fizzle_fstatvfs(_ctx) {
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::fstatvfs(fd, buf) };
         unimplemented!("fstatvfs()")
     }
 }
 
 hook_macros::hook! {
     unsafe fn truncate(
-        _path: *const libc::c_char,
-        _length: libc::off_t
-    ) => fizzle_truncate(_ctx) {
+        path: *const libc::c_char,
+        length: libc::off_t
+    ) -> libc::c_int => fizzle_truncate(_ctx) {
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::truncate(path, length) };
+
         unimplemented!("truncate()") // TODO: can implement now
     }
 }
 
 hook_macros::hook! {
     unsafe fn ftruncate(
-        _fd: libc::c_int,
-        _length: libc::off_t
-    ) => fizzle_ftruncate(_ctx) {
+        fd: libc::c_int,
+        length: libc::off_t
+    ) -> libc::c_int => fizzle_ftruncate(_ctx) {
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::ftruncate(fd, length) };
+
         unimplemented!("ftruncate()") // TODO: can implement now
     }
 }
@@ -702,6 +749,10 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn sync() => fizzle_sync(_ctx) {
         log::warn!("`sync` unimplemented by Fizzle");
+
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::sync() };
+
         hook_macros::real!(sync)()
     }
 }
@@ -825,6 +876,9 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_rename(ctx) {
         strace!("rename(oldpath={:?}, newpath={:?}) -> ...", oldpath, newpath);
 
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::rename(oldpath, newpath) };
+
         let Ok(rel_oldpath) = FilePath::from_cstr(CStr::from_ptr(oldpath)) else {
             strace!("rename(oldpath={:?}, newpath={:?}) -> -1 (EINVAL)", oldpath, newpath);
             Errno::EINVAL.set_errno();
@@ -859,6 +913,9 @@ hook_macros::hook! {
         newpath: *const libc::c_char
     ) -> libc::c_int => fizzle_renameat(ctx) {
         strace!("renameat(olddirfd={}, oldpath={:?}, newdirfd={}, newpath={:?}) -> ...", olddirfd, oldpath, newdirfd, newpath);
+
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::renameat(olddirfd, oldpath, newdirfd, newpath) };
 
         let Ok(rel_oldpath) = FilePath::from_cstr(CStr::from_ptr(oldpath)) else {
             strace!("renameat(olddirfd={}, oldpath={:?}, newdirfd={}, newpath={:?}) -> -1 (EINVAL)", olddirfd, oldpath, newdirfd, newpath);
@@ -895,6 +952,9 @@ hook_macros::hook! {
         flags: libc::c_uint
     ) -> libc::c_int => fizzle_renameat2(ctx) {
         let rename_flags = RenameFlags::from_bits_truncate(flags);
+
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::renameat2(olddirfd, oldpath, newdirfd, newpath, flags) };
 
         strace!("renameat2(olddirfd={}, oldpath={:?}, newdirfd={}, newpath={:?}, flags={:?}) -> ...", olddirfd, oldpath, newdirfd, newpath, rename_flags);
 

@@ -331,11 +331,7 @@ hook_macros::hook! {
                             crate::strace!("getsockname(sockfd={}, addr={:?}, addrlen={:?} (<unbound>)) -> 0", sockfd, addr, addrlen);
                             addr_bytes.fill(MaybeUninit::new(0));
 
-                            let family_bytes = (match family {
-                                AddressFamily::Ipv4 => libc::AF_INET,
-                                AddressFamily::Ipv6 => libc::AF_INET6,
-                                AddressFamily::Unix => libc::AF_UNIX,
-                            } as u16).to_be_bytes().map(|i| MaybeUninit::new(i));
+                            let family_bytes = family.raw().to_be_bytes().map(|i| MaybeUninit::new(i));
 
                             let family_bytelen = cmp::min(family_bytes.len(), addr_bytes.len());
                             addr_bytes[..family_bytelen].copy_from_slice(&family_bytes);

@@ -487,6 +487,7 @@ pub enum AddressFamily {
     Ipv4,
     Ipv6,
     Unix,
+    Netlink,
 }
 
 impl Display for AddressFamily {
@@ -495,16 +496,18 @@ impl Display for AddressFamily {
             Self::Ipv4 => f.write_str("Ipv4"),
             Self::Ipv6 => f.write_str("Ipv6"),
             Self::Unix => f.write_str("Unix"),
+            Self::Netlink => f.write_str("Netlink"),
         }
     }
 }
 
 impl AddressFamily {
-    pub fn raw(&self) -> i32 {
+    pub fn raw(&self) -> u16 {
         match self {
-            Self::Ipv4 => libc::AF_INET,
-            Self::Ipv6 => libc::AF_INET6,
-            Self::Unix => libc::AF_UNIX,
+            Self::Ipv4 => libc::AF_INET as u16,
+            Self::Ipv6 => libc::AF_INET6 as u16,
+            Self::Unix => libc::AF_UNIX as u16,
+            Self::Netlink => libc::AF_NETLINK as u16,
         }
     }
 }

@@ -1342,19 +1342,13 @@ impl SocketOption {
                 mem::size_of_val(&i)
             }
             Self::SocketDomain(f) => {
-                let domain = match f {
-                    AddressFamily::Ipv4 => libc::AF_INET,
-                    AddressFamily::Ipv6 => libc::AF_INET6,
-                    AddressFamily::Unix => libc::AF_UNIX,
-                };
-
-                let domain_bytes = domain.to_be_bytes();
+                let domain_bytes = f.raw().to_be_bytes();
 
                 for (dst, src) in out.iter_mut().zip(domain_bytes) {
                     dst.write(src);
                 }
 
-                mem::size_of_val(&domain)
+                mem::size_of_val(&f.raw())
             }
             Self::SocketError(error) => {
                 let error_bytes = error.to_be_bytes();
