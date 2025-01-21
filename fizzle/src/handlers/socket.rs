@@ -257,6 +257,14 @@ impl Event for SocketCreateEvent {
                         rem_addr: None,
                     })
                 }
+                SocketType::Raw if self.domain == AddressFamily::Netlink => {
+                    SocketState::Connectionless(ConnectionlessSocket {
+                        reuse_port: false,
+                        backend: ConnectionlessBackend::Passthrough,
+                        rem_addr: None,
+                    })
+                }
+                SocketType::Raw => unimplemented!(),
             },
         }), fizzle_alloc());
 
@@ -281,7 +289,7 @@ pub struct SocketCreatePairEvent {
 
 impl Event for SocketCreatePairEvent {
     type Success = (Descriptor, Descriptor);
-    type Error = ();
+    type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let addr1 = state.global.ephemeral_address(self.domain, self.protocol);
@@ -339,6 +347,7 @@ impl Event for SocketCreatePairEvent {
                     }),
                     rem_addr: Some(addr2.clone()),
                 }),
+                SocketType::Raw => return Outcome::Error(Errno::EOPNOTSUPP),
             },
         }), fizzle_alloc());
 
@@ -371,6 +380,7 @@ impl Event for SocketCreatePairEvent {
                     }),
                     rem_addr: Some(addr1.clone()),
                 }),
+                SocketType::Raw => unimplemented!(),
             },
         }), fizzle_alloc());
 

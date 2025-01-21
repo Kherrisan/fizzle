@@ -517,6 +517,7 @@ pub enum SocketType {
     Stream,
     SeqPacket,
     Datagram,
+    Raw,
 }
 
 impl Display for SocketType {
@@ -525,6 +526,7 @@ impl Display for SocketType {
             Self::Stream => f.write_str("Stream"),
             Self::SeqPacket => f.write_str("SeqPacket"),
             Self::Datagram => f.write_str("Datagram"),
+            Self::Raw => f.write_str("Raw"),
         }
     }
 }

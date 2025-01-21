@@ -94,6 +94,7 @@ hook_macros::hook! {
             libc::SOCK_STREAM => SocketType::Stream,
             libc::SOCK_SEQPACKET => SocketType::SeqPacket,
             libc::SOCK_DGRAM => SocketType::Datagram,
+            libc::SOCK_RAW => SocketType::Raw,
             _ => unimplemented!("unsupported socket type {}", socktype),
         };
 
@@ -127,7 +128,7 @@ hook_macros::hook! {
                 crate::strace!("socketpair(domain={}, socktype={}, protocol={}, sv={:?}) -> {}", domain, socktype, protocol, sv, 0);
                 0
             },
-            Err(()) => unreachable!(),
+            Err(e) => unreachable!(),
         }
     }
 }

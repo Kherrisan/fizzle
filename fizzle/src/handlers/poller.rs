@@ -643,6 +643,7 @@ impl Event for EpollCtlEvent {
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         if self.epoll_descriptor == self.target_descriptor {
+            log::error!("epoll descriptor attempted to poll itself");
             return Outcome::Error(Errno::EINVAL);
         }
 
