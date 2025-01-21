@@ -47,7 +47,7 @@ impl SockAddr {
     }
 
     pub fn decode(addr_bytes: &[u8]) -> Result<Self, SockAddrError> {
-        let sa_family = u16::from_be_bytes(
+        let sa_family = u16::from_le_bytes(
             addr_bytes
                 .get(..2)
                 .ok_or(SockAddrError::InsufficientBytes)?
