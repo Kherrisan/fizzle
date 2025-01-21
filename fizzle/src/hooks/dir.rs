@@ -2,56 +2,75 @@ use crate::hook_macros;
 
 hook_macros::hook! {
     unsafe fn opendir(
-        _name: *const libc::c_char
+        name: *const libc::c_char
     ) -> *mut libc::DIR => fizzle_opendir(_ctx) {
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::opendir(name) };
+
         unimplemented!("opendir()")
     }
 }
 
 hook_macros::hook! {
     unsafe fn fdopendir(
-        _fd: libc::c_int
+        fd: libc::c_int
     ) -> *mut libc::DIR => fizzle_fdopendir(_ctx) {
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::fopendir(fd) };
         unimplemented!("fdopendir()")
     }
 }
 
 hook_macros::hook! {
     unsafe fn dirfd(
-        _dirp: *mut libc::DIR
-    ) => fizzle_dirfd(_ctx) {
+        dirp: *mut libc::DIR
+    ) -> libc::c_int => fizzle_dirfd(_ctx) {
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::dirfd(dirp) };
+
         unimplemented!("dirfd()")
     }
 }
 
 hook_macros::hook! {
     unsafe fn closedir(
-        _name: *const libc::c_char
-    ) -> *mut libc::DIR => fizzle_closedir(_ctx) {
+        dirp: *mut libc::DIR
+    ) -> libc::c_int => fizzle_closedir(_ctx) {
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::closedir(dirp) };
+
         unimplemented!("closedir()")
     }
 }
 
 hook_macros::hook! {
     unsafe fn readdir(
-        _dirp: *mut libc::DIR
+        dirp: *mut libc::DIR
     ) -> *mut libc::dirent => fizzle_readdir(_ctx) {
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::readdir(dirp) };
+
         unimplemented!("readdir()")
     }
 }
 
 type FtwFn = unsafe extern "C" fn(fpath: *const char, sb: *const libc::stat, typeflag: libc::c_int);
 
+/*
 hook_macros::hook! {
     unsafe fn ftw(
-        _dirpath: *const libc::c_char,
-        _fn: FtwFn,
-        _nopenfd: libc::c_int,
-        _flags: libc::c_int
+        dirpath: *const libc::c_char,
+        ftw_fn: FtwFn,
+        nopenfd: libc::c_int,
+        flags: libc::c_int
     ) -> libc::c_int => fizzle_ftw(_ctx) {
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::ftw(dirpath, ftw_fn, nopenfd, flags) };
+
         unimplemented!("ftw()")
     }
 }
+*/
 
 type NftwFn = unsafe extern "C" fn(
     fpath: *const char,
@@ -60,6 +79,7 @@ type NftwFn = unsafe extern "C" fn(
     ftwbuf: *mut libc::c_void,
 );
 
+/*
 hook_macros::hook! {
     unsafe fn nftw(
         _dirpath: *const libc::c_char,
@@ -70,11 +90,12 @@ hook_macros::hook! {
         unimplemented!("nftw()")
     }
 }
+*/
 
 type FTS = libc::c_void;
 type FTSENT = libc::c_void;
 type FtsCompareFn = unsafe extern "C" fn(*const *const FTSENT, *const *const FTSENT);
-
+/*
 hook_macros::hook! {
     unsafe fn fts_open(
         _path_argv: *const *const libc::c_char,
@@ -119,3 +140,5 @@ hook_macros::hook! {
         unimplemented!("fts_close()")
     }
 }
+
+*/
