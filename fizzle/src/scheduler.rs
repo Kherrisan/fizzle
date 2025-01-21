@@ -993,7 +993,7 @@ impl Scheduler {
             let current_len = state.global.fuzz_input.len();
             use std::io::Read;
             match std::io::stdin().read(state.global.fuzz_input.as_mut_slice()) {
-                Err(_) => panic!("read() failed for fuzzing"),
+                Err(e) => panic!("read() failed for fuzzing: {}", e),
                 Ok(0) => break,
                 Ok(read_amount) => {
                     unsafe {
