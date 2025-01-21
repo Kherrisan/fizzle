@@ -76,6 +76,16 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
     let mut ctx = fizzle_singleton();
 
     let res = match number {
+        libc::SYS_sched_getaffinity => {
+            crate::strace!("syscall(SYS_sched_getaffinity) -> ...");
+            let pid: libc::pid_t = va_args.arg();
+            let cpusetsize: libc::size_t = va_args.arg();
+            let mask: *mut libc::cpu_set_t = va_args.arg();
+
+            let res = hook_macros::real_syscall()(number, pid, cpusetsize, mask);
+            crate::strace!("syscall(SYS_sched_getaffinity) -> {}", res);
+            res
+        }
         libc::SYS_gettid => {
             crate::strace!("syscall(SYS_gettid) -> ...");
             let res = hook_macros::real_syscall()(number);
