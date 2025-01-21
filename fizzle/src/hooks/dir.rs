@@ -16,7 +16,7 @@ hook_macros::hook! {
         fd: libc::c_int
     ) -> *mut libc::DIR => fizzle_fdopendir(_ctx) {
         #[cfg(feature = "passthroughfs")]
-        return unsafe { libc::fopendir(fd) };
+        return unsafe { libc::fdopendir(fd) };
         unimplemented!("fdopendir()")
     }
 }
