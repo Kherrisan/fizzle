@@ -14,6 +14,8 @@ use crate::hook_macros;
 use crate::scheduler::fizzle_singleton;
 use crate::scheduler::Scheduler;
 
+/*
+
 hook_macros::hook! {
     unsafe fn inotify_init() => fizzle_inotify_init(_ctx) {
         log::error!("`inotify_init()` not implemented by Fizzle");
@@ -466,6 +468,15 @@ hook_macros::hook! {
     ) -> *mut libc::FILE => fizzle_fmemopen(_ctx) {
         unimplemented!("fmemopen()")
         // hook_macros::real!(fmemopen)(buf, size, mode)
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn open_memstream(
+        _ptr: *mut *mut libc::c_char,
+        _sizeloc: *mut libc::size_t
+    ) -> *mut libc::FILE => fizzle_open_memstream(_ctx) {
+        unimplemented!("open_memstream()")
     }
 }
 
@@ -1126,3 +1137,5 @@ hook_macros::hook! {
         unimplemented!("__fpurge()")
     }
 }
+
+*/

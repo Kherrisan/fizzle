@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::io::IoSlice;
 use std::mem::MaybeUninit;
 use std::{cmp, ptr};
 use std::fmt::Display;
@@ -136,7 +137,6 @@ bitflags! {
         const SYNC = libc::O_SYNC;
         const TMPFILE = libc::O_TMPFILE;
         const TRUNC = libc::O_TRUNC;
-        const READONLY = libc::O_RDONLY;
         const WRITEONLY = libc::O_WRONLY;
         const READWRITE = libc::O_RDWR;
     }
@@ -554,7 +554,23 @@ impl Event for FileWriteEvent<'_> {
                 let offset = open_file.borrow().offset;
 
                 match &self.data {
-                    WriteData::Basic(data) => {
+                    WriteData::BasicSlice(slice) => {
+                        let iov = IoSlice::new(slice);
+
+                        let written = unsafe {
+                            libc::pwritev(fd, iov.as_ptr().cast::<libc::iovec>(), 1, offset as i64)
+                        };
+                        if written < 0 {
+                            let e = Errno::get_errno();
+                            log::warn!("pwritev() failed with {} when reading data from file backend", e);
+                            return Outcome::Error(e)
+                        }
+
+                        open_file.borrow_mut().offset += written as usize;
+
+                        Outcome::Success(written as usize)                       
+                    }
+                    WriteData::BasicVec(data) => {
                         let written = unsafe {
                             libc::pwritev(fd, data.as_ptr().cast::<libc::iovec>(), data.len() as i32, offset as i64)
                         };
@@ -593,7 +609,10 @@ impl Event for FileWriteEvent<'_> {
             }
             FileBackend::Sink => {
                 match &self.data {
-                    WriteData::Basic(data) => {
+                    WriteData::BasicSlice(slice) => {
+                        Outcome::Success(slice.len())
+                    }
+                    WriteData::BasicVec(data) => {
                         Outcome::Success(data.iter().map(|s| s.len()).sum())
                     }
                     WriteData::File(data) => {
@@ -604,7 +623,10 @@ impl Event for FileWriteEvent<'_> {
             }
             FileBackend::NullSink => {
                 match &self.data {
-                    WriteData::Basic(data) => {
+                    WriteData::BasicSlice(slice) => {
+                        Outcome::Success(slice.len())
+                    }
+                    WriteData::BasicVec(data) => {
                         Outcome::Success(data.iter().map(|s| s.len()).sum())
                     }
                     WriteData::File(data) => {
@@ -615,7 +637,10 @@ impl Event for FileWriteEvent<'_> {
             },
             FileBackend::Fuzz(_) => {
                 match &self.data {
-                    WriteData::Basic(data) => {
+                    WriteData::BasicSlice(slice) => {
+                        Outcome::Success(slice.len())
+                    }
+                    WriteData::BasicVec(data) => {
                         Outcome::Success(data.iter().map(|s| s.len()).sum())
                     }
                     WriteData::File(data) => {

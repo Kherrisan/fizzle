@@ -35,8 +35,8 @@ pub enum FileStreamSource {
 // TODO: for now, we just pass everything through--none of these buffers are actually used.
 // Need to fix this to emulate proper buffering/flushing
 pub enum FileStreamBuffer {
-    Internal(Vec<u8>),
-    Slice(NonNull<[u8]>, usize),
+    Internal(Box<[u8]>),
+    Slice(NonNull<[u8]>),
     None,
 }
 
@@ -83,7 +83,7 @@ impl FileStreamMode {
                     bytes.next();
                     FileOpenFlags::READWRITE
                 } else {
-                    FileOpenFlags::READONLY
+                    FileOpenFlags::empty() // READONLY
                 }
             }
             b'w' => {
@@ -166,9 +166,27 @@ impl FileStreamMode {
 
 pub struct FileObject {
     pub source: FileStreamSource,
-    pub buf: FileStreamBuffer,
+    pub buffer: FileStreamBuffer,
+    pub buffer_index: usize,
+    pub read_end: usize,
+    pub access_mode: FileAccessMode,
+    pub buffering_mode: FileBufferMode,
     pub err: bool,
     pub eof: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileBufferMode {
+    Unbuffered,
+    Line,
+    Block,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileAccessMode {
+    ReadOnly,
+    WriteOnly,
+    ReadWrite,
 }
 
 pub struct FileStreamCreateEvent {
@@ -198,7 +216,17 @@ impl Event for FileStreamCreateEvent {
 
         state.local.file_objs.insert(file_ptr, FileObject {
             source,
-            buf: FileStreamBuffer::Internal(Vec::new()),
+            buffer: FileStreamBuffer::Internal(Box::new([0u8; libc::BUFSIZ as usize])),
+            buffer_index: 0,
+            read_end: 0,
+            access_mode: if self.mode.flags.contains(FileOpenFlags::READWRITE) {
+                FileAccessMode::ReadWrite
+            } else if self.mode.flags.contains(FileOpenFlags::WRITEONLY) {
+                FileAccessMode::WriteOnly
+            } else {
+                FileAccessMode::ReadOnly
+            },
+            buffering_mode: FileBufferMode::Block,
             eof: false,
             err: false,
         });
@@ -235,38 +263,115 @@ impl Event for FileStreamCloseEvent<'_> {
     }
 }
 
-pub struct FileStreamFlushEvent {
-    stream: Option<FilePtr>,
+pub enum FileStreamFlushState<'a> {
+    Start,
+    RunActions(Vec<FlushAction<'a>>),
+    Invalid,
 }
 
-impl FileStreamFlushEvent {
+pub struct FlushAction<'a> {
+    ptr: FilePtr,
+    event: DescriptorWriteEvent<'a>,
+}
+
+pub struct FileStreamFlushEvent<'a> {
+    stream: Option<FilePtr>,
+    state: FileStreamFlushState<'a>,
+}
+
+impl FileStreamFlushEvent<'_> {
     #[inline]
     pub fn new(stream: Option<FilePtr>) -> Self {
-        Self { stream }
+        Self {
+            stream,
+            state: FileStreamFlushState::Start,
+        }
     }
 }
-
-impl Event for FileStreamFlushEvent {
+/*
+impl Event for FileStreamFlushEvent<'_> {
     type Success = ();
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         // TODO: for now, this is a No-op as buffering isn't implemented
 
-        match &self.stream {
-            Some(stream) => match state.local.file_objs.get_mut(stream) {
+        let flush_state = mem::replace(&mut self.state, FileStreamFlushState::Invalid);
+
+        match (flush_state, &self.stream) {
+            (FileStreamFlushState::Start, Some(file_ptr)) => match state.local.file_objs.get_mut(file_ptr) {
                 Some(obj) => {
+                    if let FileAccessMode::ReadOnly = obj.access_mode {
+                        log::error!("fflush() called on read-only FILE* stream (undefined behavior)");
+                    }
+
+                    if obj.eof || obj.err {
+                        return Outcome::Error(Errno::SUCCESS)
+                    }
+
+                    // Nothing to flush if buffer_index is at 0
+                    if obj.buffer_index == 0 {
+                        return Outcome::Success(())
+                    }
+
+                    let data = match &obj.buffer {
+                        FileStreamBuffer::Internal(buf) => &buf.as_ref()[..obj.buffer_index],
+                        FileStreamBuffer::Slice(buf) => unsafe { &buf.as_ref()[..obj.buffer_index] },
+                        FileStreamBuffer::None => unreachable!(),
+                    };
+
+                    match &mut obj.source {
+                        FileStreamSource::Descriptor(fd) => {
+                            let desc = Descriptor::from_raw_fd(*fd);
+
+                            let events = vec![
+                                FlushAction {
+                                    ptr: *file_ptr,
+                                    event: DescriptorWriteEvent::new(desc, WriteData::BasicSlice(data)),
+                                }
+                            ];
+
+                            self.state = FileStreamFlushState::RunActions(events);
+                        }
+                        FileStreamSource::Slice(cell, dst_idx) => {
+                            let dst = unsafe { cell.get_mut().as_mut() };
+                            let flush_len = cmp::min(data.len(), dst.len() - *dst_idx);
+
+                            dst[*dst_idx..*dst_idx + flush_len].copy_from_slice(&data[..flush_len]);
+                            *dst_idx += flush_len;
+
+                            obj.buffer_index = 0;
+                            obj.read_end = 0;
+
+                            if flush_len < data.len() {
+                                obj.eof = true;
+                                return Outcome::Error(Errno::SUCCESS)
+                            }
+                        }
+                        FileStreamSource::Buffer(cell, dst_idx) => {
+                            let dst = cell.get_mut();
+
+                            let overwrite_len = cmp::min(data.len(), dst.len() - *dst_idx);
+
+                            dst[*dst_idx..*dst_idx + overwrite_len].copy_from_slice(&data[..overwrite_len]);
+                            dst.extend(&data[overwrite_len..]);
+                            *dst_idx += data.len();
+
+                            obj.buffer_index = 0;
+                            obj.read_end = 0;
+                        }
+                    }
 
                 }
                 None => panic!("UB: invalid file stream pointer flushed"),
             }
-            None => {
+            (FileStreamFlushState::Start, None) => {
                 // Flush all open file streams
                 for stream in state.local.file_objs.values_mut() {
-                    let read_slice = match &stream.buf {
-                        FileStreamBuffer::Internal(vec) => vec.as_slice(),
-                        FileStreamBuffer::Slice(non_null, write_idx) => {
-                            unsafe { &non_null.as_ref()[..*write_idx] }
+                    let read_slice = match &stream.buffer {
+                        FileStreamBuffer::Internal(vec) => &vec.as_ref()[..stream.buffer_index],
+                        FileStreamBuffer::Slice(non_null) => {
+                            unsafe { &non_null.as_ref()[..stream.buffer_index] }
                         }
                         FileStreamBuffer::None => continue,
                     };
@@ -297,12 +402,16 @@ impl Event for FileStreamFlushEvent {
                     */
                 }
             }
+            (FileStreamFlushState::RunActions(v), _) => {
+
+            }
+            (FileStreamFlushState::Invalid, _) => unreachable!(),
         }
 
         Outcome::Success(())
     }
 }
-
+*/
 pub struct FileStreamDescriptorEvent {
     stream: FilePtr,
 }
@@ -366,7 +475,7 @@ impl Event for FileStreamWriteEvent<'_> {
                     Some(obj) => match &mut obj.source {
                         FileStreamSource::Descriptor(fd) => {
                             let desc = Descriptor::from_raw_fd(*fd);
-                            self.state = FileStreamWriteState::Descriptor(DescriptorWriteEvent::new(desc, WriteData::Basic(slice::from_ref(self.buf))));
+                            self.state = FileStreamWriteState::Descriptor(DescriptorWriteEvent::new(desc, WriteData::BasicVec(slice::from_ref(self.buf))));
                             Outcome::Continue
                         }
                         FileStreamSource::Slice(cell, write_idx) => {

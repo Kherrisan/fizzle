@@ -289,7 +289,7 @@ impl Event for PipeWriteEvent<'_> {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let WriteData::Basic(iovec) = &self.data else {
+        let WriteData::BasicVec(iovec) = &self.data else {
             unreachable!(
                 "internal error--buffer other than WriteData::Basic passed to PipeWriteEvent"
             );

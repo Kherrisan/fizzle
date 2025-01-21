@@ -19,7 +19,7 @@ hook_macros::hook! {
 
         let s = slice::from_raw_parts(buf as *const u8, len);
         let mut iov = IoSlice::new(s);
-        let write_data = WriteData::Basic(slice::from_mut(&mut iov));
+        let write_data = WriteData::BasicVec(slice::from_mut(&mut iov));
 
         match Scheduler::handle_event(&mut ctx, DescriptorWriteEvent::new(descriptor_id, write_data)) {
             Ok(amount) => {
@@ -587,7 +587,7 @@ hook_macros::hook! {
         crate::strace!("writev(fd={}, iov={:?}, iovcnt={}) -> ...", fd, iov, iovcnt);
 
         let iov_slice = slice::from_raw_parts(iov.cast::<IoSlice<'_>>(), iovcnt as usize);
-        let write_data = WriteData::Basic(iov_slice);
+        let write_data = WriteData::BasicVec(iov_slice);
 
         match Scheduler::handle_event(&mut ctx, DescriptorWriteEvent::new(descriptor_id, write_data)) {
             Ok(amount) => {

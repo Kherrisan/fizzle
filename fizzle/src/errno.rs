@@ -10,6 +10,7 @@ impl From<Errno> for i32 {
 }
 
 impl Errno {
+    pub const SUCCESS: Self = Self(0);
     pub const EPERM: Self = Self(1);
     pub const ENOENT: Self = Self(2);
     pub const ESRCH: Self = Self(3);

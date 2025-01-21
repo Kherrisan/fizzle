@@ -712,7 +712,8 @@ impl Event for StdinReadEvent<'_> {
 }
 
 pub enum WriteData<'a> {
-    Basic(&'a [IoSlice<'a>]),
+    BasicSlice(&'a [u8]),
+    BasicVec(&'a [IoSlice<'a>]),
     File(FileWriteData<'a>),
     Socket(&'a [SocketWriteData<'a>], SocketFlags),
 }
@@ -874,7 +875,7 @@ impl Event for StdoutWriteEvent<'_> {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let nonblocking = state.local.fds.get(&self.fd).unwrap().nonblocking;
 
-        let WriteData::Basic(iovec) = self.data else {
+        let WriteData::BasicVec(iovec) = self.data else {
             unreachable!(
                 "internal error--buffer other than WriteData::Basic passed to StdoutWriteEvent"
             );
@@ -1002,7 +1003,7 @@ impl Event for StderrWriteEvent<'_> {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let WriteData::Basic(iovec) = self.data else {
+        let WriteData::BasicVec(iovec) = self.data else {
             unreachable!(
                 "internal error--buffer other than WriteData::Basic passed to StderrWriteEent"
             );
