@@ -471,6 +471,7 @@ hook_macros::hook! {
             (libc::SOL_TCP, libc::TCP_NODELAY | libc::TCP_MAXSEG | libc::TCP_USER_TIMEOUT | libc::TCP_FASTOPEN) => {
                 return 0
             }
+            (libc::SOL_TCP, libc::TCP_KEEPIDLE) => return 0,
             (libc::SOL_TCP, _) => {
                 panic!("Unrecognized socket option: SOL_TCP, optname {}", optname);
             }
@@ -480,7 +481,7 @@ hook_macros::hook! {
                 return -1
             }
             // Socket options that we pretend to support (but don't)
-            (libc::SOL_SOCKET, libc::SO_KEEPALIVE | libc::SO_OOBINLINE | libc::SO_PRIORITY | libc::SO_RCVBUF | libc::SO_SNDLOWAT | libc::SO_RCVLOWAT | libc::SO_RCVTIMEO | libc::SO_SNDTIMEO | libc::SO_REUSEADDR | libc::SO_ZEROCOPY) => {
+            (libc::SOL_SOCKET, libc::SO_KEEPALIVE | libc::SO_OOBINLINE | libc::SO_PRIORITY | libc::SO_RCVBUF | libc::SO_SNDLOWAT | libc::SO_RCVLOWAT | libc::SO_RCVTIMEO | libc::SO_SNDTIMEO | libc::SO_REUSEADDR | libc::SO_ZEROCOPY | libc::SO_SNDBUF) => { // TODO: configure SO_SNDBUF
                 // Ignore received value
                 return 0
             }
