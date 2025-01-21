@@ -873,7 +873,13 @@ impl Event for SocketAcceptEvent {
                     return Outcome::Error(Errno::ENOTSOCK);
                 };
 
-                let SocketState::Server(server_info) = &mut server_socket_info.borrow_mut().state else {
+                let mut server_sock_mut = server_socket_info.borrow_mut();
+                let protocol = server_sock_mut.protocol;
+                let LocalAddress::Assigned(sockaddr) = server_sock_mut.local_addr.clone() else {
+                    unreachable!()
+                };
+
+                let SocketState::Server(server_info) = &mut server_sock_mut.state else {
                     log::error!("accept() called on non-listening socket");
                     return Outcome::Error(Errno::EINVAL);
                 };
@@ -881,10 +887,7 @@ impl Event for SocketAcceptEvent {
                 let server_poll = server_info.ready_to_connect.clone();
 
                 let has_connecting = !server_info.connecting.is_empty();
-                let protocol = server_socket_info.borrow().protocol;
-                let LocalAddress::Assigned(sockaddr) = server_socket_info.borrow().local_addr.clone() else {
-                    unreachable!()
-                };
+
 
                 let server_address = TransportAddress { sockaddr, protocol };
 
@@ -894,8 +897,9 @@ impl Event for SocketAcceptEvent {
                 if let Some(PendingInfo { mut client, poll }) = bound_info.pending.take() {
                     let _addr = get_or_assign_local(&mut client, state);
 
+                    let mut client_mut = client.borrow_mut();
                     let SocketState::PendingConnection(pending_info) =
-                        &mut client.borrow_mut().state
+                        &mut client_mut.state
                     else {
                         unreachable!()
                     };
@@ -932,7 +936,8 @@ impl Event for SocketAcceptEvent {
                     self.state = SocketAcceptState::Finish(client.clone(), server_address);
                     Outcome::Continue
                 } else {
-                    let SocketState::Server(server_info) = &mut server_socket_info.borrow_mut().state else {
+                    let mut server_sock_mut = server_socket_info.borrow_mut();
+                    let SocketState::Server(server_info) = &mut server_sock_mut.state else {
                         unreachable!()
                     };
 
@@ -1023,13 +1028,12 @@ impl Event for SocketAcceptEvent {
                 let close_on_exec = fd_info.close_on_exec;
                 let nonblocking = fd_info.nonblocking;
 
+                let socktype = connecting_info.borrow().socktype;
+                let protocol = connecting_info.borrow().protocol;
                 let SocketState::Connecting(connecting_socket_info) = &mut connecting_info.borrow_mut().state
                 else {
                     unreachable!()
                 };
-
-                let socktype = connecting_info.borrow().socktype;
-                let protocol = connecting_info.borrow().protocol;
 
                 let connecting_backend = connecting_socket_info.backend.clone();
                 let connecting_polled = connecting_socket_info.connect_polled.clone();
