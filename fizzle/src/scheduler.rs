@@ -1440,6 +1440,7 @@ impl Scheduler {
         // Send SIGCHLD to parent process
         // NOTE: it is VERY IMPORTANT that this go towards the end of process termination.
         if ppid != Pid::INIT {
+            log::info!("sending SIGCHLD to parent process {}", ppid.as_raw());
             // TODO: if ppid == Pid::INIT, things should be reaped
             Scheduler::handle_event(
                 ctx,
@@ -1477,6 +1478,8 @@ impl Scheduler {
 
         // Delegate execution to the primary process (it's guaranteed not to exit)
         let delegate_sem = state.global.pids.get(&Pid::PRIMARY).unwrap().borrow().semaphore.clone();
+
+        log::info!("Exiting process and delegating to main semaphore");
 
         drop(state);
         delegate_sem.post();
