@@ -51,17 +51,17 @@
 # stdio = "fuzz" # Consume all input, produce fuzzing data as output
 "file:/dev/null" = "nullsink" # Consume all input, produce repeating 0s
 
-"tcp-client:127.0.0.1:25" = "fuzz"
+#"tcp-client:127.0.0.1:25" = "fuzz"
 
 # For Magma only
-#"tcp-server:192.168.61.132:3868" = "sink"
+"tcp-server:192.168.61.132:3868" = "sink"
 
-#[io."tcp-client:127.0.0.2:36412"]
-#method = "plugin" # The means of passing I/O on the device
-#when = "perround"
-#module = "fizzle-plugin-fuzz-s1ap" # The name of the cargo crate to source the plugin from
-#plugin = "S1apFuzzClient" # The name of the `Plugin` implementation to be used
-#streams = 1 # Establishes 5 client connections with the given server.
+[io."tcp-client:127.0.0.2:36412"]
+method = "plugin" # The means of passing I/O on the device
+when = "perround"
+module = "fizzle-plugin-fuzz-s1ap" # The name of the cargo crate to source the plugin from
+plugin = "S1apFuzzClient" # The name of the `Plugin` implementation to be used
+streams = 1 # Establishes 5 client connections with the given server.
 
 #"file:./myconfig" = "feedback" # Output whatever is given as input
 #"udp-server:127.0.0.1:53" = "passthrough" # Pass on to an actual network service (warning: unstable)
