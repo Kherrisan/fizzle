@@ -1258,6 +1258,7 @@ pub enum SocketOption {
     SocketIsListening(bool),
     SocketDontRoute(bool),
     SocketDomain(AddressFamily),
+    SocketType(SocketType),
     SocketError(libc::c_int),
     SocketKeepalive(bool),
     SocketLinger(Option<u32>),
@@ -1359,6 +1360,20 @@ impl SocketOption {
                 }
 
                 mem::size_of_val(&f.raw())
+            }
+            Self::SocketType(t) => {
+                let type_bytes = match t {
+                    SocketType::Stream => libc::SOCK_STREAM,
+                    SocketType::Datagram => libc::SOCK_DGRAM,
+                    SocketType::SeqPacket => libc::SOCK_SEQPACKET,
+                    SocketType::Raw => libc::SOCK_RAW,
+                }.to_be_bytes();
+
+                for (dst, src) in out.iter_mut().zip(type_bytes) {
+                    dst.write(src);
+                }
+
+                mem::size_of::<libc::c_int>()
             }
             Self::SocketError(error) => {
                 let error_bytes = error.to_be_bytes();
@@ -1652,6 +1667,9 @@ impl Event for SocketGetOptionEvent {
                     }
                 }))
             }
+            (OptLevel::Socket, libc::SO_TYPE) => {
+                Outcome::Success(SocketOption::SocketType(socket_info.borrow().socktype))
+            }
             // TODO: implement SO_RXQ_OVFL, SO_TIMESTAMP, when implementing `cmsg`s
             (OptLevel::Socket, _) => {
                 log::error!("unrecognized socket option {} for SOL_SOCKET", self.optname);
@@ -1846,6 +1864,7 @@ impl Event for SocketSetOptionEvent {
         match &self.option {
             SocketOption::SocketIsListening(_)
             | SocketOption::SocketDomain(_)
+            | SocketOption::SocketType(_)
             | SocketOption::SocketError(_)
             | SocketOption::SocketProtocol(_)
             | SocketOption::SctpGetLocalAddrs(_) => Outcome::Error(Errno::ENOPROTOOPT),
