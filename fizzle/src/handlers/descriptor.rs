@@ -89,7 +89,13 @@ impl Event for DescriptorCloseEvent {
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let Some(fd_info) = state.local.fds.get(&self.fd) else {
-            return Outcome::Error(Errno::EBADFD);
+            #[cfg(not(feature = "passthroughfs"))]
+            return Outcome::Error(Errno::EBADF);
+            #[cfg(feature = "passthroughfs")]
+            return match unsafe { libc::close(self.fd.as_raw_fd()) } {
+                0 => Outcome::Success(()),
+                _ => Outcome::Error(Errno::get_errno()),
+            }
         };
 
         if let FdResource::Socket(socket_info) = fd_info.resource.clone() {
@@ -284,7 +290,10 @@ impl Event for FcntlEvent<'_> {
                 }
             },
             None => {
-                Outcome::Error(Errno::EBADF)
+                #[cfg(not(feature = "passthroughfs"))]
+                return Outcome::Error(Errno::EBADF);
+                #[cfg(feature = "passthroughfs")]
+                unimplemented!("fcntl() passthrough");
             },
         }
     }
@@ -315,7 +324,13 @@ impl Event for DescriptorDuplicateEvent {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         // Copy over associated data from the old fd
         let Some(mut new_fd_info) = state.local.fds.get_mut(&self.old_fd).cloned() else {
-            return Outcome::Error(Errno::EBADFD);
+            #[cfg(not(feature = "passthroughfs"))]
+            return Outcome::Error(Errno::EBADF);
+            #[cfg(feature = "passthroughfs")]
+            return match unsafe { libc::fcntl(self.old_fd.as_raw_fd(), libc::F_DUPFD, self.new_fd.map(|d| d.as_raw_fd()).unwrap_or(0)) } {
+                fd @ 0.. => Outcome::Success(fd),
+                ..=-1 => Outcome::Error(Errno::get_errno()),
+            }
         };
 
         // Create a new, unique file descriptor
@@ -449,7 +464,20 @@ impl Event for DescriptorReadEvent<'_> {
         match &mut self.state {
             DescriptorReadState::Start => {
                 let Some(fd_info) = state.local.fds.get(&self.fd) else {
+                    #[cfg(not(feature = "passthroughfs"))]
                     return Outcome::Error(Errno::EBADF);
+                    #[cfg(feature = "passthroughfs")]
+                    return match self.data.take().unwrap() {
+                        ReadData::Basic(io_slice) => match unsafe { libc::readv(self.fd.as_raw_fd(), io_slice.as_ptr().cast(), io_slice.len() as i32) } {
+                            ..=-1 => Outcome::Error(Errno::get_errno()),
+                            len @ 0.. => Outcome::Success(len as usize),
+                        }
+                        ReadData::File(data) => match unsafe { libc::preadv2(self.fd.as_raw_fd(), data.buf.as_ptr().cast(), data.buf.len() as i32, data.offset.unwrap_or(0), data.flags.bits()) } {
+                             ..=-1 => Outcome::Error(Errno::get_errno()),
+                            len @ 0.. => Outcome::Success(len as usize),
+                        }
+                        ReadData::Socket(_msgs, _msgflags) => unreachable!(), // Passthrough sockets not allowed
+                    }
                 };
 
                 match &fd_info.resource {
@@ -770,7 +798,24 @@ impl Event for DescriptorWriteEvent<'_> {
         match &mut self.state {
             DescriptorWriteState::Start => {
                 let Some(fd_info) = state.local.fds.get(&self.fd) else {
+                    #[cfg(not(feature = "passthroughfs"))]
                     return Outcome::Error(Errno::EBADF);
+                    #[cfg(feature = "passthroughfs")]
+                    return match self.data.take().unwrap() {
+                        WriteData::BasicSlice(slice) => match unsafe { libc::write(self.fd.as_raw_fd(), slice.as_ptr().cast(), slice.len()) } {
+                            ..=-1 => Outcome::Error(Errno::get_errno()),
+                            len @ 0.. => Outcome::Success(len as usize),
+                        }
+                        WriteData::BasicVec(io_slice) => match unsafe { libc::writev(self.fd.as_raw_fd(), io_slice.as_ptr().cast(), io_slice.len() as i32) } {
+                            ..=-1 => Outcome::Error(Errno::get_errno()),
+                            len @ 0.. => Outcome::Success(len as usize),
+                        }
+                        WriteData::File(data) => match unsafe { libc::pwritev2(self.fd.as_raw_fd(), data.buf.as_ptr().cast(), data.buf.len() as i32, data.offset.unwrap_or(0), data.flags.bits()) } {
+                             ..=-1 => Outcome::Error(Errno::get_errno()),
+                            len @ 0.. => Outcome::Success(len as usize),
+                        }
+                        WriteData::Socket(_msgs, _msgflags) => unreachable!(), // Passthrough sockets not allowed
+                    }
                 };
 
                 match &fd_info.resource {

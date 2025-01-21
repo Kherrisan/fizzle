@@ -22,21 +22,21 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn umask(
         mask: libc::mode_t
-    ) -> libc::c_int => fizzle_umask(ctx) {
+    ) -> libc::c_uint => fizzle_umask(ctx) {
         let access_mode = AccessMode::from_bits_truncate(mask);
 
         crate::strace!("umask(mask={}) -> ...", access_mode);
 
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::umask(mask) };
+
+        // TODO: needs to return the previous mask
         match Scheduler::handle_event(&mut ctx, UmaskEvent::new(access_mode)) {
-            Ok(()) => {
-                crate::strace!("umask(mask={}) -> 0", access_mode);
-                0
+            Ok(prev) => {
+                crate::strace!("umask(mask={}) -> {}", access_mode, prev);
+                prev.bits()
             },
-            Err(e) => {
-                crate::strace!("umask(mask={}) -> -1 ({})", access_mode, e);
-                e.set_errno();
-                -1
-            }
+            Err(()) => unreachable!(),
         }
     }
 }
@@ -47,6 +47,11 @@ hook_macros::hook! {
         flags: libc::c_int,
         mode: libc::mode_t
     ) -> libc::c_int => fizzle_open(ctx) {
+        crate::strace!("open(pathname={:?}, flags={:?}, mode={:?}) -> ...", pathname, flags, mode);
+
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::open(pathname, flags, mode) };
+
         let Some(open_flags) = FileOpenFlags::from_bits(flags) else {
             log::warn!("unrecognized flags in `open()`");
             strace!("open(pathname={:?}, flags={}) -> -1 (EINVAL)", pathname, flags);
@@ -74,8 +79,6 @@ hook_macros::hook! {
             None
         };
 
-        crate::strace!("open(pathname={:?}, flags={:?}, mode={:?}) -> ...", relative_path, open_flags, mode);
-
         match Scheduler::handle_event(&mut ctx, FileOpenEvent::new(FileOpenLocation::Path(relative_path.clone()), open_flags, mode)) {
             Ok(fd) => {
                 crate::strace!("open(pathname={:?}, flags={:?}, mode={:?}) -> {}", relative_path, open_flags, mode, fd);
@@ -97,6 +100,9 @@ hook_macros::hook! {
         mode: libc::mode_t
     ) -> libc::c_int => fizzle_creat(ctx) {
         let open_flags = FileOpenFlags::CREATE | FileOpenFlags::TRUNC | FileOpenFlags::WRITEONLY;
+
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::creat(pathname, mode) };
 
         // TODO: track atime
 
@@ -136,6 +142,10 @@ hook_macros::hook! {
         flags: libc::c_int,
         mode: libc::mode_t
     ) -> libc::c_int => fizzle_openat(ctx) {
+
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::openat(dirfd, pathname, flags, mode) };
+
         let Some(open_flags) = FileOpenFlags::from_bits(flags) else {
             log::warn!("unrecognized flags in `openat()`");
             strace!("openat(dirfd={}, pathname={:?}, flags={}) -> -1 (EINVAL)", dirfd, pathname, flags);
@@ -532,6 +542,9 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_stat(ctx) {
         strace!("stat(pathname={:?}, statbuf={:?}) -> ...", pathname, statbuf);
 
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::stat(pathname, statbuf) };
+
         let stat_mut = statbuf.as_mut().unwrap();
 
         let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
@@ -561,6 +574,9 @@ hook_macros::hook! {
         statbuf: *mut libc::stat
     ) -> libc::c_int => fizzle_lstat(ctx) {
         strace!("lstat(pathname={:?}, statbuf={:?}) -> ...", pathname, statbuf);
+
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::lstat(pathname, statbuf) };
 
         let stat_mut = statbuf.as_mut().unwrap();
 
@@ -592,6 +608,9 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_fstat(ctx) {
         strace!("fstat(fd={}, statbuf={:?}) -> ...", fd, statbuf);
 
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::fstat(fd, statbuf) };
+
         let stat_mut = statbuf.as_mut().unwrap();
 
         match Scheduler::handle_event(&mut ctx, StatEvent::new(StatSource::Descriptor(fd), stat_mut, StatFlags::empty())) {
@@ -616,6 +635,9 @@ hook_macros::hook! {
         flags: libc::c_int
     ) -> libc::c_int => fizzle_fstatat(ctx) {
         strace!("fstatat(dirfd={}, pathname={:?}, statbuf={:?}, flags={}) -> ...", dirfd, pathname, statbuf, flags);
+
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::fstatat(dirfd, pathname, statbuf, flags) };
 
         let stat_mut = statbuf.as_mut().unwrap();
 

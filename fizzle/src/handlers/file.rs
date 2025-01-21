@@ -704,7 +704,13 @@ impl Event for ChangeDirectoryEvent {
             ChangeDirectorySource::Directory(dirfd) => {
                 let Some(DescriptorInfo { resource: FdResource::Directory(dir), .. }) = state.local.fds.get(&Descriptor::from_raw_fd(*dirfd)) else {
                     log::debug!("`fchdir` called with unrecognized fd");
-                    return Outcome::Error(Errno::EBADF)
+                    #[cfg(not(feature = "passthroughfs"))]
+                    return Outcome::Error(Errno::EBADF);
+                    #[cfg(feature = "passthroughfs")]
+                    return match unsafe { libc::fchdir(*dirfd) } {
+                        0 => Outcome::Success(()),
+                        _ => Outcome::Error(Errno::get_errno()),
+                    }
                 };
 
                 state.local.working_directory = dir.borrow().path.clone();
@@ -762,7 +768,13 @@ impl Event for ChangeOwnerEvent {
             }
             ChangeOwnerSource::Descriptor(fd) => {
                 let Some(fd_info) = state.local.fds.get(&Descriptor::from_raw_fd(*fd)) else {
-                    return Outcome::Error(Errno::EBADF)
+                    #[cfg(not(feature = "passthroughfs"))]
+                    return Outcome::Error(Errno::EBADF);
+                    #[cfg(feature = "passthroughfs")]
+                    return match unsafe { libc::fchown(*fd, self.owner, self.group) } {
+                        0 => Outcome::Success(()),
+                        _ => Outcome::Error(Errno::get_errno()),
+                    }
                 };
 
                 match &fd_info.resource {
@@ -774,7 +786,7 @@ impl Event for ChangeOwnerEvent {
                     FdResource::Directory(dir) => {
                         dir.borrow().path.clone()
                     }
-                    _ => return Outcome::Error(Errno::EBADF)
+                    _ => return Outcome::Error(Errno::ENOTDIR)
                 }
             },
             ChangeOwnerSource::PathAt(file_path, fd) => {
@@ -782,7 +794,13 @@ impl Event for ChangeOwnerEvent {
                     state.local.working_directory.clone()
                 } else {
                     let Some(fd_info) = state.local.fds.get(&Descriptor::from_raw_fd(*fd)) else {
-                        return Outcome::Error(Errno::EBADF)
+                        #[cfg(not(feature = "passthroughfs"))]
+                        return Outcome::Error(Errno::EBADF);
+                        #[cfg(feature = "passthroughfs")]
+                        return match unsafe { libc::fchownat(*fd, file_path.as_cstr().as_ptr(), self.owner, self.group, self.flags.bits()) } {
+                            0 => Outcome::Success(()),
+                            _ => Outcome::Error(Errno::get_errno()),
+                        }
                     };
 
                     match &fd_info.resource {
@@ -794,7 +812,7 @@ impl Event for ChangeOwnerEvent {
                         FdResource::Directory(dir) => {
                             dir.borrow().path.clone()
                         }
-                        _ => return Outcome::Error(Errno::EBADF)
+                        _ => return Outcome::Error(Errno::ENOTDIR)
                     }
                 };
 
@@ -863,7 +881,13 @@ impl Event for ChangeModeEvent {
             }
             ChangeModeSource::Descriptor(fd) => {
                 let Some(fd_info) = state.local.fds.get(&Descriptor::from_raw_fd(*fd)) else {
-                    return Outcome::Error(Errno::EBADF)
+                    #[cfg(not(feature = "passthroughfs"))]
+                    return Outcome::Error(Errno::EBADF);
+                    #[cfg(feature = "passthroughfs")]
+                    return match unsafe { libc::fchmod(*fd, self.mode) } {
+                        0 => Outcome::Success(()),
+                        _ => Outcome::Error(Errno::get_errno()),
+                    }
                 };
 
                 match &fd_info.resource {
@@ -873,7 +897,7 @@ impl Event for ChangeModeEvent {
                     FdResource::Directory(dir) => {
                         dir.borrow().path.clone()
                     }
-                    _ => return Outcome::Error(Errno::EBADF)
+                    _ => return Outcome::Error(Errno::ENOTDIR)
                 }
             },
             ChangeModeSource::PathAt(file_path, fd) => {
@@ -881,7 +905,13 @@ impl Event for ChangeModeEvent {
                     state.local.working_directory.clone()
                 } else {
                     let Some(fd_info) = state.local.fds.get(&Descriptor::from_raw_fd(*fd)) else {
-                        return Outcome::Error(Errno::EBADF)
+                        #[cfg(not(feature = "passthroughfs"))]
+                        return Outcome::Error(Errno::EBADF);
+                        #[cfg(feature = "passthroughfs")]
+                        return match unsafe { libc::fchmodat(*fd, file_path.as_cstr().as_ptr(), self.mode, self.flags.bits()) } {
+                            0 => Outcome::Success(()),
+                            _ => Outcome::Error(Errno::get_errno()),
+                        }
                     };
 
                     match &fd_info.resource {
@@ -891,7 +921,7 @@ impl Event for ChangeModeEvent {
                         FdResource::Directory(dir) => {
                             dir.borrow().path.clone()
                         }
-                        _ => return Outcome::Error(Errno::EBADF)
+                        _ => return Outcome::Error(Errno::ENOTDIR)
                     }
                 };
 
@@ -962,7 +992,13 @@ impl Event for AccessEvent {
                     state.local.working_directory.clone()
                 } else {
                     let Some(fd_info) = state.local.fds.get(&Descriptor::from_raw_fd(*fd)) else {
-                        return Outcome::Error(Errno::EBADF)
+                        #[cfg(not(feature = "passthroughfs"))]
+                        return Outcome::Error(Errno::EBADF);
+                        #[cfg(feature = "passthroughfs")]
+                        return match unsafe { libc::faccessat(*fd, file_path.as_cstr().as_ptr(), self.mode, self.flags.bits()) } {
+                            0 => Outcome::Success(()),
+                            _ => Outcome::Error(Errno::get_errno()),
+                        }
                     };
 
                     match &fd_info.resource {
@@ -972,7 +1008,7 @@ impl Event for AccessEvent {
                         FdResource::Directory(dir) => {
                             dir.borrow().path.clone()
                         }
-                        _ => return Outcome::Error(Errno::EBADF)
+                        _ => return Outcome::Error(Errno::ENOTDIR)
                     }
                 };
 
@@ -1174,12 +1210,13 @@ impl UmaskEvent {
 }
 
 impl Event for UmaskEvent {
-    type Success = ();
-    type Error = Errno;
+    type Success = AccessMode;
+    type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let prev = state.local.umask;
         state.local.umask = self.umask;
-        Outcome::Success(())
+        Outcome::Success(prev)
     }
 }
 
