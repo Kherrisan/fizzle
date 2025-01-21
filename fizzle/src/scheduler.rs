@@ -507,17 +507,23 @@ impl Scheduler {
                 }
                 DelegationState::RunPlugins => {
                     let mut state = ctx.acquire();
+
+                    log::debug!("Running plugins...");
                     
                     assert_eq!(state.local.process_info.borrow().pid, Pid::PRIMARY);
 
                     if plugins::run_plugins(&mut state) {
+                        log::debug!("Plugins yielded output");
                         // There are outstanding inputs from plugins to be processed
                         delegation_state = DelegationState::RunNextWorker;
                         continue 'yielded;
 
                     } else if let Some(ready) = state.global.ready_delayed.pop_front() {
                         let timestamp = state.global.current_time;
+
                         // There are outstanding delayed workers
+                        log::debug!("Running outstanding delayed worker...");
+
                         state.global.ready.push(ScheduledItem {
                             info: ready,
                             timestamp,
@@ -536,6 +542,8 @@ impl Scheduler {
                         // Not all `onready` subprocesses have been spawned
                         let curr_proc_sem = state.local.process_info.borrow().semaphore.clone();
 
+                        log::debug!("Running `onready` startup process...");
+
                         // Safety: this drop MUST occur before `run_subprocess()`
                         drop(state);
                         Scheduler::run_subprocess(ctx, onready);
@@ -544,6 +552,8 @@ impl Scheduler {
 
                     } else if !state.global.per_round_endpoints.is_empty() {
                         // Not all endpoints have been disconnected for this round?
+
+                        log::debug!("Registering per-round endpoints...");
 
                         drop(state);
                         Scheduler::remove_perround_endpoints(ctx);
@@ -554,6 +564,7 @@ impl Scheduler {
                         drop(state);
 
                         // Everything is ready for the next round now
+                        log::debug!("All tasks completed for the given fuzzing round.");
                         Scheduler::round_complete(ctx);
 
                         delegation_state = DelegationState::RunNextWorker;
@@ -924,13 +935,15 @@ impl Scheduler {
 
     fn prepare_fuzz_input(state: &mut FizzleState) {
         #[cfg(feature = "afl")]
-        if !state.global.shared_mem_initialized {
-            state.global.shared_mem_initialized = true;
+        if !state.global.afl_shmem_initialized {
+            state.global.afl_shmem_initialized = true;
+
+            #[cfg(feature = "pcr")]
+            unsafe {
+                crate::__afl_sharedmem_fuzzing = 1;
+            }
 
             unsafe {
-                #[cfg(feature = "pcr")]
-                crate::__afl_sharedmem_fuzzing = 1;
-
                 crate::__afl_manual_init();
             }
         }
@@ -977,13 +990,13 @@ impl Scheduler {
         loop {
             state.global.fuzz_input.reserve(16384);
             let current_len = state.global.fuzz_input.len();
-            unsafe {
-                let start = state.global.fuzz_input.as_mut_ptr().add(current_len);
-                match libc::read(0, start.cast::<libc::c_void>(), 16384) {
-                    ..=-1 => panic!("read() failed on stdin during PCR fuzzing"),
-                    0 => break,
-                    read_amount => {
-                        state.global.fuzz_input.set_len(current_len + read_amount as usize);
+            use std::io::Read;
+            match std::io::stdin().read(state.global.fuzz_input.as_mut_slice()) {
+                Err(_) => panic!("read() failed for fuzzing"),
+                Ok(0) => break,
+                Ok(read_amount) => {
+                    unsafe {
+                        state.global.fuzz_input.set_len(current_len + read_amount);
                     }
                 }
             }
