@@ -230,11 +230,17 @@ pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: .
 hook_macros::hook! {
     unsafe fn ioctl(
         fd: libc::c_int,
-        request: libc::c_int,
+        request: libc::c_ulong,
         arg: *mut libc::c_void
     ) -> libc::c_int => fizzle_ioctl(_ctx) {
         log::info!("ioctl({}, {}, {})", fd, request, arg as usize);
 
-        panic!("`ioctl` unimplemented")
+        let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
+        let res = libc::ioctl(fd, request, arg);
+        unsafe {
+            libc::close(fd);
+        }
+
+        res
     }
 }
