@@ -936,7 +936,6 @@ impl Event for SocketAcceptEvent {
                     self.state = SocketAcceptState::Finish(client.clone(), server_address);
                     Outcome::Continue
                 } else {
-                    let mut server_sock_mut = server_socket_info.borrow_mut();
                     let SocketState::Server(server_info) = &mut server_sock_mut.state else {
                         unreachable!()
                     };
