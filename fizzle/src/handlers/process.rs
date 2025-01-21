@@ -197,7 +197,9 @@ impl Event for ProcessForkEvent {
                 // Let the scheduler know we have more to execute once the new thread is done.
                 state.mark_thread_ready(thread::current().id());
 
-                let parent_sem = state.local.process_info.borrow().semaphore.clone();
+                let proc_info_borrow = state.local.process_info.borrow();
+                let parent_sem = proc_info_borrow.semaphore.clone();
+                drop(proc_info_borrow);
 
                 let pid = unsafe { libc::fork() };
 
@@ -217,9 +219,9 @@ impl Event for ProcessForkEvent {
 
                         // SAFETY: first time this is called in this process; parent process won't
                         // access the fizzle singleton until it is awakened.
-                        let mut ctx = unsafe { fizzle_singleton() };
+                        // let mut ctx = unsafe { fizzle_singleton() };
                         // SAFETY: this is a forked process, so it already has its FizzleState initialized.
-                        let mut state = ctx.acquire();
+                        // let mut state = ctx.acquire();
 
                         let pid = state.global.next_pid();
                         let ppid = parent_info.borrow().pid;
