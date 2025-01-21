@@ -864,9 +864,10 @@ impl FizzleState {
 
         // Remove the poller from each polled instance it was registered to
         for polled in poller.borrow().polled_events.iter() {
-            for i in 0..polled.borrow().pollers.len() {
-                if polled.borrow().pollers.get(i).unwrap().borrow().worker == poller.borrow().worker {
-                    polled.borrow_mut().pollers.remove(i);
+            let mut polled_mut = polled.borrow_mut();
+            for i in 0..polled_mut.pollers.len() {
+                if polled_mut.pollers.get(i).unwrap().borrow().worker == poller.borrow().worker {
+                    polled_mut.pollers.remove(i);
                 }
             }
         }
