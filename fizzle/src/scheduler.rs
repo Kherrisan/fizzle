@@ -987,6 +987,8 @@ impl Scheduler {
                 .did_write(*crate::__afl_fuzz_len as usize);
         }
 
+        panic!("You made it! If you're here then the server is ready to be fuzzed.");
+
         #[cfg(not(feature = "pcr"))]
         loop {
             state.global.fuzz_input.reserve(16384);
