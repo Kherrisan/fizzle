@@ -793,8 +793,11 @@ pub unsafe extern "C" fn clone(
 
 hook_macros::hook! {
     unsafe fn getpid() -> libc::pid_t => fizzle_getpid(ctx) {
-
         crate::strace!("getpid() -> ...");
+
+        #[cfg(feature = "passthroughfs")]
+        return unsafe { libc::getpid() };
+
         match Scheduler::handle_event(&mut ctx, ProcessGetIdEvent::new()) {
             Ok(pid) => {
                 crate::strace!("getpid() -> {}", pid);
