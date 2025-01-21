@@ -274,13 +274,14 @@ impl Event for ProcessForkEvent {
                         let cleanup = state
                             .local
                             .pthread_cleanup
-                            .remove(&thread::current().id())
-                            .unwrap();
+                            .remove(&thread::current().id());
                         state.local.pthread_cleanup.clear();
-                        state
-                            .local
-                            .pthread_cleanup
-                            .insert(thread::current().id(), cleanup);
+                        if let Some(cleanup) = cleanup {
+                            state
+                                .local
+                                .pthread_cleanup
+                                .insert(thread::current().id(), cleanup);
+                        }
 
                         // The current (forking) thread isn't terminating
                         state.local.terminated_threads.clear();
