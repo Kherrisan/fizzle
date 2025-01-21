@@ -1271,6 +1271,7 @@ pub enum SocketOption {
     SocketPriority(u32),
     SocketProtocol(TransportProtocol),
     SocketRecvBuffer(u32),
+    SocketSendBuffer(u32),
     SocketSendLowWatermark(u32),
     SocketRecvLowWatermark(u32),
     SocketReuseAddr(bool),
@@ -1344,6 +1345,7 @@ impl SocketOption {
             Self::TcpMss(u)
             | Self::SocketPriority(u)
             | Self::SocketRecvBuffer(u)
+            | Self::SocketSendBuffer(u)
             | Self::SocketSendLowWatermark(u)
             | Self::SocketRecvLowWatermark(u)
             | Self::SctpMaxSegment(u) => {
@@ -1600,6 +1602,10 @@ impl Event for SocketGetOptionEvent {
             (OptLevel::Socket, libc::SO_KEEPALIVE) => {
                 // TODO: implement assignment of this flag
                 Outcome::Success(SocketOption::SocketKeepalive(false))
+            }
+            (OptLevel::Socket, libc::SO_SNDBUF) => {
+                // TODO: make dynamic based on buffer set by user
+                Outcome::Success(SocketOption::SocketSendBuffer(65536))
             }
             (OptLevel::Socket, libc::SO_LINGER) => {
                 // TODO: implement assignment of this flag
@@ -1866,7 +1872,8 @@ impl Event for SocketSetOptionEvent {
         };
 
         match &self.option {
-            SocketOption::SocketIsListening(_)
+            SocketOption::SocketSendBuffer(_)
+            | SocketOption::SocketIsListening(_)
             | SocketOption::SocketDomain(_)
             | SocketOption::SocketType(_)
             | SocketOption::SocketError(_)
