@@ -19,6 +19,7 @@ mod semaphore;
 mod state;
 mod streams;
 
+use critical_section::RawRestoreState;
 use embedded_alloc::TlsfHeap;
 pub(crate) use hook_macros::hook;
 
@@ -66,6 +67,25 @@ unsafe extern "C" {
     static mut stdout: *mut libc::FILE;
 
     static mut stderr: *mut libc::FILE;
+}
+
+// # SAFETY
+// 
+// Defines a custom critical section that does not perform any mutex operations.
+// This is meant to speed up allocation/deallocation procedures in Fizzle; it is
+// safe so long as Fizzle accurately ensures that only one thread is executing at
+// a given time.
+struct MyCriticalSection;
+critical_section::set_impl!(MyCriticalSection);
+
+unsafe impl critical_section::Impl for MyCriticalSection {
+    unsafe fn acquire() -> RawRestoreState {
+        // no-op
+    }
+
+    unsafe fn release(token: RawRestoreState) {
+        // no-op
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]

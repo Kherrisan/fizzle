@@ -1052,7 +1052,7 @@ pub struct InterprocessState {
     /// The next StreamId available to be assigned to an emulated stream.
     pub next_stream_id: StreamId,
     pub process_groups: GlobalMap<Pgid, GlobalSet<Pid>>,
-    pub plugins: GlobalVec<PluginInfo>,
+    pub plugins: GlobalVec<GlobalRc<PluginInfo>>,
 
     // TODO: BTreeMap would be unwise--FilePath has an expensive `eq` comparison
     pub file_paths: FnvIndexMap<FilePath<MAX_PATH_LEN>, GlobalRc<FileInfo>, FIZZLE_MAX_FILE_PATHS>,
@@ -1389,7 +1389,7 @@ impl InterprocessState {
             event_raised: true,
         }), fizzle_alloc());
 
-        std::rc::Rc::new_in(RefCell::new(PluginInfo {
+        let plugin = std::rc::Rc::new_in(RefCell::new(PluginInfo {
                 endpoint,
                 stream,
                 module,
@@ -1397,7 +1397,11 @@ impl InterprocessState {
                 read_polled,
                 write_buf,
                 write_polled,
-            }), fizzle_alloc())
+            }), fizzle_alloc());
+
+        self.plugins.push(plugin.clone());
+
+        plugin
     }
 
     /// Assigns the next available ephemeral address.

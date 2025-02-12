@@ -7,6 +7,7 @@ use crate::constants::{
     FIZZLE_SOMAXCONN,
 };
 use crate::errno::Errno;
+use crate::hooks::io::write;
 use crate::scheduler::{fizzle_alloc, Event, Outcome};
 use crate::state::FizzleState;
 use crate::{GlobalList, GlobalRc};
@@ -99,6 +100,14 @@ pub struct TransportLocationInfo {
     pub pending: Option<PendingInfo>,
 }
 
+impl TransportLocationInfo {
+    pub fn next_bound(&mut self) -> Option<GlobalRc<SocketInfo>> {
+        let sock = self.bound_sockets.pop_front()?;
+        self.bound_sockets.push_back(sock.clone());
+        Some(sock)
+    }
+}
+
 #[derive(Clone)]
 pub struct PendingInfo {
     pub client: GlobalRc<SocketInfo>,
@@ -176,6 +185,45 @@ pub struct ConnectionlessSocket {
     pub reuse_port: bool,
 }
 
+impl ConnectionlessSocket {
+    /// Returns the `Polled` instance used to notify of read data available for this socket.
+    pub fn read_polled(&self) -> Option<GlobalRc<PolledInfo>> {
+        match &self.backend {
+            ConnectionlessBackend::Passthrough => unimplemented!(),
+            ConnectionlessBackend::Peered(p) => Some(p.read_polled.clone()),
+            ConnectionlessBackend::Feedback(f) => Some(f.read_polled.clone()),
+            ConnectionlessBackend::Plugin(p) => Some(p.borrow().read_polled.clone()),
+            ConnectionlessBackend::Sink => None,
+            ConnectionlessBackend::NullSink => None,
+            ConnectionlessBackend::Fuzz(f) => Some(f.borrow().read_polled.clone()),
+        }
+    }
+
+    /// Returns the `Polled` instance used to notify of
+    pub fn dst_socket(&self, state: &mut FizzleState) -> Option<GlobalRc<SocketInfo>> {
+        match &self.backend {
+            ConnectionlessBackend::Peered(_) => {
+                let Some(addr) = &self.rem_addr else {
+                    return None
+                };
+
+                let Some(loc_info) = state.global.socket_locations.get_mut(addr) else {
+                    return None
+                };
+
+                let Some(peer_info) = loc_info.bound_sockets.front().cloned() else {
+                    return None
+                };
+
+                loc_info.bound_sockets.push_back(peer_info.clone());
+
+                Some(peer_info)
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct UnassociatedSocket {
     reuse_port: bool,
@@ -203,6 +251,43 @@ pub struct ConnectedSocket {
     pub backend: ConnectedBackend,
     pub rem_addr: TransportAddress,
     pub peer_closed: bool,
+}
+
+impl ConnectedSocket {
+    pub fn read_polled(&self) -> Option<GlobalRc<PolledInfo>> {
+        match &self.backend {
+            ConnectedBackend::Passthrough => unimplemented!(),
+            ConnectedBackend::Peered(p) => Some(p.read_polled.clone()),
+            ConnectedBackend::Feedback(f) => Some(f.read_polled.clone()),
+            ConnectedBackend::Plugin(p) => Some(p.borrow().read_polled.clone()),
+            ConnectedBackend::Sink => None,
+            ConnectedBackend::NullSink => None,
+            ConnectedBackend::Fuzz(f) => Some(f.borrow().read_polled.clone()),
+        }
+    }
+
+    pub fn write_polled(&self) -> Option<GlobalRc<PolledInfo>> {
+        match &self.backend {
+            ConnectedBackend::Passthrough => unimplemented!(),
+            ConnectedBackend::Peered(p) => {
+                let peer = p.peer.upgrade()?;
+                let peer_ref = peer.borrow();
+                match &peer_ref.state {
+                    SocketState::Connected(c) => match &c.backend {
+                        ConnectedBackend::Peered(p) => Some(p.write_polled.clone()),
+                        ConnectedBackend::Plugin(p) => Some(p.borrow().write_polled.clone()),
+                        _ => unreachable!()
+                    },
+                    _ => unreachable!(),
+                }
+            }
+            ConnectedBackend::Feedback(f) => Some(f.write_polled.clone()),
+            ConnectedBackend::Plugin(p) => Some(p.borrow().write_polled.clone()),
+            ConnectedBackend::Sink => None,
+            ConnectedBackend::NullSink => None,
+            ConnectedBackend::Fuzz(f) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -677,11 +762,11 @@ impl Event for SocketConnectEvent {
 
                 let _addr = get_or_assign_local(&mut socket_info, state);
 
-                let borrowed_socket_info = socket_info.borrow();
-                match &borrowed_socket_info.state {
-                    SocketState::Unassociated(_) => {
-                        let protocol = socket_info.borrow().protocol;
+                let mut borrowed_socket_info = socket_info.borrow_mut();
+                let protocol = borrowed_socket_info.protocol;
 
+                match &mut borrowed_socket_info.state {
+                    SocketState::Unassociated(_) => {
                         let dst_addr = TransportAddress {
                             sockaddr: self.dst_addr.clone(),
                             protocol,
@@ -714,7 +799,8 @@ impl Event for SocketConnectEvent {
                             return Outcome::Error(Errno::ECONNREFUSED);
                         }
 
-                        let SocketState::Server(server_info) = &mut server_socket_info.borrow_mut().state else {
+                        let mut server_sock_mut = server_socket_info.borrow_mut();
+                        let SocketState::Server(server_info) = &mut server_sock_mut.state else {
                             log::error!("inconsistent Fizzle state--socket bound to connect() address {} not in listening state", &dst_addr);
                             return Outcome::Error(Errno::ECONNREFUSED);
                         };
@@ -738,7 +824,7 @@ impl Event for SocketConnectEvent {
                                     event_raised: false,
                                 }), fizzle_alloc());
 
-                                server_socket_info.borrow_mut().state =
+                                server_sock_mut.state =
                                     SocketState::Connecting(ConnectingSocket {
                                         backend: ConnectingBackend::Peered(()),
                                         connect_polled: client_poll.clone(),
@@ -821,7 +907,15 @@ impl Event for SocketConnectEvent {
                         }
                     }
                     SocketState::Connected(_) => Outcome::Error(Errno::EISCONN),
-                    SocketState::Connectionless(_) => unreachable!(),
+                    SocketState::Connectionless(conn) => {
+                        let dst_addr = TransportAddress {
+                            sockaddr: self.dst_addr.clone(),
+                            protocol,
+                        };
+
+                        conn.rem_addr = Some(dst_addr);
+                        Outcome::Success(())
+                    }
                 }
             }
             SocketConnectState::Finish(poller_id) => {
@@ -1990,23 +2084,11 @@ impl Event for SocketReadEvent<'_> {
         let mut borrowed_socket_info = socket_info.borrow_mut();
 
         match (&self.state, &mut borrowed_socket_info.state) {
-            (SocketReadState::Start, SocketState::Connectionless(conn)) => {
-                let read_polled = match &conn.backend {
-                    ConnectionlessBackend::Peered(regular) => {
-                        Some(regular.read_polled.clone())
-                    }
-                    ConnectionlessBackend::Feedback(feedback) => {
-                        Some(feedback.read_polled.clone())
-                    }
-                    ConnectionlessBackend::Fuzz(endpoint) => {
-                        Some(endpoint.borrow().read_polled.clone())
-                    }
-                    ConnectionlessBackend::NullSink => None,
-                    ConnectionlessBackend::Passthrough => unimplemented!(),
-                    ConnectionlessBackend::Sink => None,
-                    ConnectionlessBackend::Plugin(plugin_info) => {
-                        Some(plugin_info.borrow().read_polled.clone())
-                    }
+            (SocketReadState::Start, _) => {
+                let read_polled = match &borrowed_socket_info.state {
+                    SocketState::Connectionless(c) => c.read_polled(),
+                    SocketState::Connected(c) => c.read_polled(),
+                    _ => return Outcome::Error(Errno::ENOTCONN),
                 };
 
                 if let Some(read_polled) = read_polled.as_ref() {
@@ -2027,10 +2109,17 @@ impl Event for SocketReadEvent<'_> {
                     Outcome::Continue
                 }
             }
-            (SocketReadState::Finish(_poller_id), SocketState::Connectionless(ConnectionlessSocket { backend: ConnectionlessBackend::Passthrough, .. })) => {
+            (SocketReadState::Finish(poller_id), SocketState::Connectionless(ConnectionlessSocket { backend: ConnectionlessBackend::Passthrough, .. })) => {
+                if let Some(poller) = poller_id.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
                 unimplemented!()
             }
-            (SocketReadState::Finish(_poller_id), SocketState::Connectionless(ConnectionlessSocket { backend: ConnectionlessBackend::Peered(regular), .. })) => {
+            (SocketReadState::Finish(poller_id), SocketState::Connectionless(ConnectionlessSocket { backend: ConnectionlessBackend::Peered(regular), .. })) => {
+                if let Some(poller) = poller_id.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
+
                 match &mut self.data {
                     ReadData::Basic(data) => {
                         let message = regular.recv_buf.pop_front().unwrap();
@@ -2087,7 +2176,11 @@ impl Event for SocketReadEvent<'_> {
                     }
                 }
             }
-            (SocketReadState::Finish(_poller_id), SocketState::Connectionless(ConnectionlessSocket { backend: ConnectionlessBackend::Feedback(feedback), .. })) => {
+            (SocketReadState::Finish(poller_id), SocketState::Connectionless(ConnectionlessSocket { backend: ConnectionlessBackend::Feedback(feedback), .. })) => {
+                if let Some(poller) = poller_id.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
+
                 match &mut self.data {
                     ReadData::Basic(data) => {
                         let message = feedback.recv_buf.pop_front().unwrap();
@@ -2144,13 +2237,25 @@ impl Event for SocketReadEvent<'_> {
                     }
                 }
             }
-            (SocketReadState::Finish(_poller_id), SocketState::Connectionless(ConnectionlessSocket { backend: ConnectionlessBackend::Plugin(_plugin_endpoint_id), .. })) => {
+            (SocketReadState::Finish(poller_id), SocketState::Connectionless(ConnectionlessSocket { backend: ConnectionlessBackend::Plugin(_plugin_endpoint_id), .. })) => {
+                if let Some(poller) = poller_id.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
+
                 todo!("stateless socket plugins (e.g. UDP) not implemented")
             }
-            (SocketReadState::Finish(_poller_id), SocketState::Connectionless(ConnectionlessSocket { backend: ConnectionlessBackend::Sink, .. })) => {
+            (SocketReadState::Finish(poller_id), SocketState::Connectionless(ConnectionlessSocket { backend: ConnectionlessBackend::Sink, .. })) => {
+                if let Some(poller) = poller_id.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
+
                 Outcome::Success(0)
             }
-            (SocketReadState::Finish(_poller_id), SocketState::Connectionless(ConnectionlessSocket { backend: ConnectionlessBackend::NullSink, .. })) => {
+            (SocketReadState::Finish(poller_id), SocketState::Connectionless(ConnectionlessSocket { backend: ConnectionlessBackend::NullSink, .. })) => {
+                if let Some(poller) = poller_id.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
+
                 match &mut self.data {
                     ReadData::Basic(out_slices) => {
                         let mut total_read = 0;
@@ -2179,7 +2284,10 @@ impl Event for SocketReadEvent<'_> {
                     }
                 }
             }
-            (SocketReadState::Finish(_poller_id), SocketState::Connectionless(ConnectionlessSocket { backend: ConnectionlessBackend::Fuzz(fuzz_endpoint), .. })) => {
+            (SocketReadState::Finish(poller_id), SocketState::Connectionless(ConnectionlessSocket { backend: ConnectionlessBackend::Fuzz(fuzz_endpoint), .. })) => {
+                if let Some(poller) = poller_id.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
 
                 match &mut self.data {
                     ReadData::Basic(out_slices) => {
@@ -2209,45 +2317,18 @@ impl Event for SocketReadEvent<'_> {
                     }
                 }
             }
-            (SocketReadState::Start, SocketState::Connected(conn)) => {
-                let read_polled = match &conn.backend {
-                    ConnectedBackend::Passthrough => unreachable!(),
-                    ConnectedBackend::Peered(regular) => {
-                        Some(regular.read_polled.clone())
-                    }
-                    ConnectedBackend::Feedback(feedback) => {
-                        Some(feedback.read_polled.clone())
-                    }
-                    ConnectedBackend::Plugin(plugin_info) => {
-                        Some(plugin_info.borrow().read_polled.clone())
-                    }
-                    ConnectedBackend::Sink => None,
-                    ConnectedBackend::NullSink => None,
-                    ConnectedBackend::Fuzz(_) => None,
-                };
-
-                if let Some(read_polled) = read_polled.as_ref() {
-                    if state.polled_is_ready(&read_polled) {
-                        self.state = SocketReadState::Finish(None);
-                        Outcome::Continue
-                    } else if self.nonblocking {
-                        Outcome::Error(Errno::EAGAIN)
-                    } else {
-                        let poller_id = state.new_poller();
-                        state.register_poller(poller_id.clone(), read_polled.clone());
-
-                        self.state = SocketReadState::Finish(Some(poller_id));
-                        Outcome::Yield(None)
-                    }
-                } else {
-                    self.state = SocketReadState::Finish(None);
-                    Outcome::Continue
+            (SocketReadState::Finish(poller_id), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Passthrough, .. })) => {
+                if let Some(poller) = poller_id.as_ref() {
+                    state.delete_poller(poller.clone());
                 }
-            }
-            (SocketReadState::Finish(_poller_id), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Passthrough, .. })) => {
+
                 unimplemented!()
             }
-            (SocketReadState::Finish(_poller_id), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Peered(regular), .. })) => {
+            (SocketReadState::Finish(poller_id), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Peered(regular), .. })) => {
+                if let Some(poller) = poller_id.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
+
                 match &mut self.data {
                     ReadData::Basic(data) => {
                         let buf = regular.recv_buf.clone();
@@ -2294,8 +2375,12 @@ impl Event for SocketReadEvent<'_> {
                     }
                 }
             }
-            (SocketReadState::Finish(_poller_id), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Feedback(feedback), .. })) => {
+            (SocketReadState::Finish(poller_id), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Feedback(feedback), .. })) => {
                 let buf = feedback.buf.clone();
+
+                if let Some(poller) = poller_id.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
 
                 match &mut self.data {
                     ReadData::Basic(out_data) => {
@@ -2337,12 +2422,24 @@ impl Event for SocketReadEvent<'_> {
                 }
             }
             (SocketReadState::Finish(poller_id), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Plugin(plugin_endpoint_id), .. })) => {
+                if let Some(poller) = poller_id.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
+
                 todo!("stateless socket plugins (e.g. UDP) not implemented")
             }
             (SocketReadState::Finish(poller_id), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Sink, .. })) => {
+                if let Some(poller) = poller_id.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
+
                 Outcome::Success(0)
             }
             (SocketReadState::Finish(poller_id), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::NullSink, .. })) => {
+                if let Some(poller) = poller_id.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
+
                 match &mut self.data {
                     ReadData::Basic(out_slices) => {
                         let mut total_read = 0;
@@ -2371,7 +2468,10 @@ impl Event for SocketReadEvent<'_> {
                     }
                 }
             }
-            (SocketReadState::Finish(poller), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Fuzz(endpoint), .. })) => {
+            (SocketReadState::Finish(poller_id), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Fuzz(endpoint), .. })) => {
+                if let Some(poller) = poller_id.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
 
                 match &mut self.data {
                     ReadData::Basic(out_slices) => {
@@ -2406,15 +2506,27 @@ impl Event for SocketReadEvent<'_> {
     }
 }
 
+pub enum SocketWriteState {
+    Start,
+    Finish(Option<GlobalRc<PollerInfo>>),
+}
+
 pub struct SocketWriteEvent<'a> {
-    fd: Descriptor,
+    socket: GlobalRc<SocketInfo>,
+    nonblocking: bool,
     data: WriteData<'a>,
+    state: SocketWriteState,
 }
 
 impl<'a> SocketWriteEvent<'a> {
     #[inline]
-    pub fn new(fd: Descriptor, data: WriteData<'a>) -> Self {
-        Self { fd, data }
+    pub fn new(socket: GlobalRc<SocketInfo>, nonblocking: bool, data: WriteData<'a>) -> Self {
+        Self {
+            socket,
+            nonblocking,
+            data,
+            state: SocketWriteState::Start,
+        }
     }
 }
 
@@ -2423,6 +2535,400 @@ impl Event for SocketWriteEvent<'_> {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        todo!()
+        let socket_info = self.socket.clone();
+
+        let local_addr = get_or_assign_local(&mut socket_info, state);
+        let mut borrowed_socket_info = socket_info.borrow_mut();
+
+        match (&self.state, &mut borrowed_socket_info.state) {
+            (SocketWriteState::Start, SocketState::Connectionless(conn)) => {
+                // Sending out on a Connectionless socket doesn't require polling--lossy packets are simply dropped
+                self.state = SocketWriteState::Finish(None);
+                Outcome::Continue
+            }
+            (SocketWriteState::Start, SocketState::Connected(conn)) => {
+                let write_polled = conn.write_polled();
+
+                if let Some(write_polled) = write_polled.as_ref() {
+                    if state.polled_is_ready(&write_polled) {
+                        self.state = SocketWriteState::Finish(None);
+                        Outcome::Continue
+                    } else if self.nonblocking {
+                        Outcome::Error(Errno::EAGAIN)
+                    } else {
+                        let poller_id = state.new_poller();
+                        state.register_poller(poller_id.clone(), write_polled.clone());
+
+                        self.state = SocketWriteState::Finish(Some(poller_id));
+                        Outcome::Yield(None)
+                    }
+                } else {
+                    self.state = SocketWriteState::Finish(None);
+                    Outcome::Continue
+                }
+            }
+            (SocketWriteState::Finish(poller), SocketState::Connectionless(conn)) => {
+                if let Some(poller) = poller.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
+
+                match &mut self.data {
+                    WriteData::BasicSlice(s) => {
+                        let Some(peer) = conn.dst_socket(state) else {
+                            log::warn!("no destination for connectionless socket information to be received--dropping sent packet");
+                            return Outcome::Success(s.len())
+                        };
+
+                        let peer_ref = peer.borrow_mut();
+
+                        let SocketState::Connectionless(peer_conn) = &mut peer_ref.state else {
+                            unreachable!()
+                        };
+
+                        let mut data = Vec::new_in(fizzle_alloc());
+                        data.extend_from_slice(s);
+
+                        match &mut peer_conn.backend {
+                            ConnectionlessBackend::Peered(p) => {
+                                p.recv_buf.push_back(ConnectionlessMessage {
+                                    source: local_addr.addr().clone(),
+                                    ancillary: Vec::new_in(fizzle_alloc()), // TODO: add ancillary here,
+                                    data,
+                                });
+                            }
+                            ConnectionlessBackend::Feedback(f) => {
+                                f.recv_buf.push_back(ConnectionlessMessage {
+                                    source: local_addr.addr().clone(),
+                                    ancillary: Vec::new_in(fizzle_alloc()), // TODO: add ancillary here,
+                                    data,
+                                });
+                            }
+                            ConnectionlessBackend::Plugin(p) => {
+                                let plugin_ref = p.borrow_mut();
+                                plugin_ref.write_buf.push_back(data);
+                            }
+                            ConnectionlessBackend::Passthrough => unimplemented!(),
+                            _ => return Outcome::Success(s.len()),
+                        }
+                    },
+                    WriteData::BasicVec(v) => {
+                        let full_len = v.iter().map(|s| s.len()).sum::<usize>();
+                        let Some(peer) = conn.dst_socket(state) else {
+                            log::warn!("no destination for connectionless socket information to be received--dropping sent packet");
+                            return Outcome::Success(full_len)
+                        };
+
+                        let peer_ref = peer.borrow_mut();
+
+                        let SocketState::Connectionless(peer_conn) = &mut peer_ref.state else {
+                            unreachable!()
+                        };
+
+                        let mut data = Vec::new_in(fizzle_alloc());
+                        for s in v.iter() {
+                            data.extend_from_slice(s);
+                        }
+
+                        match &mut peer_conn.backend {
+                            ConnectionlessBackend::Peered(p) => {
+                                p.recv_buf.push_back(ConnectionlessMessage {
+                                    source: local_addr.addr().clone(),
+                                    ancillary: Vec::new_in(fizzle_alloc()), // TODO: add ancillary here,
+                                    data,
+                                });
+                            }
+                            ConnectionlessBackend::Feedback(f) => {
+                                f.recv_buf.push_back(ConnectionlessMessage {
+                                    source: local_addr.addr().clone(),
+                                    ancillary: Vec::new_in(fizzle_alloc()), // TODO: add ancillary here,
+                                    data,
+                                });
+                            }
+                            ConnectionlessBackend::Plugin(p) => {
+                                let plugin_ref = p.borrow_mut();
+                                plugin_ref.write_buf.push_back(data);
+                            }
+                            ConnectionlessBackend::Passthrough => unimplemented!(),
+                            _ => return Outcome::Success(full_len),
+                        }
+                    },
+                    WriteData::File(file_write_data) => return Outcome::Error(Errno::ESPIPE),
+                    WriteData::Socket(s, _) => {
+                        let conn_addr = match conn.dst_socket(state) {
+                            Some(peer) => Some(get_or_assign_local(&mut peer, state)),
+                            None => None,
+                        };
+
+                        let num_written = 0;
+                        let mut write_error: Errno = Errno::SUCCESS;
+
+                        for write_data in s.iter_mut() {
+                            let addr = match conn_addr {
+                                Some(addr) if write_data.addr_bytes.is_some() => {
+                                    write_error = Errno::EISCONN;
+                                    continue
+                                }
+                                Some(addr) => addr,
+                                None => {
+                                    let Some(addr_bytes) = &write_data.addr_bytes else {
+                                        write_error = Errno::ENOTCONN;
+                                        continue
+                                    };
+
+                                    let Ok(sockaddr) = SockAddr::decode(addr_bytes) else {
+                                        log::warn!("bad address passed to socket");
+                                        write_error = Errno::EINVAL;
+                                        continue
+                                    };
+
+                                    TransportAddress {
+                                        sockaddr,
+                                        protocol: local_addr.protocol,
+                                    }
+                                }
+                            };
+
+                            let Some(dst_info) = state.global.socket_locations.get_mut(&addr) else {
+                                write_error = Errno::EHOSTUNREACH;
+                                continue
+                            };
+
+                            let Some(dst_socket) = dst_info.next_bound() else {
+                                write_error = Errno::EHOSTUNREACH;
+                                continue
+                            };
+
+                            let SocketState::Connectionless(peer_conn) = &mut dst_socket.state else {
+                                unreachable!()
+                            };
+
+                            let mut ancillary = Vec::new_in(fizzle_alloc());
+                            ancillary.extend_from_slice(write_data.control_info);
+
+                            let mut data = Vec::new_in(fizzle_alloc());
+                            for s in write_data.buf.iter() {
+                                data.extend_from_slice(s.as_slice());
+                            }
+                            
+                            match &mut peer_conn.backend {
+                                ConnectionlessBackend::Peered(p) => {
+                                    p.recv_buf.push_back(ConnectionlessMessage {
+                                        source: local_addr.addr().clone(),
+                                        ancillary,
+                                        data,
+                                    });
+                                }
+                                ConnectionlessBackend::Feedback(f) => {
+                                    f.recv_buf.push_back(ConnectionlessMessage {
+                                        source: local_addr.addr().clone(),
+                                        ancillary,
+                                        data,
+                                    });
+                                }
+                                ConnectionlessBackend::Plugin(p) => {
+                                    let plugin_ref = p.borrow_mut();
+                                    plugin_ref.write_buf.push_back(data);
+                                }
+                                ConnectionlessBackend::Passthrough => unimplemented!(),
+                                _ => *write_data.buflen = data.len().try_into().unwrap(),
+                            }
+
+                            num_written += 1;
+                        }
+
+                        if num_written > 0 {
+                            Outcome::Success(num_written)
+                        } else {
+                            Outcome::Error(write_error)
+                        }
+                    }
+                };
+            }
+            (SocketReadState::Finish(poller), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Passthrough, .. })) => {
+                if let Some(poller) = poller.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
+
+                unimplemented!()
+            }
+            (SocketReadState::Finish(poller), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Peered(regular), .. })) => {
+                if let Some(poller) = poller.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
+
+                match &mut self.data {
+                    ReadData::Basic(data) => {
+                        let buf = regular.recv_buf.clone();
+                        
+                        let mut idx = 0;
+                        for s in data.iter_mut() {
+                            let read = cmp::min(s.len(), buf.borrow().len() - idx);
+                            s.copy_from_slice(&buf.borrow().data()[idx..idx + read]);
+                            idx += read;
+                        }
+
+                        buf.borrow_mut().did_read(idx);
+
+                        Outcome::Success(idx)
+                    },
+                    ReadData::File(_data) => Outcome::Error(Errno::ESPIPE),
+                    ReadData::Socket(out_msgs, _socket_flags) => {
+                        // TODO: blocking incorrectly handled here (see the MSG_WAITFORONE flag in `man 2 recvmmsg`)
+
+                        let buf = regular.recv_buf.clone();
+
+                        let mut msg_count = 0;
+                        for out_msg in out_msgs.iter_mut() {
+                            *out_msg.msg_flags = SocketMsgFlags::empty();
+
+                            *out_msg.addrlen = 0; // TODO: encode peer addr
+                            *out_msg.control_len = 0; // TODO: encode ancillary
+
+                            let mut total_read = 0;
+                            for s in out_msg.buf.iter_mut() {
+                                let read = cmp::min(buf.borrow().len() - total_read, s.len());
+                                s.copy_from_slice(&buf.borrow().data()[total_read..total_read + read]);
+                                total_read += read;
+                            }
+
+                            buf.borrow_mut().did_read(total_read);
+
+                            *out_msg.buflen = total_read as u32;
+
+                            msg_count += 1;
+                        }
+
+                        Outcome::Success(msg_count)
+                    }
+                }
+            }
+            (SocketReadState::Finish(poller), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Feedback(feedback), .. })) => {
+                let buf = feedback.buf.clone();
+
+                if let Some(poller) = poller.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
+
+                match &mut self.data {
+                    ReadData::Basic(out_data) => {
+                        let mut idx = 0;
+                        for s in out_data.iter_mut() {
+                            let read = cmp::min(s.len(), buf.borrow().len() - idx);
+                            s.copy_from_slice(&buf.borrow().data()[idx..idx + read]);
+                            idx += read;
+                        }
+
+                        Outcome::Success(idx)
+                    },
+                    ReadData::File(data) => Outcome::Error(Errno::ESPIPE),
+                    ReadData::Socket(out_msgs, socket_flags) => {
+                        // TODO: blocking incorrectly handled here (see the MSG_WAITFORONE flag in `man 2 recvmmsg`)
+
+                        let mut msg_count = 0;
+                        for out_msg in out_msgs.iter_mut() {
+                            *out_msg.msg_flags = SocketMsgFlags::empty();
+
+                            *out_msg.addrlen = 0; // TODO: add peer addr here
+                            *out_msg.control_len = 0; // TODO: add ancillary data
+
+                            let mut total_read = 0;
+                            for s in out_msg.buf.iter_mut() {
+                                let read = cmp::min(buf.borrow().len() - total_read, s.len());
+                                s.copy_from_slice(&buf.borrow().data()[total_read..total_read + read]);
+                                total_read += read;
+                            }
+
+                            buf.borrow_mut().did_read(total_read);
+                            *out_msg.buflen = total_read as u32;
+
+                            msg_count += 1;
+                        }
+
+                        Outcome::Success(msg_count)
+                    }
+                }
+            }
+            (SocketReadState::Finish(poller), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Plugin(plugin_endpoint_id), .. })) => {
+                if let Some(poller) = poller.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
+
+                todo!("stateless socket plugins (e.g. UDP) not implemented")
+            }
+            (SocketReadState::Finish(poller), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Sink, .. })) => {
+                if let Some(poller) = poller.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
+
+                Outcome::Success(0)
+            }
+            (SocketReadState::Finish(poller), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::NullSink, .. })) => {
+                if let Some(poller) = poller.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
+
+                match &mut self.data {
+                    ReadData::Basic(out_slices) => {
+                        let mut total_read = 0;
+                        for s in out_slices.iter_mut() {
+                            for b in s.iter_mut() {
+                                *b = 0;
+                            }
+                            total_read += s.len();
+                        }
+
+                        Outcome::Success(total_read)
+                    }
+                    ReadData::File(file_read_data) => Outcome::Error(Errno::ESPIPE),
+                    ReadData::Socket(out_msgs, socket_flags) => {
+                        for msg in out_msgs.iter_mut() {
+                            *msg.addrlen = 0;
+                            *msg.control_len = 0;
+                            for s in msg.buf.iter_mut() {
+                                for b in s.iter_mut() {
+                                    *b = 0;
+                                }
+                            }
+                        }
+
+                        Outcome::Success(out_msgs.len())
+                    }
+                }
+            }
+            (SocketReadState::Finish(poller), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Fuzz(endpoint), .. })) => {
+                if let Some(poller) = poller.as_ref() {
+                    state.delete_poller(poller.clone());
+                }
+
+                match &mut self.data {
+                    ReadData::Basic(out_slices) => {
+                        let mut total_read = 0;
+                        for s in out_slices.iter_mut() {
+                            let read = cmp::min(s.len(), state.global.fuzz_input.len() - endpoint.borrow().read_idx);
+                            s.copy_from_slice(&state.global.fuzz_input[endpoint.borrow().read_idx..endpoint.borrow().read_idx + read]);
+                            endpoint.borrow_mut().read_idx += read;
+                            total_read += read;
+                        }
+
+                        Outcome::Success(total_read)
+                    }
+                    ReadData::File(_) => Outcome::Error(Errno::ESPIPE),
+                    ReadData::Socket(out_msgs, socket_flags) => {
+                        let mut total_read = 0;
+                        for out_msg in out_msgs.iter_mut() {
+                            for s in out_msg.buf.iter_mut() {
+                                let read = cmp::min(s.len(), state.global.fuzz_input.len() - endpoint.borrow().read_idx);
+                                s.copy_from_slice(&state.global.fuzz_input[endpoint.borrow().read_idx..endpoint.borrow().read_idx + read]);
+                                endpoint.borrow_mut().read_idx += read;
+                                total_read += read;
+                            }
+                        }
+
+                        Outcome::Success(total_read)
+                    }
+                }
+            }
+            _ => Outcome::Error(Errno::EINVAL), // Invalid socket state
+        }
     }
 }

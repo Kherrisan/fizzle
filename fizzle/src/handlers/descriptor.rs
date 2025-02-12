@@ -743,7 +743,7 @@ pub enum WriteData<'a> {
     BasicSlice(&'a [u8]),
     BasicVec(&'a [IoSlice<'a>]),
     File(FileWriteData<'a>),
-    Socket(&'a [SocketWriteData<'a>], SocketFlags),
+    Socket(&'a mut [SocketWriteData<'a>], SocketFlags),
 }
 
 pub struct FileWriteData<'a> {
@@ -754,7 +754,7 @@ pub struct FileWriteData<'a> {
 }
 
 pub struct SocketWriteData<'a> {
-    pub addr_bytes: &'a [u8],
+    pub addr_bytes: Option<&'a [u8]>,
     pub buf: &'a [IoSlice<'a>],
     pub buflen: &'a mut u32,
     pub control_info: &'a [u8],
@@ -870,9 +870,10 @@ impl Event for DescriptorWriteEvent<'_> {
                             self.data.take().unwrap(),
                         ));
                     }
-                    FdResource::Socket(_) => {
+                    FdResource::Socket(socket_info) => {
                         self.state = DescriptorWriteState::Socket(SocketWriteEvent::new(
-                            self.fd,
+                            socket_info.clone(),
+                            fd_info.nonblocking,
                             self.data.take().unwrap(),
                         ));
                     }

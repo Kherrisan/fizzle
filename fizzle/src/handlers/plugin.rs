@@ -1,9 +1,7 @@
 use std::cell::RefCell;
 
-use crate::constants::FIZZLE_BUFFER_LENGTH;
-use crate::GlobalRc;
+use crate::{GlobalList, GlobalRc, GlobalVec};
 
-use fizzle_common::storage::Buffer;
 use fizzle_plugin::{IoEndpointVariant, PluginObject, StreamId};
 
 use super::polled::PolledInfo;
@@ -24,9 +22,9 @@ pub struct PluginInfo {
     pub stream: StreamId,
     /// The plugin module to read/write from.
     pub module: std::rc::Rc<RefCell<dyn PluginObject>>,
-    pub read_buf: GlobalRc<Buffer<FIZZLE_BUFFER_LENGTH>>,
+    pub read_buf: GlobalList<GlobalVec<u8>>,
     pub read_polled: GlobalRc<PolledInfo>,
-    pub write_buf: GlobalRc<Buffer<FIZZLE_BUFFER_LENGTH>>,
+    pub write_buf: GlobalList<GlobalVec<u8>>,
     pub write_polled: GlobalRc<PolledInfo>,
 }
 

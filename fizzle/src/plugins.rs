@@ -63,16 +63,18 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
         let mut raise_read = false;
         let mut lower_write = false;
 
-        let plugin_module = plugin_info.module.clone();
+        let plugin_info_ref = plugin_info.borrow();
+
+        let plugin_module = plugin_info_ref.module.clone();
         let context = Context {
-            endpoint: plugin_info.endpoint.clone(),
-            stream_id: plugin_info.stream,
+            endpoint: plugin_info_ref.endpoint.clone(),
+            stream_id: plugin_info_ref.stream,
         };
 
-        let write_buf = plugin_info.write_buf.clone();
-        let write_polled = plugin_info.write_polled.clone();
-        let read_buf = plugin_info.read_buf.clone();
-        let read_polled = plugin_info.read_polled.clone();
+        let write_buf = plugin_info_ref.write_buf.clone();
+        let write_polled = plugin_info_ref.write_polled.clone();
+        let read_buf = plugin_info_ref.read_buf.clone();
+        let read_polled = plugin_info_ref.read_polled.clone();
 
         // Check read end
         if plugin_module.borrow().can_read(&context) && !write_buf.borrow().is_empty() {

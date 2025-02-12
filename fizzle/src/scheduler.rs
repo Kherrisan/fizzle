@@ -817,7 +817,7 @@ impl Scheduler {
             .global
             .plugins
             .iter()
-            .map(|plugin_info| plugin_info.module.clone())
+            .map(|plugin_info| plugin_info.borrow().module.clone())
             .collect();
         for module in modules {
             module.borrow_mut().fuzz_round_start(state.global.fuzz_input.as_slice());
@@ -829,11 +829,12 @@ impl Scheduler {
             .plugins
             .iter()
             .map(|plugin_info| {
+                let plugin_ref = plugin_info.borrow();
                 (
-                    plugin_info.read_buf.clone(),
-                    plugin_info.write_buf.clone(),
-                    plugin_info.read_polled.clone(),
-                    plugin_info.write_polled.clone(),
+                    plugin_ref.read_buf.clone(),
+                    plugin_ref.write_buf.clone(),
+                    plugin_ref.read_polled.clone(),
+                    plugin_ref.write_polled.clone(),
                 )
             })
             .collect();

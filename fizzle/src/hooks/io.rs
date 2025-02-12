@@ -60,7 +60,7 @@ hook_macros::hook! {
         let mut data = SocketWriteData {
             buf: slice::from_ref(&iov),
             buflen: &mut buflen,
-            addr_bytes: &[],
+            addr_bytes: None,
             control_info: &[],
             msg_flags: SocketMsgFlags::empty(),
         };
@@ -108,9 +108,9 @@ hook_macros::hook! {
         };
 
         let addr_bytes = if dest_addr.is_null() {
-            &[]
+            None
         } else {
-            slice::from_raw_parts(dest_addr.cast::<u8>(), addrlen as usize)
+            Some(slice::from_raw_parts(dest_addr.cast::<u8>(), addrlen as usize))
         };
 
         let mut buflen = 0;
@@ -162,9 +162,9 @@ hook_macros::hook! {
         };
 
         let addr_bytes = if (*msg).msg_name.is_null() {
-            &[]
+            None
         } else {
-            slice::from_raw_parts((*msg).msg_name.cast::<u8>(), (*msg).msg_namelen as usize)
+            Some(slice::from_raw_parts((*msg).msg_name.cast::<u8>(), (*msg).msg_namelen as usize))
         };
 
         let Some(msg_flags) = SocketMsgFlags::from_bits((*msg).msg_flags) else {
@@ -220,9 +220,9 @@ hook_macros::hook! {
         for msg in msg_slice {
             let iov_slice = slice::from_raw_parts((*msg).msg_hdr.msg_iov.cast::<IoSlice<'_>>(), (*msg).msg_hdr.msg_iovlen);
             let addr_bytes = if (*msg).msg_hdr.msg_name.is_null() {
-                &[]
+                None
             } else {
-                slice::from_raw_parts((*msg).msg_hdr.msg_name.cast::<u8>(), (*msg).msg_hdr.msg_namelen as usize)
+                Some(slice::from_raw_parts((*msg).msg_hdr.msg_name.cast::<u8>(), (*msg).msg_hdr.msg_namelen as usize))
             };
 
             let control_info = if (*msg).msg_hdr.msg_control.is_null() {
