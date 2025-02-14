@@ -601,7 +601,10 @@ impl Event for StdinReadEvent<'_> {
                     Outcome::Yield(None)
                 }
             }
-            (StdinReadState::Finish(poller_id), StdioBackend::Feedback(feedback)) => {
+            (StdinReadState::Finish(_poller_id), StdioBackend::Feedback(_feedback)) => {
+                // TODO: remove Feedback entirely? It's been a nuisance...
+                unimplemented!()
+                /*
                 if let Some(poller_id) = poller_id {
                     state.delete_poller(poller_id.clone());
                 }
@@ -609,27 +612,38 @@ impl Event for StdinReadEvent<'_> {
                 let read_polled = feedback.read_polled.clone();
                 let write_polled = feedback.write_polled.clone();
 
-                let buf = feedback.buf.clone();
                 let mut total_read = 0;
+                let mut read_idx = feedback.read_idx;
+                let Some(read_data) = feedback.buf.pop_front() else {
+                    unreachable!()
+                };
 
                 for slice in iovec.iter_mut() {
-                    if buf.borrow().is_empty() {
-                        break;
+                    if read_idx == read_data.len() {
+                        break
                     }
 
-                    let data_len = cmp::min(buf.borrow().len(), slice.len());
-                    slice[..data_len].copy_from_slice(&buf.borrow().data()[..data_len]);
+                    let data_len = cmp::min(read_data.len() - read_idx, slice.len());
+                    slice[..data_len].copy_from_slice(&read_data[read_idx..read_idx + data_len]);
 
-                    buf.borrow_mut().did_read(data_len);
+                    read_idx += data_len;
                     total_read += data_len;
                 }
 
-                if buf.borrow().is_empty() {
+                if read_idx == read_data.len() {
+                    feedback.read_idx = 0;
+                } else {
+                    feedback.buf.push_front(read_data);
+                    feedback.read_idx = read_idx;
+                }
+
+                if feedback.buf.is_empty() {
                     state.lower_polled(&read_polled);
                 }
                 state.raise_polled(&write_polled);
 
                 Outcome::Success(total_read)
+                */
             }
             (StdinReadState::Start, StdioBackend::Plugin(plugin_info)) => {
                 let read_polled = plugin_info.borrow().read_polled.clone();
@@ -652,23 +666,34 @@ impl Event for StdinReadEvent<'_> {
                     state.delete_poller(poller.clone());
                 }
 
-                let buf = plugin_info.borrow().write_buf.clone();
-                let read_polled = plugin_info.borrow().read_polled.clone();
                 let mut total_read = 0;
+                let mut read_idx = plugin_info.borrow_mut().write_idx;
+                let Some(read_data) = plugin_info.borrow_mut().write_buf.pop_front() else {
+                    unreachable!()
+                };
+
+                let read_polled = plugin_info.borrow().read_polled.clone();
 
                 for slice in iovec.iter_mut() {
-                    if buf.borrow().is_empty() {
-                        break;
+                    if read_idx == read_data.len() {
+                        break
                     }
 
-                    let data_len = cmp::min(buf.borrow().len(), slice.len());
-                    slice[..data_len].copy_from_slice(&buf.borrow().data()[..data_len]);
+                    let data_len = cmp::min(read_data.len() - read_idx, slice.len());
+                    slice[..data_len].copy_from_slice(&read_data[read_idx..read_idx + data_len]);
 
-                    buf.borrow_mut().did_read(data_len);
+                    read_idx += data_len;
                     total_read += data_len;
                 }
 
-                if buf.borrow().is_empty() {
+                if read_idx == read_data.len() {
+                    plugin_info.borrow_mut().write_idx = 0;
+                } else {
+                    plugin_info.borrow_mut().write_buf.push_front(read_data);
+                    plugin_info.borrow_mut().write_idx = read_idx;
+                }
+
+                if plugin_info.borrow().write_buf.is_empty() {
                     state.lower_polled(&read_polled);
                 }
 
@@ -950,7 +975,9 @@ impl Event for StdoutWriteEvent<'_> {
                     Outcome::Yield(None)
                 }
             }
-            (StdoutWriteState::Finish(poller_id), StdioBackend::Feedback(feedback)) => {
+            (StdoutWriteState::Finish(_poller_id), StdioBackend::Feedback(_feedback)) => {
+                unimplemented!()
+                /*
                 if let Some(poller_id) = poller_id {
                     state.delete_poller(poller_id.clone());
                 }
@@ -973,6 +1000,7 @@ impl Event for StdoutWriteEvent<'_> {
                 state.raise_polled(&read_polled);
 
                 Outcome::Success(total_written)
+                */
             }
             (StdoutWriteState::Start, StdioBackend::Plugin(plugin_info)) => {
                 let write_polled = plugin_info.borrow().write_polled.clone();
@@ -995,14 +1023,15 @@ impl Event for StdoutWriteEvent<'_> {
                     state.delete_poller(poller.clone());
                 }
 
-                let buf = plugin_info.borrow().write_buf.clone();
+                let mut buf = Vec::new_in(fizzle_alloc());
+
                 let mut total_written = 0;
                 for slice in iovec {
-                    if buf.borrow().is_full() {
-                        break;
-                    }
-                    total_written += buf.borrow_mut().write(slice);
+                    buf.extend_from_slice(slice);
+                    total_written += slice.len();
                 }
+
+                plugin_info.borrow_mut().write_buf.push_back(buf);
 
                 Outcome::Success(total_written)
             }

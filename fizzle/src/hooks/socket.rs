@@ -129,7 +129,7 @@ hook_macros::hook! {
                 crate::strace!("socketpair(domain={}, socktype={}, protocol={}, sv={:?}) -> {}", domain, socktype, protocol, sv, 0);
                 0
             },
-            Err(e) => unreachable!(),
+            Err(_) => unreachable!(),
         }
     }
 }

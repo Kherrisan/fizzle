@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::os::fd::RawFd;
+use std::rc::Rc;
 use std::time::Duration;
 
 use crate::backend::{ConnectedBackend, ConnectionlessBackend, StdioBackend};
@@ -595,7 +596,7 @@ impl Event for EpollCreateEvent {
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let fd = Descriptor::from_raw_fd(crate::create_descriptor());
-        let epoll = std::rc::Rc::new_in(RefCell::new(EpollInfo {
+        let epoll = Rc::new_in(RefCell::new(EpollInfo {
             interests: BTreeMap::new_in(fizzle_alloc()),
         }), fizzle_alloc());
 

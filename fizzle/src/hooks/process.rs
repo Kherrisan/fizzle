@@ -798,6 +798,7 @@ hook_macros::hook! {
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::getpid() };
 
+        #[cfg(not(feature = "passthroughfs"))]
         match Scheduler::handle_event(&mut ctx, ProcessGetIdEvent::new()) {
             Ok(pid) => {
                 crate::strace!("getpid() -> {}", pid);

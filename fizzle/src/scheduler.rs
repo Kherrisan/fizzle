@@ -3,6 +3,7 @@ use std::cell::{RefCell, RefMut};
 use std::collections::BTreeMap;
 use std::os::fd::RawFd;
 use std::process::{self, Command};
+use std::rc::Rc;
 use std::thread::ThreadId;
 use std::time::Duration;
 use std::{cmp, env, mem, ptr, thread};
@@ -22,6 +23,7 @@ use crate::semaphore::Semaphore;
 use crate::{plugins, GlobalRc};
 use crate::state;
 use crate::state::*;
+use crate::GlobalHeap;
 
 static FIZZLE_STATE: PanicOnceCell<SequentialRefCell<FizzleState>> = PanicOnceCell::new();
 
@@ -49,7 +51,7 @@ pub unsafe fn fizzle_singleton() -> FizzleSingleton {
     FizzleSingleton::new()
 }
 
-pub fn fizzle_alloc() -> &'static TlsfHeap {
+pub fn fizzle_alloc() -> GlobalHeap {
     &FIZZLE_ALLOC
         .get_or_init(|| {
             let size = mem::size_of::<InterprocessAllocator>();
@@ -196,7 +198,7 @@ pub enum Outcome<S, E> {
     /// The event should move on to its next action immediately.
     Continue,
     /// Yields the current thread without executing the next ready worker.
-    Pause(DelegationSource, Option<std::rc::Rc<Semaphore, &'static TlsfHeap>>),
+    Pause(DelegationSource, Option<Rc<Semaphore, GlobalHeap>>),
     /// Terminates the given thread's execution.
     TerminateThread(TerminationMethod),
     /// Terminates the given process's execution.
@@ -643,7 +645,7 @@ impl Scheduler {
                         let uid = state.global.uid;
                         let gid = state.global.gid;
 
-                        let file_info = std::rc::Rc::new_in(RefCell::new(FileInfo {
+                        let file_info = Rc::new_in(RefCell::new(FileInfo {
                             path: path.clone(),
                             cow: Some(cow_id),
                             dev_id: 0xfe01,
@@ -823,28 +825,14 @@ impl Scheduler {
             module.borrow_mut().fuzz_round_start(state.global.fuzz_input.as_slice());
         }
 
-        // Gather all plugin endpoints
-        let plugin_info_ids: Vec<_> = state
-            .global
-            .plugins
-            .iter()
-            .map(|plugin_info| {
-                let plugin_ref = plugin_info.borrow();
-                (
-                    plugin_ref.read_buf.clone(),
-                    plugin_ref.write_buf.clone(),
-                    plugin_ref.read_polled.clone(),
-                    plugin_ref.write_polled.clone(),
-                )
-            })
-            .collect();
+        let plugins = state.global.plugins.clone();
 
-        // Reset plugin endpoint state
-        for (read_buf, write_buf, read_polled, write_polled) in plugin_info_ids {
-            write_buf.borrow_mut().clear();
-            read_buf.borrow_mut().clear();
-            state.lower_polled(&read_polled);
-            state.raise_polled(&write_polled);
+        for plugin_info in plugins {
+            plugin_info.borrow_mut().read_buf.clear();
+            plugin_info.borrow_mut().write_buf.clear();
+
+            state.lower_polled(&plugin_info.borrow_mut().read_polled);
+            state.raise_polled(&plugin_info.borrow_mut().write_polled);
         }
 
         // Reset per-round fuzzing clients
@@ -1530,7 +1518,7 @@ impl Scheduler {
                     let gid = state.global.gid;
 
                     if !state.global.file_paths.contains_key(&path) {
-                        let file_info = std::rc::Rc::new_in(RefCell::new(FileInfo {
+                        let file_info = Rc::new_in(RefCell::new(FileInfo {
                             path: path.clone(),
                             cow: Some(cow_id),
                             dev_id: 0xfe01,
@@ -1662,14 +1650,14 @@ impl Scheduler {
 }
 
 pub enum DelegationAction {
-    PauseCurrentWorker(DelegationSource, Option<std::rc::Rc<Semaphore, &'static TlsfHeap>>),
+    PauseCurrentWorker(DelegationSource, Option<Rc<Semaphore, GlobalHeap>>),
     RunNextWorker,
     RunThread(ThreadId),
     RunProcess(Pid),
 }
 
 pub enum DelegationState {
-    PauseCurrentWorker(DelegationSource, Option<std::rc::Rc<Semaphore, &'static TlsfHeap>>),
+    PauseCurrentWorker(DelegationSource, Option<Rc<Semaphore, GlobalHeap>>),
     RunNextWorker,
     NoMoreWorkers,
     RunCurrentWorker,
@@ -1695,8 +1683,8 @@ impl<'a> From<DelegationAction> for DelegationState {
 
 #[derive(Clone)]
 pub enum DelegationSource {
-    Thread(std::rc::Rc<Semaphore, &'static TlsfHeap>),
-    Process(std::rc::Rc<Semaphore, &'static TlsfHeap>),
+    Thread(Rc<Semaphore, GlobalHeap>),
+    Process(Rc<Semaphore, GlobalHeap>),
 }
 
 #[derive(Clone, Debug)]

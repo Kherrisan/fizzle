@@ -1,3 +1,13 @@
+use fizzle_common::io::{AddressFamily, SockAddr, SocketType, TransportAddress, TransportProtocol};
+use heapless::Entry;
+
+use std::cell::RefCell;
+use std::collections::LinkedList;
+use std::mem::MaybeUninit;
+use std::rc::{Rc, Weak};
+use std::time::Duration;
+use std::{cmp, mem, slice};
+
 use crate::backend::{
     ConnectedBackend, ConnectingBackend, ConnectionlessBackend, PendingBackend, RegularConnected,
     RegularConnectionless, ServerBackend, StandardFeedback,
@@ -7,21 +17,9 @@ use crate::constants::{
     FIZZLE_SOMAXCONN,
 };
 use crate::errno::Errno;
-use crate::hooks::io::write;
 use crate::scheduler::{fizzle_alloc, Event, Outcome};
 use crate::state::FizzleState;
-use crate::{GlobalList, GlobalRc};
-use std::cell::RefCell;
-use std::collections::LinkedList;
-use std::mem::MaybeUninit;
-use std::rc::Weak;
-use std::time::Duration;
-use std::{cmp, mem, slice};
-
-use embedded_alloc::TlsfHeap;
-use fizzle_common::io::{AddressFamily, SockAddr, SocketType, TransportAddress, TransportProtocol};
-use fizzle_common::storage::Buffer;
-use heapless::Entry;
+use crate::{GlobalHeap, GlobalList, GlobalRc};
 
 use super::descriptor::*;
 use super::polled::PolledInfo;
@@ -44,7 +42,7 @@ fn get_or_assign_local(socket_info: &mut GlobalRc<SocketInfo>, state: &mut Fizzl
             protocol: protocol,
         },
         LocalAddress::Ephemeral(family) => {
-            let family = *family;
+            let family = family.clone();
             let proto = protocol;
 
             // Check to see if the ephemeral address will bind
@@ -199,7 +197,7 @@ impl ConnectionlessSocket {
         }
     }
 
-    /// Returns the `Polled` instance used to notify of
+    /// Returns the socket currently connected to.
     pub fn dst_socket(&self, state: &mut FizzleState) -> Option<GlobalRc<SocketInfo>> {
         match &self.backend {
             ConnectionlessBackend::Peered(_) => {
@@ -285,7 +283,7 @@ impl ConnectedSocket {
             ConnectedBackend::Plugin(p) => Some(p.borrow().write_polled.clone()),
             ConnectedBackend::Sink => None,
             ConnectedBackend::NullSink => None,
-            ConnectedBackend::Fuzz(f) => None,
+            ConnectedBackend::Fuzz(_) => None,
         }
     }
 }
@@ -293,8 +291,8 @@ impl ConnectedSocket {
 #[derive(Debug, Clone)]
 pub struct ConnectionlessMessage {
     pub source: SockAddr,
-    pub ancillary: Vec<u8, &'static TlsfHeap>,
-    pub data: Vec<u8, &'static TlsfHeap>,
+    pub ancillary: Vec<u8, GlobalHeap>,
+    pub data: Vec<u8, GlobalHeap>,
 }
 
 pub struct SocketCreateEvent {
@@ -312,7 +310,7 @@ impl Event for SocketCreateEvent {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let fd = Descriptor::from_raw_fd(crate::create_descriptor());
 
-        let socket_info = std::rc::Rc::new_in(RefCell::new(SocketInfo {
+        let socket_info = Rc::new_in(RefCell::new(SocketInfo {
             fd_count: 1,
             socktype: self.socket_type,
             protocol: self.protocol,
@@ -322,12 +320,12 @@ impl Event for SocketCreateEvent {
                     SocketState::Unassociated(UnassociatedSocket { reuse_port: false })
                 }
                 SocketType::Datagram => {
-                    let read_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                    let read_polled = Rc::new_in(RefCell::new(PolledInfo {
                         pollers: Vec::new_in(fizzle_alloc()),
                         event_raised: false,
                     }), fizzle_alloc());
 
-                    let write_polled = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                    let write_polled = Rc::new_in(RefCell::new(PolledInfo {
                         pollers: Vec::new_in(fizzle_alloc()),
                         event_raised: false,
                     }), fizzle_alloc());
@@ -379,33 +377,31 @@ impl Event for SocketCreatePairEvent {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let addr1 = state.global.ephemeral_address(self.domain, self.protocol);
         let fd1 = Descriptor::from_raw_fd(crate::create_descriptor());
-        let recv_buf1 = std::rc::Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc());
 
-        let read_polled1 = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+        let read_polled1 = Rc::new_in(RefCell::new(PolledInfo {
             pollers: Vec::new_in(fizzle_alloc()),
             event_raised: false,
         }), fizzle_alloc());
 
-        let write_polled1 = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+        let write_polled1 = Rc::new_in(RefCell::new(PolledInfo {
             pollers: Vec::new_in(fizzle_alloc()),
             event_raised: false,
         }), fizzle_alloc());
 
         let addr2 = state.global.ephemeral_address(self.domain, self.protocol);
         let fd2 = Descriptor::from_raw_fd(crate::create_descriptor());
-        let recv_buf2 = std::rc::Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc());
 
-        let read_polled2 = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+        let read_polled2 = Rc::new_in(RefCell::new(PolledInfo {
             pollers: Vec::new_in(fizzle_alloc()),
             event_raised: false,
         }), fizzle_alloc());
 
-        let write_polled2 = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+        let write_polled2 = Rc::new_in(RefCell::new(PolledInfo {
             pollers: Vec::new_in(fizzle_alloc()),
             event_raised: false,
         }), fizzle_alloc());
 
-        let socket1 = std::rc::Rc::new_in(RefCell::new(SocketInfo {
+        let socket1 = Rc::new_in(RefCell::new(SocketInfo {
             fd_count: 1,
             socktype: self.socket_type,
             protocol: self.protocol,
@@ -415,7 +411,8 @@ impl Event for SocketCreatePairEvent {
                     SocketState::Connected(ConnectedSocket {
                         backend: ConnectedBackend::Peered(RegularConnected {
                             peer: Weak::new_in(fizzle_alloc()),
-                            recv_buf: recv_buf1,
+                            recv_buf: LinkedList::new_in(fizzle_alloc()),
+                            read_idx: 0,
                             read_polled: read_polled1,
                             write_polled: write_polled1,
                         }),
@@ -436,9 +433,9 @@ impl Event for SocketCreatePairEvent {
             },
         }), fizzle_alloc());
 
-        let socket1_weak = std::rc::Rc::downgrade(&socket1);
+        let socket1_weak = Rc::downgrade(&socket1);
 
-        let socket2 = std::rc::Rc::new_in(RefCell::new(SocketInfo {
+        let socket2 = Rc::new_in(RefCell::new(SocketInfo {
             fd_count: 1,
             socktype: self.socket_type,
             protocol: self.protocol,
@@ -448,7 +445,8 @@ impl Event for SocketCreatePairEvent {
                     SocketState::Connected(ConnectedSocket {
                         backend: ConnectedBackend::Peered(RegularConnected {
                             peer: socket1_weak,
-                            recv_buf: recv_buf2,
+                            recv_buf: LinkedList::new_in(fizzle_alloc()),
+                            read_idx: 0,
                             read_polled: read_polled2,
                             write_polled: write_polled2,
                         }),
@@ -469,7 +467,7 @@ impl Event for SocketCreatePairEvent {
             },
         }), fizzle_alloc());
 
-        let socket2_weak = std::rc::Rc::downgrade(&socket2);
+        let socket2_weak = Rc::downgrade(&socket2);
 
         match &mut socket2.borrow_mut().state {
             SocketState::Connected(connected_socket) => match &mut connected_socket.backend {
@@ -693,7 +691,7 @@ impl Event for SocketListenEvent {
         };
 
         // Allocate server context and set up polling
-        let ready_to_connect = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+        let ready_to_connect = Rc::new_in(RefCell::new(PolledInfo {
             pollers: Vec::new_in(fizzle_alloc()),
             event_raised: false,
         }), fizzle_alloc());
@@ -819,7 +817,7 @@ impl Event for SocketConnectEvent {
                                 let server_poll = server_info.ready_to_connect.clone();
                                 state.raise_polled(&server_poll);
 
-                                let client_poll = std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                                let client_poll = Rc::new_in(RefCell::new(PolledInfo {
                                     pollers: Vec::new_in(fizzle_alloc()),
                                     event_raised: false,
                                 }), fizzle_alloc());
@@ -861,12 +859,13 @@ impl Event for SocketConnectEvent {
                             ServerBackend::NullSink => ConnectedBackend::NullSink,
                             ServerBackend::Feedback(()) => {
                                 ConnectedBackend::Feedback(StandardFeedback {
-                                    buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc()),
-                                    read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                                    buf: LinkedList::new_in(fizzle_alloc()),
+                                    read_polled: Rc::new_in(RefCell::new(PolledInfo {
                                         pollers: Vec::new_in(fizzle_alloc()),
                                         event_raised: false,
                                     }), fizzle_alloc()),
-                                    write_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                                    read_idx: 0,
+                                    write_polled: Rc::new_in(RefCell::new(PolledInfo {
                                         pollers: Vec::new_in(fizzle_alloc()),
                                         event_raised: true,
                                     }), fizzle_alloc()),
@@ -1134,25 +1133,27 @@ impl Event for SocketAcceptEvent {
                 let accepting_backend = match connecting_backend {
                     ConnectingBackend::Passthrough => unreachable!(),
                     ConnectingBackend::Peered(()) => ConnectedBackend::Peered(RegularConnected {
-                        peer: std::rc::Rc::downgrade(&connecting_info),
-                        recv_buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc()),
-                        read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                        peer: Rc::downgrade(&connecting_info),
+                        recv_buf: LinkedList::new_in(fizzle_alloc()),
+                        read_polled: Rc::new_in(RefCell::new(PolledInfo {
                             pollers: Vec::new_in(fizzle_alloc()),
                             event_raised: false,
                         }), fizzle_alloc()),
-                        write_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                        read_idx: 0,
+                        write_polled: Rc::new_in(RefCell::new(PolledInfo {
                             pollers: Vec::new_in(fizzle_alloc()),
                             event_raised: true,
                         }), fizzle_alloc()),
                     }),
                     ConnectingBackend::Feedback(()) => {
                         ConnectedBackend::Feedback(StandardFeedback {
-                            buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc()),
-                            read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                            buf: LinkedList::new_in(fizzle_alloc()),
+                            read_polled: Rc::new_in(RefCell::new(PolledInfo {
                                 pollers: Vec::new_in(fizzle_alloc()),
                                 event_raised: false,
                             }), fizzle_alloc()),
-                            write_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                            read_idx: 0,
+                            write_polled: Rc::new_in(RefCell::new(PolledInfo {
                                 pollers: Vec::new_in(fizzle_alloc()),
                                 event_raised: true,
                             }), fizzle_alloc()),
@@ -1170,7 +1171,7 @@ impl Event for SocketAcceptEvent {
                 };
 
                 let accepting_info = if let ConnectedBackend::Peered(_) = accepting_backend {
-                    let accepting_info = std::rc::Rc::new_in(RefCell::new(SocketInfo {
+                    let accepting_info = Rc::new_in(RefCell::new(SocketInfo {
                         fd_count: 1,
                         socktype,
                         protocol,
@@ -1183,13 +1184,14 @@ impl Event for SocketAcceptEvent {
                     }), fizzle_alloc());
 
                     let connected_backend = ConnectedBackend::Peered(RegularConnected {
-                        peer: std::rc::Rc::downgrade(&accepting_info),
-                        recv_buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc()),
-                        read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                        peer: Rc::downgrade(&accepting_info),
+                        recv_buf: LinkedList::new_in(fizzle_alloc()),
+                        read_polled: Rc::new_in(RefCell::new(PolledInfo {
                             pollers: Vec::new_in(fizzle_alloc()),
                             event_raised: false,
                         }), fizzle_alloc()),
-                        write_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+                        read_idx: 0,
+                        write_polled: Rc::new_in(RefCell::new(PolledInfo {
                             pollers: Vec::new_in(fizzle_alloc()),
                             event_raised: true,
                         }), fizzle_alloc()),
@@ -1260,7 +1262,7 @@ impl Event for SocketGetNameEvent {
         };
 
         Outcome::Success(match &socket_info.borrow().local_addr {
-            LocalAddress::Ephemeral(address_family) => Err(*address_family),
+            LocalAddress::Ephemeral(address_family) => Err(address_family.clone()),
             LocalAddress::Assigned(sock_addr) => Ok(sock_addr.clone()),
         })
     }
@@ -2331,24 +2333,32 @@ impl Event for SocketReadEvent<'_> {
 
                 match &mut self.data {
                     ReadData::Basic(data) => {
-                        let buf = regular.recv_buf.clone();
+                        let Some(buf) = regular.recv_buf.pop_front() else {
+                            unreachable!()
+                        };
+
+                        let mut read_idx = regular.read_idx;
+                        let mut total_read = 0;
                         
-                        let mut idx = 0;
                         for s in data.iter_mut() {
-                            let read = cmp::min(s.len(), buf.borrow().len() - idx);
-                            s.copy_from_slice(&buf.borrow().data()[idx..idx + read]);
-                            idx += read;
+                            let read = cmp::min(s.len(), buf.len() - read_idx);
+                            s.copy_from_slice(&buf[read_idx..read_idx + read]);
+                            read_idx += read;
+                            total_read += read;
                         }
 
-                        buf.borrow_mut().did_read(idx);
+                        if read_idx == regular.read_idx {
+                            regular.read_idx = 0;
+                        } else {
+                            regular.read_idx = read_idx;
+                            regular.recv_buf.push_front(buf);
+                        }
 
-                        Outcome::Success(idx)
+                        Outcome::Success(total_read)
                     },
                     ReadData::File(_data) => Outcome::Error(Errno::ESPIPE),
                     ReadData::Socket(out_msgs, _socket_flags) => {
                         // TODO: blocking incorrectly handled here (see the MSG_WAITFORONE flag in `man 2 recvmmsg`)
-
-                        let buf = regular.recv_buf.clone();
 
                         let mut msg_count = 0;
                         for out_msg in out_msgs.iter_mut() {
@@ -2357,14 +2367,25 @@ impl Event for SocketReadEvent<'_> {
                             *out_msg.addrlen = 0; // TODO: encode peer addr
                             *out_msg.control_len = 0; // TODO: encode ancillary
 
+                            let Some(buf) = regular.recv_buf.pop_front() else {
+                                unreachable!()
+                            };
+                            let mut read_idx = regular.read_idx;
+
                             let mut total_read = 0;
                             for s in out_msg.buf.iter_mut() {
-                                let read = cmp::min(buf.borrow().len() - total_read, s.len());
-                                s.copy_from_slice(&buf.borrow().data()[total_read..total_read + read]);
+                                let read = cmp::min(buf.len() - read_idx, s.len());
+                                s.copy_from_slice(&buf[read_idx..read_idx + read]);
+                                read_idx += read;
                                 total_read += read;
                             }
 
-                            buf.borrow_mut().did_read(total_read);
+                            if read_idx == regular.read_idx {
+                                regular.read_idx = 0;
+                            } else {
+                                regular.read_idx = read_idx;
+                                regular.recv_buf.push_front(buf);
+                            }
 
                             *out_msg.buflen = total_read as u32;
 
@@ -2375,7 +2396,10 @@ impl Event for SocketReadEvent<'_> {
                     }
                 }
             }
-            (SocketReadState::Finish(poller_id), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Feedback(feedback), .. })) => {
+            (SocketReadState::Finish(_poller_id), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Feedback(_feedback), .. })) => {
+                unimplemented!()
+                /*
+
                 let buf = feedback.buf.clone();
 
                 if let Some(poller) = poller_id.as_ref() {
@@ -2393,7 +2417,7 @@ impl Event for SocketReadEvent<'_> {
 
                         Outcome::Success(idx)
                     },
-                    ReadData::File(data) => Outcome::Error(Errno::ESPIPE),
+                    ReadData::File(_) => Outcome::Error(Errno::ESPIPE),
                     ReadData::Socket(out_msgs, socket_flags) => {
                         // TODO: blocking incorrectly handled here (see the MSG_WAITFORONE flag in `man 2 recvmmsg`)
 
@@ -2420,6 +2444,7 @@ impl Event for SocketReadEvent<'_> {
                         Outcome::Success(msg_count)
                     }
                 }
+                */
             }
             (SocketReadState::Finish(poller_id), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Plugin(plugin_endpoint_id), .. })) => {
                 if let Some(poller) = poller_id.as_ref() {
@@ -2452,7 +2477,7 @@ impl Event for SocketReadEvent<'_> {
 
                         Outcome::Success(total_read)
                     }
-                    ReadData::File(file_read_data) => Outcome::Error(Errno::ESPIPE),
+                    ReadData::File(_) => Outcome::Error(Errno::ESPIPE),
                     ReadData::Socket(out_msgs, socket_flags) => {
                         for msg in out_msgs.iter_mut() {
                             *msg.addrlen = 0;
@@ -2535,7 +2560,7 @@ impl Event for SocketWriteEvent<'_> {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let socket_info = self.socket.clone();
+        let mut socket_info = self.socket.clone();
 
         let local_addr = get_or_assign_local(&mut socket_info, state);
         let mut borrowed_socket_info = socket_info.borrow_mut();
@@ -2574,19 +2599,18 @@ impl Event for SocketWriteEvent<'_> {
 
                 match &mut self.data {
                     WriteData::BasicSlice(s) => {
-                        let Some(peer) = conn.dst_socket(state) else {
+                        let mut data = Vec::new_in(fizzle_alloc());
+                        data.extend_from_slice(s);
+
+                        let Some(mut peer) = conn.dst_socket(state) else {
                             log::warn!("no destination for connectionless socket information to be received--dropping sent packet");
                             return Outcome::Success(s.len())
                         };
 
-                        let peer_ref = peer.borrow_mut();
-
+                        let mut peer_ref = peer.borrow_mut();
                         let SocketState::Connectionless(peer_conn) = &mut peer_ref.state else {
                             unreachable!()
                         };
-
-                        let mut data = Vec::new_in(fizzle_alloc());
-                        data.extend_from_slice(s);
 
                         match &mut peer_conn.backend {
                             ConnectionlessBackend::Peered(p) => {
@@ -2604,12 +2628,14 @@ impl Event for SocketWriteEvent<'_> {
                                 });
                             }
                             ConnectionlessBackend::Plugin(p) => {
-                                let plugin_ref = p.borrow_mut();
+                                let mut plugin_ref = p.borrow_mut();
                                 plugin_ref.write_buf.push_back(data);
                             }
                             ConnectionlessBackend::Passthrough => unimplemented!(),
-                            _ => return Outcome::Success(s.len()),
+                            _ => (),
                         }
+
+                        Outcome::Success(s.len())
                     },
                     WriteData::BasicVec(v) => {
                         let full_len = v.iter().map(|s| s.len()).sum::<usize>();
@@ -2618,8 +2644,7 @@ impl Event for SocketWriteEvent<'_> {
                             return Outcome::Success(full_len)
                         };
 
-                        let peer_ref = peer.borrow_mut();
-
+                        let mut peer_ref = peer.borrow_mut();
                         let SocketState::Connectionless(peer_conn) = &mut peer_ref.state else {
                             unreachable!()
                         };
@@ -2645,30 +2670,32 @@ impl Event for SocketWriteEvent<'_> {
                                 });
                             }
                             ConnectionlessBackend::Plugin(p) => {
-                                let plugin_ref = p.borrow_mut();
+                                let mut plugin_ref = p.borrow_mut();
                                 plugin_ref.write_buf.push_back(data);
                             }
                             ConnectionlessBackend::Passthrough => unimplemented!(),
-                            _ => return Outcome::Success(full_len),
+                            _ => (),
                         }
+
+                        Outcome::Success(full_len)
                     },
                     WriteData::File(file_write_data) => return Outcome::Error(Errno::ESPIPE),
                     WriteData::Socket(s, _) => {
                         let conn_addr = match conn.dst_socket(state) {
-                            Some(peer) => Some(get_or_assign_local(&mut peer, state)),
+                            Some(mut peer) => Some(get_or_assign_local(&mut peer, state)),
                             None => None,
                         };
 
-                        let num_written = 0;
+                        let mut num_written = 0;
                         let mut write_error: Errno = Errno::SUCCESS;
 
                         for write_data in s.iter_mut() {
-                            let addr = match conn_addr {
+                            let addr = match &conn_addr {
                                 Some(addr) if write_data.addr_bytes.is_some() => {
                                     write_error = Errno::EISCONN;
                                     continue
                                 }
-                                Some(addr) => addr,
+                                Some(addr) => addr.clone(),
                                 None => {
                                     let Some(addr_bytes) = &write_data.addr_bytes else {
                                         write_error = Errno::ENOTCONN;
@@ -2698,7 +2725,8 @@ impl Event for SocketWriteEvent<'_> {
                                 continue
                             };
 
-                            let SocketState::Connectionless(peer_conn) = &mut dst_socket.state else {
+                            let mut dst_socket_mut = dst_socket.borrow_mut();
+                            let SocketState::Connectionless(peer_conn) = &mut dst_socket_mut.state else {
                                 unreachable!()
                             };
 
@@ -2707,7 +2735,7 @@ impl Event for SocketWriteEvent<'_> {
 
                             let mut data = Vec::new_in(fizzle_alloc());
                             for s in write_data.buf.iter() {
-                                data.extend_from_slice(s.as_slice());
+                                data.extend_from_slice(s);
                             }
                             
                             match &mut peer_conn.backend {
@@ -2726,7 +2754,7 @@ impl Event for SocketWriteEvent<'_> {
                                     });
                                 }
                                 ConnectionlessBackend::Plugin(p) => {
-                                    let plugin_ref = p.borrow_mut();
+                                    let mut plugin_ref = p.borrow_mut();
                                     plugin_ref.write_buf.push_back(data);
                                 }
                                 ConnectionlessBackend::Passthrough => unimplemented!(),
@@ -2742,189 +2770,148 @@ impl Event for SocketWriteEvent<'_> {
                             Outcome::Error(write_error)
                         }
                     }
-                };
-            }
-            (SocketReadState::Finish(poller), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Passthrough, .. })) => {
-                if let Some(poller) = poller.as_ref() {
-                    state.delete_poller(poller.clone());
                 }
-
-                unimplemented!()
             }
-            (SocketReadState::Finish(poller), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Peered(regular), .. })) => {
+            (SocketWriteState::Finish(poller), SocketState::Connected(conn)) => {
                 if let Some(poller) = poller.as_ref() {
                     state.delete_poller(poller.clone());
                 }
 
                 match &mut self.data {
-                    ReadData::Basic(data) => {
-                        let buf = regular.recv_buf.clone();
-                        
-                        let mut idx = 0;
-                        for s in data.iter_mut() {
-                            let read = cmp::min(s.len(), buf.borrow().len() - idx);
-                            s.copy_from_slice(&buf.borrow().data()[idx..idx + read]);
-                            idx += read;
+                    WriteData::BasicSlice(s) => {
+
+                        let mut data = Vec::new_in(fizzle_alloc());
+                        data.extend_from_slice(s);
+
+                        match &mut conn.backend {
+                            ConnectedBackend::Peered(p) => {
+                                let Some(peer) = p.peer.upgrade() else {
+                                    return Outcome::Success(0)
+                                };
+
+                                let mut peer_mut = peer.borrow_mut();
+                                let SocketState::Connected(conn) = &mut peer_mut.state else {
+                                    unreachable!()
+                                };
+
+                                let ConnectedBackend::Peered(peer_conn) = &mut conn.backend else {
+                                    unreachable!()
+                                };
+
+                                (ConnectionlessMessage {
+                                    source: local_addr.addr().clone(),
+                                    ancillary: Vec::new_in(fizzle_alloc()), // TODO: add ancillary here,
+                                    data,
+                                });
+
+                                let read_polled = peer_conn.read_polled.clone();
+                                state.raise_polled(&read_polled);
+                            }
+                            ConnectedBackend::Feedback(_f) => {
+                                unimplemented!()
+                            }
+                            ConnectedBackend::Plugin(p) => {
+                                let mut plugin_ref = p.borrow_mut();
+                                plugin_ref.write_buf.push_back(data);
+                            }
+                            ConnectedBackend::Passthrough => unimplemented!(),
+                            _ => (),
                         }
 
-                        buf.borrow_mut().did_read(idx);
-
-                        Outcome::Success(idx)
+                        Outcome::Success(s.len())
                     },
-                    ReadData::File(_data) => Outcome::Error(Errno::ESPIPE),
-                    ReadData::Socket(out_msgs, _socket_flags) => {
-                        // TODO: blocking incorrectly handled here (see the MSG_WAITFORONE flag in `man 2 recvmmsg`)
+                    WriteData::BasicVec(v) => {
+                        let mut data = Vec::new_in(fizzle_alloc());
+                        for s in v.iter() {
+                            data.extend_from_slice(s);
+                        }
+                        let total_len = data.len();
 
-                        let buf = regular.recv_buf.clone();
+                        match &mut conn.backend {
+                            ConnectedBackend::Peered(p) => {
+                                let Some(peer) = p.peer.upgrade() else {
+                                    return Outcome::Success(0)
+                                };
 
-                        let mut msg_count = 0;
-                        for out_msg in out_msgs.iter_mut() {
-                            *out_msg.msg_flags = SocketMsgFlags::empty();
+                                let mut peer_mut = peer.borrow_mut();
+                                let SocketState::Connected(conn) = &mut peer_mut.state else {
+                                    unreachable!()
+                                };
 
-                            *out_msg.addrlen = 0; // TODO: encode peer addr
-                            *out_msg.control_len = 0; // TODO: encode ancillary
+                                let ConnectedBackend::Peered(peer_conn) = &mut conn.backend else {
+                                    unreachable!()
+                                };
 
-                            let mut total_read = 0;
-                            for s in out_msg.buf.iter_mut() {
-                                let read = cmp::min(buf.borrow().len() - total_read, s.len());
-                                s.copy_from_slice(&buf.borrow().data()[total_read..total_read + read]);
-                                total_read += read;
+                                (ConnectionlessMessage {
+                                    source: local_addr.addr().clone(),
+                                    ancillary: Vec::new_in(fizzle_alloc()), // TODO: add ancillary here,
+                                    data,
+                                });
+
+                                let read_polled = peer_conn.read_polled.clone();
+                                state.raise_polled(&read_polled);
                             }
-
-                            buf.borrow_mut().did_read(total_read);
-
-                            *out_msg.buflen = total_read as u32;
-
-                            msg_count += 1;
+                            ConnectedBackend::Feedback(_f) => {
+                                unimplemented!()
+                            }
+                            ConnectedBackend::Plugin(p) => {
+                                let mut plugin_ref = p.borrow_mut();
+                                plugin_ref.write_buf.push_back(data);
+                            }
+                            ConnectedBackend::Passthrough => unimplemented!(),
+                            _ => (),
                         }
 
-                        Outcome::Success(msg_count)
-                    }
-                }
-            }
-            (SocketReadState::Finish(poller), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Feedback(feedback), .. })) => {
-                let buf = feedback.buf.clone();
-
-                if let Some(poller) = poller.as_ref() {
-                    state.delete_poller(poller.clone());
-                }
-
-                match &mut self.data {
-                    ReadData::Basic(out_data) => {
-                        let mut idx = 0;
-                        for s in out_data.iter_mut() {
-                            let read = cmp::min(s.len(), buf.borrow().len() - idx);
-                            s.copy_from_slice(&buf.borrow().data()[idx..idx + read]);
-                            idx += read;
-                        }
-
-                        Outcome::Success(idx)
+                        Outcome::Success(total_len)
                     },
-                    ReadData::File(data) => Outcome::Error(Errno::ESPIPE),
-                    ReadData::Socket(out_msgs, socket_flags) => {
-                        // TODO: blocking incorrectly handled here (see the MSG_WAITFORONE flag in `man 2 recvmmsg`)
-
-                        let mut msg_count = 0;
-                        for out_msg in out_msgs.iter_mut() {
-                            *out_msg.msg_flags = SocketMsgFlags::empty();
-
-                            *out_msg.addrlen = 0; // TODO: add peer addr here
-                            *out_msg.control_len = 0; // TODO: add ancillary data
-
-                            let mut total_read = 0;
-                            for s in out_msg.buf.iter_mut() {
-                                let read = cmp::min(buf.borrow().len() - total_read, s.len());
-                                s.copy_from_slice(&buf.borrow().data()[total_read..total_read + read]);
-                                total_read += read;
+                    WriteData::File(file_write_data) => return Outcome::Error(Errno::ESPIPE),
+                    WriteData::Socket(s, _) => {
+                        for write_data in s.iter_mut() {
+                            let mut data = Vec::new_in(fizzle_alloc());
+                            for s in write_data.buf.iter() {
+                                data.extend_from_slice(s);
                             }
 
-                            buf.borrow_mut().did_read(total_read);
-                            *out_msg.buflen = total_read as u32;
+                            let mut ancillary = Vec::new_in(fizzle_alloc());
+                            ancillary.extend_from_slice(write_data.control_info);
 
-                            msg_count += 1;
-                        }
+                            match &mut conn.backend {
+                                ConnectedBackend::Peered(p) => {
+                                    let Some(peer) = p.peer.upgrade() else {
+                                        return Outcome::Success(0)
+                                    };
 
-                        Outcome::Success(msg_count)
-                    }
-                }
-            }
-            (SocketReadState::Finish(poller), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Plugin(plugin_endpoint_id), .. })) => {
-                if let Some(poller) = poller.as_ref() {
-                    state.delete_poller(poller.clone());
-                }
+                                    let mut peer_mut = peer.borrow_mut();
+                                    let SocketState::Connected(conn) = &mut peer_mut.state else {
+                                        unreachable!()
+                                    };
 
-                todo!("stateless socket plugins (e.g. UDP) not implemented")
-            }
-            (SocketReadState::Finish(poller), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Sink, .. })) => {
-                if let Some(poller) = poller.as_ref() {
-                    state.delete_poller(poller.clone());
-                }
+                                    let ConnectedBackend::Peered(peer_conn) = &mut conn.backend else {
+                                        unreachable!()
+                                    };
 
-                Outcome::Success(0)
-            }
-            (SocketReadState::Finish(poller), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::NullSink, .. })) => {
-                if let Some(poller) = poller.as_ref() {
-                    state.delete_poller(poller.clone());
-                }
+                                    (ConnectionlessMessage {
+                                        source: local_addr.addr().clone(),
+                                        ancillary,
+                                        data,
+                                    });
 
-                match &mut self.data {
-                    ReadData::Basic(out_slices) => {
-                        let mut total_read = 0;
-                        for s in out_slices.iter_mut() {
-                            for b in s.iter_mut() {
-                                *b = 0;
-                            }
-                            total_read += s.len();
-                        }
-
-                        Outcome::Success(total_read)
-                    }
-                    ReadData::File(file_read_data) => Outcome::Error(Errno::ESPIPE),
-                    ReadData::Socket(out_msgs, socket_flags) => {
-                        for msg in out_msgs.iter_mut() {
-                            *msg.addrlen = 0;
-                            *msg.control_len = 0;
-                            for s in msg.buf.iter_mut() {
-                                for b in s.iter_mut() {
-                                    *b = 0;
+                                    let read_polled = peer_conn.read_polled.clone();
+                                    state.raise_polled(&read_polled);
                                 }
+                                ConnectedBackend::Feedback(_f) => {
+                                    unimplemented!()
+                                }
+                                ConnectedBackend::Plugin(p) => {
+                                    let mut plugin_ref = p.borrow_mut();
+                                    plugin_ref.write_buf.push_back(data);
+                                }
+                                ConnectedBackend::Passthrough => unimplemented!(),
+                                _ => (),
                             }
                         }
 
-                        Outcome::Success(out_msgs.len())
-                    }
-                }
-            }
-            (SocketReadState::Finish(poller), SocketState::Connected(ConnectedSocket { backend: ConnectedBackend::Fuzz(endpoint), .. })) => {
-                if let Some(poller) = poller.as_ref() {
-                    state.delete_poller(poller.clone());
-                }
-
-                match &mut self.data {
-                    ReadData::Basic(out_slices) => {
-                        let mut total_read = 0;
-                        for s in out_slices.iter_mut() {
-                            let read = cmp::min(s.len(), state.global.fuzz_input.len() - endpoint.borrow().read_idx);
-                            s.copy_from_slice(&state.global.fuzz_input[endpoint.borrow().read_idx..endpoint.borrow().read_idx + read]);
-                            endpoint.borrow_mut().read_idx += read;
-                            total_read += read;
-                        }
-
-                        Outcome::Success(total_read)
-                    }
-                    ReadData::File(_) => Outcome::Error(Errno::ESPIPE),
-                    ReadData::Socket(out_msgs, socket_flags) => {
-                        let mut total_read = 0;
-                        for out_msg in out_msgs.iter_mut() {
-                            for s in out_msg.buf.iter_mut() {
-                                let read = cmp::min(s.len(), state.global.fuzz_input.len() - endpoint.borrow().read_idx);
-                                s.copy_from_slice(&state.global.fuzz_input[endpoint.borrow().read_idx..endpoint.borrow().read_idx + read]);
-                                endpoint.borrow_mut().read_idx += read;
-                                total_read += read;
-                            }
-                        }
-
-                        Outcome::Success(total_read)
+                        Outcome::Success(s.len())
                     }
                 }
             }

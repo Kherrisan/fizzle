@@ -19,7 +19,7 @@ macro_rules! hook {
         static $real_fn: $real_fn = $real_fn {__private_field: ()};
 
         impl $real_fn {
-            fn get(&self) -> unsafe extern fn ( $($v : $t),* ) -> $r {
+            fn get(&self) -> unsafe extern "C" fn ( $($v : $t),* ) -> $r {
                 use std::cell::OnceCell;
 
                 std::thread_local! {

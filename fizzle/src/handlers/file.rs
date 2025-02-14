@@ -4,6 +4,7 @@ use std::mem::MaybeUninit;
 use std::{cmp, ptr};
 use std::fmt::Display;
 use std::os::fd::RawFd;
+use std::rc::Rc;
 use std::time::Duration;
 
 use bitflags::bitflags;
@@ -295,7 +296,7 @@ impl Event for FileOpenEvent {
                         let gid = state.global.gid;
                         let current_time = state.global.current_time;
 
-                        let file_info = std::rc::Rc::new_in(RefCell::new(FileInfo {
+                        let file_info = Rc::new_in(RefCell::new(FileInfo {
                             path: path.clone(),
                             cow: None,
                             dev_id: 0xfe01, // plausible
@@ -1132,7 +1133,7 @@ impl Event for StatEvent<'_> {
                 let current_time = state.global.current_time;
 
 
-                let file_info = std::rc::Rc::new_in(RefCell::new(FileInfo {
+                let file_info = Rc::new_in(RefCell::new(FileInfo {
                     path: path.clone(),
                     cow: None,
                     dev_id: 0xfe01,

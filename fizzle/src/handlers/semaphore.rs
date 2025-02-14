@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::CStr;
 use std::fmt::Display;
+use std::rc::Rc;
 
 use bitflags::bitflags;
 use fizzle_common::path::SemaphorePath;
@@ -146,7 +147,7 @@ impl Event for SemOpenEvent<'_> {
             let sem = unsafe { crate::unique_mem_create() }.cast::<libc::sem_t>();
             let semaphore_ptr = SemaphorePtr::from(sem);
 
-            let sem_info = std::rc::Rc::new_in(RefCell::new(SemaphoreInfo {
+            let sem_info = Rc::new_in(RefCell::new(SemaphoreInfo {
                 refs: 1,
                 unlinked: false,
                 value: value as usize,

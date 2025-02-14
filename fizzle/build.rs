@@ -185,27 +185,25 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let final_tokens = quote::quote! {
         #[allow(unused)]
-        use fizzle_plugin::IoEndpointVariant;
-        #[allow(unused)]
-        use fizzle_plugin::{Plugin, PluginObject};
-        #[allow(unused)]
-        use crate::handlers::plugin::PluginEndpointId;
-        #[allow(unused)]
-        use std::rc::Rc;
+        use fizzle_plugin::{IoEndpointVariant, Plugin, PluginObject};
         #[allow(unused)]
         use std::cell::RefCell;
         #[allow(unused)]
-        use crate::plugins::{IoEmulationType, PluginEndpoint};
-        #[allow(unused)]
-        use std::path::PathBuf;
+        use std::collections::HashMap;
         #[allow(unused)]
         use std::net::SocketAddr;
         #[allow(unused)]
-        use std::collections::HashMap;
+        use std::path::PathBuf;
+        #[allow(unused)]
+        use std::rc::Rc;
+        #[allow(unused)]
+        use crate::handlers::plugin::PluginEndpointId;
+        #[allow(unused)]
+        use crate::plugins::{IoEmulationType, PluginEndpoint};
 
         #includes
 
-        pub fn populate_plugins(endpoints: &mut Vec<PluginEndpoint>, plugins: &mut Vec<std::rc::Rc<RefCell<dyn PluginObject>>>) {
+        pub fn populate_plugins(endpoints: &mut Vec<PluginEndpoint>, plugins: &mut Vec<Rc<RefCell<dyn PluginObject>>>) {
             #plugins_impl
         }
 

@@ -1,14 +1,10 @@
 use std::collections::LinkedList;
 
-use embedded_alloc::TlsfHeap;
-use fizzle_common::storage::Buffer;
-
-use crate::constants::FIZZLE_BUFFER_LENGTH;
 use crate::handlers::fuzz_endpoint::FuzzEndpointInfo;
 use crate::handlers::plugin::PluginInfo;
 use crate::handlers::polled::PolledInfo;
 use crate::handlers::socket::{ConnectionlessMessage, SocketInfo};
-use crate::{GlobalRc, GlobalWeak};
+use crate::{GlobalHeap, GlobalRc, GlobalVec, GlobalWeak};
 
 use self::private::Sealed;
 
@@ -37,7 +33,8 @@ pub enum IoBackend<R: Clone, F: Clone> {
 
 #[derive(Clone)]
 pub struct StandardFeedback {
-    pub buf: GlobalRc<Buffer<FIZZLE_BUFFER_LENGTH>>,
+    pub buf: LinkedList<GlobalVec<u8>, GlobalHeap>,
+    pub read_idx: usize,
     pub read_polled: GlobalRc<PolledInfo>,
     pub write_polled: GlobalRc<PolledInfo>,
 }
@@ -48,21 +45,22 @@ pub struct FileFeedback { }
 #[derive(Clone)]
 pub struct RegularConnected {
     pub peer: GlobalWeak<SocketInfo>,
-    pub recv_buf: GlobalRc<Buffer<FIZZLE_BUFFER_LENGTH>>,
+    pub recv_buf: LinkedList<GlobalVec<u8>, GlobalHeap>,
+    pub read_idx: usize,
     pub read_polled: GlobalRc<PolledInfo>,
     pub write_polled: GlobalRc<PolledInfo>,
 }
 
 #[derive(Clone)]
 pub struct RegularConnectionless {
-    pub recv_buf: LinkedList<ConnectionlessMessage, &'static TlsfHeap>,
+    pub recv_buf: LinkedList<ConnectionlessMessage, GlobalHeap>,
     pub read_polled: GlobalRc<PolledInfo>,
     pub write_polled: GlobalRc<PolledInfo>,
 }
 
 #[derive(Clone)]
 pub struct FeedbackConnectionless {
-    pub recv_buf: LinkedList<ConnectionlessMessage, &'static TlsfHeap>,
+    pub recv_buf: LinkedList<ConnectionlessMessage, GlobalHeap>,
     pub read_polled: GlobalRc<PolledInfo>,
     pub write_polled: GlobalRc<PolledInfo>,
 }

@@ -1,7 +1,9 @@
 use std::cell::RefCell;
+use std::rc::Rc;
 
 use fizzle_plugin::{Context, IoEndpointVariant, PluginObject};
 
+use crate::scheduler::fizzle_alloc;
 use crate::state::FizzleState;
 
 /// Plugin information, populated based on the Fizzle configuration file.
@@ -37,7 +39,7 @@ pub enum IoEmulationType {
     Feedback,
     /// Uses the plugin specified by the Rc to decide `read()`/`write()` behavior.
     #[allow(unused)]
-    Plugin(std::rc::Rc<RefCell<dyn PluginObject>>),
+    Plugin(Rc<RefCell<dyn PluginObject>>),
     #[allow(unused)]
     Sink,
     #[allow(unused)]
@@ -71,50 +73,72 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
             stream_id: plugin_info_ref.stream,
         };
 
-        let write_buf = plugin_info_ref.write_buf.clone();
-        let write_polled = plugin_info_ref.write_polled.clone();
-        let read_buf = plugin_info_ref.read_buf.clone();
-        let read_polled = plugin_info_ref.read_polled.clone();
+        let read_idx = plugin_info_ref.read_idx;
+        let write_idx = plugin_info_ref.write_idx;
+        drop(plugin_info_ref);
 
         // Check read end
-        if plugin_module.borrow().can_read(&context) && !write_buf.borrow().is_empty() {
-            log::debug!("plugin module context {:?} can be read", &context);
-            plugin_activated = true;
-            match plugin_module.borrow_mut().read(write_buf.borrow().data(), &context) {
-                Ok(0) => unimplemented!(),
-                Err(_) => unimplemented!(),
-                Ok(amount) => {
-                    log::debug!("plugin module read {} bytes", amount);
-                    write_buf.borrow_mut().did_read(amount);
-                    if write_buf.borrow().is_empty() {
-                        lower_write = true;
+        if plugin_module.borrow().can_read(&context) {
+            if let Some(write_buf) = plugin_info.borrow_mut().write_buf.pop_front() {
+                log::debug!("plugin module context {:?} can be written", &context);
+                plugin_activated = true;
+                match plugin_module.borrow_mut().read(&write_buf[write_idx..], &context) {
+                    Ok(0) => unimplemented!(),
+                    Err(_) => unimplemented!(),
+                    Ok(amount) => {
+                        log::debug!("plugin module read {} bytes", amount);
+                        let mut plugin_info_mut = plugin_info.borrow_mut();
+                        plugin_info_mut.write_idx += amount;
+                        if plugin_info_mut.write_idx != write_buf.len() {
+                            plugin_info_mut.write_buf.push_front(write_buf);
+                        } else {
+                            plugin_info_mut.write_idx = 0;
+                        }
+
+                        if plugin_info_mut.write_buf.is_empty() {
+                            lower_write = true;
+                        }
                     }
                 }
             }
         }
 
-        let mut read_buf_mut = read_buf.borrow_mut();
         // Check write end
-        if plugin_module.borrow().can_write(&context) && !read_buf_mut.is_full() {
+        if plugin_module.borrow().can_write(&context) {
             log::debug!("plugin module context {:?} can write", &context);
             plugin_activated = true;
-            match plugin_module.borrow_mut().write(read_buf_mut.remaining_mut(), &context) {
+
+            // TODO: make this more efficient allocation-wise
+            let mut read_buf = Vec::with_capacity_in(65536, fizzle_alloc());
+
+            let available = read_buf.spare_capacity_mut();
+
+            match plugin_module.borrow_mut().write(available, &context) {
                 Ok(0) => unimplemented!(),
                 Err(_) => unimplemented!(),
                 Ok(amount) => {
                     log::debug!("plugin module wrote {} bytes", amount);
-                    read_buf_mut.did_write(amount);
                     raise_read = true;
+
+                    unsafe {
+                        read_buf.set_len(amount);
+                    }
+                    read_buf.shrink_to_fit();
+
+                    plugin_info.borrow_mut().read_buf.push_back(read_buf);
                 }
             }
         }
 
+        let plugin_info_ref = plugin_info.borrow();
         if raise_read {
-            read.push(read_polled.clone());
+            read.push(plugin_info_ref.read_polled.clone());
         }
         if lower_write {
-            write.push(write_polled.clone());
+            write.push(plugin_info_ref.write_polled.clone());
         }
+
+        drop(plugin_info_ref);
     }
 
     for read_polled in read {

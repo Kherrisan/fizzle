@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::cmp;
-use std::rc::Weak;
+use std::rc::{Rc, Weak};
 
 use crate::constants::FIZZLE_BUFFER_LENGTH;
 use crate::errno::Errno;
@@ -83,36 +83,36 @@ impl Event for PipeCreateEvent {
         let fd1 = crate::create_descriptor();
         let fd2 = crate::create_descriptor();
 
-        let first_pipe = std::rc::Rc::new_in(RefCell::new(PipeInfo {
+        let first_pipe = Rc::new_in(RefCell::new(PipeInfo {
             mode,
             peer: Weak::new_in(fizzle_alloc()),
-            read_buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc()),
-            read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+            read_buf: Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc()),
+            read_polled: Rc::new_in(RefCell::new(PolledInfo {
                 pollers: Vec::new_in(fizzle_alloc()),
                 event_raised: false,
             }), fizzle_alloc()),
-            write_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+            write_polled: Rc::new_in(RefCell::new(PolledInfo {
                 pollers: Vec::new_in(fizzle_alloc()),
                 event_raised: true,
             }), fizzle_alloc()),
         }), fizzle_alloc());
 
-        let second_pipe = std::rc::Rc::new_in(RefCell::new(PipeInfo {
+        let second_pipe = Rc::new_in(RefCell::new(PipeInfo {
             mode,
-            peer: std::rc::Rc::downgrade(&first_pipe),
-            read_buf: std::rc::Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc()),
-            read_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+            peer: Rc::downgrade(&first_pipe),
+            read_buf: Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc()),
+            read_polled: Rc::new_in(RefCell::new(PolledInfo {
                 pollers: Vec::new_in(fizzle_alloc()),
                 event_raised: false,
             }), fizzle_alloc()),
-            write_polled: std::rc::Rc::new_in(RefCell::new(PolledInfo {
+            write_polled: Rc::new_in(RefCell::new(PolledInfo {
                 pollers: Vec::new_in(fizzle_alloc()),
                 event_raised: true,
             }), fizzle_alloc()),
         }), fizzle_alloc());
 
         // `unwrap()` guaranteed to succeed--we *just* inserted the pipe
-        first_pipe.borrow_mut().peer = std::rc::Rc::downgrade(&second_pipe);
+        first_pipe.borrow_mut().peer = Rc::downgrade(&second_pipe);
 
         let fd1_info = DescriptorInfo {
             close_on_exec,

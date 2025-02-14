@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, rc::Rc};
 
 use crate::{GlobalList, GlobalRc, GlobalVec};
 
@@ -21,10 +21,12 @@ pub struct PluginInfo {
     pub endpoint: IoEndpointVariant,
     pub stream: StreamId,
     /// The plugin module to read/write from.
-    pub module: std::rc::Rc<RefCell<dyn PluginObject>>,
+    pub module: Rc<RefCell<dyn PluginObject>>,
     pub read_buf: GlobalList<GlobalVec<u8>>,
+    pub read_idx: usize,
     pub read_polled: GlobalRc<PolledInfo>,
     pub write_buf: GlobalList<GlobalVec<u8>>,
+    pub write_idx: usize,
     pub write_polled: GlobalRc<PolledInfo>,
 }
 

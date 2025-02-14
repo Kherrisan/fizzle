@@ -2,18 +2,18 @@ use std::array;
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::ffi::CString;
+use std::rc::Rc;
 use std::{io::Error, ptr, thread};
 
 use bitflags::bitflags;
 
-use embedded_alloc::TlsfHeap;
 use fizzle_common::io::MAX_PATH_LEN;
 use fizzle_common::path::FilePath;
 
-use crate::GlobalSet;
+use crate::{GlobalHeap, GlobalSet};
 use crate::errno::Errno;
 use crate::handlers::signal::SigDisposition;
-use crate::scheduler::{fizzle_alloc, fizzle_singleton, DelegationSource, Event, Outcome, TerminationMethod};
+use crate::scheduler::{fizzle_alloc, DelegationSource, Event, Outcome, TerminationMethod};
 use crate::semaphore::Semaphore;
 use crate::state::{set_entered_handler, FizzleState, InheritedState};
 
@@ -92,7 +92,7 @@ impl Pgid {
 
 pub struct ProcessInfo {
     /// The global semaphore used to awaken this process.
-    pub semaphore: std::rc::Rc<Semaphore, &'static TlsfHeap>,
+    pub semaphore: Rc<Semaphore, GlobalHeap>,
     /// Threads that are awaiting the death of this process (e.g. via `waitpid`).
     pub awaiting_death: Option<Worker>,
     /// The PID of this process (e.g., the TID of the main thread).
@@ -228,7 +228,7 @@ impl Event for ProcessForkEvent {
                         let pgid = parent_info.borrow().pgid;
                         let signal_handlers = parent_info.borrow().signal_handlers.clone();
 
-                        state.local.process_info = std::rc::Rc::new_in(RefCell::new(ProcessInfo {
+                        state.local.process_info = Rc::new_in(RefCell::new(ProcessInfo {
                             pid,
                             ppid,
                             pgid,

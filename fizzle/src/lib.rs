@@ -27,18 +27,20 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, LinkedList};
 use std::ffi::VaList;
 use std::os::fd::RawFd;
-use std::ptr;
+use std::rc::Rc;
 use std::time::Duration;
+use std::ptr;
 
-pub type GlobalRc<T> = std::rc::Rc<RefCell<T>, &'static TlsfHeap>;
-pub type GlobalWeak<T> = std::rc::Weak<RefCell<T>, &'static TlsfHeap>;
 
-pub type GlobalList<T> = LinkedList<T, &'static TlsfHeap>;
-pub type GlobalVec<T> = Vec<T, &'static TlsfHeap>;
-pub type GlobalMap<K, V> = BTreeMap<K, V, &'static TlsfHeap>;
-pub type GlobalSet<K> = BTreeSet<K, &'static TlsfHeap>;
+pub type GlobalRc<T> = Rc<RefCell<T>, GlobalHeap>;
+pub type GlobalWeak<T> = std::rc::Weak<RefCell<T>, GlobalHeap>;
 
-pub type GlobalBox<T> = Box<T, &'static TlsfHeap>;
+pub type GlobalList<T> = LinkedList<T, GlobalHeap>;
+pub type GlobalVec<T> = Vec<T, GlobalHeap>;
+pub type GlobalMap<K, V> = BTreeMap<K, V, GlobalHeap>;
+pub type GlobalSet<K> = BTreeSet<K, GlobalHeap>;
+pub type GlobalBox<T> = Box<T, GlobalHeap>;
+pub type GlobalHeap = &'static TlsfHeap;
 
 unsafe extern "C" {
     #[cfg(feature = "afl")]

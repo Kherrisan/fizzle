@@ -6,7 +6,7 @@ hook_macros::hook! {
     ) -> *mut libc::DIR => fizzle_opendir(_ctx) {
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::opendir(name) };
-
+        #[cfg(not(feature = "passthroughfs"))]
         unimplemented!("opendir()")
     }
 }
@@ -17,6 +17,7 @@ hook_macros::hook! {
     ) -> *mut libc::DIR => fizzle_fdopendir(_ctx) {
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::fdopendir(fd) };
+        #[cfg(not(feature = "passthroughfs"))]
         unimplemented!("fdopendir()")
     }
 }
@@ -27,7 +28,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_dirfd(_ctx) {
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::dirfd(dirp) };
-
+        #[cfg(not(feature = "passthroughfs"))]
         unimplemented!("dirfd()")
     }
 }
@@ -38,7 +39,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_closedir(_ctx) {
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::closedir(dirp) };
-
+        #[cfg(not(feature = "passthroughfs"))]
         unimplemented!("closedir()")
     }
 }
@@ -49,7 +50,7 @@ hook_macros::hook! {
     ) -> *mut libc::dirent => fizzle_readdir(_ctx) {
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::readdir(dirp) };
-
+        #[cfg(not(feature = "passthroughfs"))]
         unimplemented!("readdir()")
     }
 }
