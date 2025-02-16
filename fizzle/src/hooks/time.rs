@@ -70,10 +70,11 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn clock_getres(
-        _clockid: libc::clockid_t,
-        _res: *mut libc::timespec
+        clockid: libc::clockid_t,
+        res: *mut libc::timespec
     ) -> libc::c_int => fizzle_clock_getres(_ctx) {
-        unimplemented!("clock_getres()")
+        log::warn!("unimplemented: clock_getres()");
+        libc::clock_getres(clockid, res)
     }
 }
 

@@ -28,7 +28,6 @@ pub const FIZZLE_MAX_FILE_PATHS: usize = 128;
 pub const FIZZLE_BUFFER_LENGTH: usize = 262_144; // 256 KB per buffer (twice the Linux default for `/proc/sys/net/ipv4/tcp_rmem`)
 
 pub const FIZZLE_MAX_NAMED_SEMAPHORES: usize = 128;
-pub const FIZZLE_FOPEN_BUFSIZE: usize = 4096;
 
 pub const FIZZLE_MAX_PER_ROUND_ENDPOINTS: usize = 128;
 

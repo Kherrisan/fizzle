@@ -460,7 +460,7 @@ hook_macros::hook! {
         };
 
         let input = match (level, optname) {
-            (libc::SOL_IP, libc::IP_OPTIONS | libc::IP_MULTICAST_LOOP | libc::IP_ADD_MEMBERSHIP | libc::IP_MULTICAST_ALL | libc::IP_MULTICAST_TTL | libc::IP_FREEBIND) => {
+            (libc::SOL_IP, libc::IP_TOS | libc::IP_MTU_DISCOVER | libc::IP_DROP_MEMBERSHIP | libc::IP_OPTIONS | libc::IP_MULTICAST_LOOP | libc::IP_ADD_MEMBERSHIP | libc::IP_MULTICAST_ALL | libc::IP_MULTICAST_TTL | libc::IP_FREEBIND) => {
                 return 0
             }
             (libc::SOL_IP, _) => {

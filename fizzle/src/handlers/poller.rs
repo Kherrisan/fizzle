@@ -77,6 +77,14 @@ impl<'a> SelectEvent<'a> {
         timeout: Option<Duration>,
         sigmask: Option<SignalSet>,
     ) -> Self {
+        // TODO: temporary workaround for certain programs that loop on a zero timeout duration
+        let timeout = match timeout {
+            Some(t) if t == Duration::ZERO => {
+                Some(Duration::from_secs(5))
+            }
+            t => t,
+        };
+
         Self {
             nfds,
             readfds,
