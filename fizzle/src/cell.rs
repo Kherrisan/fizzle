@@ -68,14 +68,13 @@ impl<T> PanicOnceCell<T> {
     where
         F: FnOnce() -> T,
     {
-        let state = self.state.fetch_xor(0b0000_0001, Ordering::AcqRel);
+        // These are `Ordering::Relaxed` because this is assumed to only ever be called
+        // in a single-threaded context. Synchronization of data already happens with Fizzle
+        // semaphores.
+        let state = self.state.fetch_xor(0b0000_0001, Ordering::Relaxed);
         if state == 0b0000_0000 {
             // 1st MSB not currently set: need to initialize
-            unsafe {
-                (&mut *self.inner.get()).write(f());
-            }
-
-            self.state.fetch_xor(0b0000_0010, Ordering::AcqRel);
+            self.initialize(f);
 
             unsafe {
                 &*(self.inner.get().cast_const().cast::<T>())
@@ -91,6 +90,22 @@ impl<T> PanicOnceCell<T> {
                 &*(self.inner.get().cast_const().cast::<T>())
             }
         }
+    }
+
+    // `inline(never)` and `cold` improve branch prediction, since `initialize()` only ever happens
+    // once on program startup.
+    #[inline(never)]
+    #[cold]
+    fn initialize<F>(&self, f: F)
+    where
+        F: FnOnce() -> T,
+    {
+        unsafe {
+            (&mut *self.inner.get()).write(f());
+        }
+
+        // Set 2nd MSB to indicate initialization is complete
+        self.state.fetch_xor(0b0000_0010, Ordering::Relaxed);
     }
 }
 
