@@ -11,11 +11,8 @@ use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
 use crate::WaitDuration;
 
-const PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP: u32 = 2;
 const PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP: libc::pthread_rwlock_t = unsafe {
-    mem::transmute([
-    0u32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP
-    ])
+    mem::transmute([0u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0])
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -465,6 +462,7 @@ pub fn static_rwlock_kind(rwlock: RwLockPtr) -> Option<RwLockKind> {
         {
             Some(RwLockKind::PreferWriter)
         } else {
+            let s = std::slice::from_raw_parts(rwlock.to_mut_ptr().cast_const().cast::<u8>(), mem::size_of::<libc::pthread_rwlock_t>());
             None
         }
     }
