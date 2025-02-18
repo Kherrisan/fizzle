@@ -163,8 +163,21 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
-    unsafe fn lrand48() -> libc::c_long => fizzle_lrand48(_ctx) {
-        unimplemented!("lrand48")
+    unsafe fn lrand48() -> libc::c_long => fizzle_lrand48(ctx) {
+
+        const LONG_SIZE: usize = mem::size_of::<libc::c_long>();
+        let mut long_array = [0u8; LONG_SIZE];
+
+        crate::strace!("lrand48() -> ...");
+        match Scheduler::handle_event(&mut ctx, GetEntropyEvent::new(long_array.as_mut_slice())) {
+            Ok(LONG_SIZE) => {
+                let mut out = libc::c_long::from_ne_bytes(long_array);
+                out %= (1 << 31) + 1;
+                crate::strace!("lrand48() -> {}", out);
+                out
+            },
+            _ => unreachable!(),
+        }
     }
 }
 
