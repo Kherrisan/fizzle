@@ -69,7 +69,7 @@ impl SockAddr {
                         .ok_or(SockAddrError::BadAlignment)?
                 };
 
-                let addr_bits = sockaddr_in.sin_addr.s_addr;
+                let addr_bits = u32::from_be(sockaddr_in.sin_addr.s_addr);
                 let port = u16::from_be(sockaddr_in.sin_port);
 
                 Ok(SockAddr::Ipv4(SocketAddrV4::new(
