@@ -131,7 +131,9 @@ unsafe fn unique_mem_destroy(mem_location: *mut libc::c_void) {
 }
 
 fn create_descriptor() -> RawFd {
-    let fd = unsafe { libc::memfd_create(c"FIZZLE_ALIAS_FD".as_ptr(), 0) };
+    // For some reason using `memfd_create` here lead to UB and the function would (erroneously)
+    // always return 0. Using `eventfd` instead seems to fix this.
+    let fd = unsafe { libc::eventfd(0, 0) };
     if fd < 0 {
         panic!("fizzle internal file descriptor alias creation (`memfd_create`) failed");
     }
