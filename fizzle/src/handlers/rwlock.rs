@@ -11,6 +11,13 @@ use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
 use crate::WaitDuration;
 
+const PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP: u32 = 2;
+const PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP: libc::pthread_rwlock_t = unsafe {
+    mem::transmute([
+    0u32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP
+    ])
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RwLockPtr(usize);
 
@@ -177,26 +184,16 @@ impl Event for RwLockReadEvent {
                 let rwlock_info = match state.local.rwlocks.get_mut(&self.rwlock) {
                     Some(rwlock_info) => rwlock_info,
                     None => {
-                        static RWLOCK_INIT: libc::pthread_rwlock_t =
-                            libc::PTHREAD_RWLOCK_INITIALIZER;
-
                         // We need to find out if this lock is statically-initialized
-                        unsafe {
-                            if libc::memcmp(
-                                self.rwlock.to_mut_ptr().cast::<libc::c_void>(),
-                                ptr::addr_of!(RWLOCK_INIT).cast::<libc::c_void>(),
-                                mem::size_of::<libc::pthread_rwlock_t>(),
-                            ) != 0
-                            {
-                                panic!("[UB] read lock called on uninitialized rwlock")
-                            }
-                        }
+                        let Some(rwlock_kind) = static_rwlock_kind(self.rwlock) else {
+                            panic!("[UB] read lock called on uninitialized rwlock")
+                        };
 
                         // This was a statically-initialized rwlock--add it to our internal state
                         state
                             .local
                             .rwlocks
-                            .insert(self.rwlock, RwLockInfo::new(RwLockKind::PreferReader));
+                            .insert(self.rwlock, RwLockInfo::new(rwlock_kind));
                         state.local.rwlocks.get_mut(&self.rwlock).unwrap()
                     }
                 };
@@ -308,26 +305,16 @@ impl Event for RwLockWriteEvent {
                 let rwlock_info = match state.local.rwlocks.get_mut(&self.rwlock) {
                     Some(rwlock_info) => rwlock_info,
                     None => {
-                        static RWLOCK_INIT: libc::pthread_rwlock_t =
-                            libc::PTHREAD_RWLOCK_INITIALIZER;
-
                         // We need to find out if this lock is statically-initialized
-                        unsafe {
-                            if libc::memcmp(
-                                self.rwlock.to_mut_ptr().cast::<libc::c_void>(),
-                                ptr::addr_of!(RWLOCK_INIT).cast::<libc::c_void>(),
-                                mem::size_of::<libc::pthread_rwlock_t>(),
-                            ) != 0
-                            {
-                                panic!("[UB] read lock called on uninitialized rwlock")
-                            }
-                        }
+                        let Some(rwlock_kind) = static_rwlock_kind(self.rwlock) else {
+                            panic!("[UB] read lock called on uninitialized rwlock")
+                        };
 
                         // This was a statically-initialized rwlock--add it to our internal state
                         state
                             .local
                             .rwlocks
-                            .insert(self.rwlock, RwLockInfo::new(RwLockKind::PreferReader));
+                            .insert(self.rwlock, RwLockInfo::new(rwlock_kind));
                         state.local.rwlocks.get_mut(&self.rwlock).unwrap()
                     }
                 };
@@ -454,5 +441,31 @@ impl Event for RwLockUnlockEvent {
         }
 
         Outcome::Success(())
+    }
+}
+
+pub fn static_rwlock_kind(rwlock: RwLockPtr) -> Option<RwLockKind> {
+    static REGULAR_INIT: libc::pthread_rwlock_t = libc::PTHREAD_RWLOCK_INITIALIZER;
+    static NONRECURSIVE_WRITER_INIT: libc::pthread_rwlock_t = PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP;
+
+    // We need to find out if this lock is statically-initialized
+    unsafe {
+        if libc::memcmp(
+            rwlock.to_mut_ptr().cast::<libc::c_void>(),
+            ptr::addr_of!(REGULAR_INIT).cast::<libc::c_void>(),
+            mem::size_of::<libc::pthread_rwlock_t>(),
+        ) == 0
+        {
+            Some(RwLockKind::PreferReader)
+        } else if libc::memcmp(
+            rwlock.to_mut_ptr().cast::<libc::c_void>(),
+            ptr::addr_of!(NONRECURSIVE_WRITER_INIT).cast::<libc::c_void>(),
+            mem::size_of::<libc::pthread_rwlock_t>(),
+        ) == 0
+        {
+            Some(RwLockKind::PreferWriter)
+        } else {
+            None
+        }
     }
 }
