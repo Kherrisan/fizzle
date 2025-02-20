@@ -7,7 +7,7 @@ use std::time::Duration;
 use crate::backend::{ConnectedBackend, ConnectionlessBackend, StdioBackend};
 use crate::errno::Errno;
 use crate::handlers::epoll::{EpollDirection, EpollInterest};
-use crate::scheduler::{fizzle_alloc, Event, Outcome};
+use crate::scheduler::{fizzle_alloc, Event, Outcome, YieldUntil};
 use crate::state::FizzleState;
 use crate::{GlobalRc, GlobalSet, GlobalVec};
 
@@ -44,7 +44,6 @@ impl PartialEq for PollerInfo {
 
 impl Eq for PollerInfo {}
 
-
 enum SelectState {
     Start,
     ApplySigmask(SignalSetSigmaskEvent),
@@ -79,9 +78,7 @@ impl<'a> SelectEvent<'a> {
     ) -> Self {
         // TODO: temporary workaround for certain programs that loop on a zero timeout duration
         let timeout = match timeout {
-            Some(t) if t == Duration::ZERO => {
-                Some(Duration::from_secs(5))
-            }
+            Some(t) if t == Duration::ZERO => Some(Duration::from_secs(5)),
             t => t,
         };
 
@@ -112,7 +109,7 @@ impl Event for SelectEvent<'_> {
                 } else {
                     self.state = SelectState::CheckDescriptors;
                 }
-                Outcome::Continue
+                Outcome::Yield(YieldUntil::Immediate)
             }
             SelectState::ApplySigmask(event) => {
                 match event.run(state) {
@@ -120,18 +117,12 @@ impl Event for SelectEvent<'_> {
                         // Store the replacement signal mask to revert state to
                         self.sigmask = Some(s);
                         self.state = SelectState::CheckDescriptors;
-                        Outcome::Continue
+                        Outcome::Yield(YieldUntil::Immediate)
                     }
                     Outcome::Error(_) => unreachable!(), // Errors shouldn't happen in this event
                     // For all other outcomes, have the scheduler continue running
-                    Outcome::Yield(duration) => Outcome::Yield(duration),
-                    Outcome::Continue => Outcome::Continue,
-                    Outcome::Pause(delegation_source, sem) => Outcome::Pause(delegation_source, sem),
-                    Outcome::TerminateThread(t) => Outcome::TerminateThread(t),
-                    Outcome::TerminateProcess(t) => Outcome::TerminateProcess(t),
-                    Outcome::Execute(e) => Outcome::Execute(e),
-                    Outcome::SendSignal(d, i) => Outcome::SendSignal(d, i),
-                    Outcome::CreateCow(c) => Outcome::CreateCow(c),
+                    Outcome::Yield(until) => Outcome::Yield(until),
+                    Outcome::RunTask(t, y) => Outcome::RunTask(t, y),
                 }
             }
             SelectState::CheckDescriptors => {
@@ -161,7 +152,7 @@ impl Event for SelectEvent<'_> {
                                 PolledStatus::BadFd => {
                                     log::warn!("select(): fd {} in readfds was not recognized (returning EBADF)", fd);
                                     self.state = SelectState::CheckDescriptorsFail(Errno::EBADF);
-                                    return Outcome::Continue;
+                                    return Outcome::Yield(YieldUntil::Immediate);
                                 }
                                 PolledStatus::NotPollable => {
                                     log::trace!(
@@ -201,7 +192,7 @@ impl Event for SelectEvent<'_> {
                                 PolledStatus::BadFd => {
                                     log::warn!("`select`: fd {} in writefds was not recognized (returning EBADF)", fd);
                                     self.state = SelectState::CheckDescriptorsFail(Errno::EBADF);
-                                    return Outcome::Continue;
+                                    return Outcome::Yield(YieldUntil::Immediate);
                                 }
                                 PolledStatus::NotPollable => {
                                     log::trace!(
@@ -245,7 +236,10 @@ impl Event for SelectEvent<'_> {
                 }
 
                 self.state = SelectState::EndPoll(poller_id, read_pollers, write_pollers);
-                Outcome::Yield(self.timeout)
+                Outcome::Yield(match self.timeout {
+                    Some(timeout) => YieldUntil::Reschedule(timeout),
+                    None => YieldUntil::None,
+                })
             }
             SelectState::CheckDescriptorsFail(e) => match self.sigmask {
                 Some(sigmask) => {
@@ -253,7 +247,7 @@ impl Event for SelectEvent<'_> {
                         SignalSetSigmaskEvent::new(SigmaskOp::Setmask, Some(sigmask)),
                         Err(*e),
                     );
-                    Outcome::Continue
+                    Outcome::Yield(YieldUntil::Immediate)
                 }
                 None => Outcome::Error(*e),
             },
@@ -298,7 +292,7 @@ impl Event for SelectEvent<'_> {
                             SignalSetSigmaskEvent::new(SigmaskOp::Setmask, Some(sigmask)),
                             Ok(total_ready),
                         );
-                        Outcome::Continue
+                        Outcome::Yield(YieldUntil::Immediate)
                     }
                     None => Outcome::Success(total_ready),
                 }
@@ -317,13 +311,7 @@ impl Event for SelectEvent<'_> {
                     Outcome::Error(_) => unreachable!(), // Errors shouldn't happen in this event
                     // For all other outcomes, have the scheduler continue running
                     Outcome::Yield(duration) => Outcome::Yield(duration),
-                    Outcome::Continue => Outcome::Continue,
-                    Outcome::Pause(delegation_source, sem) => Outcome::Pause(delegation_source, sem),
-                    Outcome::TerminateThread(t) => Outcome::TerminateThread(t),
-                    Outcome::TerminateProcess(t) => Outcome::TerminateProcess(t),
-                    Outcome::Execute(e) => Outcome::Execute(e),
-                    Outcome::SendSignal(d, i) => Outcome::SendSignal(d, i),
-                    Outcome::CreateCow(c) => Outcome::CreateCow(c),
+                    Outcome::RunTask(t, y) => Outcome::RunTask(t, y),
                 }
             }
         }
@@ -380,7 +368,7 @@ impl Event for PollEvent<'_> {
                 } else {
                     self.state = PollState::CheckDescriptors;
                 }
-                Outcome::Continue
+                Outcome::Yield(YieldUntil::Immediate)
             }
             PollState::ApplySigmask(event) => {
                 match event.run(state) {
@@ -388,18 +376,12 @@ impl Event for PollEvent<'_> {
                         // Store the replacement signal mask to revert state to
                         self.sigmask = Some(s);
                         self.state = PollState::CheckDescriptors;
-                        Outcome::Continue
+                        Outcome::Yield(YieldUntil::Immediate)
                     }
                     Outcome::Error(_) => unreachable!(), // Errors shouldn't happen in this event
                     // For all other outcomes, have the scheduler continue running
                     Outcome::Yield(duration) => Outcome::Yield(duration),
-                    Outcome::Continue => Outcome::Continue,
-                    Outcome::Pause(delegation_source, sem) => Outcome::Pause(delegation_source, sem),
-                    Outcome::TerminateThread(t) => Outcome::TerminateThread(t),
-                    Outcome::TerminateProcess(t) => Outcome::TerminateProcess(t),
-                    Outcome::Execute(e) => Outcome::Execute(e),
-                    Outcome::SendSignal(d, i) => Outcome::SendSignal(d, i),
-                    Outcome::CreateCow(c) => Outcome::CreateCow(c),
+                    Outcome::RunTask(t, y) => Outcome::RunTask(t, y),
                 }
             }
             PollState::CheckDescriptors => {
@@ -437,7 +419,7 @@ impl Event for PollEvent<'_> {
                                     fd
                                 );
                                 self.state = PollState::CheckDescriptorsFail(Errno::EBADF);
-                                return Outcome::Continue;
+                                return Outcome::Yield(YieldUntil::Immediate);
                             }
                             PolledStatus::NotPollable => {
                                 log::trace!("`poll`: fd {} was set for reading (NotPollable)", fd);
@@ -472,7 +454,7 @@ impl Event for PollEvent<'_> {
                             PolledStatus::BadFd => {
                                 log::warn!("`poll`: fd {} in writefds was not recognized (returning EBADF)", fd);
                                 self.state = PollState::CheckDescriptorsFail(Errno::EBADF);
-                                return Outcome::Continue;
+                                return Outcome::Yield(YieldUntil::Immediate);
                             }
                             PolledStatus::NotPollable => {
                                 log::trace!("`poll`: fd {} was set for writing (NotPollable)", fd);
@@ -509,7 +491,10 @@ impl Event for PollEvent<'_> {
                 }
 
                 self.state = PollState::EndPoll(poller_id, read_pollers, write_pollers);
-                Outcome::Yield(self.timeout)
+                Outcome::Yield(match self.timeout {
+                    Some(timeout) => YieldUntil::Reschedule(timeout),
+                    None => YieldUntil::None,
+                })
             }
             PollState::CheckDescriptorsFail(e) => match self.sigmask {
                 Some(sigmask) => {
@@ -517,7 +502,7 @@ impl Event for PollEvent<'_> {
                         SignalSetSigmaskEvent::new(SigmaskOp::Setmask, Some(sigmask)),
                         Err(*e),
                     );
-                    Outcome::Continue
+                    Outcome::Yield(YieldUntil::Immediate)
                 }
                 None => Outcome::Error(*e),
             },
@@ -556,7 +541,7 @@ impl Event for PollEvent<'_> {
                             SignalSetSigmaskEvent::new(SigmaskOp::Setmask, Some(sigmask)),
                             Ok(total_ready),
                         );
-                        Outcome::Continue
+                        Outcome::Yield(YieldUntil::Immediate)
                     }
                     None => Outcome::Success(total_ready),
                 }
@@ -574,14 +559,8 @@ impl Event for PollEvent<'_> {
                     }
                     Outcome::Error(_) => unreachable!(), // Errors shouldn't happen in this event
                     // For all other outcomes, have the scheduler continue running
-                    Outcome::Yield(duration) => Outcome::Yield(duration),
-                    Outcome::Continue => Outcome::Continue,
-                    Outcome::Pause(delegation_source, sem) => Outcome::Pause(delegation_source, sem),
-                    Outcome::TerminateThread(t) => Outcome::TerminateThread(t),
-                    Outcome::TerminateProcess(t) => Outcome::TerminateProcess(t),
-                    Outcome::Execute(e) => Outcome::Execute(e),
-                    Outcome::SendSignal(d, i) => Outcome::SendSignal(d, i),
-                    Outcome::CreateCow(c) => Outcome::CreateCow(c),
+                    Outcome::Yield(until) => Outcome::Yield(until),
+                    Outcome::RunTask(t, y) => Outcome::RunTask(t, y),
                 }
             }
         }
@@ -604,16 +583,22 @@ impl Event for EpollCreateEvent {
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let fd = Descriptor::from_raw_fd(crate::create_descriptor());
-        let epoll = Rc::new_in(RefCell::new(EpollInfo {
-            interests: BTreeMap::new_in(fizzle_alloc()),
-        }), fizzle_alloc());
+        let epoll = Rc::new_in(
+            RefCell::new(EpollInfo {
+                interests: BTreeMap::new_in(fizzle_alloc()),
+            }),
+            fizzle_alloc(),
+        );
 
-        state.local.fds.insert(fd, DescriptorInfo {
-            close_on_exec: self.cloexec,
-            nonblocking: false,
-            is_passthrough: false,
-            resource: FdResource::Epoll(epoll),
-        });
+        state.local.fds.insert(
+            fd,
+            DescriptorInfo {
+                close_on_exec: self.cloexec,
+                nonblocking: false,
+                is_passthrough: false,
+                resource: FdResource::Epoll(epoll),
+            },
+        );
 
         Outcome::Success(fd)
     }
@@ -676,7 +661,11 @@ impl Event for EpollCtlEvent {
         match self.op {
             EpollOperation::Add(ev) => {
                 let target_fd = self.target_descriptor.as_raw_fd();
-                if epoll.borrow().interests.contains_key(&self.target_descriptor) {
+                if epoll
+                    .borrow()
+                    .interests
+                    .contains_key(&self.target_descriptor)
+                {
                     return Outcome::Error(Errno::EEXIST);
                 }
 
@@ -700,15 +689,13 @@ impl Event for EpollCtlEvent {
                     }
                 };
 
-                epoll.borrow_mut()
-                    .interests
-                    .insert(
-                        self.target_descriptor,
-                        EpollInterest {
-                            direction: direction.clone(),
-                            user_data: ev.u64,
-                        },
-                    );
+                epoll.borrow_mut().interests.insert(
+                    self.target_descriptor,
+                    EpollInterest {
+                        direction: direction.clone(),
+                        user_data: ev.u64,
+                    },
+                );
 
                 log::trace!(
                     "EPOLL_CTL_ADD called on epoll_fd({}) for fd({})--setting poll mode to {}",
@@ -823,7 +810,7 @@ impl Event for EpollWaitEvent<'_> {
                 } else {
                     self.state = EpollWaitState::CheckDescriptors;
                 }
-                Outcome::Continue
+                Outcome::Yield(YieldUntil::Immediate)
             }
             EpollWaitState::ApplySigmask(event) => {
                 match event.run(state) {
@@ -831,18 +818,12 @@ impl Event for EpollWaitEvent<'_> {
                         // Store the replacement signal mask to revert state to
                         self.sigmask = Some(s);
                         self.state = EpollWaitState::CheckDescriptors;
-                        Outcome::Continue
+                        Outcome::Yield(YieldUntil::Immediate)
                     }
                     Outcome::Error(_) => unreachable!(), // Errors shouldn't happen in this event
                     // For all other outcomes, have the scheduler continue running
-                    Outcome::Yield(duration) => Outcome::Yield(duration),
-                    Outcome::Continue => Outcome::Continue,
-                    Outcome::Pause(delegation_source, sem) => Outcome::Pause(delegation_source, sem),
-                    Outcome::TerminateThread(t) => Outcome::TerminateThread(t),
-                    Outcome::TerminateProcess(t) => Outcome::TerminateProcess(t),
-                    Outcome::Execute(e) => Outcome::Execute(e),
-                    Outcome::SendSignal(d, i) => Outcome::SendSignal(d, i),
-                    Outcome::CreateCow(c) => Outcome::CreateCow(c),
+                    Outcome::Yield(u) => Outcome::Yield(u),
+                    Outcome::RunTask(t, y) => Outcome::RunTask(t, y),
                 }
             }
             EpollWaitState::CheckDescriptors => {
@@ -889,7 +870,7 @@ impl Event for EpollWaitEvent<'_> {
                                     fd
                                 );
                                 self.state = EpollWaitState::CheckDescriptorsFail(Errno::EBADF);
-                                return Outcome::Continue;
+                                return Outcome::Yield(YieldUntil::Immediate);
                             }
                             PolledStatus::NotPollable => {
                                 log::trace!("`poll`: fd {} was set for reading (NotPollable)", fd);
@@ -926,7 +907,7 @@ impl Event for EpollWaitEvent<'_> {
                             PolledStatus::BadFd => {
                                 log::warn!("`poll`: fd {} in writefds was not recognized (returning EBADF)", fd);
                                 self.state = EpollWaitState::CheckDescriptorsFail(Errno::EBADF);
-                                return Outcome::Continue;
+                                return Outcome::Yield(YieldUntil::Immediate);
                             }
                             PolledStatus::NotPollable => {
                                 log::trace!("`poll`: fd {} was set for writing (NotPollable)", fd);
@@ -963,7 +944,10 @@ impl Event for EpollWaitEvent<'_> {
                 }
 
                 self.state = EpollWaitState::EndPoll(poller_id, read_pollers, write_pollers);
-                Outcome::Yield(self.timeout)
+                Outcome::Yield(match self.timeout {
+                    Some(timeout) => YieldUntil::Reschedule(timeout),
+                    None => YieldUntil::None,
+                })
             }
             EpollWaitState::CheckDescriptorsFail(e) => match self.sigmask {
                 Some(sigmask) => {
@@ -971,7 +955,7 @@ impl Event for EpollWaitEvent<'_> {
                         SignalSetSigmaskEvent::new(SigmaskOp::Setmask, Some(sigmask)),
                         Err(*e),
                     );
-                    Outcome::Continue
+                    Outcome::Yield(YieldUntil::Immediate)
                 }
                 None => Outcome::Error(*e),
             },
@@ -1026,7 +1010,7 @@ impl Event for EpollWaitEvent<'_> {
                             SignalSetSigmaskEvent::new(SigmaskOp::Setmask, Some(sigmask)),
                             Ok(total_ready),
                         );
-                        Outcome::Continue
+                        Outcome::Yield(YieldUntil::Immediate)
                     }
                     None => Outcome::Success(total_ready),
                 }
@@ -1044,14 +1028,8 @@ impl Event for EpollWaitEvent<'_> {
                     }
                     Outcome::Error(_) => unreachable!(), // Errors shouldn't happen in this event
                     // For all other outcomes, have the scheduler continue running
-                    Outcome::Yield(duration) => Outcome::Yield(duration),
-                    Outcome::Continue => Outcome::Continue,
-                    Outcome::Pause(delegation_source, sem) => Outcome::Pause(delegation_source, sem),
-                    Outcome::TerminateThread(t) => Outcome::TerminateThread(t),
-                    Outcome::TerminateProcess(t) => Outcome::TerminateProcess(t),
-                    Outcome::Execute(e) => Outcome::Execute(e),
-                    Outcome::SendSignal(d, i) => Outcome::SendSignal(d, i),
-                    Outcome::CreateCow(c) => Outcome::CreateCow(c),
+                    Outcome::Yield(y) => Outcome::Yield(y),
+                    Outcome::RunTask(t, y) => Outcome::RunTask(t, y),
                 }
             }
         }
@@ -1065,9 +1043,9 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
     };
     match &fd_info.resource {
         FdResource::Epoll(_) => panic!("polling an epoll descriptor not supported"),
-        FdResource::EventFd(eventfd) => PolledStatus::Pollable(
-            eventfd.borrow().read_polled.clone()
-        ),
+        FdResource::EventFd(eventfd) => {
+            PolledStatus::Pollable(eventfd.borrow().read_polled.clone())
+        }
         FdResource::Directory(_) => PolledStatus::NotPollable,
         FdResource::File(_file_id) => PolledStatus::ImmediatelyPollable, // Polling a file is not generally supported
         /*
@@ -1098,28 +1076,27 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
         },
         */
         FdResource::MessageQueue(_) => todo!(),
-        FdResource::Pipe(pipe_info) => PolledStatus::Pollable(
-            pipe_info.borrow().read_polled.clone()
-        ),
+        FdResource::Pipe(pipe_info) => {
+            PolledStatus::Pollable(pipe_info.borrow().read_polled.clone())
+        }
         FdResource::Stdin => match &state.global.stdio {
             StdioBackend::Passthrough => PolledStatus::ImmediatelyPollable,
             StdioBackend::Peered(_) => unreachable!(),
             StdioBackend::Feedback(feedback) => {
                 PolledStatus::Pollable(feedback.read_polled.clone())
             }
-            StdioBackend::Plugin(plugin_info) => PolledStatus::Pollable(
-                plugin_info.borrow().read_polled.clone()
-            ),
+            StdioBackend::Plugin(plugin_info) => {
+                PolledStatus::Pollable(plugin_info.borrow().read_polled.clone())
+            }
             StdioBackend::Sink => PolledStatus::NotPollable,
             StdioBackend::NullSink => PolledStatus::ImmediatelyPollable,
-            StdioBackend::Fuzz(fuzz_endpoint) => PolledStatus::Pollable(
-                fuzz_endpoint.borrow().read_polled.clone()
-            ),
+            StdioBackend::Fuzz(fuzz_endpoint) => {
+                PolledStatus::Pollable(fuzz_endpoint.borrow().read_polled.clone())
+            }
         },
         FdResource::Stdout => PolledStatus::NotPollable,
         FdResource::Stderr => PolledStatus::NotPollable,
-        FdResource::Socket(socket_info) => match &socket_info.borrow().state
-        {
+        FdResource::Socket(socket_info) => match &socket_info.borrow().state {
             SocketState::Connectionless(connectionless) => match &connectionless.backend {
                 ConnectionlessBackend::Passthrough => PolledStatus::ImmediatelyPollable,
                 ConnectionlessBackend::Peered(regular) => {
@@ -1128,14 +1105,14 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                 ConnectionlessBackend::Feedback(feedback) => {
                     PolledStatus::Pollable(feedback.read_polled.clone())
                 }
-                ConnectionlessBackend::Plugin(plugin_info) => PolledStatus::Pollable(
-                    plugin_info.borrow().read_polled.clone()
-                ),
+                ConnectionlessBackend::Plugin(plugin_info) => {
+                    PolledStatus::Pollable(plugin_info.borrow().read_polled.clone())
+                }
                 ConnectionlessBackend::Sink => PolledStatus::NotPollable,
                 ConnectionlessBackend::NullSink => PolledStatus::ImmediatelyPollable,
-                ConnectionlessBackend::Fuzz(fuzz_endpoint) => PolledStatus::Pollable(
-                    fuzz_endpoint.borrow().read_polled.clone()
-                ),
+                ConnectionlessBackend::Fuzz(fuzz_endpoint) => {
+                    PolledStatus::Pollable(fuzz_endpoint.borrow().read_polled.clone())
+                }
             },
             SocketState::Unassociated(_) => PolledStatus::NotPollable,
             SocketState::Server(server) => PolledStatus::Pollable(server.ready_to_connect.clone()),
@@ -1149,14 +1126,14 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                 ConnectedBackend::Feedback(feedback) => {
                     PolledStatus::Pollable(feedback.read_polled.clone())
                 }
-                ConnectedBackend::Plugin(plugin_info) => PolledStatus::Pollable(
-                    plugin_info.borrow().read_polled.clone()
-                ),
+                ConnectedBackend::Plugin(plugin_info) => {
+                    PolledStatus::Pollable(plugin_info.borrow().read_polled.clone())
+                }
                 ConnectedBackend::Sink => PolledStatus::NotPollable,
                 ConnectedBackend::NullSink => PolledStatus::ImmediatelyPollable,
-                ConnectedBackend::Fuzz(fuzz_endpoint) => PolledStatus::Pollable(
-                    fuzz_endpoint.borrow().read_polled.clone()
-                ),
+                ConnectedBackend::Fuzz(fuzz_endpoint) => {
+                    PolledStatus::Pollable(fuzz_endpoint.borrow().read_polled.clone())
+                }
             },
         },
     }
@@ -1168,9 +1145,9 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
     };
     match &fd_info.resource {
         FdResource::Epoll(_) => panic!("polling an epoll descriptor not supported"),
-        FdResource::EventFd(eventfd) => PolledStatus::Pollable(
-            eventfd.borrow().write_polled.clone()
-        ),
+        FdResource::EventFd(eventfd) => {
+            PolledStatus::Pollable(eventfd.borrow().write_polled.clone())
+        }
         FdResource::Directory(_) => PolledStatus::NotPollable,
         FdResource::File(_file_id) => PolledStatus::ImmediatelyPollable,
         /*
@@ -1208,9 +1185,9 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
             StdioBackend::Feedback(feedback) => {
                 PolledStatus::Pollable(feedback.write_polled.clone())
             }
-            StdioBackend::Plugin(plugin_info) => PolledStatus::Pollable(
-                plugin_info.borrow().write_polled.clone()
-            ),
+            StdioBackend::Plugin(plugin_info) => {
+                PolledStatus::Pollable(plugin_info.borrow().write_polled.clone())
+            }
             StdioBackend::Sink => PolledStatus::ImmediatelyPollable,
             StdioBackend::NullSink => PolledStatus::ImmediatelyPollable,
             StdioBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
@@ -1223,9 +1200,9 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                 ConnectionlessBackend::Feedback(feedback) => {
                     PolledStatus::Pollable(feedback.write_polled.clone())
                 }
-                ConnectionlessBackend::Plugin(plugin_info) => PolledStatus::Pollable(
-                    plugin_info.borrow().write_polled.clone()
-                ),
+                ConnectionlessBackend::Plugin(plugin_info) => {
+                    PolledStatus::Pollable(plugin_info.borrow().write_polled.clone())
+                }
                 ConnectionlessBackend::Sink => PolledStatus::ImmediatelyPollable,
                 ConnectionlessBackend::NullSink => PolledStatus::ImmediatelyPollable,
                 ConnectionlessBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
@@ -1240,8 +1217,7 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                 ConnectedBackend::Passthrough => unreachable!(),
                 ConnectedBackend::Peered(peered) => {
                     if let Some(peer_info) = peered.peer.upgrade() {
-                        let SocketState::Connected(conn) = &peer_info.borrow().state
-                        else {
+                        let SocketState::Connected(conn) = &peer_info.borrow().state else {
                             unreachable!()
                         };
 
@@ -1258,9 +1234,9 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                 ConnectedBackend::Feedback(feedback) => {
                     PolledStatus::Pollable(feedback.write_polled.clone())
                 }
-                ConnectedBackend::Plugin(plugin_info) => PolledStatus::Pollable(
-                    plugin_info.borrow().write_polled.clone()
-                ),
+                ConnectedBackend::Plugin(plugin_info) => {
+                    PolledStatus::Pollable(plugin_info.borrow().write_polled.clone())
+                }
                 ConnectedBackend::Sink => PolledStatus::ImmediatelyPollable,
                 ConnectedBackend::NullSink => PolledStatus::ImmediatelyPollable,
                 ConnectedBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,

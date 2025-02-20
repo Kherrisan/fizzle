@@ -2,7 +2,7 @@ use std::{collections::VecDeque, thread};
 
 use crate::{
     errno::Errno,
-    scheduler::{Event, Outcome},
+    scheduler::{Event, Outcome, YieldUntil},
     state::FizzleState,
 };
 
@@ -117,7 +117,7 @@ impl Event for ThreadSpinLockEvent {
                     Outcome::Error(Errno::EBUSY)
                 } else {
                     spinlock_queue.push_back(thread::current().id());
-                    Outcome::Yield(None)
+                    Outcome::Yield(YieldUntil::None)
                 }
             }
             ThreadSpinLockState::Finish => Outcome::Success(()),

@@ -2,12 +2,12 @@ use core::slice;
 use std::cell::Cell;
 use std::ffi::CStr;
 use std::io::{IoSlice, IoSliceMut};
-use std::{cmp, mem};
 use std::os::fd::RawFd;
 use std::ptr::NonNull;
+use std::{cmp, mem};
 
 use crate::errno::Errno;
-use crate::scheduler::{Event, Outcome};
+use crate::scheduler::{Event, Outcome, YieldUntil};
 use crate::state::FizzleState;
 
 use super::descriptor::*;
@@ -146,9 +146,9 @@ impl FileStreamMode {
                     bytes.next().filter(|b| b == &b's')?;
                     bytes.next().filter(|b| b == &b'=')?;
                     charset = Some(String::from_utf8(bytes.collect::<Vec<u8>>()).ok()?);
-                    break
+                    break;
                 }
-                _ => return None
+                _ => return None,
             }
         }
 
@@ -160,7 +160,7 @@ impl FileStreamMode {
             read_mmap,
             exclusive_create,
             charset,
-        })
+        });
     }
 }
 
@@ -198,7 +198,11 @@ pub struct FileStreamCreateEvent {
 impl FileStreamCreateEvent {
     #[inline]
     pub fn new(source: FileStreamSource, mode: FileStreamMode, file_ptr: Option<FilePtr>) -> Self {
-        Self { source, mode, file_ptr }
+        Self {
+            source,
+            mode,
+            file_ptr,
+        }
     }
 }
 
@@ -211,25 +215,29 @@ impl Event for FileStreamCreateEvent {
 
         let file_ptr = match self.file_ptr {
             Some(p) => p,
-            None => FilePtr::from_raw(unsafe { crate::unique_mem_create().cast::<libc::FILE>() }).unwrap(),
+            None => FilePtr::from_raw(unsafe { crate::unique_mem_create().cast::<libc::FILE>() })
+                .unwrap(),
         };
 
-        state.local.file_objs.insert(file_ptr, FileObject {
-            source,
-            buffer: FileStreamBuffer::Internal(Box::new([0u8; libc::BUFSIZ as usize])),
-            buffer_index: 0,
-            read_end: 0,
-            access_mode: if self.mode.flags.contains(FileOpenFlags::READWRITE) {
-                FileAccessMode::ReadWrite
-            } else if self.mode.flags.contains(FileOpenFlags::WRITEONLY) {
-                FileAccessMode::WriteOnly
-            } else {
-                FileAccessMode::ReadOnly
+        state.local.file_objs.insert(
+            file_ptr,
+            FileObject {
+                source,
+                buffer: FileStreamBuffer::Internal(Box::new([0u8; libc::BUFSIZ as usize])),
+                buffer_index: 0,
+                read_end: 0,
+                access_mode: if self.mode.flags.contains(FileOpenFlags::READWRITE) {
+                    FileAccessMode::ReadWrite
+                } else if self.mode.flags.contains(FileOpenFlags::WRITEONLY) {
+                    FileAccessMode::WriteOnly
+                } else {
+                    FileAccessMode::ReadOnly
+                },
+                buffering_mode: FileBufferMode::Block,
+                eof: false,
+                err: false,
             },
-            buffering_mode: FileBufferMode::Block,
-            eof: false,
-            err: false,
-        });
+        );
 
         Outcome::Success(file_ptr)
     }
@@ -257,7 +265,7 @@ impl Event for FileStreamCloseEvent<'_> {
                     state.local.fds.remove(&Descriptor::from_raw_fd(fd));
                 }
                 Outcome::Success(())
-            },
+            }
             None => panic!("UB: unrecognized pointer passed to `fclose()`"),
         }
     }
@@ -432,7 +440,7 @@ impl Event for FileStreamDescriptorEvent {
             Some(obj) => match &obj.source {
                 FileStreamSource::Descriptor(fd) => Outcome::Success(*fd),
                 _ => Outcome::Error(Errno::EBADF),
-            }
+            },
             None => panic!("UB: `fileno()` called on invalid stream pointer"),
         }
     }
@@ -453,7 +461,12 @@ pub struct FileStreamWriteEvent<'a> {
 impl<'a> FileStreamWriteEvent<'a> {
     #[inline]
     pub fn new(stream: FilePtr, buf: &'a IoSlice<'a>, chunk_size: usize) -> Self {
-        Self { stream, buf, chunk_size, state: FileStreamWriteState::Start }
+        Self {
+            stream,
+            buf,
+            chunk_size,
+            state: FileStreamWriteState::Start,
+        }
     }
 }
 
@@ -475,33 +488,39 @@ impl Event for FileStreamWriteEvent<'_> {
                     Some(obj) => match &mut obj.source {
                         FileStreamSource::Descriptor(fd) => {
                             let desc = Descriptor::from_raw_fd(*fd);
-                            self.state = FileStreamWriteState::Descriptor(DescriptorWriteEvent::new(desc, WriteData::BasicVec(slice::from_ref(self.buf))));
-                            Outcome::Continue
+                            self.state =
+                                FileStreamWriteState::Descriptor(DescriptorWriteEvent::new(
+                                    desc,
+                                    WriteData::BasicVec(slice::from_ref(self.buf)),
+                                ));
+                            Outcome::Yield(YieldUntil::Immediate)
                         }
                         FileStreamSource::Slice(cell, write_idx) => {
                             let written = cmp::min(cell.get().len() - *write_idx, self.buf.len());
                             let write_buf = unsafe { cell.get_mut().as_mut() };
 
-                            write_buf[*write_idx..*write_idx + written].copy_from_slice(&self.buf[..written]);
+                            write_buf[*write_idx..*write_idx + written]
+                                .copy_from_slice(&self.buf[..written]);
                             *write_idx += written;
                             if *write_idx == cell.get().len() {
                                 obj.eof = true; // TODO: is this meant to be set here?
                             }
                             Outcome::Success(written)
-                        },
+                        }
                         FileStreamSource::Buffer(cell, write_idx) => {
                             let v = cell.get_mut();
 
                             let overwrite_len = cmp::min(v.len() - *write_idx, self.buf.len());
 
-                            v[*write_idx..*write_idx + overwrite_len].copy_from_slice(&self.buf[..overwrite_len]);
+                            v[*write_idx..*write_idx + overwrite_len]
+                                .copy_from_slice(&self.buf[..overwrite_len]);
 
                             v.extend_from_slice(&self.buf[overwrite_len..]);
                             *write_idx += self.buf.len();
 
                             Outcome::Success(self.buf.len())
                         }
-                    }
+                    },
                     None => panic!("UB: `fileno()` called on invalid stream pointer"),
                 }
             }
@@ -511,7 +530,7 @@ impl Event for FileStreamWriteEvent<'_> {
                     *u /= self.chunk_size;
                 }
                 res
-            } 
+            }
         }
     }
 }
@@ -531,7 +550,11 @@ pub struct FileStreamReadEvent<'a> {
 impl<'a> FileStreamReadEvent<'a> {
     #[inline]
     pub fn new(stream: FilePtr, buf: &'a mut IoSliceMut<'a>, chunk_size: usize) -> Self {
-        Self { stream, chunk_size, state: FileStreamReadState::Start(buf) }
+        Self {
+            stream,
+            chunk_size,
+            state: FileStreamReadState::Start(buf),
+        }
     }
 }
 
@@ -556,8 +579,11 @@ impl Event for FileStreamReadEvent<'_> {
                     Some(obj) => match &mut obj.source {
                         FileStreamSource::Descriptor(fd) => {
                             let desc = Descriptor::from_raw_fd(*fd);
-                            self.state = FileStreamReadState::Descriptor(DescriptorReadEvent::new(desc, ReadData::Basic(slice::from_mut(buf))));
-                            Outcome::Continue
+                            self.state = FileStreamReadState::Descriptor(DescriptorReadEvent::new(
+                                desc,
+                                ReadData::Basic(slice::from_mut(buf)),
+                            ));
+                            Outcome::Yield(YieldUntil::Immediate)
                         }
                         FileStreamSource::Slice(cell, read_idx) => {
                             let read = cmp::min(cell.get().len() - *read_idx, buf.len());
@@ -569,7 +595,7 @@ impl Event for FileStreamReadEvent<'_> {
                                 obj.eof = true; // TODO: is this meant to be set here?
                             }
                             Outcome::Success(read)
-                        },
+                        }
                         FileStreamSource::Buffer(cell, read_idx) => {
                             let read = cmp::min(cell.get_mut().len() - *read_idx, buf.len());
                             let read_buf = cell.get_mut().as_slice();
@@ -582,7 +608,7 @@ impl Event for FileStreamReadEvent<'_> {
 
                             Outcome::Success(read)
                         }
-                    }
+                    },
                     None => panic!("UB: `fileno()` called on invalid stream pointer"),
                 }
             }
@@ -591,9 +617,8 @@ impl Event for FileStreamReadEvent<'_> {
                 let res = ev.run(state);
                 self.state = FileStreamReadState::Descriptor(ev);
                 res
-            },
+            }
             FileStreamReadState::Invalid => unreachable!(),
         }
     }
 }
-

@@ -4,7 +4,7 @@ use std::thread::ThreadId;
 use std::{mem, ptr, thread};
 
 use crate::errno::Errno;
-use crate::scheduler::{Event, Outcome};
+use crate::scheduler::{Event, Outcome, YieldUntil};
 use crate::state::FizzleState;
 use crate::WaitDuration;
 
@@ -193,16 +193,16 @@ impl Event for MutexLockEvent {
                                 // Make the current thread the owner of the mutex
                                 mutex_info.queued_threads.push_front(current_thread);
 
-                                return Outcome::Continue; // Go to Finish state to return poisoned lock
+                                return Outcome::Yield(YieldUntil::Immediate); // Go to Finish state to return poisoned lock
                             }
-                            MutexStatus::Unusable => return Outcome::Continue, // Go to Finish state
+                            MutexStatus::Unusable => return Outcome::Yield(YieldUntil::Immediate), // Go to Finish state
                         }
 
                         if mutex_info.queued_threads.is_empty() {
                             // Mutex is immediately available
                             mutex_info.queued_threads.push_back(current_thread);
 
-                            return Outcome::Continue;
+                            return Outcome::Yield(YieldUntil::Immediate);
                         }
 
                         let holding_thread = *mutex_info.queued_threads.front().unwrap();
@@ -213,10 +213,10 @@ impl Event for MutexLockEvent {
                                     log::error!(
                                         "[Deadlock] Thread locking a mutex it already holds"
                                     );
-                                    Outcome::Yield(None)
+                                    Outcome::Yield(YieldUntil::None)
                                 }
                                 // Return successfully immediately
-                                MutexKind::Recursive => Outcome::Continue,
+                                MutexKind::Recursive => Outcome::Yield(YieldUntil::Immediate),
                                 // Return a deadlock error
                                 MutexKind::ErrorChecking => Outcome::Error(Errno::EDEADLK),
                             }
@@ -225,11 +225,11 @@ impl Event for MutexLockEvent {
                                 WaitDuration::Immediate => Outcome::Error(Errno::EBUSY),
                                 WaitDuration::Timed(duration) => {
                                     mutex_info.queued_threads.push_back(current_thread);
-                                    Outcome::Yield(Some(duration))
+                                    Outcome::Yield(YieldUntil::Reschedule(duration))
                                 }
                                 WaitDuration::Indefinite => {
                                     mutex_info.queued_threads.push_back(current_thread);
-                                    Outcome::Yield(None)
+                                    Outcome::Yield(YieldUntil::None)
                                 }
                             }
                         }
@@ -244,7 +244,7 @@ impl Event for MutexLockEvent {
                         mutex_info.queued_threads.push_back(current_thread);
 
                         v.insert(mutex_info);
-                        return Outcome::Continue; // Go to Finish state
+                        return Outcome::Yield(YieldUntil::Immediate); // Go to Finish state
                     }
                 }
             }

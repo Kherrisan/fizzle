@@ -11,7 +11,6 @@ pub const FIZZLE_SINGLEPROCESS_ENV: &str = "FIZZLE_SINGLEPROCESS";
 
 pub const FIZZLE_HEAP_SIZE: usize = 30 * 1024 * 1024; // 30 MB by default
 
-
 /// Instructs the fizzle harness to keep running if the main process would exit normally
 // pub const FIZZLE_NOEXIT_ENV: &str = "FIZZLE_NOEXIT";
 

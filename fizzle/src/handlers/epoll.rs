@@ -5,7 +5,6 @@ use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
 use crate::{GlobalMap, GlobalRc};
 
-
 pub struct EpollInfo {
     pub interests: GlobalMap<Descriptor, EpollInterest>,
 }

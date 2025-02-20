@@ -6,9 +6,10 @@ use std::{mem, ptr, thread};
 use bitflags::bitflags;
 
 use crate::errno::Errno;
-use crate::scheduler::{Event, Outcome};
+use crate::scheduler::{fizzle_alloc, Event, Outcome, Scheduler, YieldUntil};
 use crate::state::{FizzleState, SignalDestination};
 
+use super::id::Worker;
 use super::process::{Pgid, Pid};
 use super::thread::Tid;
 
@@ -279,6 +280,8 @@ impl RaisedSignalInfo {
     }
 }
 
+unsafe impl Send for RaisedSignalInfo {}
+
 #[derive(Clone, Copy, Debug)]
 pub struct SigKillInfo {
     pub signum: libc::c_int,
@@ -506,11 +509,11 @@ pub enum SigDisposition {
 pub struct ThreadSigInfo {
     /// Signals that have been specifically raised for the thread via `pthread_kill` but that cannot
     /// be immediately handled as they are blocked.
-    pub raised: RaisedSignalSet,
+    pub pending: RaisedSignalSet,
     /// Signals that have been masked for the given thread.
     ///
     /// Note that when `SigCallback::Ignore` is set, any blocked signals will be discarded.
-    pub blocked: SignalSet,
+    pub masked: SignalSet,
     /// Indicates that the given thread is currently waiting on a blocked signal to become pending
     pub sigwait_set: SignalSet,
     pub sigsuspend: bool,
@@ -593,7 +596,7 @@ impl Event for SignalSendEvent {
                 match self.target {
                     SignalTarget::Pid(pid) => {
                         if !state.global.pids.contains_key(&pid) {
-                            return Outcome::Error(Errno::ESRCH)
+                            return Outcome::Error(Errno::ESRCH);
                         };
 
                         // TODO: change SignalDestination to be passed an Rc<ProcessInfo>?
@@ -624,7 +627,7 @@ impl Event for SignalSendEvent {
                     }
                     SignalTarget::Pgid(pgid) => {
                         let Some(pids) = state.global.process_groups.get(&pgid) else {
-                            return Outcome::Error(Errno::ESRCH) // TODO: esrch?
+                            return Outcome::Error(Errno::ESRCH); // TODO: esrch?
                         };
 
                         for pid in pids.iter() {
@@ -633,7 +636,7 @@ impl Event for SignalSendEvent {
                     }
                     SignalTarget::Tid(tid, _pid) => {
                         let Some(thread_id) = state.local.tid_threads.get(&tid) else {
-                            return Outcome::Error(Errno::ESRCH)
+                            return Outcome::Error(Errno::ESRCH);
                         };
 
                         let pid = state.local.process_info.borrow().pid;
@@ -657,7 +660,7 @@ impl Event for SignalSendEvent {
                 }
 
                 self.state = SignalSendState::SendSignals(destinations);
-                Outcome::Continue
+                Outcome::Yield(YieldUntil::Immediate)
             }
             SignalSendState::SendSignals(destinations) => {
                 let Some(destination) = destinations.pop() else {
@@ -666,7 +669,7 @@ impl Event for SignalSendEvent {
 
                 let pid = state.local.process_info.borrow().pid;
 
-                let raised_info = match self.value {
+                let raised = match self.value {
                     Some(value) => RaisedSignalInfo::SigQueue(SigQueueInfo {
                         signum: self.signum,
                         pid: pid.as_raw(),
@@ -680,7 +683,18 @@ impl Event for SignalSendEvent {
                     }),
                 };
 
-                Outcome::SendSignal(destination, raised_info)
+                Outcome::RunTask(Box::new_in(move |ctx| {
+                    match destination {
+                        SignalDestination::Process(pid) => Scheduler::handle_process_signal(ctx, raised, pid),
+                        SignalDestination::Thread(pid, thread_id) => {
+                            let worker = Worker {
+                                pid,
+                                thread_id,
+                            };
+                            Scheduler::handle_thread_signal(ctx, raised, worker)
+                        }
+                    }
+                }, fizzle_alloc()), YieldUntil::Reschedule(Duration::ZERO))
             }
         }
     }
@@ -722,8 +736,8 @@ impl Event for SignalWaitEvent {
                     .signals
                     .get_mut(&thread::current().id())
                     .unwrap();
-                let blocked_signals = thread_signals.blocked;
-                let raised_signals = &mut thread_signals.raised;
+                let blocked_signals = thread_signals.masked;
+                let raised_signals = &mut thread_signals.pending;
 
                 let interest_signals = self.wait_set.intersection(blocked_signals);
 
@@ -750,7 +764,10 @@ impl Event for SignalWaitEvent {
                     .sigwait_set = self.wait_set;
 
                 self.state = SignalWaitState::Finish;
-                Outcome::Yield(self.timeout)
+                Outcome::Yield(match self.timeout {
+                    Some(timeout) => YieldUntil::Reschedule(timeout),
+                    None => YieldUntil::None,
+                })
             }
             SignalWaitState::Finish => {
                 let siginfo = state
@@ -762,7 +779,7 @@ impl Event for SignalWaitEvent {
 
                 for signal in self.wait_set {
                     if let Some(raised_info) =
-                        siginfo.raised[signal.lowest_signal_value() as usize - 1].take()
+                        siginfo.pending[signal.lowest_signal_value() as usize - 1].take()
                     {
                         return Outcome::Success(raised_info);
                     }
@@ -788,7 +805,7 @@ impl Event for SignalGetPendingEvent {
             .signals
             .get(&thread::current().id())
             .unwrap()
-            .raised
+            .pending
             .iter()
             .enumerate()
         {
@@ -835,7 +852,7 @@ impl Event for SignalSetSigmaskEvent {
                 .signals
                 .get(&thread::current().id())
                 .unwrap()
-                .blocked,
+                .masked,
         );
         let Some(mask) = self.mask else {
             return Outcome::Success(old);
@@ -854,13 +871,20 @@ impl Event for SignalSetSigmaskEvent {
             .signals
             .get_mut(&thread::current().id())
             .unwrap();
-        siginfo.blocked |= new; // Add newly blocked signals
+        siginfo.masked |= new; // Add newly blocked signals
         for signal in unblocked {
-            siginfo.blocked -= signal; // Incrementally remove old signals, handling each if necessary
-            if let Some(raised_info) = siginfo.raised[signal.lowest_signal_value() as usize - 1].take()
+            siginfo.masked -= signal; // Incrementally remove old signals, handling each if necessary
+            if let Some(raised_info) =
+                siginfo.pending[signal.lowest_signal_value() as usize - 1].take()
             {
                 // This entire function runs for as many times as is needed to handle all signals
-                return Outcome::SendSignal(SignalDestination::Thread(pid, thread::current().id()), raised_info);
+                return Outcome::RunTask(Box::new_in(move |ctx| {
+                    let worker = Worker {
+                        pid,
+                        thread_id: thread::current().id(),
+                    };
+                    Scheduler::handle_thread_signal(ctx, raised_info, worker)
+                }, fizzle_alloc()), YieldUntil::Reschedule(Duration::ZERO))
             }
         }
 
@@ -896,7 +920,7 @@ impl Event for SignalSuspendEvent {
 
         match self.state {
             SignalSuspendState::Start => {
-                let old = state.local.signals.get(&thread_id).unwrap().blocked;
+                let old = state.local.signals.get(&thread_id).unwrap().masked;
                 self.state = SignalSuspendState::Finish(old);
 
                 let unblocked = old & !self.mask;
@@ -906,21 +930,27 @@ impl Event for SignalSuspendEvent {
                 let siginfo = state.local.signals.get_mut(&thread_id).unwrap();
                 for signal in unblocked {
                     if let Some(raised_info) =
-                        siginfo.raised[signal.lowest_signal_value() as usize - 1].take()
+                        siginfo.pending[signal.lowest_signal_value() as usize - 1].take()
                     {
                         // This entire function runs for as many times as is needed to handle all signals
-                        return Outcome::SendSignal(SignalDestination::Thread(pid, thread_id), raised_info);
+                        return Outcome::RunTask(Box::new_in(move |ctx| {
+                            let worker = Worker {
+                                pid,
+                                thread_id: thread::current().id(),
+                            };
+                            Scheduler::handle_thread_signal(ctx, raised_info, worker)
+                        }, fizzle_alloc()), YieldUntil::Reschedule(Duration::ZERO))
                     }
                 }
 
                 let signal_info = state.local.signals.get_mut(&thread_id).unwrap();
-                signal_info.blocked = self.mask;
+                signal_info.masked = self.mask;
                 signal_info.sigsuspend = true;
-                Outcome::Yield(None)
+                Outcome::Yield(YieldUntil::None)
             }
             SignalSuspendState::Finish(old) => {
                 let signal_info = state.local.signals.get_mut(&thread_id).unwrap();
-                signal_info.blocked = old;
+                signal_info.masked = old;
                 signal_info.sigsuspend = false;
 
                 Outcome::Error(Errno::EINTR)

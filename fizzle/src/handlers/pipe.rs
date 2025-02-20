@@ -4,7 +4,7 @@ use std::rc::{Rc, Weak};
 
 use crate::constants::FIZZLE_BUFFER_LENGTH;
 use crate::errno::Errno;
-use crate::scheduler::{fizzle_alloc, Event, Outcome};
+use crate::scheduler::{fizzle_alloc, Event, Outcome, YieldUntil};
 use crate::state::FizzleState;
 use crate::{GlobalRc, GlobalWeak};
 
@@ -83,33 +83,51 @@ impl Event for PipeCreateEvent {
         let fd1 = crate::create_descriptor();
         let fd2 = crate::create_descriptor();
 
-        let first_pipe = Rc::new_in(RefCell::new(PipeInfo {
-            mode,
-            peer: Weak::new_in(fizzle_alloc()),
-            read_buf: Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc()),
-            read_polled: Rc::new_in(RefCell::new(PolledInfo {
-                pollers: Vec::new_in(fizzle_alloc()),
-                event_raised: false,
-            }), fizzle_alloc()),
-            write_polled: Rc::new_in(RefCell::new(PolledInfo {
-                pollers: Vec::new_in(fizzle_alloc()),
-                event_raised: true,
-            }), fizzle_alloc()),
-        }), fizzle_alloc());
+        let first_pipe = Rc::new_in(
+            RefCell::new(PipeInfo {
+                mode,
+                peer: Weak::new_in(fizzle_alloc()),
+                read_buf: Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc()),
+                read_polled: Rc::new_in(
+                    RefCell::new(PolledInfo {
+                        pollers: Vec::new_in(fizzle_alloc()),
+                        event_raised: false,
+                    }),
+                    fizzle_alloc(),
+                ),
+                write_polled: Rc::new_in(
+                    RefCell::new(PolledInfo {
+                        pollers: Vec::new_in(fizzle_alloc()),
+                        event_raised: true,
+                    }),
+                    fizzle_alloc(),
+                ),
+            }),
+            fizzle_alloc(),
+        );
 
-        let second_pipe = Rc::new_in(RefCell::new(PipeInfo {
-            mode,
-            peer: Rc::downgrade(&first_pipe),
-            read_buf: Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc()),
-            read_polled: Rc::new_in(RefCell::new(PolledInfo {
-                pollers: Vec::new_in(fizzle_alloc()),
-                event_raised: false,
-            }), fizzle_alloc()),
-            write_polled: Rc::new_in(RefCell::new(PolledInfo {
-                pollers: Vec::new_in(fizzle_alloc()),
-                event_raised: true,
-            }), fizzle_alloc()),
-        }), fizzle_alloc());
+        let second_pipe = Rc::new_in(
+            RefCell::new(PipeInfo {
+                mode,
+                peer: Rc::downgrade(&first_pipe),
+                read_buf: Rc::new_in(RefCell::new(Buffer::new()), fizzle_alloc()),
+                read_polled: Rc::new_in(
+                    RefCell::new(PolledInfo {
+                        pollers: Vec::new_in(fizzle_alloc()),
+                        event_raised: false,
+                    }),
+                    fizzle_alloc(),
+                ),
+                write_polled: Rc::new_in(
+                    RefCell::new(PolledInfo {
+                        pollers: Vec::new_in(fizzle_alloc()),
+                        event_raised: true,
+                    }),
+                    fizzle_alloc(),
+                ),
+            }),
+            fizzle_alloc(),
+        );
 
         // `unwrap()` guaranteed to succeed--we *just* inserted the pipe
         first_pipe.borrow_mut().peer = Rc::downgrade(&second_pipe);
@@ -181,7 +199,7 @@ impl Event for PipeReadEvent<'_> {
 
                 if state.polled_is_ready(&read_polled) {
                     self.state = PipeReadState::Finish(None);
-                    Outcome::Continue
+                    Outcome::Yield(YieldUntil::Immediate)
                 } else if peer_is_closed {
                     Outcome::Success(0)
                 } else if self.nonblocking {
@@ -191,7 +209,7 @@ impl Event for PipeReadEvent<'_> {
                     state.register_poller(poller_id.clone(), read_polled.clone());
 
                     self.state = PipeReadState::Finish(Some(poller_id));
-                    Outcome::Yield(None)
+                    Outcome::Yield(YieldUntil::None)
                 }
             }
             PipeReadState::Finish(poller) => {
@@ -313,7 +331,7 @@ impl Event for PipeWriteEvent<'_> {
                     || peer_mode == PipeMode::Streamed && state.polled_is_ready(&write_polled)
                 {
                     self.state = PipeWriteState::NextPayload(None);
-                    return Outcome::Continue;
+                    return Outcome::Yield(YieldUntil::Immediate);
                 }
 
                 // Not enough data for buffer--enable polled to be raised again once more data read.
@@ -326,7 +344,7 @@ impl Event for PipeWriteEvent<'_> {
                     state.register_poller(poller_id.clone(), write_polled.clone());
 
                     self.state = PipeWriteState::NextPayload(Some(poller_id));
-                    Outcome::Yield(None)
+                    Outcome::Yield(YieldUntil::None)
                 }
             }
             PipeWriteState::NextPayload(poller) => {
@@ -358,7 +376,7 @@ impl Event for PipeWriteEvent<'_> {
                     state.register_poller(poller_id.clone(), write_polled.clone());
 
                     self.state = PipeWriteState::NextPayload(Some(poller_id));
-                    return Outcome::Yield(None);
+                    return Outcome::Yield(YieldUntil::None);
                 }
 
                 let total_written = match pipe_mode {
@@ -418,7 +436,7 @@ impl Event for PipeWriteEvent<'_> {
                 if pipe_mode == PipeMode::Direct && remaining > 0 {
                     if !buf_is_full {
                         self.state = PipeWriteState::NextPayload(None);
-                        Outcome::Continue
+                        Outcome::Yield(YieldUntil::Immediate)
                     } else if self.nonblocking {
                         Outcome::Success(self.data_written)
                     } else {
@@ -426,7 +444,7 @@ impl Event for PipeWriteEvent<'_> {
                         state.register_poller(poller_id.clone(), write_polled.clone());
 
                         self.state = PipeWriteState::NextPayload(Some(poller_id));
-                        Outcome::Yield(None)
+                        Outcome::Yield(YieldUntil::None)
                     }
                 } else {
                     Outcome::Success(self.data_written)

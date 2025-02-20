@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::{ptr, thread};
 
 use crate::errno::Errno;
-use crate::scheduler::{Event, Outcome};
+use crate::scheduler::{Event, Outcome, YieldUntil};
 use crate::state::FizzleState;
 use crate::WaitDuration;
 
@@ -111,8 +111,8 @@ impl Event for FutexWaitEvent<'_> {
                 // Now wait for futex to be unblocked
                 match self.duration {
                     WaitDuration::Immediate => unreachable!(), // No such thing as try* in futex semantics
-                    WaitDuration::Indefinite => Outcome::Yield(None),
-                    WaitDuration::Timed(duration) => Outcome::Yield(Some(duration)),
+                    WaitDuration::Indefinite => Outcome::Yield(YieldUntil::None),
+                    WaitDuration::Timed(duration) => Outcome::Yield(YieldUntil::Reschedule(duration)),
                 }
             }
             FutexWaitState::Finish => {
@@ -476,8 +476,8 @@ impl Event for FutexWaitBitsetEvent<'_> {
                 // Now wait for futex to be unblocked
                 match self.duration {
                     WaitDuration::Immediate => unreachable!(), // No such thing as try* in futex semantics
-                    WaitDuration::Indefinite => Outcome::Yield(None),
-                    WaitDuration::Timed(duration) => Outcome::Yield(Some(duration)),
+                    WaitDuration::Indefinite => Outcome::Yield(YieldUntil::None),
+                    WaitDuration::Timed(duration) => Outcome::Yield(YieldUntil::Reschedule(duration)),
                 }
             }
             FutexWaitState::Finish => {

@@ -3,10 +3,11 @@
 
 use crate::errno::Errno;
 use crate::handlers::descriptor::{
-    f_owner_ex, DescriptorCloseEvent, DescriptorDuplicateEvent, Descriptor, FcntlCommand, FcntlEvent
+    f_owner_ex, Descriptor, DescriptorCloseEvent, DescriptorDuplicateEvent, FcntlCommand,
+    FcntlEvent,
 };
-use crate::{hook_macros, strace};
 use crate::scheduler::{fizzle_singleton, Scheduler};
+use crate::{hook_macros, strace};
 
 hook_macros::hook! {
     unsafe fn close(
@@ -124,24 +125,43 @@ const F_SET_FILE_RW_HINT: libc::c_int = 1038;
 pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: ...) -> libc::c_int {
     if crate::state::has_entered_handler() {
         return match cmd {
-            libc::F_DUPFD | libc::F_DUPFD_CLOEXEC | libc::F_SETFD | libc::F_SETFL | libc::F_SETOWN
-                    | F_SETSIG | libc::F_NOTIFY | libc::F_SETPIPE_SZ | libc::F_ADD_SEALS => {
+            libc::F_DUPFD
+            | libc::F_DUPFD_CLOEXEC
+            | libc::F_SETFD
+            | libc::F_SETFL
+            | libc::F_SETOWN
+            | F_SETSIG
+            | libc::F_NOTIFY
+            | libc::F_SETPIPE_SZ
+            | libc::F_ADD_SEALS => {
                 let arg: libc::c_int = va_args.arg();
                 libc::fcntl(fd, cmd, arg)
             }
-            libc::F_GETFD | libc::F_GETFL | libc::F_GETOWN | F_GETSIG | libc::F_GETLEASE
-                    | libc::F_GET_SEALS => libc::fcntl(fd, cmd),
-            libc::F_SETLK | libc::F_SETLKW | libc::F_GETLK | libc::F_OFD_SETLK | libc::F_OFD_SETLKW
-                    | libc::F_OFD_GETLK | F_GETOWN_EX | F_SETOWN_EX | F_GET_RW_HINT
-                    | F_SET_RW_HINT | F_GET_FILE_RW_HINT
-                    | F_SET_FILE_RW_HINT => {
+            libc::F_GETFD
+            | libc::F_GETFL
+            | libc::F_GETOWN
+            | F_GETSIG
+            | libc::F_GETLEASE
+            | libc::F_GET_SEALS => libc::fcntl(fd, cmd),
+            libc::F_SETLK
+            | libc::F_SETLKW
+            | libc::F_GETLK
+            | libc::F_OFD_SETLK
+            | libc::F_OFD_SETLKW
+            | libc::F_OFD_GETLK
+            | F_GETOWN_EX
+            | F_SETOWN_EX
+            | F_GET_RW_HINT
+            | F_SET_RW_HINT
+            | F_GET_FILE_RW_HINT
+            | F_SET_FILE_RW_HINT => {
                 let arg: *mut libc::c_void = va_args.arg();
                 libc::fcntl(fd, cmd, arg)
             }
             _ => {
                 log::error!("fcntl(fd={}, cmd={}, ...) -> -1 (EINVAL)", fd, cmd);
                 Errno::EINVAL.set_errno();
-                return -1
+                return -1;
             }
         };
     }
@@ -167,62 +187,57 @@ pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: .
         libc::F_GETOWN => FcntlCommand::GetOwn,
         libc::F_GETLEASE => FcntlCommand::GetLease,
         libc::F_GET_SEALS => FcntlCommand::GetSeals,
-        libc::F_SETLK => FcntlCommand::SetLock(unsafe {
-            &mut *(va_args.arg::<*mut libc::flock>())
-        }),
-        libc::F_SETLKW => FcntlCommand::SetLockWait(unsafe {
-            &mut *(va_args.arg::<*mut libc::flock>())
-        }),
-        libc::F_GETLK => FcntlCommand::GetLock(unsafe {
-            &mut *(va_args.arg::<*mut libc::flock>())
-        }),
-        libc::F_OFD_SETLK => FcntlCommand::SetLock(unsafe {
-            &mut *(va_args.arg::<*mut libc::flock>())
-        }),
-        libc::F_OFD_SETLKW => FcntlCommand::SetLockWait(unsafe {
-            &mut *(va_args.arg::<*mut libc::flock>())
-        }),
-        libc::F_OFD_GETLK => FcntlCommand::GetLock(unsafe {
-            &mut *(va_args.arg::<*mut libc::flock>())
-        }),
-        F_GETOWN_EX => FcntlCommand::GetOwnEx(unsafe {
-            &mut *(va_args.arg::<*mut f_owner_ex>())
-        }),
-        F_SETOWN_EX => FcntlCommand::SetOwnEx(unsafe {
-            &mut *(va_args.arg::<*mut f_owner_ex>())
-        }),
-        F_GET_RW_HINT => FcntlCommand::GetRwHint(unsafe {
-            &mut *(va_args.arg::<*mut u64>())
-        }),
-        F_SET_RW_HINT => FcntlCommand::SetRwHint(unsafe {
-            &mut *(va_args.arg::<*mut u64>())
-        }),
-        F_GET_FILE_RW_HINT => FcntlCommand::GetFileRwHint(unsafe {
-            &mut *(va_args.arg::<*mut u64>())
-        }),
-        F_SET_FILE_RW_HINT => FcntlCommand::SetFileRwHint(unsafe {
-            &mut *(va_args.arg::<*mut u64>())
-        }),
+        libc::F_SETLK => {
+            FcntlCommand::SetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+        }
+        libc::F_SETLKW => {
+            FcntlCommand::SetLockWait(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+        }
+        libc::F_GETLK => {
+            FcntlCommand::GetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+        }
+        libc::F_OFD_SETLK => {
+            FcntlCommand::SetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+        }
+        libc::F_OFD_SETLKW => {
+            FcntlCommand::SetLockWait(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+        }
+        libc::F_OFD_GETLK => {
+            FcntlCommand::GetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+        }
+        F_GETOWN_EX => FcntlCommand::GetOwnEx(unsafe { &mut *(va_args.arg::<*mut f_owner_ex>()) }),
+        F_SETOWN_EX => FcntlCommand::SetOwnEx(unsafe { &mut *(va_args.arg::<*mut f_owner_ex>()) }),
+        F_GET_RW_HINT => FcntlCommand::GetRwHint(unsafe { &mut *(va_args.arg::<*mut u64>()) }),
+        F_SET_RW_HINT => FcntlCommand::SetRwHint(unsafe { &mut *(va_args.arg::<*mut u64>()) }),
+        F_GET_FILE_RW_HINT => {
+            FcntlCommand::GetFileRwHint(unsafe { &mut *(va_args.arg::<*mut u64>()) })
+        }
+        F_SET_FILE_RW_HINT => {
+            FcntlCommand::SetFileRwHint(unsafe { &mut *(va_args.arg::<*mut u64>()) })
+        }
         _ => {
             strace!("fcntl(fd={}, cmd={}, ...) -> -1 (EINVAL)", fd, cmd);
             Errno::EINVAL.set_errno();
             crate::state::set_entered_handler(false);
-            return -1
+            return -1;
         }
     };
 
-    match Scheduler::handle_event(&mut ctx, FcntlEvent::new(Descriptor::from_raw_fd(fd), command)) {
+    match Scheduler::handle_event(
+        &mut ctx,
+        FcntlEvent::new(Descriptor::from_raw_fd(fd), command),
+    ) {
         Ok(i) => {
             strace!("fcntl(fd={}, cmd={}, ...) -> {}", fd, cmd, i);
             crate::state::set_entered_handler(false);
-            return i
-        },
+            return i;
+        }
         Err(e) => {
             strace!("fcntl(fd={}, cmd={}, ...) -> -1 ({})", fd, cmd, e);
             e.set_errno();
             crate::state::set_entered_handler(false);
-            return -1
-        },
+            return -1;
+        }
     }
 }
 

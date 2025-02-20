@@ -15,7 +15,7 @@ use super::poller::PollerInfo;
 use super::socket::*;
 use crate::backend::{ConnectedBackend, StdioBackend};
 use crate::errno::Errno;
-use crate::scheduler::{fizzle_alloc, Event, Outcome};
+use crate::scheduler::{fizzle_alloc, Event, Outcome, YieldUntil};
 use crate::state::FizzleState;
 use crate::GlobalRc;
 
@@ -95,7 +95,7 @@ impl Event for DescriptorCloseEvent {
             return match unsafe { libc::close(self.fd.as_raw_fd()) } {
                 0 => Outcome::Success(()),
                 _ => Outcome::Error(Errno::get_errno()),
-            }
+            };
         };
 
         if let FdResource::Socket(socket_info) = fd_info.resource.clone() {
@@ -193,10 +193,7 @@ pub struct FcntlEvent<'a> {
 impl<'a> FcntlEvent<'a> {
     #[inline]
     pub fn new(fd: Descriptor, command: FcntlCommand<'a>) -> Self {
-        Self {
-            fd,
-            command,
-        }
+        Self { fd, command }
     }
 }
 
@@ -254,32 +251,41 @@ impl Event for FcntlEvent<'_> {
                     FcntlCommand::DupFd(newfd) => {
                         let nonblocking = fd_info.nonblocking;
                         let resource = fd_info.resource.clone();
-                        let dupfd = unsafe { libc::fcntl(self.fd.as_raw_fd(), libc::F_DUPFD, *newfd) };
+                        let dupfd =
+                            unsafe { libc::fcntl(self.fd.as_raw_fd(), libc::F_DUPFD, *newfd) };
                         if dupfd < 0 {
-                            return Outcome::Error(Errno::get_errno())
+                            return Outcome::Error(Errno::get_errno());
                         }
-                        state.local.fds.insert(Descriptor::from_raw_fd(dupfd), DescriptorInfo {
-                            close_on_exec: false,
-                            nonblocking,
-                            is_passthrough: false,
-                            resource,                           
-                        });
-                        
+                        state.local.fds.insert(
+                            Descriptor::from_raw_fd(dupfd),
+                            DescriptorInfo {
+                                close_on_exec: false,
+                                nonblocking,
+                                is_passthrough: false,
+                                resource,
+                            },
+                        );
+
                         Outcome::Success(dupfd)
                     }
                     FcntlCommand::DupFdCloexec(newfd) => {
                         let nonblocking = fd_info.nonblocking;
                         let resource = fd_info.resource.clone();
-                        let dupfd = unsafe { libc::fcntl(self.fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, *newfd) };
+                        let dupfd = unsafe {
+                            libc::fcntl(self.fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, *newfd)
+                        };
                         if dupfd < 0 {
-                            return Outcome::Error(Errno::get_errno())
+                            return Outcome::Error(Errno::get_errno());
                         }
-                        state.local.fds.insert(Descriptor::from_raw_fd(dupfd), DescriptorInfo {
-                            close_on_exec: true,
-                            nonblocking,
-                            is_passthrough: false,
-                            resource,                           
-                        });
+                        state.local.fds.insert(
+                            Descriptor::from_raw_fd(dupfd),
+                            DescriptorInfo {
+                                close_on_exec: true,
+                                nonblocking,
+                                is_passthrough: false,
+                                resource,
+                            },
+                        );
 
                         Outcome::Success(dupfd)
                     }
@@ -288,17 +294,16 @@ impl Event for FcntlEvent<'_> {
                         Outcome::Error(Errno::EINVAL)
                     }
                 }
-            },
+            }
             None => {
                 #[cfg(not(feature = "passthroughfs"))]
                 return Outcome::Error(Errno::EBADF);
                 #[cfg(feature = "passthroughfs")]
                 unimplemented!("fcntl() passthrough");
-            },
+            }
         }
     }
 }
-
 
 pub struct DescriptorDuplicateEvent {
     old_fd: Descriptor,
@@ -327,10 +332,16 @@ impl Event for DescriptorDuplicateEvent {
             #[cfg(not(feature = "passthroughfs"))]
             return Outcome::Error(Errno::EBADF);
             #[cfg(feature = "passthroughfs")]
-            return match unsafe { libc::fcntl(self.old_fd.as_raw_fd(), libc::F_DUPFD, self.new_fd.map(|d| d.as_raw_fd()).unwrap_or(0)) } {
+            return match unsafe {
+                libc::fcntl(
+                    self.old_fd.as_raw_fd(),
+                    libc::F_DUPFD,
+                    self.new_fd.map(|d| d.as_raw_fd()).unwrap_or(0),
+                )
+            } {
                 fd @ 0.. => Outcome::Success(fd),
                 ..=-1 => Outcome::Error(Errno::get_errno()),
-            }
+            };
         };
 
         // Create a new, unique file descriptor
@@ -468,16 +479,30 @@ impl Event for DescriptorReadEvent<'_> {
                     return Outcome::Error(Errno::EBADF);
                     #[cfg(feature = "passthroughfs")]
                     return match self.data.take().unwrap() {
-                        ReadData::Basic(io_slice) => match unsafe { libc::readv(self.fd.as_raw_fd(), io_slice.as_ptr().cast(), io_slice.len() as i32) } {
+                        ReadData::Basic(io_slice) => match unsafe {
+                            libc::readv(
+                                self.fd.as_raw_fd(),
+                                io_slice.as_ptr().cast(),
+                                io_slice.len() as i32,
+                            )
+                        } {
                             ..=-1 => Outcome::Error(Errno::get_errno()),
                             len @ 0.. => Outcome::Success(len as usize),
-                        }
-                        ReadData::File(data) => match unsafe { libc::preadv2(self.fd.as_raw_fd(), data.buf.as_ptr().cast(), data.buf.len() as i32, data.offset.unwrap_or(0), data.flags.bits()) } {
-                             ..=-1 => Outcome::Error(Errno::get_errno()),
+                        },
+                        ReadData::File(data) => match unsafe {
+                            libc::preadv2(
+                                self.fd.as_raw_fd(),
+                                data.buf.as_ptr().cast(),
+                                data.buf.len() as i32,
+                                data.offset.unwrap_or(0),
+                                data.flags.bits(),
+                            )
+                        } {
+                            ..=-1 => Outcome::Error(Errno::get_errno()),
                             len @ 0.. => Outcome::Success(len as usize),
-                        }
+                        },
                         ReadData::Socket(_msgs, _msgflags) => unreachable!(), // Passthrough sockets not allowed
-                    }
+                    };
                 };
 
                 match &fd_info.resource {
@@ -534,7 +559,7 @@ impl Event for DescriptorReadEvent<'_> {
                         ));
                     }
                 }
-                Outcome::Continue
+                Outcome::Yield(YieldUntil::Immediate)
             }
             DescriptorReadState::Directory(e) => e.run(state),
             DescriptorReadState::Epoll(e) => e.run(state),
@@ -590,7 +615,7 @@ impl Event for StdinReadEvent<'_> {
 
                 if state.polled_is_ready(&read_polled) {
                     self.state = StdinReadState::Finish(None);
-                    Outcome::Continue
+                    Outcome::Yield(YieldUntil::Immediate)
                 } else if nonblocking {
                     Outcome::Error(Errno::EAGAIN)
                 } else {
@@ -598,7 +623,7 @@ impl Event for StdinReadEvent<'_> {
                     state.register_poller(poller_id.clone(), read_polled);
 
                     self.state = StdinReadState::Finish(Some(poller_id));
-                    Outcome::Yield(None)
+                    Outcome::Yield(YieldUntil::None)
                 }
             }
             (StdinReadState::Finish(_poller_id), StdioBackend::Feedback(_feedback)) => {
@@ -650,7 +675,7 @@ impl Event for StdinReadEvent<'_> {
 
                 if state.polled_is_ready(&read_polled) {
                     self.state = StdinReadState::Finish(None);
-                    Outcome::Continue
+                    Outcome::Yield(YieldUntil::Immediate)
                 } else if nonblocking {
                     Outcome::Error(Errno::EAGAIN)
                 } else {
@@ -658,7 +683,7 @@ impl Event for StdinReadEvent<'_> {
                     state.register_poller(poller_id.clone(), read_polled);
 
                     self.state = StdinReadState::Finish(Some(poller_id));
-                    Outcome::Yield(None)
+                    Outcome::Yield(YieldUntil::None)
                 }
             }
             (StdinReadState::Finish(poller), StdioBackend::Plugin(plugin_info)) => {
@@ -676,7 +701,7 @@ impl Event for StdinReadEvent<'_> {
 
                 for slice in iovec.iter_mut() {
                     if read_idx == read_data.len() {
-                        break
+                        break;
                     }
 
                     let data_len = cmp::min(read_data.len() - read_idx, slice.len());
@@ -716,7 +741,7 @@ impl Event for StdinReadEvent<'_> {
 
                 if state.polled_is_ready(&read_polled) {
                     self.state = StdinReadState::Finish(None);
-                    Outcome::Continue
+                    Outcome::Yield(YieldUntil::Immediate)
                 } else if nonblocking {
                     Outcome::Error(Errno::EAGAIN)
                 } else {
@@ -724,7 +749,7 @@ impl Event for StdinReadEvent<'_> {
                     state.register_poller(poller_id.clone(), read_polled);
 
                     self.state = StdinReadState::Finish(Some(poller_id));
-                    Outcome::Yield(None)
+                    Outcome::Yield(YieldUntil::None)
                 }
             }
             (StdinReadState::Finish(poller), StdioBackend::Fuzz(fuzz_endpoint)) => {
@@ -827,20 +852,36 @@ impl Event for DescriptorWriteEvent<'_> {
                     return Outcome::Error(Errno::EBADF);
                     #[cfg(feature = "passthroughfs")]
                     return match self.data.take().unwrap() {
-                        WriteData::BasicSlice(slice) => match unsafe { libc::write(self.fd.as_raw_fd(), slice.as_ptr().cast(), slice.len()) } {
+                        WriteData::BasicSlice(slice) => match unsafe {
+                            libc::write(self.fd.as_raw_fd(), slice.as_ptr().cast(), slice.len())
+                        } {
                             ..=-1 => Outcome::Error(Errno::get_errno()),
                             len @ 0.. => Outcome::Success(len as usize),
-                        }
-                        WriteData::BasicVec(io_slice) => match unsafe { libc::writev(self.fd.as_raw_fd(), io_slice.as_ptr().cast(), io_slice.len() as i32) } {
+                        },
+                        WriteData::BasicVec(io_slice) => match unsafe {
+                            libc::writev(
+                                self.fd.as_raw_fd(),
+                                io_slice.as_ptr().cast(),
+                                io_slice.len() as i32,
+                            )
+                        } {
                             ..=-1 => Outcome::Error(Errno::get_errno()),
                             len @ 0.. => Outcome::Success(len as usize),
-                        }
-                        WriteData::File(data) => match unsafe { libc::pwritev2(self.fd.as_raw_fd(), data.buf.as_ptr().cast(), data.buf.len() as i32, data.offset.unwrap_or(0), data.flags.bits()) } {
-                             ..=-1 => Outcome::Error(Errno::get_errno()),
+                        },
+                        WriteData::File(data) => match unsafe {
+                            libc::pwritev2(
+                                self.fd.as_raw_fd(),
+                                data.buf.as_ptr().cast(),
+                                data.buf.len() as i32,
+                                data.offset.unwrap_or(0),
+                                data.flags.bits(),
+                            )
+                        } {
+                            ..=-1 => Outcome::Error(Errno::get_errno()),
                             len @ 0.. => Outcome::Success(len as usize),
-                        }
+                        },
                         WriteData::Socket(_msgs, _msgflags) => unreachable!(), // Passthrough sockets not allowed
-                    }
+                    };
                 };
 
                 match &fd_info.resource {
@@ -903,7 +944,7 @@ impl Event for DescriptorWriteEvent<'_> {
                         ));
                     }
                 }
-                Outcome::Continue
+                    Outcome::Yield(YieldUntil::Immediate)
             }
             DescriptorWriteState::Directory(e) => e.run(state),
             DescriptorWriteState::Epoll(e) => e.run(state),
@@ -964,7 +1005,7 @@ impl Event for StdoutWriteEvent<'_> {
 
                 if state.polled_is_ready(&write_polled) {
                     self.state = StdoutWriteState::Finish(None);
-                    Outcome::Continue
+                    Outcome::Yield(YieldUntil::Immediate)
                 } else if nonblocking {
                     Outcome::Error(Errno::EAGAIN)
                 } else {
@@ -972,7 +1013,7 @@ impl Event for StdoutWriteEvent<'_> {
                     state.register_poller(poller_id.clone(), write_polled);
 
                     self.state = StdoutWriteState::Finish(Some(poller_id));
-                    Outcome::Yield(None)
+                    Outcome::Yield(YieldUntil::None)
                 }
             }
             (StdoutWriteState::Finish(_poller_id), StdioBackend::Feedback(_feedback)) => {
@@ -1007,7 +1048,7 @@ impl Event for StdoutWriteEvent<'_> {
 
                 if state.polled_is_ready(&write_polled) {
                     self.state = StdoutWriteState::Finish(None);
-                    Outcome::Continue
+                    Outcome::Yield(YieldUntil::Immediate)
                 } else if nonblocking {
                     Outcome::Error(Errno::EAGAIN)
                 } else {
@@ -1015,7 +1056,7 @@ impl Event for StdoutWriteEvent<'_> {
                     state.register_poller(poller_id.clone(), write_polled);
 
                     self.state = StdoutWriteState::Finish(Some(poller_id));
-                    Outcome::Yield(None)
+                    Outcome::Yield(YieldUntil::None)
                 }
             }
             (StdoutWriteState::Finish(poller), StdioBackend::Plugin(plugin_info)) => {

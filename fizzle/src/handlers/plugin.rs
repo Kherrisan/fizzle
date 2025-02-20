@@ -29,4 +29,3 @@ pub struct PluginInfo {
     pub write_idx: usize,
     pub write_polled: GlobalRc<PolledInfo>,
 }
-

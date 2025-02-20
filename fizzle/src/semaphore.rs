@@ -26,9 +26,9 @@ impl Semaphore {
     ///
     /// This method is safe to use under most normal circumstances, but the enclosed `Sem` must
     /// not be moved out of the box or undefined behavior will occur.
-    pub fn new_boxed_in<A>(value: u32, shared: bool, alloc: A) -> Box<Semaphore, A> 
+    pub fn new_boxed_in<A>(value: u32, shared: bool, alloc: A) -> Box<Semaphore, A>
     where
-        A: Allocator
+        A: Allocator,
     {
         let mut s: Box<MaybeUninit<Semaphore>, A> = Box::new_in(MaybeUninit::uninit(), alloc);
 
@@ -50,9 +50,9 @@ impl Semaphore {
     ///
     /// This method is safe to use under most normal circumstances, but the enclosed `Sem` must
     /// not be moved out of the box or undefined behavior will occur.
-    pub fn new_rc_in<A>(value: u32, shared: bool, alloc: A) -> Rc<Semaphore, A> 
+    pub fn new_rc_in<A>(value: u32, shared: bool, alloc: A) -> Rc<Semaphore, A>
     where
-        A: Allocator 
+        A: Allocator,
     {
         let mut s: Rc<MaybeUninit<Semaphore>, A> = Rc::new_in(MaybeUninit::uninit(), alloc);
 
@@ -79,10 +79,7 @@ impl Semaphore {
         unsafe {
             let sem_ptr = (&raw mut (*sem.as_mut_ptr()).inner).cast::<libc::sem_t>();
             // Initialize the `sem_t` contained within the UnsafeCell
-            assert_eq!(
-                libc::sem_init(sem_ptr, access, value),
-                0
-            );
+            assert_eq!(libc::sem_init(sem_ptr, access, value), 0);
             // UnsafeCell<libc::sem_t> is now fully initialized
             sem.assume_init_mut()
         }

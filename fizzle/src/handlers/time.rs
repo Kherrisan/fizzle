@@ -4,6 +4,7 @@ use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::{FizzleState, ReadyInfo, ScheduledItem, TimerType};
 
+#[derive(Clone)]
 pub struct ItimerInfo {
     pub interval: Duration,
 }
@@ -30,9 +31,7 @@ pub struct GetItimerEvent {
 
 impl GetItimerEvent {
     pub fn new(which: TimerType) -> Self {
-        Self {
-            which,
-        }
+        Self { which }
     }
 }
 
@@ -62,9 +61,7 @@ impl Event for GetItimerEvent {
         });
 
         let val = match ready {
-            Some(ScheduledItem { timestamp, .. }) => {
-                current_time.saturating_sub(*timestamp)
-            }
+            Some(ScheduledItem { timestamp, .. }) => current_time.saturating_sub(*timestamp),
             None => Duration::ZERO,
         };
 
@@ -75,10 +72,7 @@ impl Event for GetItimerEvent {
         });
         */
 
-        Outcome::Success(ItimerValue {
-            interval,
-            val,
-        })
+        Outcome::Success(ItimerValue { interval, val })
     }
 }
 
@@ -89,10 +83,7 @@ pub struct SetItimerEvent {
 
 impl SetItimerEvent {
     pub fn new(which: TimerType, new_value: Option<ItimerValue>) -> Self {
-        Self {
-            which,
-            new_value,
-        }
+        Self { which, new_value }
     }
 }
 
@@ -122,9 +113,7 @@ impl Event for SetItimerEvent {
         });
 
         let val = match ready {
-            Some(ScheduledItem { timestamp, .. }) => {
-                current_time.saturating_sub(*timestamp)
-            }
+            Some(ScheduledItem { timestamp, .. }) => current_time.saturating_sub(*timestamp),
             None => Duration::ZERO,
         };
 
@@ -136,26 +125,46 @@ impl Event for SetItimerEvent {
             });
 
             match self.which {
-                TimerType::Real => state.local.itimer_real = if interval.is_zero() { None } else { Some(ItimerInfo { interval: *interval }) },
-                TimerType::Virtual => state.local.itimer_virtual = if interval.is_zero() { None } else { Some(ItimerInfo { interval: *interval }) },
-                TimerType::Prof => state.local.itimer_prof = if interval.is_zero() { None } else { Some(ItimerInfo { interval: *interval }) },
+                TimerType::Real => {
+                    state.local.itimer_real = if interval.is_zero() {
+                        None
+                    } else {
+                        Some(ItimerInfo {
+                            interval: *interval,
+                        })
+                    }
+                }
+                TimerType::Virtual => {
+                    state.local.itimer_virtual = if interval.is_zero() {
+                        None
+                    } else {
+                        Some(ItimerInfo {
+                            interval: *interval,
+                        })
+                    }
+                }
+                TimerType::Prof => {
+                    state.local.itimer_prof = if interval.is_zero() {
+                        None
+                    } else {
+                        Some(ItimerInfo {
+                            interval: *interval,
+                        })
+                    }
+                }
             }
 
-            let timestamp = if val.is_zero() {
-                *interval
-            } else {
-                *val
-            };
+            let timestamp = if val.is_zero() { *interval } else { *val };
 
             if !timestamp.is_zero() {
                 // Add the new timer
-                state.global.ready.push(ScheduledItem { info: ReadyInfo::Timer(current_pid, self.which), timestamp });
+                state.global.ready.push(ScheduledItem {
+                    info: ReadyInfo::Timer(current_pid, self.which),
+                    timestamp,
+                });
             }
         };
 
-        Outcome::Success(ItimerValue {
-            interval,
-            val,
-        })
+        Outcome::Success(ItimerValue { interval, val })
     }
 }

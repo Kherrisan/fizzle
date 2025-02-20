@@ -3,12 +3,12 @@ use std::rc::Rc;
 use std::{cmp, os::fd::RawFd};
 
 use crate::errno::Errno;
-use crate::scheduler::{fizzle_alloc, Event, Outcome};
+use crate::scheduler::{fizzle_alloc, Event, Outcome, YieldUntil};
 use crate::state::FizzleState;
 use crate::GlobalRc;
 
-use super::polled::PolledInfo;
 use super::descriptor::*;
+use super::polled::PolledInfo;
 use super::poller::PollerInfo;
 
 // This is to forbid access to the SocketId's inner `usize` field.
@@ -56,35 +56,41 @@ impl Event for EventfdCreateEvent {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let fd = crate::create_descriptor();
 
-        let read_polled = Rc::new_in(RefCell::new(PolledInfo {
-            pollers: Vec::new_in(fizzle_alloc()),
-            event_raised: self.initial_value != 0,
-        }), fizzle_alloc());
+        let read_polled = Rc::new_in(
+            RefCell::new(PolledInfo {
+                pollers: Vec::new_in(fizzle_alloc()),
+                event_raised: self.initial_value != 0,
+            }),
+            fizzle_alloc(),
+        );
 
-        let write_polled = Rc::new_in(RefCell::new(PolledInfo {
-            pollers: Vec::new_in(fizzle_alloc()),
-            event_raised: true,
-        }), fizzle_alloc());
-        
-        let eventfd = Rc::new_in(RefCell::new(EventfdInfo {
-            read_polled,
-            write_polled,
-            is_semaphore: self.is_semaphore,
-            counter: self.initial_value as u64,
-        }), fizzle_alloc());
+        let write_polled = Rc::new_in(
+            RefCell::new(PolledInfo {
+                pollers: Vec::new_in(fizzle_alloc()),
+                event_raised: true,
+            }),
+            fizzle_alloc(),
+        );
 
-        state
-            .local
-            .fds
-            .insert(
-                Descriptor::from_raw_fd(fd),
-                DescriptorInfo {
-                    close_on_exec: self.close_on_exec,
-                    nonblocking: self.nonblocking,
-                    is_passthrough: false,
-                    resource: FdResource::EventFd(eventfd),
-                },
-            );
+        let eventfd = Rc::new_in(
+            RefCell::new(EventfdInfo {
+                read_polled,
+                write_polled,
+                is_semaphore: self.is_semaphore,
+                counter: self.initial_value as u64,
+            }),
+            fizzle_alloc(),
+        );
+
+        state.local.fds.insert(
+            Descriptor::from_raw_fd(fd),
+            DescriptorInfo {
+                close_on_exec: self.close_on_exec,
+                nonblocking: self.nonblocking,
+                is_passthrough: false,
+                resource: FdResource::EventFd(eventfd),
+            },
+        );
 
         Outcome::Success(fd)
     }
@@ -133,7 +139,7 @@ impl Event for EventfdReadEvent<'_> {
 
                 if old_counter > 0 {
                     self.state = EventfdReadState::Finish(None);
-                    Outcome::Continue
+                    Outcome::Yield(YieldUntil::Immediate)
                 } else if self.nonblocking {
                     Outcome::Error(Errno::EAGAIN)
                 } else {
@@ -141,7 +147,7 @@ impl Event for EventfdReadEvent<'_> {
                     state.register_poller(poller_id.clone(), read_polled);
 
                     self.state = EventfdReadState::Finish(Some(poller_id));
-                    Outcome::Yield(None)
+                    Outcome::Yield(YieldUntil::None)
                 }
             }
             EventfdReadState::Finish(poller) => {
@@ -259,11 +265,11 @@ impl Event for EventfdWriteEvent<'_> {
                         state.register_poller(poller_id.clone(), write_polled);
 
                         self.state = EventfdWriteState::Finish(Some(poller_id));
-                        Outcome::Yield(None)
+                        return Outcome::Yield(YieldUntil::None)
                     }
                 } else {
                     self.state = EventfdWriteState::Finish(None);
-                    Outcome::Continue
+                    Outcome::Yield(YieldUntil::Immediate)
                 }
             }
             EventfdWriteState::Finish(poller_id) => {
@@ -328,7 +334,7 @@ impl Event for EventfdWriteEvent<'_> {
                         state.register_poller(poller_id.clone(), write_polled);
 
                         self.state = EventfdWriteState::Finish(Some(poller_id));
-                        return Outcome::Yield(None);
+                        return Outcome::Yield(YieldUntil::None)
                     }
                 };
 

@@ -82,7 +82,10 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
             if let Some(write_buf) = plugin_info.borrow_mut().write_buf.pop_front() {
                 log::debug!("plugin module context {:?} can be written", &context);
                 plugin_activated = true;
-                match plugin_module.borrow_mut().read(&write_buf[write_idx..], &context) {
+                match plugin_module
+                    .borrow_mut()
+                    .read(&write_buf[write_idx..], &context)
+                {
                     Ok(0) => unimplemented!(),
                     Err(_) => unimplemented!(),
                     Ok(amount) => {

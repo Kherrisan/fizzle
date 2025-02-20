@@ -1,7 +1,7 @@
 use std::thread::{self, ThreadId};
 
 use crate::{
-    scheduler::{Event, Outcome},
+    scheduler::{Event, Outcome, YieldUntil},
     state::FizzleState,
 };
 
@@ -128,7 +128,7 @@ impl Event for BarrierWaitEvent {
 
                     Outcome::Success(true)
                 } else {
-                    Outcome::Yield(None)
+                    Outcome::Yield(YieldUntil::None)
                 }
             }
             BarrierWaitState::Finish => Outcome::Success(false),

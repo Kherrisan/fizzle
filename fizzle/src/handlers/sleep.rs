@@ -2,7 +2,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::errno::Errno;
-use crate::scheduler::{Event, Outcome};
+use crate::scheduler::{Event, Outcome, YieldUntil};
 use crate::state::FizzleState;
 
 pub enum SleepState {
@@ -38,7 +38,10 @@ impl Event for SleepEvent {
                 let signal_info = state.local.signals.get_mut(&thread_id).unwrap();
                 signal_info.sigsuspend = true;
                 signal_info.interrupted = false;
-                Outcome::Yield(self.duration)
+                Outcome::Yield(match self.duration {
+                    Some(duration) => YieldUntil::Reschedule(duration),
+                    None => YieldUntil::None,
+                })
             }
             SleepState::Finish => {
                 let signal_info = state.local.signals.get_mut(&thread_id).unwrap();

@@ -1,7 +1,7 @@
 use std::ptr;
 
-use crate::{GlobalRc, GlobalVec};
 use super::poller::PollerInfo;
+use crate::{GlobalRc, GlobalVec};
 
 // Each time a Polled is *raised* (i.e., goes from `event_raised: false` to `event_raised: true`),
 // the PolledInfo will move all of its `pollers` into the ready queue (if they are not already there).

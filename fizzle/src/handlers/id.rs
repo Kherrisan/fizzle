@@ -5,14 +5,35 @@ use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
 
 use super::process::{Pgid, Pid};
-use super::thread::Tid;
-
+use super::thread::{index_of_thread, Tid};
 
 /// The unique identifying information for a given thread in a process.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Worker {
     pub pid: Pid,
     pub thread_id: ThreadId,
+}
+
+impl PartialOrd for Worker {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match self.pid.partial_cmp(&other.pid) {
+            Some(core::cmp::Ordering::Equal) => (),
+            ord => return ord,
+        }
+
+        index_of_thread(&self.thread_id).partial_cmp(&index_of_thread(&other.thread_id))
+    }
+}
+
+impl Ord for Worker {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.pid.cmp(&other.pid) {
+            core::cmp::Ordering::Equal => (),
+            ord => return ord,
+        }
+
+        index_of_thread(&self.thread_id).cmp(&index_of_thread(&other.thread_id))
+    }
 }
 
 pub struct ProcessGetIdEvent;
@@ -68,10 +89,9 @@ impl Event for ProcessGetGroupIdEvent {
             Some(pid) => match state.global.pids.get(&pid) {
                 Some(process) => Outcome::Success(process.borrow().pgid),
                 None => Outcome::Error(Errno::ESRCH),
-            }
+            },
             None => Outcome::Success(state.local.process_info.borrow().pgid),
         }
-        
     }
 }
 
@@ -93,8 +113,10 @@ impl Event for ProcessSetGroupIdEvent {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         if let Some(pid) = self.pid {
             match state.global.process_groups.get(&self.pgid) {
-                Some(group_pids) => if !group_pids.contains(&pid) {
-                    return Outcome::Error(Errno::EPERM)  
+                Some(group_pids) => {
+                    if !group_pids.contains(&pid) {
+                        return Outcome::Error(Errno::EPERM);
+                    }
                 }
                 None => return Outcome::Error(Errno::ESRCH),
             }
@@ -108,7 +130,6 @@ impl Event for ProcessSetGroupIdEvent {
                 }
                 None => Outcome::Error(Errno::ESRCH),
             }
-
         } else {
             state.local.process_info.borrow_mut().pgid = self.pgid;
             Outcome::Success(())
@@ -123,7 +144,11 @@ impl Event for ThreadGetIdEvent {
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let tid = state.local.thread_tids.get(&thread::current().id()).unwrap();
+        let tid = state
+            .local
+            .thread_tids
+            .get(&thread::current().id())
+            .unwrap();
         Outcome::Success(*tid)
     }
 }

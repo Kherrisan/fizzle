@@ -2,12 +2,19 @@
 
 #[link(name = "dl")]
 unsafe extern "C" {
-    unsafe fn dlsym(handle: *const libc::c_void, symbol: *const libc::c_char) -> *const libc::c_void;
+    unsafe fn dlsym(
+        handle: *const libc::c_void,
+        symbol: *const libc::c_char,
+    ) -> *const libc::c_void;
 }
 
 pub unsafe fn dlsym_next(symbol: &'static str) -> *const u8 {
     let ptr = dlsym(libc::RTLD_NEXT, symbol.as_ptr().cast::<libc::c_char>());
-    assert!(!ptr.is_null(), "dlsym: unable to find underlying function for {}", symbol);
+    assert!(
+        !ptr.is_null(),
+        "dlsym: unable to find underlying function for {}",
+        symbol
+    );
     ptr.cast::<u8>()
 }
 
@@ -41,7 +48,7 @@ macro_rules! hook {
                     if crate::state::has_entered_handler() {
                         return $real_fn.get() ( $($v),* )
                     }
-                    
+
                     crate::state::set_entered_handler(true);
                     let res = {
                         $hook_fn ( $($v),*)
@@ -89,13 +96,7 @@ pub fn real_syscall() -> extern "C" fn(libc::c_long, ...) -> libc::c_long {
         static REAL: OnceCell<*const u8> = OnceCell::new();
     }
 
-    unsafe {
-        std::mem::transmute(REAL.with(|cell| {
-            *cell.get_or_init(|| {
-                dlsym_next("syscall\0")
-            })
-        }))
-    }
+    unsafe { std::mem::transmute(REAL.with(|cell| *cell.get_or_init(|| dlsym_next("syscall\0")))) }
 }
 
 /*

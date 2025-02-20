@@ -7,12 +7,15 @@ use std::{mem, ptr, thread};
 use fxhash::FxBuildHasher;
 
 use crate::errno::Errno;
-use crate::scheduler::{Event, Outcome};
+use crate::scheduler::{Event, Outcome, YieldUntil};
 use crate::state::FizzleState;
 use crate::WaitDuration;
 
 const PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP: libc::pthread_rwlock_t = unsafe {
-    mem::transmute([0u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0])
+    mem::transmute([
+        0u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0,
+    ])
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -200,11 +203,11 @@ impl Event for RwLockReadEvent {
                         WaitDuration::Immediate => Outcome::Error(Errno::EBUSY),
                         WaitDuration::Timed(duration) => {
                             rwlock_info.awaiting_read.push_back(current_thread);
-                            Outcome::Yield(Some(duration))
+                            Outcome::Yield(YieldUntil::Reschedule(duration))
                         }
                         WaitDuration::Indefinite => {
                             rwlock_info.awaiting_read.push_back(current_thread);
-                            Outcome::Yield(None)
+                            Outcome::Yield(YieldUntil::None)
                         }
                     },
                     // We have a pending writer, and this RwLock is configured to prioritize writes
@@ -216,11 +219,11 @@ impl Event for RwLockReadEvent {
                             WaitDuration::Immediate => Outcome::Error(Errno::EBUSY),
                             WaitDuration::Timed(duration) => {
                                 rwlock_info.awaiting_read.push_back(current_thread);
-                                Outcome::Yield(Some(duration))
+                                Outcome::Yield(YieldUntil::Reschedule(duration))
                             }
                             WaitDuration::Indefinite => {
                                 rwlock_info.awaiting_read.push_back(current_thread);
-                                Outcome::Yield(None)
+                                Outcome::Yield(YieldUntil::None)
                             }
                         }
                     }
@@ -321,11 +324,11 @@ impl Event for RwLockWriteEvent {
                         WaitDuration::Immediate => Outcome::Error(Errno::EBUSY),
                         WaitDuration::Timed(duration) => {
                             rwlock_info.awaiting_write.push_back(current_thread);
-                            Outcome::Yield(Some(duration))
+                            Outcome::Yield(YieldUntil::Reschedule(duration))
                         }
                         WaitDuration::Indefinite => {
                             rwlock_info.awaiting_write.push_back(current_thread);
-                            Outcome::Yield(None)
+                            Outcome::Yield(YieldUntil::None)
                         }
                     },
                     RwLockState::Available => {
@@ -443,7 +446,8 @@ impl Event for RwLockUnlockEvent {
 
 pub fn static_rwlock_kind(rwlock: RwLockPtr) -> Option<RwLockKind> {
     static REGULAR_INIT: libc::pthread_rwlock_t = libc::PTHREAD_RWLOCK_INITIALIZER;
-    static NONRECURSIVE_WRITER_INIT: libc::pthread_rwlock_t = PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP;
+    static NONRECURSIVE_WRITER_INIT: libc::pthread_rwlock_t =
+        PTHREAD_RWLOCK_WRITER_NONRECURSIVE_INITIALIZER_NP;
 
     // We need to find out if this lock is statically-initialized
     unsafe {
@@ -462,7 +466,6 @@ pub fn static_rwlock_kind(rwlock: RwLockPtr) -> Option<RwLockKind> {
         {
             Some(RwLockKind::PreferWriter)
         } else {
-            let s = std::slice::from_raw_parts(rwlock.to_mut_ptr().cast_const().cast::<u8>(), mem::size_of::<libc::pthread_rwlock_t>());
             None
         }
     }

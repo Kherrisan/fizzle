@@ -8,7 +8,7 @@ use bitflags::bitflags;
 use fizzle_common::path::SemaphorePath;
 
 use crate::errno::Errno;
-use crate::scheduler::{fizzle_alloc, Event, Outcome};
+use crate::scheduler::{fizzle_alloc, Event, Outcome, YieldUntil};
 use crate::state::FizzleState;
 use crate::WaitDuration;
 
@@ -147,12 +147,15 @@ impl Event for SemOpenEvent<'_> {
             let sem = unsafe { crate::unique_mem_create() }.cast::<libc::sem_t>();
             let semaphore_ptr = SemaphorePtr::from(sem);
 
-            let sem_info = Rc::new_in(RefCell::new(SemaphoreInfo {
-                refs: 1,
-                unlinked: false,
-                value: value as usize,
-                waiting: VecDeque::new(),               
-            }), fizzle_alloc());
+            let sem_info = Rc::new_in(
+                RefCell::new(SemaphoreInfo {
+                    refs: 1,
+                    unlinked: false,
+                    value: value as usize,
+                    waiting: VecDeque::new(),
+                }),
+                fizzle_alloc(),
+            );
             state.local.named_semaphores.insert(semaphore_ptr, sem_info);
 
             Outcome::Success(semaphore_ptr)
@@ -304,7 +307,6 @@ impl Event for SemPostEvent {
 
             Outcome::Success(())
         } else if let Some(sem_info) = state.local.named_semaphores.get(&self.sem).cloned() {
-
             let mut sem_mut = sem_info.borrow_mut();
             match sem_mut.waiting.pop_front() {
                 Some(worker_id) => state.mark_worker_ready(worker_id),
@@ -365,12 +367,12 @@ impl Event for SemWaitEvent {
                         WaitDuration::Timed(t) => {
                             semaphore.waiting.push_back(current_worker_id);
                             self.state = SemWaitState::Finish;
-                            Outcome::Yield(Some(t))
+                            Outcome::Yield(YieldUntil::Reschedule(t))
                         }
                         WaitDuration::Indefinite => {
                             semaphore.waiting.push_back(current_worker_id);
                             self.state = SemWaitState::Finish;
-                            Outcome::Yield(None)
+                            Outcome::Yield(YieldUntil::None)
                         }
                     },
                 }

@@ -18,15 +18,15 @@ use fizzle_common::io::{
 };
 use fizzle_common::path::{FilePath, SemaphorePath};
 use fizzle_plugin::{IoEndpointVariant, PluginObject, StreamId};
-use fxhash::{FxBuildHasher, FxHashMap};
+use fxhash::FxBuildHasher;
 use heapless::FnvIndexMap;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
 use crate::handlers::filestream::*;
 use crate::handlers::time::ItimerInfo;
-use crate::scheduler::fizzle_alloc;
-use crate::constants::*;
+use crate::scheduler::{fizzle_alloc, FizzleSingleton, TaskResult};
+use crate::{constants::*, GlobalBox};
 use crate::errno::Errno;
 use crate::handlers::barrier::{BarrierInfo, BarrierPtr};
 use crate::handlers::condvar::CondVarPtr;
@@ -209,8 +209,9 @@ impl FizzleState {
             named_semaphores: HashMap::default(),
             on_exit_handlers: Vec::new(),
             pasture: Default::default(),
+            pending_signals: [None; 32],
             process_info: Rc::new_in(RefCell::new(ProcessInfo {
-                semaphore: Semaphore::new_rc_in(0, true, fizzle_alloc()),
+                main_worker_lock: Semaphore::new_rc_in(0, true, fizzle_alloc()),
                 awaiting_death: None,
                 pid: Pid::PRIMARY,
                 ppid: Pid::INIT,
@@ -227,7 +228,7 @@ impl FizzleState {
             signals: HashMap::default(),
             spinlocks: HashMap::default(),
             terminated_threads: HashSet::default(),
-            thread_locks: Default::default(),
+            // thread_locks: Default::default(),
             thread_tids: Default::default(),
             tid_threads: Default::default(),
             // Default umask is 0644
@@ -276,7 +277,7 @@ impl FizzleState {
             mem::swap(&mut local.fds, &mut inherited_state.fds);
 
             let sigmask = inherited_state.sigmask;
-            local.thread_locks.insert(thread::current().id(), Semaphore::new_rc_in(0, true, fizzle_alloc()));
+            // local.thread_locks.insert(thread::current().id(), Semaphore::new_rc_in(0, true, fizzle_alloc()));
             local.initialize_thread(Tid::from_raw(pid.as_raw()), Some(sigmask));
 
         } else {
@@ -311,7 +312,7 @@ impl FizzleState {
                 resource: FdResource::Stderr,
             });
 
-            local.thread_locks.insert(thread::current().id(), Semaphore::new_rc_in(0, true, fizzle_alloc()));
+            // local.thread_locks.insert(thread::current().id(), Semaphore::new_rc_in(0, true, fizzle_alloc()));
             local.initialize_thread(tid, None);
         }
 
@@ -352,9 +353,10 @@ impl FizzleState {
             eof: false,
         });
 
-        global.process_locks.insert(local.process_info.borrow().pid, Semaphore::new_rc_in(0, true, fizzle_alloc()));
-
         let mut state = Self { local, global };
+
+        let worker = state.current_worker();
+        state.global.worker_locks.insert(worker, Semaphore::new_rc_in(0, true, fizzle_alloc()));
 
         // Now that everything else is initialized, time to populate startup processes/plugins.
         if is_main_process {
@@ -902,7 +904,7 @@ impl FizzleState {
         });
     }
 
-    pub fn current_worker(&mut self) -> Worker {
+    pub fn current_worker(&self) -> Worker {
         Worker {
             pid: self.local.process_info.borrow().pid,
             thread_id: thread::current().id(),
@@ -965,6 +967,7 @@ pub struct ProcessLocalState {
     /// See `on_exit()`
     pub on_exit_handlers: Vec<(OnExitFunction, *mut libc::c_void)>,
     pub pasture: HashMap<CowId, CowInfo>,
+    pub pending_signals: RaisedSignalSet,
     pub process_info: GlobalRc<ProcessInfo>,
     pub pthreads: HashMap<libc::pthread_t, ThreadInfo, FxBuildHasher>,
     pub pthread_cleanup: HashMap<ThreadId, VecDeque<PThreadRoutine>, FxBuildHasher>,
@@ -980,7 +983,7 @@ pub struct ProcessLocalState {
     pub spinlocks: HashMap<SpinlockPtr, VecDeque<ThreadId>, FxBuildHasher>,
     pub terminated_threads: HashSet<ThreadId, FxBuildHasher>,
     /// Per-thread semaphores for synchronization.
-    pub thread_locks: FxHashMap<ThreadId, Rc<Semaphore, GlobalHeap>>,
+    // pub thread_locks: FxHashMap<ThreadId, Rc<Semaphore, GlobalHeap>>,
     pub thread_tids: HashMap<ThreadId, Tid>,
     pub tid_threads: HashMap<Tid, ThreadId>,
     /// The current default permissions mask of the process.
@@ -1001,8 +1004,8 @@ impl ProcessLocalState {
         self.signals.insert(
             thread::current().id(),
             ThreadSigInfo {
-                raised: array::from_fn(|_| None),
-                blocked: sigmask.unwrap_or(SignalSet::empty()),
+                pending: array::from_fn(|_| None),
+                masked: sigmask.unwrap_or(SignalSet::empty()),
                 interrupted: false,
                 sigwait_set: SignalSet::empty(),
                 sigsuspend: false,
@@ -1018,7 +1021,9 @@ pub struct InterprocessState {
     pub afl_shmem_initialized: bool,
     pub fuzz_endpoints: GlobalVec<FuzzEndpointInfo>,
     pub fuzz_input: GlobalVec<u8>,
-    pub process_locks: GlobalMap<Pid, Rc<Semaphore, GlobalHeap>>,
+
+    pub worker_locks: GlobalMap<Worker, Rc<Semaphore, GlobalHeap>>,
+    // pub process_locks: GlobalMap<Pid, Rc<Semaphore, GlobalHeap>>,
     /// The thread identifier to be executed by the waking process. This is `Some` if and only if
     /// a thread is currently about to be scheduled.
     pub waking_id: Option<ThreadId>,
@@ -1067,6 +1072,8 @@ pub struct InterprocessState {
     pub ready: BinaryHeap<ScheduledItem, GlobalHeap>,
     /// Pollers/Workers that should be scheduled once the system has reached a halted state.
     pub ready_delayed: GlobalList<ReadyInfo>,
+
+    pub tasks: GlobalList<GlobalBox<dyn FnOnce(&mut FizzleSingleton) -> TaskResult + Send + 'static>>,
 
     pub per_round_clients: heapless::Vec<PerRoundClientInfo, FIZZLE_MAX_PER_ROUND_ENDPOINTS>,
     pub per_round_endpoints: GlobalVec<GlobalRc<SocketInfo>>,
@@ -1158,7 +1165,7 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).dead_pids) = BTreeMap::new_in(fizzle_alloc());
             *ptr::addr_of_mut!((*state).pids) = BTreeMap::new_in(fizzle_alloc());
             *ptr::addr_of_mut!((*state).process_groups) = BTreeMap::new_in(fizzle_alloc());
-            *ptr::addr_of_mut!((*state).process_locks) = BTreeMap::new_in(fizzle_alloc());
+            *ptr::addr_of_mut!((*state).worker_locks) = BTreeMap::new_in(fizzle_alloc());
             *ptr::addr_of_mut!((*state).ready) = BinaryHeap::new_in(fizzle_alloc());
             *ptr::addr_of_mut!((*state).ready_delayed) = LinkedList::new_in(fizzle_alloc());
             *ptr::addr_of_mut!((*state).fuzz_input) = Vec::new_in(fizzle_alloc());
@@ -1169,6 +1176,8 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).time_fuzz_idx) = 0;
             *ptr::addr_of_mut!((*state).fuzz_endpoints) = Vec::new_in(fizzle_alloc());
             *ptr::addr_of_mut!((*state).plugins) = Vec::new_in(fizzle_alloc());
+
+            *ptr::addr_of_mut!((*state).tasks) = LinkedList::new_in(fizzle_alloc());
 
             *ptr::addr_of_mut!((*state).next_pid) = Pid::PRIMARY.next();
             &mut (*state)
@@ -1487,13 +1496,13 @@ impl Eq for ScheduledItem {}
 
 impl PartialOrd for ScheduledItem {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
+        Some(self.cmp(other).reverse())
     }
 }
 
 impl Ord for ScheduledItem {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.timestamp.cmp(&other.timestamp)
+        self.timestamp.cmp(&other.timestamp).reverse()
     }
 }
 
@@ -1509,6 +1518,24 @@ pub enum TimerType {
     Real,
     Virtual,
     Prof
+}
+
+impl TimerType {
+    pub fn signum(&self) -> libc::c_int {
+        match self {
+            TimerType::Real => libc::SIGALRM,
+            TimerType::Virtual => libc::SIGVTALRM,
+            TimerType::Prof => libc::SIGPROF,
+        }
+    }
+
+    pub fn timer_id(&self) -> libc::c_int {
+        match self {
+            TimerType::Real => libc::ITIMER_REAL,
+            TimerType::Virtual => libc::ITIMER_VIRTUAL,
+            TimerType::Prof => libc::ITIMER_PROF,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

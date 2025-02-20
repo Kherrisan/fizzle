@@ -40,7 +40,7 @@ pub struct StandardFeedback {
 }
 
 #[derive(Clone)]
-pub struct FileFeedback { }
+pub struct FileFeedback {}
 
 #[derive(Clone)]
 pub struct RegularConnected {

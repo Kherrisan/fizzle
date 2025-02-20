@@ -1,17 +1,21 @@
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 use std::thread::ThreadId;
+use std::time::Duration;
 use std::{ptr, thread};
 
 use fxhash::FxBuildHasher;
 
 use crate::errno::Errno;
-use crate::scheduler::{fizzle_alloc, fizzle_singleton, DelegationSource, Event, Outcome, Scheduler, TerminationMethod};
+use crate::scheduler::{
+    fizzle_alloc, fizzle_singleton, Event, FizzleSingleton, Outcome, Scheduler, TaskResult, TerminationMethod, YieldUntil
+};
 use crate::semaphore::Semaphore;
 use crate::state::{set_entered_handler, FizzleState};
 
+use super::id::Worker;
 use super::mutex::MutexPtr;
 use super::signal::SignalSet;
 
@@ -34,7 +38,7 @@ extern "C" {
     ) -> libc::c_int;
 }
 
-pub type PTFunction = unsafe extern "C" fn(*mut libc::c_void) -> *mut libc::c_void;
+pub type PtFunction = unsafe extern "C" fn(*mut libc::c_void) -> *mut libc::c_void;
 pub type PTDestructor = unsafe extern "C" fn(*mut libc::c_void);
 
 #[derive(Debug, Clone, Copy)]
@@ -115,7 +119,6 @@ impl PThreadRoutine {
     }
 }
 
-/*
 /// A hasher that correctly outputs the internal value of a [`ThreadId`] for its hash.
 pub struct ThreadHasher {
     value: u64,
@@ -163,12 +166,11 @@ pub fn index_of_thread(thread: &ThreadId) -> usize {
     thread.hash(&mut hasher);
     hasher.finish() as usize
 }
-*/
 
 #[derive(Clone)]
 #[repr(C)]
-pub struct PTCreateWrapper {
-    wrapped_fn: PTFunction,
+pub struct PtCreateWrapper {
+    wrapped_fn: PtFunction,
     wrapped_arg: *mut libc::c_void,
     sigmask: Option<SignalSet>,
     detached: bool,
@@ -185,14 +187,18 @@ extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void {
     // SAFETY: only one ctx at the time (so that it in turn enforces only one `state` alias at a time...)
     let mut ctx = unsafe { fizzle_singleton() };
 
-    let wrapped_arg = unsafe { (arg.cast::<PTCreateWrapper>()).as_mut().unwrap() };
+    let wrapped_arg = unsafe { (arg.cast::<PtCreateWrapper>()).as_mut().unwrap() };
 
     // SAFETY: the FizzleState can be acquired here because we know startup initialization has
     // already run for this process (otherwise how could this pt_wrapper_fn be called?).
     let mut state = ctx.acquire();
     let tid = state.global.next_tid();
-    
-    state.local.thread_locks.insert(thread::current().id(), Semaphore::new_rc_in(0, true, fizzle_alloc()));
+    let worker_id = state.current_worker();
+
+    state
+        .global
+        .worker_locks
+        .insert(worker_id, Semaphore::new_rc_in(0, true, fizzle_alloc()));
     state.local.initialize_thread(tid, wrapped_arg.sigmask);
     drop(state);
 
@@ -205,11 +211,19 @@ extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void {
     unreachable!()
 }
 
+#[derive(Clone)]
+pub struct ThreadCreateContext {
+    pthread: *mut libc::pthread_t,
+    attrs: *const libc::pthread_attr_t,
+    arg: *mut libc::c_void,
+}
+
+unsafe impl Send for ThreadCreateContext { }
+
 pub struct ThreadCreateEvent {
     pthread: *mut libc::pthread_t,
     attrs: *const libc::pthread_attr_t,
-    // This must outlive the initialization done by the created thread
-    wrapper: PTCreateWrapper,
+    wrapper: PtCreateWrapper,
     state: ThreadCreateState,
 }
 
@@ -217,7 +231,7 @@ impl ThreadCreateEvent {
     pub fn new(
         pthread: *mut libc::pthread_t,
         attrs: *const libc::pthread_attr_t,
-        f: PTFunction,
+        f: PtFunction,
         arg: *mut libc::c_void,
     ) -> Self {
         // If the attributes contain a sigmask, note it (but remove the actual sigmask)
@@ -225,7 +239,7 @@ impl ThreadCreateEvent {
         let sigmask = match attrs.is_null() {
             true => None,
             false => {
-                // TODO: 
+                // TODO:
                 let sigmask = Self::get_attr_sigmask(attrs);
                 Self::clear_attr_sigmask(attrs.cast::<libc::pthread_attr_t>()); // TODO: BUG: undefined behavior--fix
                 Some(SignalSet::from_sigset(sigmask))
@@ -246,7 +260,7 @@ impl ThreadCreateEvent {
             detach_state != 0
         };
 
-        let wrapper = PTCreateWrapper {
+        let wrapper = PtCreateWrapper {
             wrapped_fn: f,
             wrapped_arg: arg,
             sigmask,
@@ -266,7 +280,7 @@ impl Event for ThreadCreateEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match self.state {
             ThreadCreateState::Start => {
                 self.state = ThreadCreateState::Finish;
@@ -288,34 +302,48 @@ impl Event for ThreadCreateEvent {
                     log::debug!("__afl_manual_init finished");
                 }
 
-                // Let the scheduler know we have more to execute once the new thread is done.
-                state.mark_thread_ready(thread::current().id());
-
-                let thread_sem = state.local.thread_locks.get(&thread::current().id()).unwrap().clone();
-
-                let res = unsafe {
-                    libc::pthread_create(
-                        self.pthread,
-                        self.attrs,
-                        pt_wrapper_fn,
-                        (&raw mut self.wrapper).cast::<libc::c_void>(),
-                    )
+                let thread_ctx = ThreadCreateContext {
+                    pthread: self.pthread,
+                    attrs: self.attrs,
+                    arg: (&raw mut self.wrapper).cast(),
                 };
-                // SAFETY: `state` must not be used after here
 
-                // TODO: is this still UB unsafe due to `state` being acquired while another thread is running?
+                Outcome::RunTask(Box::new_in(move |_| {
+                    thread_create(thread_ctx);
+                    TaskResult::Continue
 
-                match res {
-                    // The newly-created thread executes now, so this thread pauses
-                    0.. => Outcome::Pause(DelegationSource::Thread(thread_sem), None),
-                    // Thread creation failed
-                    ..=-1 => Outcome::Error(Errno::get_errno()),
-                }
+                }, fizzle_alloc()), YieldUntil::Reschedule(Duration::ZERO))
             }
             ThreadCreateState::Finish => Outcome::Success(()),
         }
     }
 }
+
+fn thread_create(thread_ctx: ThreadCreateContext) {
+    let res = unsafe {
+        libc::pthread_create(
+            thread_ctx.pthread,
+            thread_ctx.attrs,
+            pt_wrapper_fn,
+            thread_ctx.arg,
+        )
+    };
+    assert_eq!(res, 0);
+}
+
+pub struct ThreadExitRetval {
+    retval: *mut libc::c_void,
+}
+
+impl ThreadExitRetval {
+    pub fn new(retval: *mut libc::c_void) -> Self {
+        Self {
+            retval,
+        }
+    }
+}
+
+unsafe impl Send for ThreadExitRetval {}
 
 pub struct ThreadExitEvent {
     retval: *mut libc::c_void,
@@ -332,8 +360,16 @@ impl Event for ThreadExitEvent {
     type Error = ();
 
     fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        Outcome::TerminateThread(TerminationMethod::ThreadExit(self.retval))
+        let retval = ThreadExitRetval::new(self.retval);
+
+        Outcome::RunTask(Box::new_in(move |ctx| {
+            exit_thread(ctx, retval)
+        }, fizzle_alloc()), YieldUntil::None)
     }
+}
+
+fn exit_thread(ctx: &mut FizzleSingleton, retval: ThreadExitRetval) -> ! {
+    Scheduler::terminate_thread(ctx, TerminationMethod::ThreadExit(retval.retval))
 }
 
 pub enum ThreadJoinState {
@@ -379,11 +415,10 @@ impl Event for ThreadJoinEvent {
                         }
                     }
 
-                    Outcome::Yield(None)
-
+                    Outcome::Yield(YieldUntil::None)
                 } else {
                     state.local.terminated_threads.remove(&target_thread.id);
-                    Outcome::Continue
+                    Outcome::Yield(YieldUntil::Immediate)
                 }
             }
             ThreadJoinState::Finish => {
@@ -464,22 +499,30 @@ impl Event for ThreadCancelEvent {
                 }
 
                 if self.thread == unsafe { libc::pthread_self() } {
-                    return Outcome::TerminateThread(TerminationMethod::Cancellation);
+                    return Outcome::RunTask(Box::new_in(move |ctx| {
+                        Scheduler::terminate_thread(ctx, TerminationMethod::Cancellation)
+                    }, fizzle_alloc()), YieldUntil::None)
                 }
 
                 let thread_id = target_thread.id;
-                if !target_thread.cancellable {
-                    target_thread.cancel_requested = true;
-                    return Outcome::Success(());
-                }
 
-                let curr_thread_sem = state.local.thread_locks.get(&thread::current().id()).unwrap().clone();
-                state.local.cancelling = Some(thread_id);
-                let sem = state.local.thread_locks.get(&thread_id).unwrap().clone();
+                Outcome::RunTask(Box::new_in(move |ctx| {
+                    if thread::current().id() != thread_id {
+                        let mut state = ctx.acquire();
+                        let pid = state.local.process_info.borrow().pid;
+                        state.mark_thread_ready(thread::current().id());
+                        let target_sem = state.global.worker_locks.get(&Worker { pid, thread_id }).unwrap().clone();
+                        state.global.tasks.push_front(Box::new_in(|ctx| {
+                            Scheduler::terminate_thread(ctx, TerminationMethod::Cancellation)
+                        }, fizzle_alloc()));
+                        drop(state);
 
-                // This thread will be run after the cancelling thread is
-                state.mark_thread_ready(thread::current().id());
-                Outcome::Pause(DelegationSource::Thread(curr_thread_sem), Some(sem))
+                        target_sem.post();
+                        return TaskResult::Suspend
+                    }
+
+                    Scheduler::terminate_thread(ctx, TerminationMethod::Cancellation)
+                }, fizzle_alloc()), YieldUntil::Reschedule(Duration::ZERO))
             }
             ThreadCancelState::Finish => Outcome::Success(()),
         }
@@ -637,7 +680,7 @@ impl Event for ThreadYieldEvent {
             ThreadYieldState::Start => {
                 state.mark_thread_ready(thread::current().id());
                 self.state = ThreadYieldState::Finish;
-                Outcome::Yield(None)
+                Outcome::Yield(YieldUntil::None)
             }
             ThreadYieldState::Finish => Outcome::Success(()),
         }
@@ -666,7 +709,9 @@ impl Event for ThreadCancellableEvent {
         thread_info.cancellable = self.cancellable;
 
         if thread_info.cancellable && thread_info.cancel_requested {
-            Outcome::TerminateThread(TerminationMethod::Cancellation)
+            Outcome::RunTask(Box::new_in(|ctx| {
+                Scheduler::terminate_thread(ctx, TerminationMethod::Cancellation)
+            }, fizzle_alloc()), YieldUntil::Reschedule(Duration::ZERO))
         } else {
             Outcome::Success(prev_cancellable)
         }

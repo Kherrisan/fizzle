@@ -38,7 +38,7 @@ hook_macros::hook! {
     unsafe fn pthread_create(
         thread: *mut libc::pthread_t,
         attr: *const libc::pthread_attr_t,
-        start_routine: PTFunction,
+        start_routine: PtFunction,
         arg: *mut libc::c_void
     ) -> libc::c_int => fizzle_pthread_create(ctx) {
         crate::strace!("pthread_create(thread={:?}, attr={:?}, start_routine={:?}, arg={:?}) -> ...", thread, attr, start_routine, arg);

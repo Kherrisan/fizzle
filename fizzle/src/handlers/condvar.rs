@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::{mem, ptr, thread};
 
 use crate::errno::Errno;
-use crate::scheduler::{Event, Outcome};
+use crate::scheduler::{Event, Outcome, YieldUntil};
 use crate::state::FizzleState;
 use crate::WaitDuration;
 
@@ -247,8 +247,8 @@ impl Event for CondWaitEvent {
 
                 match self.duration {
                     WaitDuration::Immediate => unreachable!(),
-                    WaitDuration::Timed(timeout) => Outcome::Yield(Some(timeout)),
-                    WaitDuration::Indefinite => Outcome::Yield(None),
+                    WaitDuration::Timed(timeout) => Outcome::Yield(YieldUntil::Reschedule(timeout)),
+                    WaitDuration::Indefinite => Outcome::Yield(YieldUntil::None),
                 }
             }
             CondWaitState::AwaitCond => {
@@ -274,12 +274,12 @@ impl Event for CondWaitEvent {
                 mutex_info.queued_threads.push_back(thread::current().id());
 
                 if available {
-                    Outcome::Continue
+                    Outcome::Yield(YieldUntil::Immediate)
                 } else {
                     match self.duration {
                         WaitDuration::Immediate => unreachable!(),
-                        WaitDuration::Timed(timeout) => Outcome::Yield(Some(timeout)),
-                        WaitDuration::Indefinite => Outcome::Yield(None),
+                        WaitDuration::Timed(timeout) => Outcome::Yield(YieldUntil::Reschedule(timeout)),
+                        WaitDuration::Indefinite => Outcome::Yield(YieldUntil::None),
                     }
                 }
             }

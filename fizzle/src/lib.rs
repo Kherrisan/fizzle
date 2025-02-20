@@ -27,10 +27,9 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, LinkedList};
 use std::ffi::VaList;
 use std::os::fd::RawFd;
+use std::ptr;
 use std::rc::Rc;
 use std::time::Duration;
-use std::ptr;
-
 
 pub type GlobalRc<T> = Rc<RefCell<T>, GlobalHeap>;
 pub type GlobalWeak<T> = std::rc::Weak<RefCell<T>, GlobalHeap>;
@@ -62,7 +61,11 @@ unsafe extern "C" {
     #[cfg(feature = "pcr")]
     pub static mut __afl_sharedmem_fuzzing: libc::c_int;
 
-    pub fn vasprintf(strp: *mut *mut libc::c_char, fmt: *const libc::c_char, ap: VaList) -> libc::c_int;
+    pub fn vasprintf(
+        strp: *mut *mut libc::c_char,
+        fmt: *const libc::c_char,
+        ap: VaList,
+    ) -> libc::c_int;
 
     static mut stdin: *mut libc::FILE;
 
@@ -72,7 +75,7 @@ unsafe extern "C" {
 }
 
 // # SAFETY
-// 
+//
 // Defines a custom critical section that does not perform any mutex operations.
 // This is meant to speed up allocation/deallocation procedures in Fizzle; it is
 // safe so long as Fizzle accurately ensures that only one thread is executing at

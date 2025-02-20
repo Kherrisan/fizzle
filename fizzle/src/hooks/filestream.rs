@@ -571,7 +571,7 @@ hook_macros::hook! {
 
         let buf = slice::from_raw_parts(ptr.cast::<u8>(), size * nmemb);
         let io_slice = IoSlice::new(buf);
-    
+
         match Scheduler::handle_event(&mut ctx, FileStreamWriteEvent::new(stream_ptr, &io_slice, size)) {
             Ok(written) => {
                 crate::strace!("fwrite(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, written);
@@ -603,7 +603,7 @@ hook_macros::hook! {
 
         let buf = slice::from_raw_parts_mut(ptr.cast::<u8>(), size * nmemb);
         let mut io_slice = IoSliceMut::new(buf);
-    
+
         match Scheduler::handle_event(&mut ctx, FileStreamReadEvent::new(stream_ptr, &mut io_slice, size)) {
             Ok(written) => {
                 crate::strace!("fread(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, written);
@@ -660,7 +660,7 @@ hook_macros::hook! {
         };
 
         let io_slice = IoSlice::new(slice::from_ref(&c));
-    
+
         match Scheduler::handle_event(&mut ctx, FileStreamWriteEvent::new(stream_ptr, &io_slice, 1)) {
             Ok(written) => {
                 crate::strace!("fputc(c={:?}, stream={:?}) -> {}", c, stream, written);
@@ -686,7 +686,7 @@ hook_macros::hook! {
         let stream_ptr = FilePtr::from_raw(unsafe { crate::stdout }).unwrap();
 
         let io_slice = IoSlice::new(slice::from_ref(&c));
-    
+
         match Scheduler::handle_event(&mut ctx, FileStreamWriteEvent::new(stream_ptr, &io_slice, 1)) {
             Ok(written) => {
                 crate::strace!("putchar(c={:?}) -> {}", c, written);
@@ -718,7 +718,7 @@ hook_macros::hook! {
         let buf = cstr.to_bytes();
 
         let io_slice = IoSlice::new(buf);
-    
+
         match Scheduler::handle_event(&mut ctx, FileStreamWriteEvent::new(stream_ptr, &io_slice, 1)) {
             Ok(written) => {
                 crate::strace!("fputs(s={:?}, stream={:?}) -> {}", s, stream, written);
@@ -746,7 +746,7 @@ hook_macros::hook! {
         buf.push(b'\n');
 
         let io_slice = IoSlice::new(buf.as_slice());
-    
+
         match Scheduler::handle_event(&mut ctx, FileStreamWriteEvent::new(stream_ptr, &io_slice, 1)) {
             Ok(written) => {
                 crate::strace!("puts(s={:?}) -> {}", s, written);
@@ -964,7 +964,7 @@ pub unsafe extern "C" fn dprintf(fd: libc::c_int, format: *const libc::c_char, m
     // SAFETY: only one FizzleSingleton is ever owned at a time
     let mut ctx = fizzle_singleton(); // TODO: should fizzle_singleton() just be a thread-local variable? Would that improve safety?
 
-    unimplemented!("dprintf()")   
+    unimplemented!("dprintf()")
 }
 
 #[no_mangle]
@@ -977,7 +977,7 @@ pub unsafe extern "C" fn vprintf(format: *const libc::c_char, mut va_args: VaLis
     // SAFETY: only one FizzleSingleton is ever owned at a time
     let mut ctx = fizzle_singleton(); // TODO: should fizzle_singleton() just be a thread-local variable? Would that improve safety?
 
-    unimplemented!("vprintf()")   
+    unimplemented!("vprintf()")
 }
 
 #[no_mangle]
@@ -990,7 +990,7 @@ pub unsafe extern "C" fn vfprintf(stream: *mut libc::FILE, format: *const libc::
     // SAFETY: only one FizzleSingleton is ever owned at a time
     let mut ctx = fizzle_singleton(); // TODO: should fizzle_singleton() just be a thread-local variable? Would that improve safety?
 
-    unimplemented!("vfprintf()")   
+    unimplemented!("vfprintf()")
 }
 
 #[no_mangle]
@@ -1003,7 +1003,7 @@ pub unsafe extern "C" fn vdprintf(fd: libc::c_int, format: *const libc::c_char, 
     // SAFETY: only one FizzleSingleton is ever owned at a time
     let mut ctx = fizzle_singleton(); // TODO: should fizzle_singleton() just be a thread-local variable? Would that improve safety?
 
-    unimplemented!("vdprintf()")   
+    unimplemented!("vdprintf()")
 }
 
 #[no_mangle]
@@ -1016,7 +1016,7 @@ pub unsafe extern "C" fn wprintf(format: *const libc::wchar_t, mut va_args: VaLi
     // SAFETY: only one FizzleSingleton is ever owned at a time
     let mut ctx = fizzle_singleton(); // TODO: should fizzle_singleton() just be a thread-local variable? Would that improve safety?
 
-    unimplemented!("wprintf()")   
+    unimplemented!("wprintf()")
 }
 
 #[no_mangle]
@@ -1029,7 +1029,7 @@ pub unsafe extern "C" fn fwprintf(stream: *mut libc::FILE, format: *const libc::
     // SAFETY: only one FizzleSingleton is ever owned at a time
     let mut ctx = fizzle_singleton(); // TODO: should fizzle_singleton() just be a thread-local variable? Would that improve safety?
 
-    unimplemented!("fwprintf()")   
+    unimplemented!("fwprintf()")
 }
 
 #[no_mangle]
@@ -1042,7 +1042,7 @@ pub unsafe extern "C" fn vwprintf(format: *const libc::wchar_t, mut va_args: VaL
     // SAFETY: only one FizzleSingleton is ever owned at a time
     let mut ctx = fizzle_singleton(); // TODO: should fizzle_singleton() just be a thread-local variable? Would that improve safety?
 
-    unimplemented!("vwprintf()")   
+    unimplemented!("vwprintf()")
 }
 
 #[no_mangle]
@@ -1055,7 +1055,7 @@ pub unsafe extern "C" fn vfwprintf(stream: *mut libc::FILE, format: *const libc:
     // SAFETY: only one FizzleSingleton is ever owned at a time
     let mut ctx = fizzle_singleton(); // TODO: should fizzle_singleton() just be a thread-local variable? Would that improve safety?
 
-    unimplemented!("vfwprintf()")   
+    unimplemented!("vfwprintf()")
 }
 
 

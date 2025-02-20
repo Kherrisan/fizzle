@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::rc::Rc;
+use std::time::Duration;
 use std::{io::Error, ptr, thread};
 
 use bitflags::bitflags;
@@ -10,12 +11,12 @@ use bitflags::bitflags;
 use fizzle_common::io::MAX_PATH_LEN;
 use fizzle_common::path::FilePath;
 
-use crate::{GlobalHeap, GlobalSet};
 use crate::errno::Errno;
 use crate::handlers::signal::SigDisposition;
-use crate::scheduler::{fizzle_alloc, DelegationSource, Event, Outcome, TerminationMethod};
+use crate::scheduler::{fizzle_alloc, Event, Outcome, Scheduler, TaskResult, TerminationMethod, YieldUntil};
 use crate::semaphore::Semaphore;
 use crate::state::{set_entered_handler, FizzleState, InheritedState};
+use crate::{GlobalHeap, GlobalSet};
 
 use super::descriptor::{Descriptor, FdResource};
 use super::id::Worker;
@@ -50,7 +51,7 @@ impl ProcessId {
 /// The ID associated with a given process.
 ///
 /// Equivalent to a pid_t.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Pid(usize);
 
 impl Pid {
@@ -91,8 +92,8 @@ impl Pgid {
 }
 
 pub struct ProcessInfo {
-    /// The global semaphore used to awaken this process.
-    pub semaphore: Rc<Semaphore, GlobalHeap>,
+    /// The semaphore associated with the primary thread of this process.
+    pub main_worker_lock: Rc<Semaphore, GlobalHeap>,
     /// Threads that are awaiting the death of this process (e.g. via `waitpid`).
     pub awaiting_death: Option<Worker>,
     /// The PID of this process (e.g., the TID of the main thread).
@@ -152,18 +153,23 @@ impl Event for ProcessForkEvent {
                     .map(|i| i.prepare)
                     .collect();
                 self.state = ProcessForkState::RunPreHandlers(pre_handlers);
-                Outcome::Continue
+                Outcome::Yield(YieldUntil::Immediate)
             }
             ProcessForkState::RunPreHandlers(v) => {
                 while let Some(f) = v.pop() {
                     match f {
                         None => continue,
-                        Some(f) => return Outcome::Execute(f),
+                        Some(f) => return Outcome::RunTask(Box::new_in(move |ctx| {
+                            Scheduler::run_outside_hook(ctx, || {
+                                unsafe { f() }
+                            });
+                            TaskResult::Return
+                        }, fizzle_alloc()), YieldUntil::None),
                     }
                 }
 
                 self.state = ProcessForkState::RunFork;
-                Outcome::Continue
+                Outcome::Yield(YieldUntil::Immediate)
             }
             ProcessForkState::RunFork => {
                 // Initialize AFL (forkservers and multi-process applications don't play well)
@@ -198,7 +204,6 @@ impl Event for ProcessForkEvent {
                 state.mark_thread_ready(thread::current().id());
 
                 let proc_info_borrow = state.local.process_info.borrow();
-                let parent_sem = proc_info_borrow.semaphore.clone();
                 drop(proc_info_borrow);
 
                 let pid = unsafe { libc::fork() };
@@ -228,15 +233,18 @@ impl Event for ProcessForkEvent {
                         let pgid = parent_info.borrow().pgid;
                         let signal_handlers = parent_info.borrow().signal_handlers.clone();
 
-                        state.local.process_info = Rc::new_in(RefCell::new(ProcessInfo {
-                            pid,
-                            ppid,
-                            pgid,
-                            semaphore: Semaphore::new_rc_in(0, true, fizzle_alloc()),
-                            signal_handlers,
-                            awaiting_death: None,
-                            children: BTreeSet::new_in(fizzle_alloc()),
-                        }), fizzle_alloc());
+                        state.local.process_info = Rc::new_in(
+                            RefCell::new(ProcessInfo {
+                                pid,
+                                ppid,
+                                pgid,
+                                main_worker_lock: Semaphore::new_rc_in(0, true, fizzle_alloc()),
+                                signal_handlers,
+                                awaiting_death: None,
+                                children: BTreeSet::new_in(fizzle_alloc()),
+                            }),
+                            fizzle_alloc(),
+                        );
 
                         let process_info = state.local.process_info.clone();
                         state.global.pids.insert(pid, process_info);
@@ -268,13 +276,10 @@ impl Event for ProcessForkEvent {
                             .signals
                             .get_mut(&thread::current().id())
                             .unwrap()
-                            .raised = array::from_fn(|_| None);
+                            .pending = array::from_fn(|_| None);
 
                         // Remove all pthread cleanup routines except for the current thread's
-                        let cleanup = state
-                            .local
-                            .pthread_cleanup
-                            .remove(&thread::current().id());
+                        let cleanup = state.local.pthread_cleanup.remove(&thread::current().id());
                         state.local.pthread_cleanup.clear();
                         if let Some(cleanup) = cleanup {
                             state
@@ -332,13 +337,14 @@ impl Event for ProcessForkEvent {
                             .collect();
                         state.local.atfork_handlers.clear();
 
-                        self.state = ProcessForkState::RunPostHandlers(child_handlers, pid.as_raw());
-                        Outcome::Continue
+                        self.state =
+                            ProcessForkState::RunPostHandlers(child_handlers, pid.as_raw());
+                        Outcome::Yield(YieldUntil::Immediate)
                     }
                     // The parent process pauses for the child to run
                     1.. => {
                         self.state = ProcessForkState::RunPostHandlers(parent_handlers, pid);
-                        Outcome::Pause(DelegationSource::Process(parent_sem), None)
+                        Outcome::Yield(YieldUntil::Reschedule(Duration::ZERO))
                     }
                     // Process creation failed--should be seen as fatal within fuzzing context
                     ..=-1 => panic!(
@@ -351,12 +357,17 @@ impl Event for ProcessForkEvent {
                 while let Some(f) = v.pop() {
                     match f {
                         None => continue,
-                        Some(f) => return Outcome::Execute(f),
+                        Some(f) => return Outcome::RunTask(Box::new_in(move |_| {
+                            unsafe {
+                                f();
+                            }
+                            TaskResult::Return
+                        }, fizzle_alloc()), YieldUntil::None),
                     }
                 }
 
                 self.state = ProcessForkState::Finish(*pid);
-                Outcome::Continue
+                Outcome::Yield(YieldUntil::Immediate)
             }
             ProcessForkState::Finish(pid) => Outcome::Success(*pid),
         }
@@ -421,17 +432,21 @@ impl Event for ProcessExecEvent {
         // From `man signal(7)`:
         // "During an execve(2), the dispositions of handled signals are reset to the default; the
         // dispositions of ignored signals are left unchanged."
-        let signal_handlers = process_info.borrow().signal_handlers.clone().map(|handler| match handler {
-            SigDisposition::Ignore => SigDisposition::Ignore,
-            _ => SigDisposition::Default,
-        });
-        
+        let signal_handlers = process_info
+            .borrow()
+            .signal_handlers
+            .clone()
+            .map(|handler| match handler {
+                SigDisposition::Ignore => SigDisposition::Ignore,
+                _ => SigDisposition::Default,
+            });
+
         let sigmask = state
             .local
             .signals
             .get(&thread::current().id())
             .unwrap()
-            .blocked;
+            .masked;
 
         state.global.inherited_state = Some(InheritedState {
             pid, // TODO: are these meant to be switched up to reflect child relationship?
@@ -561,11 +576,14 @@ impl Event for ProcessExitEvent {
     type Error = ();
 
     fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let status = self.status;
         match self.run_cleanup {
-            true => Outcome::TerminateProcess(TerminationMethod::ProcessExit(self.status)),
-            false => {
-                Outcome::TerminateProcess(TerminationMethod::ProcessImmediateExit(self.status))
-            }
+            true => Outcome::RunTask(Box::new_in(move |ctx| {
+                Scheduler::terminate_process(ctx, TerminationMethod::ProcessExit(status))
+            }, fizzle_alloc()), YieldUntil::None),
+            false => Outcome::RunTask(Box::new_in(move |ctx| {
+                Scheduler::terminate_process(ctx, TerminationMethod::ProcessImmediateExit(status))
+            }, fizzle_alloc()), YieldUntil::None),
         }
     }
 }
@@ -663,11 +681,9 @@ impl Event for ProcessWaitEvent {
         let current_worker = state.current_worker();
         let process_info = state.local.process_info.clone();
 
-
         match self.state {
             ProcessWaitState::Start => match self.wait_type {
                 WaitType::AllChildren => {
-
                     let process_info_borrow = process_info.borrow();
                     let children: Vec<_> = process_info_borrow.children.iter().collect();
                     if children.is_empty() {
@@ -683,17 +699,25 @@ impl Event for ProcessWaitEvent {
                     // TODO: what if one thread creates new children while another thread has already called `waitid()` on any children??
 
                     self.state = ProcessWaitState::Finish;
-                    Outcome::Yield(None)
+                    Outcome::Yield(YieldUntil::None)
                 }
                 WaitType::Pid(child_pid) => {
                     // Check to see if the PID is a child of this process
-                    if !state.local.process_info.borrow().children.contains(&child_pid) {
-                        return Outcome::Error(Errno::ECHILD)
+                    if !state
+                        .local
+                        .process_info
+                        .borrow()
+                        .children
+                        .contains(&child_pid)
+                    {
+                        return Outcome::Error(Errno::ECHILD);
                     }
 
                     // Check to see if SIGCHLD is blocked in this process
-                    if state.local.process_info.borrow().signal_handlers[libc::SIGCHLD as usize - 1] == SigDisposition::Ignore {
-                        return Outcome::Error(Errno::ECHILD) // TODO: are these errors correct?
+                    if state.local.process_info.borrow().signal_handlers[libc::SIGCHLD as usize - 1]
+                        == SigDisposition::Ignore
+                    {
+                        return Outcome::Error(Errno::ECHILD); // TODO: are these errors correct?
                     }
 
                     if self.options.intersects(
@@ -703,7 +727,7 @@ impl Event for ProcessWaitEvent {
                     }
 
                     if let Some(exited_info) = state.global.dead_pids.remove(&child_pid) {
-                        return Outcome::Success(Some(exited_info))
+                        return Outcome::Success(Some(exited_info));
                     }
 
                     if self.options.contains(WaitOptions::NO_HANG) {
@@ -711,11 +735,17 @@ impl Event for ProcessWaitEvent {
                     }
 
                     let current_worker = state.current_worker();
-                    state.global.pids.get_mut(&child_pid).unwrap().borrow_mut().awaiting_death = Some(current_worker);
+                    state
+                        .global
+                        .pids
+                        .get_mut(&child_pid)
+                        .unwrap()
+                        .borrow_mut()
+                        .awaiting_death = Some(current_worker);
 
                     // Suspend execution until the child has exited
                     self.state = ProcessWaitState::Finish;
-                    Outcome::Yield(None)
+                    Outcome::Yield(YieldUntil::None)
                 }
                 WaitType::Gid(group_id) => {
                     let mut children = Vec::new();
@@ -725,7 +755,13 @@ impl Event for ProcessWaitEvent {
                     };
 
                     for child_process_id in group_info.iter() {
-                        if state.local.process_info.borrow().children.contains(child_process_id) {
+                        if state
+                            .local
+                            .process_info
+                            .borrow()
+                            .children
+                            .contains(child_process_id)
+                        {
                             children.push(*child_process_id);
                         }
                     }
@@ -744,7 +780,7 @@ impl Event for ProcessWaitEvent {
                     }
 
                     self.state = ProcessWaitState::Finish;
-                    Outcome::Yield(None)
+                    Outcome::Yield(YieldUntil::None)
                 }
                 WaitType::PidFd(fd) => todo!("pidfd for fd {} not implemented", fd.as_raw_fd()),
             },
@@ -765,7 +801,7 @@ impl Event for ProcessWaitEvent {
 
                 for child in awaiting {
                     if let Some(proc_wait_info) = state.global.dead_pids.remove(&child) {
-                        return Outcome::Success(Some(proc_wait_info))
+                        return Outcome::Success(Some(proc_wait_info));
                     }
                 }
 

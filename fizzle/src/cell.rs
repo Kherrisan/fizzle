@@ -3,9 +3,9 @@ use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 /// A mutable memory location meant to be only used in single-threaded contexts.
-/// 
+///
 /// # Safety
-/// 
+///
 /// Although `SequentialRefCell` is marked as `Sync`, only one thread may access
 /// it at a time. Failure to enforce this rule will result in Undefined Behavior.
 pub struct SequentialRefCell<T> {
@@ -50,17 +50,13 @@ impl<T> PanicOnceCell<T> {
         let state = self.state.load(Ordering::Acquire);
         if state == 0b0000_0000 {
             // 1st MSB not currently set: need to initialize
-            return None
-
+            return None;
         } else if state == 0b0000_0001 {
             // 1st MSB set: initialization underway but not complete (panic)
             panic!("PanicOnceCell accessed while being initialized in another context")
-
         } else {
             // 2nd MSB set: initialization complete
-            unsafe {
-                Some(&*(self.inner.get().cast_const().cast::<T>()))
-            }
+            unsafe { Some(&*(self.inner.get().cast_const().cast::<T>())) }
         }
     }
 
@@ -76,19 +72,13 @@ impl<T> PanicOnceCell<T> {
             // 1st MSB not currently set: need to initialize
             self.initialize(f);
 
-            unsafe {
-                &*(self.inner.get().cast_const().cast::<T>())
-            }
-
+            unsafe { &*(self.inner.get().cast_const().cast::<T>()) }
         } else if state == 0b0000_0001 {
             // 1st MSB set: initialization underway but not complete (panic)
             panic!("OnceCell accessed while being initialized in another context")
-
         } else {
             // 2nd MSB set: initialization complete
-            unsafe {
-                &*(self.inner.get().cast_const().cast::<T>())
-            }
+            unsafe { &*(self.inner.get().cast_const().cast::<T>()) }
         }
     }
 
