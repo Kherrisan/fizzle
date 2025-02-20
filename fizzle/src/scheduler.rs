@@ -1236,7 +1236,10 @@ impl Scheduler {
         let pid = state.local.process_info.borrow().pid;
         let ppid = state.local.process_info.borrow().ppid;
 
-        assert!(!(pid == Pid::PRIMARY), "main process forcibly terminated");
+        if pid == Pid::PRIMARY {
+            log::error!("main process forcibly terminated");
+            unsafe { libc::_exit(1); }
+        }
 
         let sigchild = match &method {
             TerminationMethod::Cancellation | TerminationMethod::ThreadExit(_) => SigChildInfo {
