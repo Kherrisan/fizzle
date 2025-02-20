@@ -202,8 +202,11 @@ extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void {
     state.local.initialize_thread(tid, wrapped_arg.sigmask);
     drop(state);
 
+    let create_fn = wrapped_arg.wrapped_fn;
+    let create_arg = wrapped_arg.wrapped_arg;
+
     let res = Scheduler::run_outside_hook(&mut ctx, || unsafe {
-        (wrapped_arg.wrapped_fn)(wrapped_arg.wrapped_arg)
+        (create_fn)(create_arg)
     });
 
     // Thread has exited...
@@ -302,6 +305,8 @@ impl Event for ThreadCreateEvent {
                     log::debug!("__afl_manual_init finished");
                 }
 
+                // SAFETY: `self.wrapper` is guaranteed to remain in scope untio `pt_wrapper_fn`
+                // is called; it copies the internal pointers in `self.wrapper`.
                 let thread_ctx = ThreadCreateContext {
                     pthread: self.pthread,
                     attrs: self.attrs,
@@ -310,7 +315,7 @@ impl Event for ThreadCreateEvent {
 
                 Outcome::RunTask(Box::new_in(move |_| {
                     thread_create(thread_ctx);
-                    TaskResult::Continue
+                    TaskResult::Suspend
 
                 }, fizzle_alloc()), YieldUntil::Reschedule(Duration::ZERO))
             }
