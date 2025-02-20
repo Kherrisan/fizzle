@@ -243,8 +243,6 @@ pub enum YieldUntil {
     Immediate,
     /// Schedule the current worker in the standard timestamp-based priority queue.
     Reschedule(Duration),
-    /// Schedule the current worker to be delayed until all outstanding workers are done.
-    DelayedReschedule,
     /// Do not schedule the current worker for continued execution.
     None,
 }
@@ -330,6 +328,8 @@ impl Scheduler {
                         timestamp: current_time + delay,
                     });
                 }
+                // unused
+                /*
                 YieldUntil::DelayedReschedule => {
                     let current_worker = state.current_worker();
                     state
@@ -337,6 +337,7 @@ impl Scheduler {
                         .ready_delayed
                         .push_back(ReadyInfo::Worker(current_worker));
                 }
+                */
                 YieldUntil::None => (),
             }
 

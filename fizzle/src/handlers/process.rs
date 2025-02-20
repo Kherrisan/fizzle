@@ -1,4 +1,4 @@
-use std::array;
+use std::{array, mem};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::ffi::CString;
@@ -122,17 +122,19 @@ pub enum ProcessForkState {
     Start,
     RunPreHandlers(Vec<Option<unsafe extern "C" fn()>>),
     RunFork,
-    RunPostHandlers(Vec<Option<unsafe extern "C" fn()>>, libc::pid_t),
+    RunPostHandlers,
     Finish(libc::pid_t),
 }
 
 pub struct ProcessForkEvent {
+    parent_pid: Option<Pid>,
     state: ProcessForkState,
 }
 
 impl ProcessForkEvent {
     pub fn new() -> Self {
         Self {
+            parent_pid: None,
             state: ProcessForkState::Start,
         }
     }
@@ -143,6 +145,10 @@ impl Event for ProcessForkEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        std::thread_local! {
+            static CHILD_RES: RefCell<Option<Result<libc::pid_t, Errno>>> = const { RefCell::new(None) };
+        }
+
         match &mut self.state {
             ProcessForkState::Start => {
                 // Run pthread_atfork handlers (in LIFO order)
@@ -152,6 +158,7 @@ impl Event for ProcessForkEvent {
                     .iter()
                     .map(|i| i.prepare)
                     .collect();
+                self.parent_pid = Some(state.current_worker().pid);
                 self.state = ProcessForkState::RunPreHandlers(pre_handlers);
                 Outcome::Yield(YieldUntil::Immediate)
             }
@@ -188,33 +195,15 @@ impl Event for ProcessForkEvent {
                     }
                     log::debug!("__afl_manual_init finished");
                 }
+                
+                self.state = ProcessForkState::RunPostHandlers;
+                
+                Outcome::RunTask(Box::new_in(move |ctx| {
+                    let pid = unsafe { libc::fork() };
 
-                let parent_info = state.local.process_info.clone();
-
-                // Run pthread_atfork child handlers (in FIFO order)
-                // SAFETY: this must run before `fork()` to uphold noalias
-                let parent_handlers: Vec<_> = state
-                    .local
-                    .atfork_handlers
-                    .iter()
-                    .map(|i| i.parent)
-                    .collect();
-
-                // Let the scheduler know we have more to execute once the new thread is done.
-                state.mark_thread_ready(thread::current().id());
-
-                let proc_info_borrow = state.local.process_info.borrow();
-                drop(proc_info_borrow);
-
-                let pid = unsafe { libc::fork() };
-
-                // SAFETY: parent process must not use `state` after here
-
-                match pid {
-                    // The child process initializes itself
-                    0 => {
-                        // This *technically* shouldn't be needed since we share memory with the
-                        // parent, but just to be safe...
+                    if pid == 0 { // Child process
+                        // This *technically* shouldn't be needed since the child inherits a copy of
+                        // the parent's memory, but just to be safe...
                         set_entered_handler(true);
 
                         // Clean up child processes if the parent is ever killed
@@ -222,18 +211,24 @@ impl Event for ProcessForkEvent {
                             assert_eq!(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM), 0);
                         }
 
-                        // SAFETY: first time this is called in this process; parent process won't
-                        // access the fizzle singleton until it is awakened.
-                        // let mut ctx = unsafe { fizzle_singleton() };
-                        // SAFETY: this is a forked process, so it already has its FizzleState initialized.
-                        // let mut state = ctx.acquire();
+                        let mut state = ctx.acquire();
+
+                        // Make sure we don't mangle the parent's `local` state--deal with any
+                        // globally-allocated resources
+                        let mut fds = state.local.fds.clone();
+                        mem::swap(&mut fds, &mut state.local.fds);
+                        mem::forget(fds);
+                        for sem in state.local.named_semaphores.values() {
+                            mem::forget(sem.clone()); // Upref GlobalRc<T> types
+                        }
+                        // Local state is now unique from parent (other than `process_info`).
 
                         let pid = state.global.next_pid();
-                        let ppid = parent_info.borrow().pid;
-                        let pgid = parent_info.borrow().pgid;
-                        let signal_handlers = parent_info.borrow().signal_handlers.clone();
+                        let ppid = state.local.process_info.borrow().pid;
+                        let pgid = state.local.process_info.borrow().pgid;
+                        let signal_handlers = state.local.process_info.borrow().signal_handlers.clone();
 
-                        state.local.process_info = Rc::new_in(
+                        let mut proc_info = Rc::new_in(
                             RefCell::new(ProcessInfo {
                                 pid,
                                 ppid,
@@ -246,11 +241,18 @@ impl Event for ProcessForkEvent {
                             fizzle_alloc(),
                         );
 
+                        mem::swap(&mut proc_info, &mut state.local.process_info);
+                        // Add the child's process to the parent process's child list
+                        proc_info.borrow_mut().children.insert(pid);
+                        mem::forget(proc_info);
+
                         let process_info = state.local.process_info.clone();
                         state.global.pids.insert(pid, process_info);
 
-                        // Add the child process to the parent process's child list
-                        parent_info.borrow_mut().children.insert(pid);
+                        // Add the new worker's lock to the global worker lock pool.
+                        let worker = state.current_worker();
+                        let sem = state.local.process_info.borrow().main_worker_lock.clone();
+                        state.global.worker_locks.insert(worker, sem);
 
                         // Add the child process to the parent process's group
                         state
@@ -328,45 +330,53 @@ impl Event for ProcessForkEvent {
                         // TODO: set termination signal of child to SIGCHLD
                         // TODO: after a fork() in a multithreaded program, the child can safely call only async-signal-safe functions until execve
 
-                        let child_handlers: Vec<_> = state
-                            .local
-                            .atfork_handlers
-                            .iter()
-                            .rev()
-                            .map(|i| i.child)
-                            .collect();
-                        state.local.atfork_handlers.clear();
+                        TaskResult::Continue
+                    } else if pid > 0 { // Parent process
+                        CHILD_RES.with_borrow_mut(|res| {
+                            *res = Some(Ok(pid));
+                        });
+                        TaskResult::Suspend
 
-                        self.state =
-                            ProcessForkState::RunPostHandlers(child_handlers, pid.as_raw());
-                        Outcome::Yield(YieldUntil::Immediate)
+                    } else { // Error
+                        let errno = Errno::get_errno();
+                        CHILD_RES.with_borrow_mut(|res| {
+                            *res = Some(Err(errno));
+                        });
+                        TaskResult::Continue
                     }
-                    // The parent process pauses for the child to run
-                    1.. => {
-                        self.state = ProcessForkState::RunPostHandlers(parent_handlers, pid);
-                        Outcome::Yield(YieldUntil::Reschedule(Duration::ZERO))
-                    }
-                    // Process creation failed--should be seen as fatal within fuzzing context
-                    ..=-1 => panic!(
-                        "`fork()` process creation failed ({:?})",
-                        Error::last_os_error()
-                    ),
-                }
+                }, fizzle_alloc()), YieldUntil::Reschedule(Duration::ZERO))
             }
-            ProcessForkState::RunPostHandlers(v, pid) => {
-                while let Some(f) = v.pop() {
+            ProcessForkState::RunPostHandlers => {
+                let res = match CHILD_RES.take() {
+                    None => 0,
+                    Some(Ok(pid)) => pid,
+                    Some(Err(e)) => return Outcome::Error(e),
+                };
+
+                let mut handlers: Vec<_> = state
+                    .local
+                    .atfork_handlers
+                    .iter()
+                    .map(|i| if res == 0 { i.child } else { i.parent })
+                    .collect();
+
+                if res == 0 {
+                    state.local.atfork_handlers.clear();
+                }
+
+                while let Some(f) = handlers.pop() {
                     match f {
-                        None => continue,
                         Some(f) => return Outcome::RunTask(Box::new_in(move |_| {
                             unsafe {
                                 f();
                             }
                             TaskResult::Return
                         }, fizzle_alloc()), YieldUntil::None),
+                        None => (),
                     }
                 }
 
-                self.state = ProcessForkState::Finish(*pid);
+                self.state = ProcessForkState::Finish(res);
                 Outcome::Yield(YieldUntil::Immediate)
             }
             ProcessForkState::Finish(pid) => Outcome::Success(*pid),
