@@ -195,6 +195,8 @@ impl Event for ProcessForkEvent {
                     }
                     log::debug!("__afl_manual_init finished");
                 }
+
+                state.mark_thread_ready(thread::current().id());
                 
                 self.state = ProcessForkState::RunPostHandlers;
                 
@@ -342,9 +344,9 @@ impl Event for ProcessForkEvent {
                         CHILD_RES.with_borrow_mut(|res| {
                             *res = Some(Err(errno));
                         });
-                        TaskResult::Continue
+                        TaskResult::Suspend
                     }
-                }, fizzle_alloc()), YieldUntil::Reschedule(Duration::ZERO))
+                }, fizzle_alloc()), YieldUntil::None)
             }
             ProcessForkState::RunPostHandlers => {
                 let res = match CHILD_RES.take() {
