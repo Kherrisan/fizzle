@@ -516,12 +516,14 @@ impl Event for ThreadCancelEvent {
                         let mut state = ctx.acquire();
                         let pid = state.local.process_info.borrow().pid;
                         state.mark_thread_ready(thread::current().id());
-                        let target_sem = state.global.worker_locks.get(&Worker { pid, thread_id }).unwrap().clone();
+                        let target_worker = Worker { pid, thread_id };
+                        let target_sem = state.global.worker_locks.get(&target_worker).unwrap().clone();
                         state.global.tasks.push_front(Box::new_in(|ctx| {
                             Scheduler::terminate_thread(ctx, TerminationMethod::Cancellation)
                         }, fizzle_alloc()));
                         drop(state);
 
+                        log::trace!("[10] post() to {:?}", target_worker);
                         target_sem.post();
                         return TaskResult::Suspend
                     }

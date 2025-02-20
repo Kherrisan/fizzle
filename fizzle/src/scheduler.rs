@@ -404,7 +404,9 @@ impl Scheduler {
 
             if let Some(sem) = waiting_sem {
                 // SAFETY: sem.wait() must **ONLY** be called here for thread/process locks
+                log::debug!("waiting on sem.wait()...");
                 sem.wait();
+                log::debug!("sem.wait() returned.");
             }
         }
     }
@@ -472,6 +474,7 @@ impl Scheduler {
                 } else {
                     let sem = state.global.worker_locks.get(&worker).unwrap().clone();
                     drop(state);
+                    log::trace!("[1] post() to {:?}", worker);
                     sem.post();
                     return Some(true);
                 }
@@ -554,6 +557,7 @@ impl Scheduler {
                 .main_worker_lock
                 .clone();
             drop(state);
+            log::trace!("[2] post() to {:?}", dst);
             dst_sem.post();
 
             return TaskResult::Suspend;
@@ -616,6 +620,7 @@ impl Scheduler {
             };
             let dst_sem = state.global.worker_locks.get(&dst_worker).unwrap().clone();
             drop(state);
+            log::trace!("[3] post() to {:?}", dst_worker);
             dst_sem.post();
 
             return TaskResult::Suspend;
@@ -662,6 +667,7 @@ impl Scheduler {
             // Awaken destination worker
             let dst_sem = state.global.worker_locks.get(&dst).unwrap().clone();
             drop(state);
+            log::trace!("[4] post() to {:?}", dst);
             dst_sem.post();
 
             return TaskResult::Suspend;
@@ -792,6 +798,7 @@ impl Scheduler {
                 .main_worker_lock
                 .clone();
             drop(state);
+            log::trace!("[5] post() to {:?}", pid);
             sem.post();
 
             return TaskResult::Suspend;
@@ -1170,6 +1177,8 @@ impl Scheduler {
             let sem = state.global.worker_locks.get(&worker).unwrap().clone();
             drop(state);
 
+            log::trace!("[6] post() to {:?}", worker);
+
             // Wake thread
             sem.post();
             // SAFETY: `state` is never held from this point onward
@@ -1202,6 +1211,8 @@ impl Scheduler {
     /// Removes any global state associated with the given process.
     pub fn terminate_process(ctx: &mut FizzleSingleton, method: TerminationMethod) -> ! {
         // TODO: remove all active file descriptors, handles from local state so they're freed from global
+
+        
 
         let on_exit_val = match method {
             TerminationMethod::ThreadExit(_) => Some(0),
@@ -1315,6 +1326,8 @@ impl Scheduler {
         log::info!("Exiting process and delegating to main semaphore");
 
         drop(state);
+
+        log::trace!("[7] post() to primary Pid");
         delegate_sem.post();
 
         match method {
@@ -1346,6 +1359,7 @@ impl Scheduler {
                 let sem = state.global.pids.get(&Pid::PRIMARY).unwrap().borrow().main_worker_lock.clone();
                 drop(state);
 
+                log::trace!("[8] post() to primary Pid");
                 sem.post();
                 TaskResult::Suspend
             }, fizzle_alloc()))
@@ -1460,6 +1474,7 @@ impl Scheduler {
                 let sem = state.global.worker_locks.get(&origin_worker).unwrap().clone();
                 drop(state);
 
+                log::trace!("[9] post() to {:?}", origin_worker);
                 sem.post();
                 TaskResult::Suspend
             }, fizzle_alloc()))

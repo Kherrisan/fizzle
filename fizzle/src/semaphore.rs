@@ -87,6 +87,7 @@ impl Semaphore {
 
     /// Blocks until the semaphore can be decremented.
     pub fn wait(&self) {
+        let bt = backtrace::Backtrace::new();
         loop {
             unsafe {
                 let res = libc::sem_wait(raw(self));
