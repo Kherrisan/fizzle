@@ -254,15 +254,7 @@ impl Event for CondWaitEvent {
             CondWaitState::AwaitCond => {
                 self.state = CondWaitState::Finish;
 
-                if *state
-                    .local
-                    .condvars
-                    .get(&self.cond)
-                    .unwrap()
-                    .front()
-                    .unwrap()
-                    != thread::current().id()
-                {
+                if state.local.condvars.get(&self.cond).and_then(|c| c.front()).map(|f| f == &thread::current().id()) != Some(true) {
                     return Outcome::Error(Errno::ETIMEDOUT);
                 }
 
