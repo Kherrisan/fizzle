@@ -26,7 +26,7 @@ use rand::SeedableRng;
 use crate::comptime;
 use crate::errno::Errno;
 use crate::handlers::barrier::{BarrierInfo, BarrierPtr};
-use crate::handlers::condvar::CondVarPtr;
+use crate::handlers::condvar::{CondVarInfo, CondVarPtr};
 use crate::handlers::descriptor::{Descriptor, DescriptorInfo, FdResource};
 use crate::handlers::file::*;
 use crate::handlers::filestream::*;
@@ -1055,7 +1055,7 @@ pub struct ProcessLocalState {
     pub barriers: HashMap<BarrierPtr, BarrierInfo, FxBuildHasher>,
     /// A thread that has received a cancellation request.
     pub cancelling: Option<ThreadId>,
-    pub condvars: HashMap<CondVarPtr, VecDeque<ThreadId>, FxBuildHasher>,
+    pub condvars: HashMap<CondVarPtr, CondVarInfo, FxBuildHasher>,
     pub fds: GlobalMap<Descriptor, DescriptorInfo>,
     /// Files specifically designated as being emulated.
     pub file_objs: HashMap<FilePtr, FileObject, FxBuildHasher>,

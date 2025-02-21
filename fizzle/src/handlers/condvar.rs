@@ -1,4 +1,5 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
+use std::thread::ThreadId;
 use std::{mem, ptr, thread};
 
 use crate::errno::Errno;
@@ -23,6 +24,21 @@ impl From<*mut libc::pthread_cond_t> for CondVarPtr {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct CondVarInfo {
+    waiting: VecDeque<ThreadId>,
+    ready: HashSet<ThreadId>,
+}
+
+impl CondVarInfo {
+    pub fn new() -> Self {
+        Self {
+            waiting: Default::default(),
+            ready: Default::default(),
+        }
+    }
+}
+
 pub struct CondInitEvent {
     cond: CondVarPtr,
 }
@@ -41,7 +57,7 @@ impl Event for CondInitEvent {
         if state
             .local
             .condvars
-            .insert(self.cond, VecDeque::new())
+            .insert(self.cond, CondVarInfo::new())
             .is_some()
         {
             panic!("[UB] `pthread_cond_init()` called twice on one condvar");
@@ -66,12 +82,16 @@ impl Event for CondDestroyEvent {
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let Some(queue) = state.local.condvars.remove(&self.cond) else {
+        let Some(cond_info) = state.local.condvars.remove(&self.cond) else {
             panic!("[UB] `pthread_cond_destroy()` called on uninitialized condvar");
         };
 
-        if !queue.is_empty() {
-            panic!("[UB] `pthread_cond_destroy` called on locked condvar");
+        if !cond_info.waiting.is_empty() {
+            panic!("[UB] `pthread_cond_destroy` called on condvar being waited on");
+        }
+
+        if !cond_info.ready.is_empty() {
+            panic!("[UB] `pthread_cond_destroy` called on condvar with unawakened threads");
         }
 
         Outcome::Success(())
@@ -95,8 +115,9 @@ impl Event for CondSignalEvent {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         static COND_STATIC_INIT: libc::pthread_cond_t = libc::PTHREAD_COND_INITIALIZER;
 
-        if let Some(queue) = state.local.condvars.get_mut(&self.cond) {
-            if let Some(thread_id) = queue.pop_front() {
+        if let Some(cond_info) = state.local.condvars.get_mut(&self.cond) {
+            if let Some(thread_id) = cond_info.waiting.pop_front() {
+                cond_info.ready.insert(thread_id);
                 state.mark_thread_ready(thread_id);
             }
         } else {
@@ -107,7 +128,7 @@ impl Event for CondSignalEvent {
                     mem::size_of::<libc::pthread_cond_t>(),
                 ) == 0
             } {
-                state.local.condvars.insert(self.cond, VecDeque::new());
+                state.local.condvars.insert(self.cond, CondVarInfo::new());
                 // If no threads are waiting, nothing else happens
             } else {
                 panic!("[UB] `pthread_cond_signal` called on uninitialized condvar")
@@ -135,11 +156,15 @@ impl Event for CondBroadcastEvent {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         static COND_STATIC_INIT: libc::pthread_cond_t = libc::PTHREAD_COND_INITIALIZER;
 
-        if let Some(queue) = state.local.condvars.get_mut(&self.cond) {
-            let mut ready_queue = VecDeque::new();
-            mem::swap(&mut ready_queue, queue);
+        if let Some(cond_info) = state.local.condvars.get_mut(&self.cond) {
+            let mut waiting_queue = VecDeque::new();
+            mem::swap(&mut waiting_queue, &mut cond_info.waiting);
 
-            for thread in ready_queue {
+            for thread in waiting_queue.iter() {
+                cond_info.ready.insert(*thread);
+            }
+
+            for thread in waiting_queue {
                 state.mark_thread_ready(thread);
             }
         } else {
@@ -150,7 +175,7 @@ impl Event for CondBroadcastEvent {
                     mem::size_of::<libc::pthread_cond_t>(),
                 ) == 0
             } {
-                state.local.condvars.insert(self.cond, VecDeque::new());
+                state.local.condvars.insert(self.cond, CondVarInfo::new());
                 // If no threads are waiting, nothing else happens
             } else {
                 panic!("[UB] `pthread_cond_signal` called on uninitialized condvar")
@@ -197,8 +222,8 @@ impl Event for CondWaitEvent {
             CondWaitState::Start => {
                 self.state = CondWaitState::AwaitCond;
 
-                let cond_queue = match state.local.condvars.get_mut(&self.cond) {
-                    Some(queue) => queue,
+                let cond_info = match state.local.condvars.get_mut(&self.cond) {
+                    Some(info) => info,
                     None => {
                         if unsafe {
                             libc::memcmp(
@@ -208,7 +233,7 @@ impl Event for CondWaitEvent {
                             ) == 0
                         } {
                             // This was a statically-initialized mutex--add it to our queue (and leave locked)
-                            state.local.condvars.insert(self.cond, VecDeque::new());
+                            state.local.condvars.insert(self.cond, CondVarInfo::new());
                             state.local.condvars.get_mut(&self.cond).unwrap()
                         } else {
                             panic!("[UB] `pthread_cond_signal` called on uninitialized condvar")
@@ -216,7 +241,7 @@ impl Event for CondWaitEvent {
                     }
                 };
 
-                cond_queue.push_back(thread::current().id());
+                cond_info.waiting.push_back(thread::current().id());
 
                 // Now unlock the mutex
                 let mutex_info = match state.local.mutexes.get_mut(&self.mutex) {
@@ -254,12 +279,12 @@ impl Event for CondWaitEvent {
             CondWaitState::AwaitCond => {
                 self.state = CondWaitState::Finish;
 
+                // Issue: this is broken when pthread_cond_broadcast is used, or when signal is used multiple times
                 if state
                     .local
                     .condvars
                     .get(&self.cond)
-                    .and_then(|c| c.front())
-                    .map(|f| f == &thread::current().id())
+                    .map(|c| c.ready.contains(&thread::current().id()))
                     != Some(true)
                 {
                     return Outcome::Error(Errno::ETIMEDOUT);
