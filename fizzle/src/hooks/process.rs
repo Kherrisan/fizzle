@@ -24,7 +24,7 @@ hook_macros::hook! {
         match Scheduler::handle_event(&mut ctx, ProcessForkEvent::new()) {
             Ok(pid) => {
                 crate::strace!("fork() -> {}", pid);
-                0
+                pid
             },
             Err(e) => {
                 crate::strace!("fork() -> -1 ({})", e);

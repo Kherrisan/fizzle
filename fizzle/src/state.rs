@@ -144,21 +144,6 @@ pub struct FizzleState {
 impl FizzleState {
     /// Allocates and initizes all of Fizzle's state.
     pub fn new() -> Self {
-        // Initialize the logger to print the current PID/TID with each message
-        env_logger::Builder::from_default_env()
-            .format(|buf, record| {
-                writeln!(
-                    buf,
-                    "[PID({})|{:?}|{}] {}",
-                    process::id(),
-                    thread::current().id(),
-                    record.level().as_str().to_uppercase(),
-                    record.args()
-                )
-            })
-            .init();
-        log::info!("Logger initialized");
-
         // Set signal mask to be inherited by all threads/processes of Fizzle
         let new_set = (SignalSet::SIGPIPE | SignalSet::SIGCHLD).to_sigset();
         let mut old_set = SignalSet::empty().to_sigset();
@@ -187,6 +172,8 @@ impl FizzleState {
             unsafe { global_uninit.assume_init_mut() }
         };
 
+        let worker_sem = Semaphore::new_rc_in(0, true, fizzle_alloc());
+
         // Perform bare-bones initialization of process-local state
         let working_directory =
             FilePath::from_raw_bytes(env::current_dir().unwrap().as_os_str().as_bytes()).unwrap();
@@ -211,7 +198,7 @@ impl FizzleState {
             pasture: Default::default(),
             pending_signals: [None; 32],
             process_info: Rc::new_in(RefCell::new(ProcessInfo {
-                main_worker_lock: Semaphore::new_rc_in(0, true, fizzle_alloc()),
+                main_worker_lock: worker_sem.clone(),
                 awaiting_death: None,
                 pid: Pid::PRIMARY,
                 ppid: Pid::INIT,
@@ -277,7 +264,6 @@ impl FizzleState {
             mem::swap(&mut local.fds, &mut inherited_state.fds);
 
             let sigmask = inherited_state.sigmask;
-            // local.thread_locks.insert(thread::current().id(), Semaphore::new_rc_in(0, true, fizzle_alloc()));
             local.initialize_thread(Tid::from_raw(pid.as_raw()), Some(sigmask));
 
         } else {
@@ -312,7 +298,6 @@ impl FizzleState {
                 resource: FdResource::Stderr,
             });
 
-            // local.thread_locks.insert(thread::current().id(), Semaphore::new_rc_in(0, true, fizzle_alloc()));
             local.initialize_thread(tid, None);
         }
 
@@ -356,7 +341,7 @@ impl FizzleState {
         let mut state = Self { local, global };
 
         let worker = state.current_worker();
-        state.global.worker_locks.insert(worker, Semaphore::new_rc_in(0, true, fizzle_alloc()));
+        state.global.worker_locks.insert(worker, worker_sem);
 
         // Now that everything else is initialized, time to populate startup processes/plugins.
         if is_main_process {
@@ -1496,7 +1481,7 @@ impl Eq for ScheduledItem {}
 
 impl PartialOrd for ScheduledItem {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other).reverse())
+        Some(self.cmp(other))
     }
 }
 

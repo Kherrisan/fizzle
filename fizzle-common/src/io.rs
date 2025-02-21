@@ -463,10 +463,10 @@ pub enum TransportProtocol {
 impl Display for TransportProtocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Sctp => f.write_str("sctp"),
-            Self::Tcp => f.write_str("tcp"),
-            Self::Udp => f.write_str("udp"),
-            Self::Unix => f.write_str("unix"),
+            Self::Sctp => f.write_str("SCTP"),
+            Self::Tcp => f.write_str("TCP"),
+            Self::Udp => f.write_str("UDP"),
+            Self::Unix => f.write_str("Unix"),
         }
     }
 }

@@ -1356,7 +1356,8 @@ impl Event for SocketGetNameEvent {
 }
 
 #[repr(C)]
-struct SctpRtoInfo {
+#[derive(Clone, Copy)]
+pub struct SctpRtoInfo {
     pub srto_assoc_id: libc::sctp_assoc_t,
     pub srto_initial: u32,
     pub srto_max: u32,
@@ -1531,14 +1532,13 @@ impl SocketOption {
             | Self::SocketSendLowWatermark(u)
             | Self::SocketRecvLowWatermark(u)
             | Self::SctpMaxSegment(u) => {
-                let i: libc::c_int = (*u).try_into().unwrap();
-                let i_bytes = i.to_be_bytes();
+                let u_bytes = u.to_be_bytes();
 
-                for (dst, src) in out.iter_mut().zip(i_bytes) {
+                for (dst, src) in out.iter_mut().zip(u_bytes) {
                     dst.write(src);
                 }
 
-                mem::size_of_val(&i)
+                mem::size_of_val(&u)
             }
             Self::SocketDomain(f) => {
                 let domain_bytes = f.raw().to_be_bytes();

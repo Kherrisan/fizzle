@@ -332,7 +332,7 @@ impl Event for ProcessForkEvent {
                         // TODO: set termination signal of child to SIGCHLD
                         // TODO: after a fork() in a multithreaded program, the child can safely call only async-signal-safe functions until execve
 
-                        TaskResult::Continue
+                        TaskResult::Return
                     } else if pid > 0 { // Parent process
                         CHILD_RES.with_borrow_mut(|res| {
                             *res = Some(Ok(pid));

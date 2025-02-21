@@ -305,6 +305,7 @@ impl Scheduler {
         Scheduler::increment_time(ctx);
 
         loop {
+            log::trace!("next iteration of event.run() loop");
             let mut state = ctx.acquire();
             let (task_opt, until) = match event.run(&mut state) {
                 Outcome::Success(s) => return Ok(s),
@@ -322,6 +323,7 @@ impl Scheduler {
                 YieldUntil::Reschedule(delay) => {
                     let current_worker = state.current_worker();
                     let current_time = state.global.current_time;
+                    log::trace!("rescheduling worker {:?}", current_worker);
 
                     state.global.ready.push(ScheduledItem {
                         info: ReadyInfo::Worker(current_worker),
@@ -348,6 +350,8 @@ impl Scheduler {
     }
 
     pub fn yield_worker(ctx: &mut FizzleSingleton) {
+        log::trace!("yield_worker()");
+
         let state = ctx.acquire();
 
         let current_worker = state.current_worker();
@@ -365,6 +369,7 @@ impl Scheduler {
             let task_opt = ctx.acquire().global.tasks.pop_front();
 
             let waiting_sem = if let Some(run_task) = task_opt {
+                log::trace!("running next task...");
                 // Immediately
                 let wait_on = run_task(ctx);
                 // Invariant: `ctx` must NOT be acquired between here and `sem.wait()`
@@ -436,10 +441,13 @@ impl Scheduler {
     }
 
     fn handle_next_scheduled(ctx: &mut FizzleSingleton) -> Option<bool> {
+        log::trace!("handle_next_scheduled()");
         let mut state = ctx.acquire();
         let current_worker = state.current_worker();
 
         while let Some(ScheduledItem { info, timestamp }) = state.global.ready.pop() {
+            log::trace!("worker with timestamp {:?} popped off queue", timestamp);
+
             if timestamp > state.global.current_time + Duration::from_secs(2) {
                 log::info!(
                     "next available worker would suspend execution by {} seconds--moving on",
@@ -541,7 +549,7 @@ impl Scheduler {
             .clone();
 
         if dst != current_worker.pid {
-            // Re-schedule the current task
+            // Re-schedule the current task to run in the destination process
             state.global.tasks.push_front(Box::new_in(
                 move |ctx| Scheduler::handle_process_signal(ctx, raised, dst),
                 fizzle_alloc(),
@@ -556,6 +564,7 @@ impl Scheduler {
                 .borrow()
                 .main_worker_lock
                 .clone();
+
             drop(state);
             log::trace!("[2] post() to {:?}", dst);
             dst_sem.post();
@@ -767,7 +776,7 @@ impl Scheduler {
         None
     }
 
-    fn handle_expired_timer(
+    pub fn handle_expired_timer(
         ctx: &mut FizzleSingleton,
         pid: Pid,
         timer_type: TimerType,
@@ -1126,11 +1135,14 @@ impl Scheduler {
         drop(state);
 
         // Run cleanup routines, hooking any functions within the routines
-        Self::run_outside_hook(ctx, || {
-            for routine in cleanup_routines {
+        let total = cleanup_routines.len();
+        for (i, routine) in cleanup_routines.into_iter().enumerate() {
+            log::debug!("pthread_key or cleanup routine {} of {} running...", i + 1, total);
+            Self::run_outside_hook(ctx, || {
                 routine.call();
-            }
-        });
+            });
+            log::debug!("routine {} of {} complete.", i + 1, total);
+        }
 
         let mut state = ctx.acquire();
         let current_worker = state.current_worker();

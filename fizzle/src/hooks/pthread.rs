@@ -609,9 +609,8 @@ hook_macros::hook! {
     unsafe fn pthread_mutex_lock(
         lock: *mut libc::pthread_mutex_t
     ) -> libc::c_int => fizzle_pthread_mutex_lock(ctx) {
-        let mutex = MutexPtr::from(lock);
-
         crate::strace!("pthread_mutex_lock(mutex={:?}) -> ...", lock);
+        let mutex = MutexPtr::from(lock);
 
         match Scheduler::handle_event(&mut ctx, MutexLockEvent::new(mutex, WaitDuration::Indefinite)) {
             Ok(()) => {

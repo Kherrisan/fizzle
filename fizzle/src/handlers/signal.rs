@@ -683,14 +683,19 @@ impl Event for SignalSendEvent {
                     }),
                 };
 
+
                 Outcome::RunTask(Box::new_in(move |ctx| {
                     match destination {
-                        SignalDestination::Process(pid) => Scheduler::handle_process_signal(ctx, raised, pid),
+                        SignalDestination::Process(pid) => {
+                            log::debug!("Sending signal to process {:?}", pid);
+                            Scheduler::handle_process_signal(ctx, raised, pid)
+                        }
                         SignalDestination::Thread(pid, thread_id) => {
                             let worker = Worker {
                                 pid,
                                 thread_id,
                             };
+                            log::debug!("Sending signal to worker {:?}", worker);
                             Scheduler::handle_thread_signal(ctx, raised, worker)
                         }
                     }

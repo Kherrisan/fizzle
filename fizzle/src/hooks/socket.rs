@@ -390,13 +390,12 @@ hook_macros::hook! {
                 OptInput::SctpAssocId(assoc_id)
             }
             (OptLevel::Sctp, libc::SCTP_RTOINFO) => {
-                if optval.is_null() || optlen.is_null() || *optlen < 4 {
+                if optval.is_null() || optlen.is_null() || (*optlen as usize) < mem::size_of::<SctpRtoInfo>() {
                     Errno::EINVAL.set_errno();
                     return -1
                 }
 
-                let assoc_id = libc::sctp_assoc_t::from_ne_bytes(*(optval as *mut [u8; 4]));
-
+                let assoc_id = (&*optval.cast::<SctpRtoInfo>()).srto_assoc_id;
                 OptInput::SctpAssocId(assoc_id)
             }
             (OptLevel::Sctp, libc::SCTP_PEER_ADDR_PARAMS) => {
@@ -414,7 +413,6 @@ hook_macros::hook! {
 
         match Scheduler::handle_event(&mut ctx, SocketGetOptionEvent::new(descriptor_id, opt_level, optname, input)) {
             Ok(ret) => {
-
                 crate::strace!("getsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> 0", sockfd, opt_level, optname, optval, optlen);
 
                 if !optval.is_null() && !optlen.is_null() {

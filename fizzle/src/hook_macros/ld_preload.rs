@@ -1,5 +1,9 @@
 // Uses code from `redhook` project, available under BSD 2-Clause License
 
+use std::{cell::OnceCell, sync::atomic::AtomicBool};
+
+pub static LOG_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
 #[link(name = "dl")]
 unsafe extern "C" {
     unsafe fn dlsym(
@@ -50,6 +54,25 @@ macro_rules! hook {
                     }
 
                     crate::state::set_entered_handler(true);
+
+                    if !crate::hook_macros::ld_preload::LOG_INITIALIZED.fetch_or(true, std::sync::atomic::Ordering::Relaxed) {
+                        use std::io::Write;
+                        // Initialize the logger to print the current PID/TID with each message
+                        env_logger::Builder::from_default_env()
+                            .format(|buf, record| {
+                                writeln!(
+                                    buf,
+                                    "[PID({})|{:?}|{}] {}",
+                                    std::process::id(),
+                                    std::thread::current().id(),
+                                    record.level().as_str().to_uppercase(),
+                                    record.args()
+                                )
+                            })
+                            .init();
+                        log::info!("Logger initialized");
+                    }
+                    
                     let res = {
                         $hook_fn ( $($v),*)
                     };
@@ -78,8 +101,6 @@ macro_rules! hook {
         $crate::hook! { unsafe fn $real_fn ( $($v : $t),* ) -> () => $hook_fn ( $state ) $body }
     };
 }
-
-use std::cell::OnceCell;
 
 pub(crate) use hook;
 
