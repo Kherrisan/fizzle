@@ -520,13 +520,13 @@ impl Scheduler {
         let increment = if state.global.fuzz_input.is_empty() {
             20
         } else {
-            // Randomly between 0 and 31 millisecond offset
+            // Randomly between 0 and 3100 microsecond offset
             let offset = ((state.global.fuzz_input[idx] ^ 0x7f) / 8) as u64;
             state.global.time_fuzz_idx = (idx + 1) % state.global.fuzz_input.len();
             offset
         };
 
-        state.global.current_time += Duration::from_millis(increment);
+        state.global.current_time += Duration::from_micros(increment * 100);
     }
 
     pub fn handle_process_signal(
