@@ -1649,12 +1649,12 @@ impl SocketOption {
                 init_msg_bytes.len()
             }
             Self::SctpPeerAddrParams(addr_params) => {
-                // SAFETY: u8 never should have alignment issues, so this should turn &SctpPeerAddrParams to &[u8]
-                let addr_param_bytes: &[u8] = unsafe { slice::from_ref(&addr_params).align_to().1 };
-                assert!(
-                    addr_param_bytes.len() == mem::size_of_val(&addr_params),
-                    "align_to() failed to convert `SctpPeerAddrParams` to bytes"
-                );
+                let addr_param_bytes: &[u8] = unsafe {
+                    slice::from_raw_parts(
+                        (addr_params as *const SctpPeerAddrParams).cast::<u8>(),
+                        mem::size_of_val(addr_params),
+                    )
+                };
 
                 for (dst, src) in out.iter_mut().zip(addr_param_bytes) {
                     dst.write(*src);
