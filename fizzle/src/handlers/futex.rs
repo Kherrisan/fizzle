@@ -112,7 +112,9 @@ impl Event for FutexWaitEvent<'_> {
                 match self.duration {
                     WaitDuration::Immediate => unreachable!(), // No such thing as try* in futex semantics
                     WaitDuration::Indefinite => Outcome::Yield(YieldUntil::None),
-                    WaitDuration::Timed(duration) => Outcome::Yield(YieldUntil::Reschedule(duration)),
+                    WaitDuration::Timed(duration) => {
+                        Outcome::Yield(YieldUntil::Reschedule(duration))
+                    }
                 }
             }
             FutexWaitState::Finish => {
@@ -477,7 +479,9 @@ impl Event for FutexWaitBitsetEvent<'_> {
                 match self.duration {
                     WaitDuration::Immediate => unreachable!(), // No such thing as try* in futex semantics
                     WaitDuration::Indefinite => Outcome::Yield(YieldUntil::None),
-                    WaitDuration::Timed(duration) => Outcome::Yield(YieldUntil::Reschedule(duration)),
+                    WaitDuration::Timed(duration) => {
+                        Outcome::Yield(YieldUntil::Reschedule(duration))
+                    }
                 }
             }
             FutexWaitState::Finish => {

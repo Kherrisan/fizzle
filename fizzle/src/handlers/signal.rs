@@ -683,23 +683,23 @@ impl Event for SignalSendEvent {
                     }),
                 };
 
-
-                Outcome::RunTask(Box::new_in(move |ctx| {
-                    match destination {
-                        SignalDestination::Process(pid) => {
-                            log::debug!("Sending signal to process {:?}", pid);
-                            Scheduler::handle_process_signal(ctx, raised, pid)
-                        }
-                        SignalDestination::Thread(pid, thread_id) => {
-                            let worker = Worker {
-                                pid,
-                                thread_id,
-                            };
-                            log::debug!("Sending signal to worker {:?}", worker);
-                            Scheduler::handle_thread_signal(ctx, raised, worker)
-                        }
-                    }
-                }, fizzle_alloc()), YieldUntil::Reschedule(Duration::ZERO))
+                Outcome::RunTask(
+                    Box::new_in(
+                        move |ctx| match destination {
+                            SignalDestination::Process(pid) => {
+                                log::debug!("Sending signal to process {:?}", pid);
+                                Scheduler::handle_process_signal(ctx, raised, pid)
+                            }
+                            SignalDestination::Thread(pid, thread_id) => {
+                                let worker = Worker { pid, thread_id };
+                                log::debug!("Sending signal to worker {:?}", worker);
+                                Scheduler::handle_thread_signal(ctx, raised, worker)
+                            }
+                        },
+                        fizzle_alloc(),
+                    ),
+                    YieldUntil::Reschedule(Duration::ZERO),
+                )
             }
         }
     }
@@ -883,13 +883,19 @@ impl Event for SignalSetSigmaskEvent {
                 siginfo.pending[signal.lowest_signal_value() as usize - 1].take()
             {
                 // This entire function runs for as many times as is needed to handle all signals
-                return Outcome::RunTask(Box::new_in(move |ctx| {
-                    let worker = Worker {
-                        pid,
-                        thread_id: thread::current().id(),
-                    };
-                    Scheduler::handle_thread_signal(ctx, raised_info, worker)
-                }, fizzle_alloc()), YieldUntil::Reschedule(Duration::ZERO))
+                return Outcome::RunTask(
+                    Box::new_in(
+                        move |ctx| {
+                            let worker = Worker {
+                                pid,
+                                thread_id: thread::current().id(),
+                            };
+                            Scheduler::handle_thread_signal(ctx, raised_info, worker)
+                        },
+                        fizzle_alloc(),
+                    ),
+                    YieldUntil::Reschedule(Duration::ZERO),
+                );
             }
         }
 
@@ -938,13 +944,19 @@ impl Event for SignalSuspendEvent {
                         siginfo.pending[signal.lowest_signal_value() as usize - 1].take()
                     {
                         // This entire function runs for as many times as is needed to handle all signals
-                        return Outcome::RunTask(Box::new_in(move |ctx| {
-                            let worker = Worker {
-                                pid,
-                                thread_id: thread::current().id(),
-                            };
-                            Scheduler::handle_thread_signal(ctx, raised_info, worker)
-                        }, fizzle_alloc()), YieldUntil::Reschedule(Duration::ZERO))
+                        return Outcome::RunTask(
+                            Box::new_in(
+                                move |ctx| {
+                                    let worker = Worker {
+                                        pid,
+                                        thread_id: thread::current().id(),
+                                    };
+                                    Scheduler::handle_thread_signal(ctx, raised_info, worker)
+                                },
+                                fizzle_alloc(),
+                            ),
+                            YieldUntil::Reschedule(Duration::ZERO),
+                        );
                     }
                 }
 

@@ -265,7 +265,7 @@ impl Event for EventfdWriteEvent<'_> {
                         state.register_poller(poller_id.clone(), write_polled);
 
                         self.state = EventfdWriteState::Finish(Some(poller_id));
-                        return Outcome::Yield(YieldUntil::None)
+                        return Outcome::Yield(YieldUntil::None);
                     }
                 } else {
                     self.state = EventfdWriteState::Finish(None);
@@ -334,7 +334,7 @@ impl Event for EventfdWriteEvent<'_> {
                         state.register_poller(poller_id.clone(), write_polled);
 
                         self.state = EventfdWriteState::Finish(Some(poller_id));
-                        return Outcome::Yield(YieldUntil::None)
+                        return Outcome::Yield(YieldUntil::None);
                     }
                 };
 

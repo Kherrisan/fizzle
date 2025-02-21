@@ -1,9 +1,9 @@
-use std::{array, mem};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::rc::Rc;
 use std::time::Duration;
+use std::{array, mem};
 use std::{io::Error, ptr, thread};
 
 use bitflags::bitflags;
@@ -13,7 +13,9 @@ use fizzle_common::path::FilePath;
 
 use crate::errno::Errno;
 use crate::handlers::signal::SigDisposition;
-use crate::scheduler::{fizzle_alloc, Event, Outcome, Scheduler, TaskResult, TerminationMethod, YieldUntil};
+use crate::scheduler::{
+    fizzle_alloc, Event, Outcome, Scheduler, TaskResult, TerminationMethod, YieldUntil,
+};
 use crate::semaphore::Semaphore;
 use crate::state::{set_entered_handler, FizzleState, InheritedState};
 use crate::{GlobalHeap, GlobalSet};
@@ -166,12 +168,18 @@ impl Event for ProcessForkEvent {
                 while let Some(f) = v.pop() {
                     match f {
                         None => continue,
-                        Some(f) => return Outcome::RunTask(Box::new_in(move |ctx| {
-                            Scheduler::run_outside_hook(ctx, || {
-                                unsafe { f() }
-                            });
-                            TaskResult::Return
-                        }, fizzle_alloc()), YieldUntil::None),
+                        Some(f) => {
+                            return Outcome::RunTask(
+                                Box::new_in(
+                                    move |ctx| {
+                                        Scheduler::run_outside_hook(ctx, || unsafe { f() });
+                                        TaskResult::Return
+                                    },
+                                    fizzle_alloc(),
+                                ),
+                                YieldUntil::None,
+                            )
+                        }
                     }
                 }
 
@@ -197,156 +205,174 @@ impl Event for ProcessForkEvent {
                 }
 
                 state.mark_thread_ready(thread::current().id());
-                
+
                 self.state = ProcessForkState::RunPostHandlers;
-                
-                Outcome::RunTask(Box::new_in(move |ctx| {
-                    let pid = unsafe { libc::fork() };
 
-                    if pid == 0 { // Child process
-                        // This *technically* shouldn't be needed since the child inherits a copy of
-                        // the parent's memory, but just to be safe...
-                        set_entered_handler(true);
+                Outcome::RunTask(
+                    Box::new_in(
+                        move |ctx| {
+                            let pid = unsafe { libc::fork() };
 
-                        // Clean up child processes if the parent is ever killed
-                        unsafe {
-                            assert_eq!(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM), 0);
-                        }
+                            if pid == 0 {
+                                // Child process
+                                // This *technically* shouldn't be needed since the child inherits a copy of
+                                // the parent's memory, but just to be safe...
+                                set_entered_handler(true);
 
-                        let mut state = ctx.acquire();
+                                // Clean up child processes if the parent is ever killed
+                                unsafe {
+                                    assert_eq!(
+                                        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM),
+                                        0
+                                    );
+                                }
 
-                        // Make sure we don't mangle the parent's `local` state--deal with any
-                        // globally-allocated resources
-                        let mut fds = state.local.fds.clone();
-                        mem::swap(&mut fds, &mut state.local.fds);
-                        mem::forget(fds);
-                        for sem in state.local.named_semaphores.values() {
-                            mem::forget(sem.clone()); // Upref GlobalRc<T> types
-                        }
-                        // Local state is now unique from parent (other than `process_info`).
+                                let mut state = ctx.acquire();
 
-                        let pid = state.global.next_pid();
-                        let ppid = state.local.process_info.borrow().pid;
-                        let pgid = state.local.process_info.borrow().pgid;
-                        let signal_handlers = state.local.process_info.borrow().signal_handlers.clone();
+                                // Make sure we don't mangle the parent's `local` state--deal with any
+                                // globally-allocated resources
+                                let mut fds = state.local.fds.clone();
+                                mem::swap(&mut fds, &mut state.local.fds);
+                                mem::forget(fds);
+                                for sem in state.local.named_semaphores.values() {
+                                    mem::forget(sem.clone()); // Upref GlobalRc<T> types
+                                }
+                                // Local state is now unique from parent (other than `process_info`).
 
-                        let mut proc_info = Rc::new_in(
-                            RefCell::new(ProcessInfo {
-                                pid,
-                                ppid,
-                                pgid,
-                                main_worker_lock: Semaphore::new_rc_in(0, true, fizzle_alloc()),
-                                signal_handlers,
-                                awaiting_death: None,
-                                children: BTreeSet::new_in(fizzle_alloc()),
-                            }),
-                            fizzle_alloc(),
-                        );
+                                let pid = state.global.next_pid();
+                                let ppid = state.local.process_info.borrow().pid;
+                                let pgid = state.local.process_info.borrow().pgid;
+                                let signal_handlers =
+                                    state.local.process_info.borrow().signal_handlers.clone();
 
-                        mem::swap(&mut proc_info, &mut state.local.process_info);
-                        // Add the child's process to the parent process's child list
-                        proc_info.borrow_mut().children.insert(pid);
-                        mem::forget(proc_info);
+                                let mut proc_info = Rc::new_in(
+                                    RefCell::new(ProcessInfo {
+                                        pid,
+                                        ppid,
+                                        pgid,
+                                        main_worker_lock: Semaphore::new_rc_in(
+                                            0,
+                                            true,
+                                            fizzle_alloc(),
+                                        ),
+                                        signal_handlers,
+                                        awaiting_death: None,
+                                        children: BTreeSet::new_in(fizzle_alloc()),
+                                    }),
+                                    fizzle_alloc(),
+                                );
 
-                        let process_info = state.local.process_info.clone();
-                        state.global.pids.insert(pid, process_info);
+                                mem::swap(&mut proc_info, &mut state.local.process_info);
+                                // Add the child's process to the parent process's child list
+                                proc_info.borrow_mut().children.insert(pid);
+                                mem::forget(proc_info);
 
-                        // Add the new worker's lock to the global worker lock pool.
-                        let worker = state.current_worker();
-                        let sem = state.local.process_info.borrow().main_worker_lock.clone();
-                        state.global.worker_locks.insert(worker, sem);
+                                let process_info = state.local.process_info.clone();
+                                state.global.pids.insert(pid, process_info);
 
-                        // Add the child process to the parent process's group
-                        state
-                            .global
-                            .process_groups
-                            .get_mut(&pgid)
-                            .unwrap()
-                            .insert(pid);
+                                // Add the new worker's lock to the global worker lock pool.
+                                let worker = state.current_worker();
+                                let sem =
+                                    state.local.process_info.borrow().main_worker_lock.clone();
+                                state.global.worker_locks.insert(worker, sem);
 
-                        // Remove any state from main process
-                        state.local.main_state = None;
+                                // Add the child process to the parent process's group
+                                state
+                                    .global
+                                    .process_groups
+                                    .get_mut(&pgid)
+                                    .unwrap()
+                                    .insert(pid);
 
-                        // `fork()` only copies the current thread
-                        state.local.pthreads.clear();
-                        state.local.pthreads.insert(
-                            unsafe { libc::pthread_self() },
-                            ThreadInfo::new(thread::current().id(), false, true),
-                        );
+                                // Remove any state from main process
+                                state.local.main_state = None;
 
-                        // Remove any pending signals
-                        state
-                            .local
-                            .signals
-                            .get_mut(&thread::current().id())
-                            .unwrap()
-                            .pending = array::from_fn(|_| None);
+                                // `fork()` only copies the current thread
+                                state.local.pthreads.clear();
+                                state.local.pthreads.insert(
+                                    unsafe { libc::pthread_self() },
+                                    ThreadInfo::new(thread::current().id(), false, true),
+                                );
 
-                        // Remove all pthread cleanup routines except for the current thread's
-                        let cleanup = state.local.pthread_cleanup.remove(&thread::current().id());
-                        state.local.pthread_cleanup.clear();
-                        if let Some(cleanup) = cleanup {
-                            state
-                                .local
-                                .pthread_cleanup
-                                .insert(thread::current().id(), cleanup);
-                        }
+                                // Remove any pending signals
+                                state
+                                    .local
+                                    .signals
+                                    .get_mut(&thread::current().id())
+                                    .unwrap()
+                                    .pending = array::from_fn(|_| None);
 
-                        // The current (forking) thread isn't terminating
-                        state.local.terminated_threads.clear();
-                        state.local.awaiting_thread_death.clear();
+                                // Remove all pthread cleanup routines except for the current thread's
+                                let cleanup =
+                                    state.local.pthread_cleanup.remove(&thread::current().id());
+                                state.local.pthread_cleanup.clear();
+                                if let Some(cleanup) = cleanup {
+                                    state
+                                        .local
+                                        .pthread_cleanup
+                                        .insert(thread::current().id(), cleanup);
+                                }
 
-                        // Upref the resources each file descriptor points towards
+                                // The current (forking) thread isn't terminating
+                                state.local.terminated_threads.clear();
+                                state.local.awaiting_thread_death.clear();
 
-                        // TODO: upref the resources each file descriptor points towards
-                        /*
-                        let resources: Vec<_> = state.local.fds.values().map(|fd_info| fd_info.resource.clone()).collect();
+                                // Upref the resources each file descriptor points towards
 
-                        for resource in resources {
-                            match resource {
-                                FdResource::Directory(rc) => (),
-                                FdResource::Epoll(rc) => (),
-                                FdResource::EventFd(rc) => todo!(),
-                                FdResource::File(rc) => todo!(),
-                                FdResource::MessageQueue(rc) => todo!(),
-                                FdResource::Pipe(rc) => todo!(),
-                                FdResource::Stdin => todo!(),
-                                FdResource::Stdout => todo!(),
-                                FdResource::Stderr => todo!(),
-                                FdResource::Socket(rc) => todo!(),
+                                // TODO: upref the resources each file descriptor points towards
+                                /*
+                                let resources: Vec<_> = state.local.fds.values().map(|fd_info| fd_info.resource.clone()).collect();
+
+                                for resource in resources {
+                                    match resource {
+                                        FdResource::Directory(rc) => (),
+                                        FdResource::Epoll(rc) => (),
+                                        FdResource::EventFd(rc) => todo!(),
+                                        FdResource::File(rc) => todo!(),
+                                        FdResource::MessageQueue(rc) => todo!(),
+                                        FdResource::Pipe(rc) => todo!(),
+                                        FdResource::Stdin => todo!(),
+                                        FdResource::Stdout => todo!(),
+                                        FdResource::Stderr => todo!(),
+                                        FdResource::Socket(rc) => todo!(),
+                                    }
+                                }
+                                */
+
+                                // From the man pages:
+
+                                // TODO: Wipe process-local thread information (except for this thread)
+                                // TODO: Clear all pending signals
+                                // TODO: Remove any semaphore adjustments (e.g. from `semop`)
+                                // TODO: remove any `fcntl` record locks
+                                // TODO: remove any timers (`alarm()`, `setitimer()`, etc.)
+                                // TODO: remove any outstanding asynchronous I/O operations (aio_read, aio_write)
+                                // TODO: remove any dnotify notifications (see F_NOTIFY in fcntl)
+                                // TODO: remove PR_SET_PDEATHSIG prctl
+                                // TODO: Set default timer slack value to the parent's current timer slack value (PR_SET_TIMERSLACK in prctl)
+                                // TODO: set termination signal of child to SIGCHLD
+                                // TODO: after a fork() in a multithreaded program, the child can safely call only async-signal-safe functions until execve
+
+                                TaskResult::Return
+                            } else if pid > 0 {
+                                // Parent process
+                                CHILD_RES.with_borrow_mut(|res| {
+                                    *res = Some(Ok(pid));
+                                });
+                                TaskResult::Suspend
+                            } else {
+                                // Error
+                                let errno = Errno::get_errno();
+                                CHILD_RES.with_borrow_mut(|res| {
+                                    *res = Some(Err(errno));
+                                });
+                                TaskResult::Suspend
                             }
-                        }
-                        */
-
-                        // From the man pages:
-
-                        // TODO: Wipe process-local thread information (except for this thread)
-                        // TODO: Clear all pending signals
-                        // TODO: Remove any semaphore adjustments (e.g. from `semop`)
-                        // TODO: remove any `fcntl` record locks
-                        // TODO: remove any timers (`alarm()`, `setitimer()`, etc.)
-                        // TODO: remove any outstanding asynchronous I/O operations (aio_read, aio_write)
-                        // TODO: remove any dnotify notifications (see F_NOTIFY in fcntl)
-                        // TODO: remove PR_SET_PDEATHSIG prctl
-                        // TODO: Set default timer slack value to the parent's current timer slack value (PR_SET_TIMERSLACK in prctl)
-                        // TODO: set termination signal of child to SIGCHLD
-                        // TODO: after a fork() in a multithreaded program, the child can safely call only async-signal-safe functions until execve
-
-                        TaskResult::Return
-                    } else if pid > 0 { // Parent process
-                        CHILD_RES.with_borrow_mut(|res| {
-                            *res = Some(Ok(pid));
-                        });
-                        TaskResult::Suspend
-
-                    } else { // Error
-                        let errno = Errno::get_errno();
-                        CHILD_RES.with_borrow_mut(|res| {
-                            *res = Some(Err(errno));
-                        });
-                        TaskResult::Suspend
-                    }
-                }, fizzle_alloc()), YieldUntil::None)
+                        },
+                        fizzle_alloc(),
+                    ),
+                    YieldUntil::None,
+                )
             }
             ProcessForkState::RunPostHandlers => {
                 let res = match CHILD_RES.take() {
@@ -368,12 +394,20 @@ impl Event for ProcessForkEvent {
 
                 while let Some(f) = handlers.pop() {
                     match f {
-                        Some(f) => return Outcome::RunTask(Box::new_in(move |_| {
-                            unsafe {
-                                f();
-                            }
-                            TaskResult::Return
-                        }, fizzle_alloc()), YieldUntil::None),
+                        Some(f) => {
+                            return Outcome::RunTask(
+                                Box::new_in(
+                                    move |_| {
+                                        unsafe {
+                                            f();
+                                        }
+                                        TaskResult::Return
+                                    },
+                                    fizzle_alloc(),
+                                ),
+                                YieldUntil::None,
+                            )
+                        }
                         None => (),
                     }
                 }
@@ -590,12 +624,27 @@ impl Event for ProcessExitEvent {
     fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let status = self.status;
         match self.run_cleanup {
-            true => Outcome::RunTask(Box::new_in(move |ctx| {
-                Scheduler::terminate_process(ctx, TerminationMethod::ProcessExit(status))
-            }, fizzle_alloc()), YieldUntil::None),
-            false => Outcome::RunTask(Box::new_in(move |ctx| {
-                Scheduler::terminate_process(ctx, TerminationMethod::ProcessImmediateExit(status))
-            }, fizzle_alloc()), YieldUntil::None),
+            true => Outcome::RunTask(
+                Box::new_in(
+                    move |ctx| {
+                        Scheduler::terminate_process(ctx, TerminationMethod::ProcessExit(status))
+                    },
+                    fizzle_alloc(),
+                ),
+                YieldUntil::None,
+            ),
+            false => Outcome::RunTask(
+                Box::new_in(
+                    move |ctx| {
+                        Scheduler::terminate_process(
+                            ctx,
+                            TerminationMethod::ProcessImmediateExit(status),
+                        )
+                    },
+                    fizzle_alloc(),
+                ),
+                YieldUntil::None,
+            ),
         }
     }
 }

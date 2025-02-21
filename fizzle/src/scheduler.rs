@@ -33,7 +33,6 @@ static FIZZLE_STATE: PanicOnceCell<SequentialRefCell<FizzleState>> = PanicOnceCe
 
 static FIZZLE_ALLOC: PanicOnceCell<&'static InterprocessAllocator> = PanicOnceCell::new();
 
-
 #[allow(non_snake_case)]
 pub const fn CMSG_ALIGN(len: usize) -> usize {
     len + mem::size_of::<usize>() - 1 & !(mem::size_of::<usize>() - 1)
@@ -1137,7 +1136,11 @@ impl Scheduler {
         // Run cleanup routines, hooking any functions within the routines
         let total = cleanup_routines.len();
         for (i, routine) in cleanup_routines.into_iter().enumerate() {
-            log::debug!("pthread_key or cleanup routine {} of {} running...", i + 1, total);
+            log::debug!(
+                "pthread_key or cleanup routine {} of {} running...",
+                i + 1,
+                total
+            );
             Self::run_outside_hook(ctx, || {
                 routine.call();
             });
@@ -1185,7 +1188,10 @@ impl Scheduler {
         // Delegate execution to...
         if let Some(thread_id) = state.local.pthreads.values().next().map(|t| t.id) {
             // ...another running thread in this process
-            let worker = Worker { pid: current_worker.pid, thread_id, };
+            let worker = Worker {
+                pid: current_worker.pid,
+                thread_id,
+            };
             let sem = state.global.worker_locks.get(&worker).unwrap().clone();
             drop(state);
 
@@ -1224,8 +1230,6 @@ impl Scheduler {
     pub fn terminate_process(ctx: &mut FizzleSingleton, method: TerminationMethod) -> ! {
         // TODO: remove all active file descriptors, handles from local state so they're freed from global
 
-        
-
         let on_exit_val = match method {
             TerminationMethod::ThreadExit(_) => Some(0),
             TerminationMethod::ProcessExit(val) => Some(val),
@@ -1262,7 +1266,9 @@ impl Scheduler {
 
         if pid == Pid::PRIMARY {
             log::error!("main process forcibly terminated");
-            unsafe { libc::_exit(1); }
+            unsafe {
+                libc::_exit(1);
+            }
         }
 
         let sigchild = match &method {
@@ -1366,204 +1372,234 @@ impl Scheduler {
         let origin_pid = state.local.process_info.borrow().pid;
 
         let move_to_primary = if origin_pid != Pid::PRIMARY {
-            Some(Box::new_in(move |ctx: &mut FizzleSingleton| {
-                let state = ctx.acquire();
-                let sem = state.global.pids.get(&Pid::PRIMARY).unwrap().borrow().main_worker_lock.clone();
-                drop(state);
+            Some(Box::new_in(
+                move |ctx: &mut FizzleSingleton| {
+                    let state = ctx.acquire();
+                    let sem = state
+                        .global
+                        .pids
+                        .get(&Pid::PRIMARY)
+                        .unwrap()
+                        .borrow()
+                        .main_worker_lock
+                        .clone();
+                    drop(state);
 
-                log::trace!("[8] post() to primary Pid");
-                sem.post();
-                TaskResult::Suspend
-            }, fizzle_alloc()))
+                    log::trace!("[8] post() to primary Pid");
+                    sem.post();
+                    TaskResult::Suspend
+                },
+                fizzle_alloc(),
+            ))
         } else {
             None
         };
 
         let cow_source = source.clone();
-        let create_cow_in_primary = Box::new_in(move |ctx: &mut FizzleSingleton| {
-            let mut state = ctx.acquire();
+        let create_cow_in_primary = Box::new_in(
+            move |ctx: &mut FizzleSingleton| {
+                let mut state = ctx.acquire();
 
-            let CreateCowSource::New(path, mode) = cow_source else {
-                return TaskResult::Continue
-            };
-                    
-            // Create a CoW
-            let cow_id = state.allocate_cow();
+                let CreateCowSource::New(path, mode) = cow_source else {
+                    return TaskResult::Continue;
+                };
 
-            let inode = state.global.next_inode();
-            let current_time = state.global.current_time;
-            let uid = state.global.uid;
-            let gid = state.global.gid;
+                // Create a CoW
+                let cow_id = state.allocate_cow();
 
-            if !state.global.file_paths.contains_key(&path) {
-                let file_info = Rc::new_in(
-                    RefCell::new(FileInfo {
-                        path: path.clone(),
-                        cow: Some(cow_id),
-                        dev_id: 0xfe01,
-                        inode,
-                        mode,
-                        nlink: 1, // TODO: fix
-                        backend: FileBackend::Feedback(FileFeedback {}),
-                        uid,
-                        gid,
-                        atime: current_time,
-                        btime: current_time,
-                        mtime: current_time,
-                        ctime: current_time,
-                    }),
-                    fizzle_alloc(),
-                );
+                let inode = state.global.next_inode();
+                let current_time = state.global.current_time;
+                let uid = state.global.uid;
+                let gid = state.global.gid;
 
-                if state
-                    .global
-                    .file_paths
-                    .insert(path.clone(), file_info)
-                    .is_err()
-                {
-                    panic!("failed to insert to file_paths")
+                if !state.global.file_paths.contains_key(&path) {
+                    let file_info = Rc::new_in(
+                        RefCell::new(FileInfo {
+                            path: path.clone(),
+                            cow: Some(cow_id),
+                            dev_id: 0xfe01,
+                            inode,
+                            mode,
+                            nlink: 1, // TODO: fix
+                            backend: FileBackend::Feedback(FileFeedback {}),
+                            uid,
+                            gid,
+                            atime: current_time,
+                            btime: current_time,
+                            mtime: current_time,
+                            ctime: current_time,
+                        }),
+                        fizzle_alloc(),
+                    );
+
+                    if state
+                        .global
+                        .file_paths
+                        .insert(path.clone(), file_info)
+                        .is_err()
+                    {
+                        panic!("failed to insert to file_paths")
+                    }
+                } else {
+                    let file_info = state.global.file_paths.get(&path).unwrap().clone();
+                    file_info.borrow_mut().cow = Some(cow_id);
                 }
-            } else {
-                let file_info = state.global.file_paths.get(&path).unwrap().clone();
-                file_info.borrow_mut().cow = Some(cow_id);
-            }
 
-            let memfd = state.local.pasture.get(&cow_id).unwrap().memfd;
-            copy_to_shmem(memfd, &path);
+                let memfd = state.local.pasture.get(&cow_id).unwrap().memfd;
+                copy_to_shmem(memfd, &path);
 
-            TaskResult::Continue
-        }, fizzle_alloc());
+                TaskResult::Continue
+            },
+            fizzle_alloc(),
+        );
 
         let cow_source = source.clone();
         let send_cow_to_origin = if origin_pid != Pid::PRIMARY {
-            Some(Box::new_in(move |ctx: &mut FizzleSingleton| {
-                let state = ctx.acquire();
+            Some(Box::new_in(
+                move |ctx: &mut FizzleSingleton| {
+                    let state = ctx.acquire();
 
-                let cow_id = match cow_source {
-                    CreateCowSource::Existing(cow_id) => cow_id,
-                    CreateCowSource::New(path, _mode) => {
-                        let file_info = state.global.file_paths.get(&path).unwrap();
-                        file_info.borrow().cow.unwrap()
-                    }
-                };
-                let memfd = state.local.pasture.get(&cow_id).unwrap().memfd;
+                    let cow_id = match cow_source {
+                        CreateCowSource::Existing(cow_id) => cow_id,
+                        CreateCowSource::New(path, _mode) => {
+                            let file_info = state.global.file_paths.get(&path).unwrap();
+                            file_info.borrow().cow.unwrap()
+                        }
+                    };
+                    let memfd = state.local.pasture.get(&cow_id).unwrap().memfd;
 
-                let cmsghdr = libc::cmsghdr {
-                    cmsg_len: mem::size_of::<libc::cmsghdr>() + mem::size_of::<RawFd>(),
-                    cmsg_level: libc::SCM_RIGHTS,
-                    cmsg_type: libc::SOL_SOCKET,
-                };
+                    let cmsghdr = libc::cmsghdr {
+                        cmsg_len: mem::size_of::<libc::cmsghdr>() + mem::size_of::<RawFd>(),
+                        cmsg_level: libc::SCM_RIGHTS,
+                        cmsg_type: libc::SOL_SOCKET,
+                    };
 
-                let mut control = [0u8; mem::size_of::<libc::cmsghdr>() + mem::size_of::<RawFd>()];
-                control[..mem::size_of::<libc::cmsghdr>()].copy_from_slice(unsafe { slice::from_ref(&cmsghdr).align_to::<u8>().1 });
-                control[mem::size_of::<libc::cmsghdr>()..].copy_from_slice(&memfd.to_ne_bytes());
+                    let mut control =
+                        [0u8; mem::size_of::<libc::cmsghdr>() + mem::size_of::<RawFd>()];
+                    control[..mem::size_of::<libc::cmsghdr>()]
+                        .copy_from_slice(unsafe { slice::from_ref(&cmsghdr).align_to::<u8>().1 });
+                    control[mem::size_of::<libc::cmsghdr>()..]
+                        .copy_from_slice(&memfd.to_ne_bytes());
 
-                let msghdr = libc::msghdr {
-                    msg_name: ptr::null_mut(),
-                    msg_namelen: 0,
-                    msg_iov: ptr::null_mut(),
-                    msg_iovlen: 0,
-                    msg_control: control.as_mut_ptr().cast::<libc::c_void>(),
-                    msg_controllen: control.len(),
-                    msg_flags: 0,
-                };
+                    let msghdr = libc::msghdr {
+                        msg_name: ptr::null_mut(),
+                        msg_namelen: 0,
+                        msg_iov: ptr::null_mut(),
+                        msg_iovlen: 0,
+                        msg_control: control.as_mut_ptr().cast::<libc::c_void>(),
+                        msg_controllen: control.len(),
+                        msg_flags: 0,
+                    };
 
-                let len = unsafe {
-                    libc::sendmsg(state.global.unix_write_fd, ptr::addr_of!(msghdr), 0)
-                };
+                    let len = unsafe {
+                        libc::sendmsg(state.global.unix_write_fd, ptr::addr_of!(msghdr), 0)
+                    };
 
-                assert_eq!(len, 0);
+                    assert_eq!(len, 0);
 
-                TaskResult::Continue
-            }, fizzle_alloc()))
+                    TaskResult::Continue
+                },
+                fizzle_alloc(),
+            ))
         } else {
             None
         };
 
         let move_to_origin = if origin_pid != Pid::PRIMARY {
-            Some(Box::new_in(move |ctx: &mut FizzleSingleton| {
-                let state = ctx.acquire();
-                let sem = state.global.worker_locks.get(&origin_worker).unwrap().clone();
-                drop(state);
+            Some(Box::new_in(
+                move |ctx: &mut FizzleSingleton| {
+                    let state = ctx.acquire();
+                    let sem = state
+                        .global
+                        .worker_locks
+                        .get(&origin_worker)
+                        .unwrap()
+                        .clone();
+                    drop(state);
 
-                log::trace!("[9] post() to {:?}", origin_worker);
-                sem.post();
-                TaskResult::Suspend
-            }, fizzle_alloc()))
+                    log::trace!("[9] post() to {:?}", origin_worker);
+                    sem.post();
+                    TaskResult::Suspend
+                },
+                fizzle_alloc(),
+            ))
         } else {
             None
         };
 
         let cow_source = source.clone();
         let recv_cow_at_origin = if origin_pid != Pid::PRIMARY {
-            Some(Box::new_in(move |ctx: &mut FizzleSingleton| {
-                let mut state = ctx.acquire();
+            Some(Box::new_in(
+                move |ctx: &mut FizzleSingleton| {
+                    let mut state = ctx.acquire();
 
-                let cow_id = match cow_source {
-                    CreateCowSource::Existing(cow_id) => cow_id,
-                    CreateCowSource::New(path, _mode) => {
-                        let file_info = state.global.file_paths.get(&path).unwrap();
-                        file_info.borrow().cow.unwrap()
-                    }
-                };
+                    let cow_id = match cow_source {
+                        CreateCowSource::Existing(cow_id) => cow_id,
+                        CreateCowSource::New(path, _mode) => {
+                            let file_info = state.global.file_paths.get(&path).unwrap();
+                            file_info.borrow().cow.unwrap()
+                        }
+                    };
 
-                let mut msg = [0u8; 1024];
+                    let mut msg = [0u8; 1024];
 
-                let mut msghdr = libc::msghdr {
-                    msg_name: ptr::null_mut(),
-                    msg_namelen: 0,
-                    msg_iov: ptr::null_mut(),
-                    msg_iovlen: 0,
-                    msg_control: msg.as_mut_ptr().cast::<libc::c_void>(),
-                    msg_controllen: 1024,
-                    msg_flags: 0,
-                };
+                    let mut msghdr = libc::msghdr {
+                        msg_name: ptr::null_mut(),
+                        msg_namelen: 0,
+                        msg_iov: ptr::null_mut(),
+                        msg_iovlen: 0,
+                        msg_control: msg.as_mut_ptr().cast::<libc::c_void>(),
+                        msg_controllen: 1024,
+                        msg_flags: 0,
+                    };
 
-                unsafe {
-                    assert_eq!(
-                        libc::recvmsg(state.global.unix_read_fd, ptr::addr_of_mut!(msghdr), 0),
-                        0
-                    );
-                }
-
-                let msg_len = msghdr.msg_controllen;
-                let mut msg_idx = 0;
-
-                while msg_len - msg_idx > mem::size_of::<libc::cmsghdr>() {
-                    let (s1, m, _s2) = unsafe { msg[msg_idx..].align_to::<libc::cmsghdr>() };
-                    assert!(s1.is_empty());
-                    let hdr = &m[0];
-                    if hdr.cmsg_len > msg_len {
-                        break;
+                    unsafe {
+                        assert_eq!(
+                            libc::recvmsg(state.global.unix_read_fd, ptr::addr_of_mut!(msghdr), 0),
+                            0
+                        );
                     }
 
-                    if hdr.cmsg_type == libc::SOL_SOCKET && hdr.cmsg_level == libc::SCM_RIGHTS {
-                        let msg_data =
-                            &msg[msg_idx + mem::size_of::<libc::cmsghdr>()..msg_idx + hdr.cmsg_len];
-                        let (s1, fds, s2) = unsafe { msg_data.align_to::<RawFd>() };
-                        assert!(s1.is_empty() && s2.is_empty() && fds.len() == 1);
+                    let msg_len = msghdr.msg_controllen;
+                    let mut msg_idx = 0;
 
-                        state
-                            .local
-                            .pasture
-                            .insert(cow_id, CowInfo { memfd: fds[0] });
+                    while msg_len - msg_idx > mem::size_of::<libc::cmsghdr>() {
+                        let (s1, m, _s2) = unsafe { msg[msg_idx..].align_to::<libc::cmsghdr>() };
+                        assert!(s1.is_empty());
+                        let hdr = &m[0];
+                        if hdr.cmsg_len > msg_len {
+                            break;
+                        }
 
-                        return TaskResult::Continue
+                        if hdr.cmsg_type == libc::SOL_SOCKET && hdr.cmsg_level == libc::SCM_RIGHTS {
+                            let msg_data = &msg
+                                [msg_idx + mem::size_of::<libc::cmsghdr>()..msg_idx + hdr.cmsg_len];
+                            let (s1, fds, s2) = unsafe { msg_data.align_to::<RawFd>() };
+                            assert!(s1.is_empty() && s2.is_empty() && fds.len() == 1);
+
+                            state
+                                .local
+                                .pasture
+                                .insert(cow_id, CowInfo { memfd: fds[0] });
+
+                            return TaskResult::Continue;
+                        }
+
+                        // Update msg index
+                        msg_idx = cmp::max(
+                            CMSG_ALIGN(msg_idx + hdr.cmsg_len),
+                            CMSG_ALIGN(msg_idx + mem::size_of::<libc::cmsghdr>()),
+                        );
+
+                        if msg_idx > msg_len {
+                            break;
+                        }
                     }
 
-                    // Update msg index
-                    msg_idx = cmp::max(
-                        CMSG_ALIGN(msg_idx + hdr.cmsg_len),
-                        CMSG_ALIGN(msg_idx + mem::size_of::<libc::cmsghdr>()),
-                    );
-
-                    if msg_idx > msg_len {
-                        break;
-                    }
-                }
-                
-                unreachable!("CoW msg had no SCM_RIGHTS")
-            }, fizzle_alloc()))
+                    unreachable!("CoW msg had no SCM_RIGHTS")
+                },
+                fizzle_alloc(),
+            ))
         } else {
             None
         };

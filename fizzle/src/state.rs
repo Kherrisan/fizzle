@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, LinkedList, VecDeque};
-use std::io::Write;
 use std::fmt::Debug;
+use std::io::Write;
 use std::mem::MaybeUninit;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::RawFd;
@@ -23,15 +23,13 @@ use heapless::FnvIndexMap;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
-use crate::handlers::filestream::*;
-use crate::handlers::time::ItimerInfo;
-use crate::scheduler::{fizzle_alloc, FizzleSingleton, TaskResult};
-use crate::{constants::*, GlobalBox};
+use crate::comptime;
 use crate::errno::Errno;
 use crate::handlers::barrier::{BarrierInfo, BarrierPtr};
 use crate::handlers::condvar::CondVarPtr;
 use crate::handlers::descriptor::{Descriptor, DescriptorInfo, FdResource};
 use crate::handlers::file::*;
+use crate::handlers::filestream::*;
 use crate::handlers::futex::FutexPtr;
 use crate::handlers::fuzz_endpoint::FuzzEndpointInfo;
 use crate::handlers::id::Worker;
@@ -49,12 +47,16 @@ use crate::handlers::socket::{
 };
 use crate::handlers::spinlock::SpinlockPtr;
 use crate::handlers::thread::{PThreadRoutine, ThreadInfo, Tid};
+use crate::handlers::time::ItimerInfo;
 use crate::plugins::{IoEmulationType, PluginEndpoint};
+use crate::scheduler::{fizzle_alloc, FizzleSingleton, TaskResult};
 use crate::semaphore::Semaphore;
-use crate::comptime;
+use crate::{constants::*, GlobalBox};
 use crate::{GlobalHeap, GlobalList, GlobalMap, GlobalRc, GlobalSet, GlobalVec};
 
-use crate::backend::{FileBackend, FileFeedback, PendingBackend, ServerBackend, StandardFeedback, StdioBackend};
+use crate::backend::{
+    FileBackend, FileFeedback, PendingBackend, ServerBackend, StandardFeedback, StdioBackend,
+};
 
 // See `set_entered_handler` and `has_entered_handler`
 std::thread_local! {
@@ -82,18 +84,22 @@ pub fn has_entered_handler() -> bool {
 }
 
 pub fn copy_to_shmem(memfd: RawFd, path: &FilePath<MAX_PATH_LEN>) {
-    let in_fd = unsafe {
-        libc::open(path.as_cstr().as_ptr(), libc::O_RDONLY)
-    };
+    let in_fd = unsafe { libc::open(path.as_cstr().as_ptr(), libc::O_RDONLY) };
 
     if in_fd < 0 {
-        panic!("failed to copy file to shared memory--file couldn't be opened: {}", Errno::get_errno())
+        panic!(
+            "failed to copy file to shared memory--file couldn't be opened: {}",
+            Errno::get_errno()
+        )
     }
 
     let stat_data = unsafe {
         let mut stat_buf: MaybeUninit<libc::stat> = MaybeUninit::uninit();
         if libc::fstat(in_fd, ptr::addr_of_mut!(stat_buf).cast::<libc::stat>()) != 0 {
-            panic!("failed to copy file to shared memory--fstat filure: {}", Errno::get_errno())
+            panic!(
+                "failed to copy file to shared memory--fstat filure: {}",
+                Errno::get_errno()
+            )
         }
         stat_buf.assume_init()
     };
@@ -104,9 +110,19 @@ pub fn copy_to_shmem(memfd: RawFd, path: &FilePath<MAX_PATH_LEN>) {
     unsafe {
         let mut offset = 0;
         while (offset as usize) < length {
-            let sent = libc::copy_file_range(memfd, ptr::addr_of_mut!(offset), in_fd, ptr::addr_of_mut!(offset), length - (offset as usize), 0);
+            let sent = libc::copy_file_range(
+                memfd,
+                ptr::addr_of_mut!(offset),
+                in_fd,
+                ptr::addr_of_mut!(offset),
+                length - (offset as usize),
+                0,
+            );
             if sent < 0 {
-                panic!("failed to copy file to CoW shmem object: {}", Errno::get_errno())
+                panic!(
+                    "failed to copy file to CoW shmem object: {}",
+                    Errno::get_errno()
+                )
             }
             offset += sent as i64;
         }
@@ -115,9 +131,19 @@ pub fn copy_to_shmem(memfd: RawFd, path: &FilePath<MAX_PATH_LEN>) {
     #[cfg(not(target_os = "linux"))]
     unsafe {
         let mut offset = 0;
-        let mapped = libc::mmap(ptr::null_mut(), length, libc::PROT_READ | libc::PROT_WRITE, 0, memfd, 0);
+        let mapped = libc::mmap(
+            ptr::null_mut(),
+            length,
+            libc::PROT_READ | libc::PROT_WRITE,
+            0,
+            memfd,
+            0,
+        );
         if mapped == libc::MAP_FAILED {
-            panic!("failed to mmap() when copying to shared memory: {}", Errno::get_errno())
+            panic!(
+                "failed to mmap() when copying to shared memory: {}",
+                Errno::get_errno()
+            )
         }
         while (offset as usize) < length {
             let sent = libc::read(in_fd, mapped, length - offset);
@@ -153,7 +179,7 @@ impl FizzleState {
                 libc::pthread_sigmask(
                     libc::SIG_SETMASK,
                     ptr::addr_of!(new_set),
-                    ptr::addr_of_mut!(old_set)
+                    ptr::addr_of_mut!(old_set),
                 )
             },
             0
@@ -197,15 +223,18 @@ impl FizzleState {
             on_exit_handlers: Vec::new(),
             pasture: Default::default(),
             pending_signals: [None; 32],
-            process_info: Rc::new_in(RefCell::new(ProcessInfo {
-                main_worker_lock: worker_sem.clone(),
-                awaiting_death: None,
-                pid: Pid::PRIMARY,
-                ppid: Pid::INIT,
-                pgid: Pgid::from_pid(Pid::PRIMARY),
-                signal_handlers: array::from_fn(|_| SigDisposition::Default),
-                children: BTreeSet::new_in(fizzle_alloc()),
-            }), fizzle_alloc()),
+            process_info: Rc::new_in(
+                RefCell::new(ProcessInfo {
+                    main_worker_lock: worker_sem.clone(),
+                    awaiting_death: None,
+                    pid: Pid::PRIMARY,
+                    ppid: Pid::INIT,
+                    pgid: Pgid::from_pid(Pid::PRIMARY),
+                    signal_handlers: array::from_fn(|_| SigDisposition::Default),
+                    children: BTreeSet::new_in(fizzle_alloc()),
+                }),
+                fizzle_alloc(),
+            ),
             pthreads: HashMap::default(),
             pthread_keys: HashMap::default(),
             pthread_key_values: HashMap::default(),
@@ -237,9 +266,17 @@ impl FizzleState {
 
         let mut unix_fds: [RawFd; 2] = [0; 2];
         let res = unsafe {
-            libc::socketpair(libc::AF_UNIX, libc::SOCK_DGRAM, 0, unix_fds.as_mut_ptr().cast::<i32>())
+            libc::socketpair(
+                libc::AF_UNIX,
+                libc::SOCK_DGRAM,
+                0,
+                unix_fds.as_mut_ptr().cast::<i32>(),
+            )
         };
-        assert_eq!(res, 0, "failed to create unix socketpair() for passing file descriptors across processes");
+        assert_eq!(
+            res, 0,
+            "failed to create unix socketpair() for passing file descriptors across processes"
+        );
 
         global.unix_write_fd = unix_fds[0];
         global.unix_read_fd = unix_fds[1];
@@ -265,7 +302,6 @@ impl FizzleState {
 
             let sigmask = inherited_state.sigmask;
             local.initialize_thread(Tid::from_raw(pid.as_raw()), Some(sigmask));
-
         } else {
             let pid = local.process_info.borrow().pid;
             let pgid = local.process_info.borrow().pgid;
@@ -277,26 +313,35 @@ impl FizzleState {
             pid_set.insert(pid);
             global.process_groups.insert(pgid, pid_set);
 
-            local.fds.insert(Descriptor::from_raw_fd(0), DescriptorInfo {
-                close_on_exec: false,
-                nonblocking: false,
-                is_passthrough: false,
-                resource: FdResource::Stdin,
-            });
+            local.fds.insert(
+                Descriptor::from_raw_fd(0),
+                DescriptorInfo {
+                    close_on_exec: false,
+                    nonblocking: false,
+                    is_passthrough: false,
+                    resource: FdResource::Stdin,
+                },
+            );
 
-            local.fds.insert(Descriptor::from_raw_fd(1), DescriptorInfo {
-                close_on_exec: false,
-                nonblocking: false,
-                is_passthrough: false,
-                resource: FdResource::Stdout,
-            });
+            local.fds.insert(
+                Descriptor::from_raw_fd(1),
+                DescriptorInfo {
+                    close_on_exec: false,
+                    nonblocking: false,
+                    is_passthrough: false,
+                    resource: FdResource::Stdout,
+                },
+            );
 
-            local.fds.insert(Descriptor::from_raw_fd(2), DescriptorInfo {
-                close_on_exec: false,
-                nonblocking: false,
-                is_passthrough: false,
-                resource: FdResource::Stderr,
-            });
+            local.fds.insert(
+                Descriptor::from_raw_fd(2),
+                DescriptorInfo {
+                    close_on_exec: false,
+                    nonblocking: false,
+                    is_passthrough: false,
+                    resource: FdResource::Stderr,
+                },
+            );
 
             local.initialize_thread(tid, None);
         }
@@ -305,38 +350,47 @@ impl FizzleState {
         let stdout_ptr = FilePtr::from_raw(unsafe { crate::stdout }).unwrap();
         let stderr_ptr = FilePtr::from_raw(unsafe { crate::stderr }).unwrap();
 
-        local.file_objs.insert(stdin_ptr, FileObject {
-            source: FileStreamSource::Descriptor(0),
-            buffer: FileStreamBuffer::Internal(Box::new([0u8; libc::BUFSIZ as usize])),
-            buffer_index: 0,
-            read_end: 0,
-            access_mode: FileAccessMode::ReadOnly,
-            buffering_mode: FileBufferMode::Line,
-            err: false,
-            eof: false,
-        });
+        local.file_objs.insert(
+            stdin_ptr,
+            FileObject {
+                source: FileStreamSource::Descriptor(0),
+                buffer: FileStreamBuffer::Internal(Box::new([0u8; libc::BUFSIZ as usize])),
+                buffer_index: 0,
+                read_end: 0,
+                access_mode: FileAccessMode::ReadOnly,
+                buffering_mode: FileBufferMode::Line,
+                err: false,
+                eof: false,
+            },
+        );
 
-        local.file_objs.insert(stdout_ptr, FileObject {
-            source: FileStreamSource::Descriptor(1),
-            buffer: FileStreamBuffer::Internal(Box::new([0u8; libc::BUFSIZ as usize])),
-            buffer_index: 0,
-            read_end: 0,
-            access_mode: FileAccessMode::WriteOnly,
-            buffering_mode: FileBufferMode::Line,
-            err: false,
-            eof: false,
-        });
+        local.file_objs.insert(
+            stdout_ptr,
+            FileObject {
+                source: FileStreamSource::Descriptor(1),
+                buffer: FileStreamBuffer::Internal(Box::new([0u8; libc::BUFSIZ as usize])),
+                buffer_index: 0,
+                read_end: 0,
+                access_mode: FileAccessMode::WriteOnly,
+                buffering_mode: FileBufferMode::Line,
+                err: false,
+                eof: false,
+            },
+        );
 
-        local.file_objs.insert(stderr_ptr, FileObject {
-            source: FileStreamSource::Descriptor(1),
-            buffer: FileStreamBuffer::Internal(Box::new([0u8; libc::BUFSIZ as usize])),
-            buffer_index: 0,
-            read_end: 0,
-            access_mode: FileAccessMode::WriteOnly,
-            buffering_mode: FileBufferMode::Unbuffered,
-            err: false,
-            eof: false,
-        });
+        local.file_objs.insert(
+            stderr_ptr,
+            FileObject {
+                source: FileStreamSource::Descriptor(1),
+                buffer: FileStreamBuffer::Internal(Box::new([0u8; libc::BUFSIZ as usize])),
+                buffer_index: 0,
+                read_end: 0,
+                access_mode: FileAccessMode::WriteOnly,
+                buffering_mode: FileBufferMode::Unbuffered,
+                err: false,
+                eof: false,
+            },
+        );
 
         let mut state = Self { local, global };
 
@@ -429,10 +483,15 @@ impl FizzleState {
                 env::set_var(FIZZLE_MEMORY_ENV, memfd.to_string());
 
                 let ret = libc::ftruncate(memfd, size as i64);
-                assert_eq!(ret, 0, "ftruncate() failed for interprocess memory: {}", Errno::get_errno());
+                assert_eq!(
+                    ret,
+                    0,
+                    "ftruncate() failed for interprocess memory: {}",
+                    Errno::get_errno()
+                );
 
                 memfd
-            }
+            },
         };
 
         let location = unsafe {
@@ -442,7 +501,7 @@ impl FizzleState {
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_SHARED,
                 memfd,
-                0
+                0,
             )
         };
 
@@ -450,9 +509,7 @@ impl FizzleState {
             panic!("failed to mmap global memory: {}", Errno::get_errno());
         }
 
-        unsafe {
-            &mut *(location.cast::<MaybeUninit<InterprocessState>>())
-        }
+        unsafe { &mut *(location.cast::<MaybeUninit<InterprocessState>>()) }
     }
 
     /// Allocates a new Copy-on-Write (CoW) within the main process, returning its identifier.
@@ -461,15 +518,25 @@ impl FizzleState {
         self.global.next_cow_id = CowId::next(&cow_id);
         let cow_fd = InterprocessState::cow_shmem_create(cow_id);
 
-        self.local.main_state.as_mut().unwrap().pasture.insert(cow_id, CowInfo {
-            memfd: cow_fd,
-        });
+        self.local
+            .main_state
+            .as_mut()
+            .unwrap()
+            .pasture
+            .insert(cow_id, CowInfo { memfd: cow_fd });
         let local_cow_fd = unsafe { libc::fcntl(cow_fd, libc::F_DUPFD_CLOEXEC, 0) };
-        assert!(local_cow_fd >= 0, "fcntl(F_DUPFD_CLOEXEC, ...) failed for local_cow_fd: {}", Errno::get_errno());
+        assert!(
+            local_cow_fd >= 0,
+            "fcntl(F_DUPFD_CLOEXEC, ...) failed for local_cow_fd: {}",
+            Errno::get_errno()
+        );
 
-        self.local.pasture.insert(cow_id, CowInfo {
-            memfd: local_cow_fd,
-        });
+        self.local.pasture.insert(
+            cow_id,
+            CowInfo {
+                memfd: local_cow_fd,
+            },
+        );
 
         cow_id
     }
@@ -484,14 +551,20 @@ impl FizzleState {
                             IoEmulationType::Feedback => StdioBackend::Feedback(StandardFeedback {
                                 buf: LinkedList::new_in(fizzle_alloc()),
                                 read_idx: 0,
-                                read_polled: Rc::new_in(RefCell::new(PolledInfo {
-                                    pollers: Vec::new_in(fizzle_alloc()),
-                                    event_raised: false,
-                                }), fizzle_alloc()),
-                                write_polled: Rc::new_in(RefCell::new(PolledInfo {
-                                    pollers: Vec::new_in(fizzle_alloc()),
-                                    event_raised: false,
-                                }), fizzle_alloc()),
+                                read_polled: Rc::new_in(
+                                    RefCell::new(PolledInfo {
+                                        pollers: Vec::new_in(fizzle_alloc()),
+                                        event_raised: false,
+                                    }),
+                                    fizzle_alloc(),
+                                ),
+                                write_polled: Rc::new_in(
+                                    RefCell::new(PolledInfo {
+                                        pollers: Vec::new_in(fizzle_alloc()),
+                                        event_raised: false,
+                                    }),
+                                    fizzle_alloc(),
+                                ),
                             }),
                             IoEmulationType::Plugin(module_id) => {
                                 StdioBackend::Plugin(self.global.add_plugin(
@@ -519,11 +592,11 @@ impl FizzleState {
                         let cow = self.allocate_cow();
 
                         let file_info = match &endpoint.emulation_type {
-                            IoEmulationType::Feedback => Rc::new_in(RefCell::new(
-                                FileInfo {
+                            IoEmulationType::Feedback => Rc::new_in(
+                                RefCell::new(FileInfo {
                                     path: path.clone(),
                                     dev_id: 0xfe01,
-                                    backend: FileBackend::Feedback(FileFeedback { }),
+                                    backend: FileBackend::Feedback(FileFeedback {}),
                                     cow: Some(cow),
                                     inode,
                                     mode: AccessMode::all(),
@@ -534,13 +607,16 @@ impl FizzleState {
                                     btime: current_time,
                                     mtime: current_time,
                                     ctime: current_time,
-                                }), fizzle_alloc()),
+                                }),
+                                fizzle_alloc(),
+                            ),
                             IoEmulationType::Plugin(module_id) => {
                                 let backend = FileBackend::Plugin(self.global.add_plugin(
                                     endpoint.endpoint_variant.clone(),
                                     module_id.clone(),
                                 ));
-                                Rc::new_in(RefCell::new(FileInfo {
+                                Rc::new_in(
+                                    RefCell::new(FileInfo {
                                         path: path.clone(),
                                         cow: None,
                                         backend,
@@ -554,9 +630,12 @@ impl FizzleState {
                                         btime: current_time,
                                         mtime: current_time,
                                         ctime: current_time,
-                                    }), fizzle_alloc())
+                                    }),
+                                    fizzle_alloc(),
+                                )
                             }
-                            IoEmulationType::Sink => Rc::new_in(RefCell::new(FileInfo {
+                            IoEmulationType::Sink => Rc::new_in(
+                                RefCell::new(FileInfo {
                                     path: path.clone(),
                                     cow: None,
                                     backend: FileBackend::Sink,
@@ -570,8 +649,11 @@ impl FizzleState {
                                     btime: current_time,
                                     mtime: current_time,
                                     ctime: current_time,
-                                }), fizzle_alloc()),
-                            IoEmulationType::NullSink => Rc::new_in(RefCell::new(FileInfo {
+                                }),
+                                fizzle_alloc(),
+                            ),
+                            IoEmulationType::NullSink => Rc::new_in(
+                                RefCell::new(FileInfo {
                                     path: path.clone(),
                                     cow: None,
                                     backend: FileBackend::NullSink,
@@ -585,14 +667,38 @@ impl FizzleState {
                                     btime: current_time,
                                     mtime: current_time,
                                     ctime: current_time,
-                                }), fizzle_alloc()),
+                                }),
+                                fizzle_alloc(),
+                            ),
                             IoEmulationType::Fuzz => {
                                 let fuzz_endpoint_id = self.global.add_fuzz_endpoint();
                                 let cow = self.allocate_cow();
-                                let file_info = Rc::new_in(RefCell::new(FileInfo {
+                                let file_info = Rc::new_in(
+                                    RefCell::new(FileInfo {
+                                        path: path.clone(),
+                                        cow: Some(cow),
+                                        backend: FileBackend::Fuzz(fuzz_endpoint_id),
+                                        dev_id: 0xfe01,
+                                        inode,
+                                        mode: AccessMode::all(),
+                                        nlink: 1,
+                                        uid,
+                                        gid,
+                                        atime: current_time,
+                                        btime: current_time,
+                                        mtime: current_time,
+                                        ctime: current_time,
+                                    }),
+                                    fizzle_alloc(),
+                                );
+
+                                file_info
+                            }
+                            IoEmulationType::Passthrough => Rc::new_in(
+                                RefCell::new(FileInfo {
                                     path: path.clone(),
-                                    cow: Some(cow),
-                                    backend: FileBackend::Fuzz(fuzz_endpoint_id),
+                                    cow: None,
+                                    backend: FileBackend::Passthrough,
                                     dev_id: 0xfe01,
                                     inode,
                                     mode: AccessMode::all(),
@@ -603,27 +709,10 @@ impl FizzleState {
                                     btime: current_time,
                                     mtime: current_time,
                                     ctime: current_time,
-                                }), fizzle_alloc());
-
-                                file_info
-                            }
-                            IoEmulationType::Passthrough => Rc::new_in(RefCell::new(FileInfo {
-                                path: path.clone(),
-                                cow: None,
-                                backend: FileBackend::Passthrough,
-                                dev_id: 0xfe01,
-                                inode,
-                                mode: AccessMode::all(),
-                                nlink: 1,
-                                uid,
-                                gid,
-                                atime: current_time,
-                                btime: current_time,
-                                mtime: current_time,
-                                ctime: current_time,
-                            }), fizzle_alloc()),
+                                }),
+                                fizzle_alloc(),
+                            ),
                         };
-
 
                         if self.global.file_paths.insert(path, file_info).is_err() {
                             panic!("failed to insert into file_paths")
@@ -633,11 +722,14 @@ impl FizzleState {
                         let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => ServerBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => ServerBackend::Plugin(
-                                self.global.add_plugin(endpoint_variant.clone(), module_id.clone()),
+                                self.global
+                                    .add_plugin(endpoint_variant.clone(), module_id.clone()),
                             ),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
-                            IoEmulationType::Fuzz => ServerBackend::Fuzz(self.global.add_fuzz_endpoint()),
+                            IoEmulationType::Fuzz => {
+                                ServerBackend::Fuzz(self.global.add_fuzz_endpoint())
+                            }
                             IoEmulationType::Passthrough => ServerBackend::Passthrough,
                         };
 
@@ -650,20 +742,26 @@ impl FizzleState {
                         let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(
-                                self.global.add_plugin(endpoint_variant.clone(), module_id.clone()),
+                                self.global
+                                    .add_plugin(endpoint_variant.clone(), module_id.clone()),
                             ),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
-                            IoEmulationType::Fuzz => PendingBackend::Fuzz(self.global.add_fuzz_endpoint()),
+                            IoEmulationType::Fuzz => {
+                                PendingBackend::Fuzz(self.global.add_fuzz_endpoint())
+                            }
                             IoEmulationType::Passthrough => PendingBackend::Passthrough,
                         };
 
                         let target_address =
                             TransportAddress::new_inet(addr, TransportProtocol::Tcp);
-                        let source_address = self.global
+                        let source_address = self
+                            .global
                             .ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
-                            if self.global.per_round_clients
+                            if self
+                                .global
+                                .per_round_clients
                                 .push(PerRoundClientInfo {
                                     source_address,
                                     target_address,
@@ -677,22 +775,27 @@ impl FizzleState {
                                         _ => unreachable!(),
                                     },
                                 })
-                                .is_err() {
-                                    panic!("could not add to per-round clients")
-                                }
+                                .is_err()
+                            {
+                                panic!("could not add to per-round clients")
+                            }
                         } else {
-                            self.global.add_pending_client(source_address, target_address, backend);
+                            self.global
+                                .add_pending_client(source_address, target_address, backend);
                         }
                     }
                     IoEndpointVariant::UdpServer(addr) => {
                         let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => ServerBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => ServerBackend::Plugin(
-                                self.global.add_plugin(endpoint_variant.clone(), module_id.clone()),
+                                self.global
+                                    .add_plugin(endpoint_variant.clone(), module_id.clone()),
                             ),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
-                            IoEmulationType::Fuzz => ServerBackend::Fuzz(self.global.add_fuzz_endpoint()),
+                            IoEmulationType::Fuzz => {
+                                ServerBackend::Fuzz(self.global.add_fuzz_endpoint())
+                            }
                             IoEmulationType::Passthrough => ServerBackend::Passthrough,
                         };
 
@@ -705,20 +808,26 @@ impl FizzleState {
                         let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(
-                                self.global.add_plugin(endpoint_variant.clone(), module_id.clone()),
+                                self.global
+                                    .add_plugin(endpoint_variant.clone(), module_id.clone()),
                             ),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
-                            IoEmulationType::Fuzz => PendingBackend::Fuzz(self.global.add_fuzz_endpoint()),
+                            IoEmulationType::Fuzz => {
+                                PendingBackend::Fuzz(self.global.add_fuzz_endpoint())
+                            }
                             IoEmulationType::Passthrough => PendingBackend::Passthrough,
                         };
 
                         let target_address =
                             TransportAddress::new_inet(addr, TransportProtocol::Udp);
-                        let source_address = self.global
+                        let source_address = self
+                            .global
                             .ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
-                            if self.global.per_round_clients
+                            if self
+                                .global
+                                .per_round_clients
                                 .push(PerRoundClientInfo {
                                     source_address,
                                     target_address,
@@ -732,22 +841,27 @@ impl FizzleState {
                                         _ => unreachable!(),
                                     },
                                 })
-                                .is_err() {
-                                    panic!("could not add to per-round endpoint clients")
-                                }
+                                .is_err()
+                            {
+                                panic!("could not add to per-round endpoint clients")
+                            }
                         } else {
-                            self.global.add_pending_client(source_address, target_address, backend);
+                            self.global
+                                .add_pending_client(source_address, target_address, backend);
                         }
                     }
                     IoEndpointVariant::SctpServer(addr) => {
                         let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => ServerBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => ServerBackend::Plugin(
-                                self.global.add_plugin(endpoint_variant.clone(), module_id.clone()),
+                                self.global
+                                    .add_plugin(endpoint_variant.clone(), module_id.clone()),
                             ),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
-                            IoEmulationType::Fuzz => ServerBackend::Fuzz(self.global.add_fuzz_endpoint()),
+                            IoEmulationType::Fuzz => {
+                                ServerBackend::Fuzz(self.global.add_fuzz_endpoint())
+                            }
                             IoEmulationType::Passthrough => ServerBackend::Passthrough,
                         };
 
@@ -760,20 +874,26 @@ impl FizzleState {
                         let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => PendingBackend::Feedback(()),
                             IoEmulationType::Plugin(module_id) => PendingBackend::Plugin(
-                                self.global.add_plugin(endpoint_variant.clone(), module_id.clone()),
+                                self.global
+                                    .add_plugin(endpoint_variant.clone(), module_id.clone()),
                             ),
                             IoEmulationType::Sink => PendingBackend::Sink,
                             IoEmulationType::NullSink => PendingBackend::NullSink,
-                            IoEmulationType::Fuzz => PendingBackend::Fuzz(self.global.add_fuzz_endpoint()),
+                            IoEmulationType::Fuzz => {
+                                PendingBackend::Fuzz(self.global.add_fuzz_endpoint())
+                            }
                             IoEmulationType::Passthrough => PendingBackend::Passthrough,
                         };
 
                         let target_address =
                             TransportAddress::new_inet(addr, TransportProtocol::Sctp);
-                        let source_address = self.global
+                        let source_address = self
+                            .global
                             .ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
-                            if self.global.per_round_clients
+                            if self
+                                .global
+                                .per_round_clients
                                 .push(PerRoundClientInfo {
                                     source_address,
                                     target_address,
@@ -787,11 +907,13 @@ impl FizzleState {
                                         _ => unreachable!(),
                                     },
                                 })
-                                .is_err() {
-                                    panic!("could not add to per_round_clients")
-                                }
+                                .is_err()
+                            {
+                                panic!("could not add to per_round_clients")
+                            }
                         } else {
-                            self.global.add_pending_client(source_address, target_address, backend);
+                            self.global
+                                .add_pending_client(source_address, target_address, backend);
                         }
                     }
                     _ => panic!("unimplemented IoEndpoint type"),
@@ -824,11 +946,14 @@ impl FizzleState {
     pub fn new_poller(&mut self) -> GlobalRc<PollerInfo> {
         let worker_id = self.current_worker();
 
-        Rc::new_in(RefCell::new(PollerInfo {
+        Rc::new_in(
+            RefCell::new(PollerInfo {
                 worker: worker_id,
                 polled_events: Vec::new_in(fizzle_alloc()),
                 raised_events: BTreeSet::new_in(fizzle_alloc()),
-        }), fizzle_alloc())
+            }),
+            fizzle_alloc(),
+        )
     }
 
     /// Registers `poller_id` as waiting on `polled_id`.
@@ -842,7 +967,6 @@ impl FizzleState {
     // Ugh. This looks like O(n^2)...
     /// Deletes the given poller, removing any references to it from `Polled` objects.
     pub fn delete_poller(&mut self, poller: GlobalRc<PollerInfo>) {
-
         if poller.borrow().in_raised_queue() {
             // Remove the poller from the ready queue, leaving the others in the same order
             self.global.ready.retain(|r| match &r.info {
@@ -866,10 +990,7 @@ impl FizzleState {
         let pid = self.local.process_info.borrow().pid;
 
         let timestamp = self.global.current_time;
-        let ready = ReadyInfo::Worker(Worker {
-            pid,
-            thread_id
-        });
+        let ready = ReadyInfo::Worker(Worker { pid, thread_id });
 
         self.global.ready.retain(|r| &r.info != &ready);
         self.global.ready.push(ScheduledItem {
@@ -979,7 +1100,6 @@ pub struct ProcessLocalState {
 
 impl ProcessLocalState {
     pub fn initialize_thread(&mut self, tid: Tid, sigmask: Option<SignalSet>) {
-
         // Insert the current (main) pthread into `pthreads`
         self.pthreads.insert(
             unsafe { libc::pthread_self() },
@@ -1058,7 +1178,8 @@ pub struct InterprocessState {
     /// Pollers/Workers that should be scheduled once the system has reached a halted state.
     pub ready_delayed: GlobalList<ReadyInfo>,
 
-    pub tasks: GlobalList<GlobalBox<dyn FnOnce(&mut FizzleSingleton) -> TaskResult + Send + 'static>>,
+    pub tasks:
+        GlobalList<GlobalBox<dyn FnOnce(&mut FizzleSingleton) -> TaskResult + Send + 'static>>,
 
     pub per_round_clients: heapless::Vec<PerRoundClientInfo, FIZZLE_MAX_PER_ROUND_ENDPOINTS>,
     pub per_round_endpoints: GlobalVec<GlobalRc<SocketInfo>>,
@@ -1074,17 +1195,30 @@ impl InterprocessState {
         let filename = format!("/Fizzle_Interprocess{}\0", process::id());
 
         let fd = unsafe {
-            libc::shm_open(filename.as_ptr().cast::<i8>(), libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, libc::S_IRUSR | libc::S_IWUSR)
+            libc::shm_open(
+                filename.as_ptr().cast::<i8>(),
+                libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+                libc::S_IRUSR | libc::S_IWUSR,
+            )
         };
 
         assert!(fd >= 0, "shm_open() failed: {}", Errno::get_errno());
 
         unsafe {
-            assert_eq!(libc::shm_unlink(filename.as_ptr().cast::<i8>()), 0, "shm_unlink() failed: {}", Errno::get_errno());
+            assert_eq!(
+                libc::shm_unlink(filename.as_ptr().cast::<i8>()),
+                0,
+                "shm_unlink() failed: {}",
+                Errno::get_errno()
+            );
         }
 
         let non_cloexec_fd = unsafe { libc::dup(fd) };
-        assert!(non_cloexec_fd >= 0, "dup() failed during interprocess file creation: {}", Errno::get_errno());
+        assert!(
+            non_cloexec_fd >= 0,
+            "dup() failed during interprocess file creation: {}",
+            Errno::get_errno()
+        );
 
         unsafe {
             libc::close(fd);
@@ -1097,13 +1231,22 @@ impl InterprocessState {
         let filename = format!("/Fizzle_Process{}_CoW{}\0", process::id(), usize::from(id));
 
         let fd = unsafe {
-            libc::shm_open(filename.as_ptr().cast::<i8>(), libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, libc::S_IRUSR | libc::S_IWUSR)
+            libc::shm_open(
+                filename.as_ptr().cast::<i8>(),
+                libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+                libc::S_IRUSR | libc::S_IWUSR,
+            )
         };
 
         assert!(fd >= 0, "shm_open() failed: {}", Errno::get_errno());
 
         unsafe {
-            assert_eq!(libc::shm_unlink(filename.as_ptr().cast::<i8>()), 0, "shm_unlink() failed: {}", Errno::get_errno());
+            assert_eq!(
+                libc::shm_unlink(filename.as_ptr().cast::<i8>()),
+                0,
+                "shm_unlink() failed: {}",
+                Errno::get_errno()
+            );
         }
 
         fd
@@ -1135,7 +1278,6 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
             *ptr::addr_of_mut!((*state).sem_paths) = FnvIndexMap::new();
             *ptr::addr_of_mut!((*state).socket_locations) = FnvIndexMap::new();
-
 
             *ptr::addr_of_mut!((*state).stdio) = StdioBackend::Passthrough;
             *ptr::addr_of_mut!((*state).per_round_clients) = heapless::Vec::new();
@@ -1213,15 +1355,21 @@ impl InterprocessState {
     }
 
     pub fn add_fuzz_endpoint(&mut self) -> GlobalRc<FuzzEndpointInfo> {
-        let read_polled = Rc::new_in(RefCell::new(PolledInfo {
-            pollers: Vec::new_in(fizzle_alloc()),
-            event_raised: false,
-        }), fizzle_alloc());
+        let read_polled = Rc::new_in(
+            RefCell::new(PolledInfo {
+                pollers: Vec::new_in(fizzle_alloc()),
+                event_raised: false,
+            }),
+            fizzle_alloc(),
+        );
 
-        Rc::new_in(RefCell::new(FuzzEndpointInfo {
-            read_polled,
-            read_idx: 0,
-        }), fizzle_alloc())
+        Rc::new_in(
+            RefCell::new(FuzzEndpointInfo {
+                read_polled,
+                read_idx: 0,
+            }),
+            fizzle_alloc(),
+        )
     }
 
     pub fn add_pending_client(
@@ -1230,26 +1378,33 @@ impl InterprocessState {
         rem_addr: TransportAddress,
         backend: PendingBackend,
     ) -> GlobalRc<SocketInfo> {
-        let client_socket_info = Rc::new_in(RefCell::new(SocketInfo {
-            fd_count: 0,
-            state: SocketState::PendingConnection(PendingSocket {
-                rem_addr: rem_addr.clone(),
-                backend,
-                next_pending: None,
+        let client_socket_info = Rc::new_in(
+            RefCell::new(SocketInfo {
+                fd_count: 0,
+                state: SocketState::PendingConnection(PendingSocket {
+                    rem_addr: rem_addr.clone(),
+                    backend,
+                    next_pending: None,
+                }),
+                socktype: SocketType::Datagram,
+                protocol: src_addr.protocol(),
+                local_addr: LocalAddress::Assigned(src_addr.addr().clone()),
             }),
-            socktype: SocketType::Datagram,
-            protocol: src_addr.protocol(),
-            local_addr: LocalAddress::Assigned(src_addr.addr().clone()),
-        }), fizzle_alloc());
+            fizzle_alloc(),
+        );
 
         // Add the client to the pending client chain, if applicable
         match self.socket_locations.get_mut(&rem_addr) {
             None => {
-                let polled = Rc::new_in(RefCell::new(PolledInfo {
-                    pollers: Vec::new_in(fizzle_alloc()),
-                    event_raised: false,
-                }), fizzle_alloc());
-                if self.socket_locations
+                let polled = Rc::new_in(
+                    RefCell::new(PolledInfo {
+                        pollers: Vec::new_in(fizzle_alloc()),
+                        event_raised: false,
+                    }),
+                    fizzle_alloc(),
+                );
+                if self
+                    .socket_locations
                     .insert(
                         rem_addr,
                         TransportLocationInfo {
@@ -1260,7 +1415,9 @@ impl InterprocessState {
                                 poll: polled,
                             }),
                         },
-                    ).is_err() {
+                    )
+                    .is_err()
+                {
                     panic!("failed to insert to socket_locations")
                 }
             }
@@ -1272,7 +1429,8 @@ impl InterprocessState {
                         while let SocketState::PendingConnection(PendingSocket {
                             next_pending: Some(id),
                             ..
-                        }) = &last_client_borrow.state {
+                        }) = &last_client_borrow.state
+                        {
                             let new_last_client = id.clone();
                             drop(last_client_borrow);
                             last_client = new_last_client;
@@ -1290,10 +1448,13 @@ impl InterprocessState {
                         *next_awaiting = Some(client_socket_info.clone());
                     }
                     None => {
-                        let polled = Rc::new_in(RefCell::new(PolledInfo {
-                            pollers: Vec::new_in(fizzle_alloc()),
-                            event_raised: false,
-                        }), fizzle_alloc());
+                        let polled = Rc::new_in(
+                            RefCell::new(PolledInfo {
+                                pollers: Vec::new_in(fizzle_alloc()),
+                                event_raised: false,
+                            }),
+                            fizzle_alloc(),
+                        );
                         location_info.pending = Some(PendingInfo {
                             client: client_socket_info.clone(),
                             poll: polled,
@@ -1321,32 +1482,38 @@ impl InterprocessState {
         client_socket_info
     }
 
- 
     pub fn add_server(&mut self, transport_addr: TransportAddress, backend: ServerBackend) {
         // Create a new polled instance for listeners waiting to accept connections
-        let connect_polled = Rc::new_in(RefCell::new(PolledInfo {
-            pollers: Vec::new_in(fizzle_alloc()),
-            event_raised: false,
-        }), fizzle_alloc());
-
-        let socket_info = Rc::new_in(RefCell::new(SocketInfo {
-            fd_count: 0,
-            state: SocketState::Server(ServerSocket {
-                backend,
-                connecting: LinkedList::new_in(fizzle_alloc()),
-                ready_to_connect: connect_polled,
+        let connect_polled = Rc::new_in(
+            RefCell::new(PolledInfo {
+                pollers: Vec::new_in(fizzle_alloc()),
+                event_raised: false,
             }),
-            socktype: SocketType::Datagram, // TODO: this (and above) aren't necessarily true
-            protocol: transport_addr.protocol(),
-            local_addr: LocalAddress::Assigned(transport_addr.addr().clone()),
-        }), fizzle_alloc());
-        
+            fizzle_alloc(),
+        );
+
+        let socket_info = Rc::new_in(
+            RefCell::new(SocketInfo {
+                fd_count: 0,
+                state: SocketState::Server(ServerSocket {
+                    backend,
+                    connecting: LinkedList::new_in(fizzle_alloc()),
+                    ready_to_connect: connect_polled,
+                }),
+                socktype: SocketType::Datagram, // TODO: this (and above) aren't necessarily true
+                protocol: transport_addr.protocol(),
+                local_addr: LocalAddress::Assigned(transport_addr.addr().clone()),
+            }),
+            fizzle_alloc(),
+        );
+
         match self.socket_locations.get_mut(&transport_addr) {
             None => {
                 let mut bound_sockets = LinkedList::new_in(fizzle_alloc());
                 bound_sockets.push_back(socket_info);
 
-                if self.socket_locations
+                if self
+                    .socket_locations
                     .insert(
                         transport_addr.clone(),
                         TransportLocationInfo {
@@ -1354,9 +1521,11 @@ impl InterprocessState {
                             reuse_port: false,
                             bound_sockets,
                         },
-                    ).is_err() {
-                        panic!("failed to insert to socket_locations")
-                    }
+                    )
+                    .is_err()
+                {
+                    panic!("failed to insert to socket_locations")
+                }
             }
             Some(location_info) => {
                 debug_assert!(location_info.bound_sockets.is_empty());
@@ -1374,18 +1543,25 @@ impl InterprocessState {
         self.next_stream_id = StreamId::from(usize::from(stream) + 1);
 
         let read_buf = LinkedList::new_in(fizzle_alloc());
-        let read_polled = Rc::new_in(RefCell::new(PolledInfo {
-            pollers: Vec::new_in(fizzle_alloc()),
-            event_raised: false,
-        }), fizzle_alloc());
+        let read_polled = Rc::new_in(
+            RefCell::new(PolledInfo {
+                pollers: Vec::new_in(fizzle_alloc()),
+                event_raised: false,
+            }),
+            fizzle_alloc(),
+        );
 
         let write_buf = LinkedList::new_in(fizzle_alloc());
-        let write_polled = Rc::new_in(RefCell::new(PolledInfo {
-            pollers: Vec::new_in(fizzle_alloc()),
-            event_raised: true,
-        }), fizzle_alloc());
+        let write_polled = Rc::new_in(
+            RefCell::new(PolledInfo {
+                pollers: Vec::new_in(fizzle_alloc()),
+                event_raised: true,
+            }),
+            fizzle_alloc(),
+        );
 
-        let plugin = Rc::new_in(RefCell::new(PluginInfo {
+        let plugin = Rc::new_in(
+            RefCell::new(PluginInfo {
                 endpoint,
                 stream,
                 module,
@@ -1395,7 +1571,9 @@ impl InterprocessState {
                 write_buf,
                 write_idx: 0,
                 write_polled,
-            }), fizzle_alloc());
+            }),
+            fizzle_alloc(),
+        );
 
         self.plugins.push(plugin.clone());
 
@@ -1502,7 +1680,7 @@ pub enum ReadyInfo {
 pub enum TimerType {
     Real,
     Virtual,
-    Prof
+    Prof,
 }
 
 impl TimerType {
@@ -1534,4 +1712,3 @@ pub enum CreateCowSource {
     New(FilePath<256>, AccessMode),
     Existing(CowId),
 }
-

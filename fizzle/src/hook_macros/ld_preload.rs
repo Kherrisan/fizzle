@@ -72,7 +72,7 @@ macro_rules! hook {
                             .init();
                         log::info!("Logger initialized");
                     }
-                    
+
                     let res = {
                         $hook_fn ( $($v),*)
                     };

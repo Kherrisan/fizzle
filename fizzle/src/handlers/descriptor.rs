@@ -944,7 +944,7 @@ impl Event for DescriptorWriteEvent<'_> {
                         ));
                     }
                 }
-                    Outcome::Yield(YieldUntil::Immediate)
+                Outcome::Yield(YieldUntil::Immediate)
             }
             DescriptorWriteState::Directory(e) => e.run(state),
             DescriptorWriteState::Epoll(e) => e.run(state),

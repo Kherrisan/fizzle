@@ -1616,9 +1616,13 @@ impl SocketOption {
                 p_bytes.len()
             }
             Self::SctpRtoInfo(rto_info) => {
-
                 // SAFETY: u8 never should have alignment issues, so this should turn &rto_info to &[u8]
-                let rto_info_bytes: &[u8] = unsafe { slice::from_raw_parts((rto_info as *const SctpRtoInfo).cast::<u8>(), mem::size_of::<SctpRtoInfo>()) };
+                let rto_info_bytes: &[u8] = unsafe {
+                    slice::from_raw_parts(
+                        (rto_info as *const SctpRtoInfo).cast::<u8>(),
+                        mem::size_of::<SctpRtoInfo>(),
+                    )
+                };
                 assert!(
                     rto_info_bytes.len() == mem::size_of_val(rto_info),
                     "align_to() failed to convert `SctpRtoInfo` to bytes"
@@ -1675,9 +1679,13 @@ impl SocketOption {
             }
             Self::SctpAssocInfo(assoc_params) => {
                 // SAFETY: u8 never should have alignment issues, so this should turn &SctpPeerAddrParams to &[u8]
-                let assoc_params_bytes: &[u8] =
-                    unsafe { slice::from_raw_parts((assoc_params as *const SctpAssocParams).cast::<u8>(), mem::size_of_val(assoc_params)) };
-                
+                let assoc_params_bytes: &[u8] = unsafe {
+                    slice::from_raw_parts(
+                        (assoc_params as *const SctpAssocParams).cast::<u8>(),
+                        mem::size_of_val(assoc_params),
+                    )
+                };
+
                 for (dst, src) in out.iter_mut().zip(assoc_params_bytes) {
                     dst.write(*src);
                 }

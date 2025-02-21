@@ -254,7 +254,14 @@ impl Event for CondWaitEvent {
             CondWaitState::AwaitCond => {
                 self.state = CondWaitState::Finish;
 
-                if state.local.condvars.get(&self.cond).and_then(|c| c.front()).map(|f| f == &thread::current().id()) != Some(true) {
+                if state
+                    .local
+                    .condvars
+                    .get(&self.cond)
+                    .and_then(|c| c.front())
+                    .map(|f| f == &thread::current().id())
+                    != Some(true)
+                {
                     return Outcome::Error(Errno::ETIMEDOUT);
                 }
 
@@ -270,7 +277,9 @@ impl Event for CondWaitEvent {
                 } else {
                     match self.duration {
                         WaitDuration::Immediate => unreachable!(),
-                        WaitDuration::Timed(timeout) => Outcome::Yield(YieldUntil::Reschedule(timeout)),
+                        WaitDuration::Timed(timeout) => {
+                            Outcome::Yield(YieldUntil::Reschedule(timeout))
+                        }
                         WaitDuration::Indefinite => Outcome::Yield(YieldUntil::None),
                     }
                 }
