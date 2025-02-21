@@ -1664,12 +1664,12 @@ impl SocketOption {
             }
             Self::SctpEvents(events_subscribe) => {
                 // SAFETY: u8 never should have alignment issues, so this should turn &SctpPeerAddrParams to &[u8]
-                let events_subscribe_bytes: &[u8] =
-                    unsafe { slice::from_ref(&events_subscribe).align_to().1 };
-                assert!(
-                    events_subscribe_bytes.len() == mem::size_of_val(&events_subscribe_bytes),
-                    "align_to() failed to convert `SctpEventSubscribe` to bytes"
-                );
+                let events_subscribe_bytes: &[u8] = unsafe {
+                    slice::from_raw_parts(
+                        (events_subscribe as *const SctpEventSubscribe).cast::<u8>(),
+                        mem::size_of_val(events_subscribe),
+                    )
+                };
 
                 for (dst, src) in out.iter_mut().zip(events_subscribe_bytes) {
                     dst.write(*src);
