@@ -380,12 +380,12 @@ hook_macros::hook! {
 
         let input = match (opt_level, optname) {
             (OptLevel::Sctp, libc::SCTP_ASSOCINFO) => {
-                if optval.is_null() || optlen.is_null() || *optlen < 4 {
+                if optval.is_null() || optlen.is_null() || (*optlen as usize) < mem::size_of::<SctpAssocParams>() {
                     Errno::EINVAL.set_errno();
                     return -1
                 }
 
-                let assoc_id = libc::sctp_assoc_t::from_ne_bytes(*(optval as *mut [u8; 4]));
+                let assoc_id = (*optval.cast::<SctpAssocParams>()).sasoc_assoc_id;
 
                 OptInput::SctpAssocId(assoc_id)
             }
@@ -395,7 +395,7 @@ hook_macros::hook! {
                     return -1
                 }
 
-                let assoc_id = (&*optval.cast::<SctpRtoInfo>()).srto_assoc_id;
+                let assoc_id = (*optval.cast::<SctpRtoInfo>()).srto_assoc_id;
                 OptInput::SctpAssocId(assoc_id)
             }
             (OptLevel::Sctp, libc::SCTP_PEER_ADDR_PARAMS) => {
@@ -403,9 +403,9 @@ hook_macros::hook! {
                     Errno::EINVAL.set_errno();
                     return -1
                 }
-
-                let assoc_id = libc::sctp_assoc_t::from_ne_bytes(*(optval as *mut [u8; 4]));
-                let addr = *(optval.byte_add(4) as *mut libc::sockaddr_storage);
+                let params = &*optval.cast::<SctpPeerAddrParams>();
+                let assoc_id = params.spp_assoc_id;
+                let addr = params.spp_address;
                 OptInput::SctpPeerAddrParams(assoc_id, addr)
             }
             _ => OptInput::None,
