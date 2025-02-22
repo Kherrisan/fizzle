@@ -445,7 +445,7 @@ impl Scheduler {
         let current_worker = state.current_worker();
 
         while let Some(ScheduledItem { info, timestamp }) = state.global.ready.pop() {
-            log::trace!("worker with timestamp {:?} popped off queue", timestamp);
+            log::trace!("next ReadyInfo popped off queue");
 
             if timestamp > state.global.current_time + Duration::from_secs(2) {
                 log::info!(
@@ -1011,7 +1011,7 @@ impl Scheduler {
             state
                 .global
                 .fuzz_input
-                .did_write(*crate::__afl_fuzz_len as usize);
+                .set_len(*crate::__afl_fuzz_len as usize);
         }
 
         panic!("You made it! If you're here then the server is ready to be fuzzed.");
@@ -1023,7 +1023,7 @@ impl Scheduler {
             use std::io::Read;
             match std::io::stdin().read(state.global.fuzz_input.as_mut_slice()) {
                 Err(e) => panic!("read() failed for fuzzing: {}", e),
-                Ok(0) => break,
+                Ok(0) => unsafe { libc::_exit(0) },
                 Ok(read_amount) => unsafe {
                     state.global.fuzz_input.set_len(current_len + read_amount);
                 },
