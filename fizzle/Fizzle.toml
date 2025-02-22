@@ -56,9 +56,9 @@
 # For Magma only
 "tcp-server:192.168.61.132:3868" = "sink"
 
-[io."tcp-client:127.0.0.2:36412"]
+[io."sctp-client:127.0.0.2:36412"]
 method = "plugin" # The means of passing I/O on the device
-when = "perround"
+when = "startup"
 module = "fizzle-plugin-fuzz-s1ap" # The name of the cargo crate to source the plugin from
 plugin = "S1apFuzzClient" # The name of the `Plugin` implementation to be used
 streams = 1 # Establishes 5 client connections with the given server.
