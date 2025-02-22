@@ -282,7 +282,7 @@ impl Event for ThreadCreateEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match self.state {
             ThreadCreateState::Start => {
                 self.state = ThreadCreateState::Finish;
