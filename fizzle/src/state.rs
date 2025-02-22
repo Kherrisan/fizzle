@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, LinkedList, VecDeque};
 use std::fmt::Debug;
-use std::io::Write;
 use std::mem::MaybeUninit;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::RawFd;
@@ -209,7 +208,6 @@ impl FizzleState {
             atfork_handlers: Vec::default(),
             awaiting_thread_death: HashMap::default(),
             barriers: HashMap::default(),
-            cancelling: None,
             condvars: HashMap::default(),
             fds: BTreeMap::new_in(fizzle_alloc()),
             file_objs: HashMap::default(),
@@ -1054,7 +1052,6 @@ pub struct ProcessLocalState {
     pub awaiting_thread_death: HashMap<ThreadId, Vec<ThreadId>, FxBuildHasher>,
     pub barriers: HashMap<BarrierPtr, BarrierInfo, FxBuildHasher>,
     /// A thread that has received a cancellation request.
-    pub cancelling: Option<ThreadId>,
     pub condvars: HashMap<CondVarPtr, CondVarInfo, FxBuildHasher>,
     pub fds: GlobalMap<Descriptor, DescriptorInfo>,
     /// Files specifically designated as being emulated.
@@ -1128,20 +1125,8 @@ pub struct InterprocessState {
     pub fuzz_input: GlobalVec<u8>,
 
     pub worker_locks: GlobalMap<Worker, Rc<Semaphore, GlobalHeap>>,
-    // pub process_locks: GlobalMap<Pid, Rc<Semaphore, GlobalHeap>>,
-    /// The thread identifier to be executed by the waking process. This is `Some` if and only if
-    /// a thread is currently about to be scheduled.
-    pub waking_id: Option<ThreadId>,
-    /// The thread/process identifier to be reaped. This is `Some` if and only if a thread/process
-    /// is currently exiting.
-    pub exiting_id: Option<Worker>,
     /// State passed between calls to the `exec()` family of functions
     pub inherited_state: Option<InheritedState>,
-    /// The thread/process identifier to be signalled with the given signal value. This is `Some`
-    /// if and only if a thread is about to receive an outstanding signal.
-    pub signal: Option<(SignalDestination, RaisedSignalInfo)>,
-    /// Indicates a Copy-on-Write file should be passed to the given worker.
-    pub create_cow: Option<CreateCowSource>,
     // TODO: use an env variable to pass this from parent to child when receiving shared memory
     /// The read end of the Unix socket pair used to pass file descriptors between processes.
     pub unix_read_fd: RawFd,
@@ -1260,12 +1245,8 @@ impl InterprocessState {
         unsafe {
             let state = state.as_mut_ptr();
 
-            *ptr::addr_of_mut!((*state).waking_id) = None;
-            *ptr::addr_of_mut!((*state).exiting_id) = None;
             *ptr::addr_of_mut!((*state).inherited_state) = None;
-
             *ptr::addr_of_mut!((*state).mask_stderr) = false;
-            *ptr::addr_of_mut!((*state).signal) = None;
 
             *ptr::addr_of_mut!((*state).persistent_rounds) = FIZZLE_AFL_LOOP; // TODO: make configurable
             *ptr::addr_of_mut!((*state).next_stream_id) = StreamId::from(0);
@@ -1299,7 +1280,6 @@ impl InterprocessState {
 
             *ptr::addr_of_mut!((*state).unix_read_fd) = -1;
             *ptr::addr_of_mut!((*state).unix_write_fd) = -1;
-            *ptr::addr_of_mut!((*state).create_cow) = None;
             *ptr::addr_of_mut!((*state).time_fuzz_idx) = 0;
             *ptr::addr_of_mut!((*state).fuzz_endpoints) = Vec::new_in(fizzle_alloc());
             *ptr::addr_of_mut!((*state).plugins) = Vec::new_in(fizzle_alloc());
