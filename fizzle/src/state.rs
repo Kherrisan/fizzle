@@ -757,7 +757,7 @@ impl FizzleState {
                             .global
                             .ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
-                            if self
+                            self
                                 .global
                                 .per_round_clients
                                 .push(PerRoundClientInfo {
@@ -772,8 +772,7 @@ impl FizzleState {
                                         }
                                         _ => unreachable!(),
                                     },
-                                })
-                                .is_err()
+                                });
                             {
                                 panic!("could not add to per-round clients")
                             }
@@ -823,7 +822,7 @@ impl FizzleState {
                             .global
                             .ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
-                            if self
+                            self
                                 .global
                                 .per_round_clients
                                 .push(PerRoundClientInfo {
@@ -838,11 +837,7 @@ impl FizzleState {
                                         }
                                         _ => unreachable!(),
                                     },
-                                })
-                                .is_err()
-                            {
-                                panic!("could not add to per-round endpoint clients")
-                            }
+                                });
                         } else {
                             self.global
                                 .add_pending_client(source_address, target_address, backend);
@@ -889,7 +884,7 @@ impl FizzleState {
                             .global
                             .ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
-                            if self
+                            self
                                 .global
                                 .per_round_clients
                                 .push(PerRoundClientInfo {
@@ -904,11 +899,7 @@ impl FizzleState {
                                         }
                                         _ => unreachable!(),
                                     },
-                                })
-                                .is_err()
-                            {
-                                panic!("could not add to per_round_clients")
-                            }
+                                });
                         } else {
                             self.global
                                 .add_pending_client(source_address, target_address, backend);
@@ -1166,7 +1157,7 @@ pub struct InterprocessState {
     pub tasks:
         GlobalList<GlobalBox<dyn FnOnce(&mut FizzleSingleton) -> TaskResult + Send + 'static>>,
 
-    pub per_round_clients: heapless::Vec<PerRoundClientInfo, FIZZLE_MAX_PER_ROUND_ENDPOINTS>,
+    pub per_round_clients: GlobalVec<PerRoundClientInfo>,
     pub per_round_endpoints: GlobalVec<GlobalRc<SocketInfo>>,
     pub prefuzz_rng: rand::rngs::SmallRng,
     pub current_time: Duration,
@@ -1261,7 +1252,7 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).socket_locations) = FnvIndexMap::new();
 
             *ptr::addr_of_mut!((*state).stdio) = StdioBackend::Passthrough;
-            *ptr::addr_of_mut!((*state).per_round_clients) = heapless::Vec::new();
+            *ptr::addr_of_mut!((*state).per_round_clients) = Vec::new_in(fizzle_alloc());
             *ptr::addr_of_mut!((*state).prefuzz_rng) =
                 SmallRng::seed_from_u64(0xABAD_5EED_ABAD_5EED_u64); // TODO: enable custom seed loading
             *ptr::addr_of_mut!((*state).current_time) = Duration::from_secs(1735924847); // TODO: set this randomly each fuzzing round
@@ -1611,6 +1602,7 @@ pub struct InterprocessAllocator {
     pub heap_memory: [MaybeUninit<u8>; FIZZLE_HEAP_SIZE],
 }
 
+#[derive(Clone)]
 pub struct PerRoundClientInfo {
     pub source_address: TransportAddress,
     pub target_address: TransportAddress,

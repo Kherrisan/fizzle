@@ -885,8 +885,7 @@ impl Scheduler {
         }
 
         // Reset per-round fuzzing clients
-        let mut per_round_clients = heapless::Vec::new();
-        mem::swap(&mut per_round_clients, &mut state.global.per_round_clients);
+        let per_round_clients = state.global.per_round_clients.clone();
 
         log::info!(
             "{} per-round clients to be initialized...",
@@ -909,7 +908,6 @@ impl Scheduler {
                 "added pending client with local addr {:?}",
                 socket_info.borrow().local_addr
             );
-            state.global.per_round_endpoints.push(socket_info);
         }
 
         drop(state);
@@ -964,14 +962,13 @@ impl Scheduler {
                         }
                     }
 
-                    if global
+                    global
                         .per_round_clients
                         .push(PerRoundClientInfo {
                             source_address,
                             target_address,
                             backend: client_backend,
-                        })
-                        .is_err()
+                        });
                     {
                         panic!("failed to insert to per_round_clients")
                     }
