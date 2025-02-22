@@ -63,6 +63,16 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
 
                 hook_macros::real_syscall()(number, dirfd, pathname, flags, mask, statxbuf)
             }
+            libc::SYS_futex => {
+                let uaddr: *mut u32 = va_args.arg();
+                let futex_op: libc::c_int = va_args.arg();
+                let val: u32 = va_args.arg();
+                let timeout: *const libc::timespec = va_args.arg();
+                let uaddr2: *mut u32 = va_args.arg();
+                let val3: u32 = va_args.arg();
+
+                hook_macros::real_syscall()(number, uaddr, futex_op, val, timeout, uaddr2, val3)
+            }
             _ => {
                 log::debug!("syscall({}, ...)", number);
 
