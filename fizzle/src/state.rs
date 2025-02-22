@@ -773,9 +773,6 @@ impl FizzleState {
                                         _ => unreachable!(),
                                     },
                                 });
-                            {
-                                panic!("could not add to per-round clients")
-                            }
                         } else {
                             self.global
                                 .add_pending_client(source_address, target_address, backend);
@@ -1350,6 +1347,8 @@ impl InterprocessState {
         rem_addr: TransportAddress,
         backend: PendingBackend,
     ) -> GlobalRc<SocketInfo> {
+        log::info!("adding pending client (src={:?}, dst={:?})", src_addr, rem_addr);
+
         let client_socket_info = Rc::new_in(
             RefCell::new(SocketInfo {
                 fd_count: 0,

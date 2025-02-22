@@ -768,6 +768,7 @@ impl Event for SocketListenEvent {
             .pending
             .is_empty()
         {
+            log::debug!("listen() socket had pending connections--raising polled");
             state.raise_polled(&ready_to_connect);
         }
 
