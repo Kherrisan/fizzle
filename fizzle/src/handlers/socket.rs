@@ -1070,7 +1070,7 @@ impl Event for SocketAcceptEvent {
                     let _addr = get_or_assign_local(&mut client, state);
 
                     let mut client_mut = client.borrow_mut();
-                    assert!(matches!(&mut client_mut.state, SocketState::PendingConnection(_)));
+                    assert!(matches!(&client_mut.state, SocketState::PendingConnection(_)));
 
                     state.raise_polled(&poll);
 
@@ -1089,13 +1089,15 @@ impl Event for SocketAcceptEvent {
                             state.lower_polled(&ready_to_connect);
                         }
 
+                        let mut connecting_info_mut = connecting_info.borrow_mut();
                         let SocketState::Connecting(connecting_socket_info) =
-                            &mut connecting_info.borrow_mut().state
+                            &mut connecting_info_mut.state
                         else {
                             unreachable!()
                         };
 
                         let connect_polled = connecting_socket_info.connect_polled.clone();
+                        drop(connecting_info_mut);
                         state.raise_polled(&connect_polled);
 
                         self.state =
@@ -1171,14 +1173,19 @@ impl Event for SocketAcceptEvent {
 
                 let socktype = connecting_info.borrow().socktype;
                 let protocol = connecting_info.borrow().protocol;
-                let SocketState::Connecting(connecting_socket_info) =
-                    &mut connecting_info.borrow_mut().state
-                else {
-                    unreachable!()
-                };
+                let mut connecting_info_mut = connecting_info.borrow_mut();
 
-                let connecting_backend = connecting_socket_info.backend.clone();
-                let connecting_polled = connecting_socket_info.connect_polled.clone();
+                let connecting_backend = match &mut connecting_info_mut.state {
+                    SocketState::Connecting(connecting_socket) => {
+                        state.raise_polled(&connecting_socket.connect_polled);
+                        connecting_socket.backend.clone()
+                    }
+                    SocketState::PendingConnection(pending_socket) => {
+                        pending_socket.backend.clone()
+                    }
+                    _ => unreachable!()
+                };
+                drop(connecting_info_mut);
 
                 let accepting_backend = match connecting_backend {
                     ConnectingBackend::Passthrough => unreachable!(),
@@ -1222,10 +1229,7 @@ impl Event for SocketAcceptEvent {
                         })
                     }
                     ConnectingBackend::Plugin(plugin_info) => {
-                        let endpoint = plugin_info.borrow().endpoint.clone();
-                        let module = plugin_info.borrow().module.clone();
-                        let connect_plugin_id = state.global.add_plugin(endpoint, module);
-                        ConnectedBackend::Plugin(connect_plugin_id)
+                        ConnectedBackend::Plugin(plugin_info)
                     }
                     ConnectingBackend::Sink => ConnectedBackend::Sink,
                     ConnectingBackend::NullSink => ConnectedBackend::NullSink,
@@ -1290,8 +1294,7 @@ impl Event for SocketAcceptEvent {
                     connecting_info.clone()
                 };
 
-                // Let the connecting socket know it's been connected
-                state.raise_polled(&connecting_polled);
+
 
                 let new_fd = Descriptor::from_raw_fd(crate::create_descriptor());
                 // The two sockets are now joined--add a file descriptor to the accepted socket
