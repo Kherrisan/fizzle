@@ -78,7 +78,8 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
 
         // Check read end
         if plugin_module.borrow().can_read(&context) {
-            if let Some(write_buf) = plugin_info.borrow_mut().write_buf.pop_front() {
+            let mut plugin_info_mut = plugin_info.borrow_mut();
+            if let Some(write_buf) = plugin_info_mut.write_buf.pop_front() {
                 log::debug!("plugin module context {:?} can be written", &context);
                 plugin_activated = true;
                 match plugin_module
@@ -89,7 +90,6 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
                     Err(_) => unimplemented!(),
                     Ok(amount) => {
                         log::debug!("plugin module read {} bytes", amount);
-                        let mut plugin_info_mut = plugin_info.borrow_mut();
                         plugin_info_mut.write_idx += amount;
                         if plugin_info_mut.write_idx != write_buf.len() {
                             plugin_info_mut.write_buf.push_front(write_buf);
