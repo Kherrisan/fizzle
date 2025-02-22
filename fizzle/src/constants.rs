@@ -28,7 +28,5 @@ pub const FIZZLE_BUFFER_LENGTH: usize = 262_144; // 256 KB per buffer (twice the
 
 pub const FIZZLE_MAX_NAMED_SEMAPHORES: usize = 128;
 
-pub const FIZZLE_MAX_PER_ROUND_ENDPOINTS: usize = 128;
-
 pub const FIZZLE_EPHEMERAL_PORT_START: u16 = 32768;
 pub const FIZZLE_EPHEMERAL_PORT_END: u16 = 61000;

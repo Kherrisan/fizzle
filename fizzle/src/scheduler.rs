@@ -22,7 +22,7 @@ use crate::handlers::mutex::MutexStatus;
 use crate::handlers::poller::PollerInfo;
 use crate::handlers::process::*;
 use crate::handlers::signal::*;
-use crate::handlers::socket::{SocketInfo, SocketState};
+use crate::handlers::socket::SocketState;
 use crate::handlers::time::ItimerInfo;
 use crate::state;
 use crate::state::*;
@@ -908,6 +908,7 @@ impl Scheduler {
                 "added pending client with local addr {:?}",
                 socket_info.borrow().local_addr
             );
+            state.global.per_round_endpoints.push(socket_info);
         }
 
         drop(state);
@@ -915,34 +916,21 @@ impl Scheduler {
 
     fn remove_perround_endpoints(ctx: &mut FizzleSingleton) -> bool {
         let mut state = ctx.acquire();
-        let global = &mut state.global;
 
-        let endpoints: Vec<GlobalRc<SocketInfo>> = global.per_round_endpoints.drain(..).collect();
+        let endpoints: Vec<_> = state.global.per_round_endpoints.drain(..).collect();
         if endpoints.is_empty() {
             return false;
         }
 
         for sock_info in endpoints {
-            let local_transport = sock_info.borrow().local_transport();
-
             match &mut sock_info.borrow_mut().state {
-                SocketState::PendingConnection(_) => (), // Leave be
+                SocketState::PendingConnection(pending) => {
+                    let addr = pending.rem_addr.clone();
+                    // Pending sockets are exclusively the result of per-round clients, so we just clear() wholesale here.
+                    state.global.socket_locations.get_mut(&addr).unwrap().pending.clear();
+                }
                 SocketState::Connected(connected) => {
                     log::debug!("removing connected fuzz/plugin client socket");
-
-                    let target_address = local_transport.unwrap();
-
-                    let source_address = connected.rem_addr.clone();
-                    let client_backend = match &connected.backend {
-                        ConnectedBackend::Plugin(plugin_id) => {
-                            PerRoundClientBackend::Plugin(plugin_id.clone())
-                        }
-                        ConnectedBackend::Fuzz(fuzz_endpoint_id) => {
-                            PerRoundClientBackend::Fuzz(fuzz_endpoint_id.clone())
-                        }
-                        _ => unreachable!(),
-                    };
-
                     if !connected.peer_closed {
                         connected.peer_closed = true;
 
@@ -950,27 +938,14 @@ impl Scheduler {
                         match connected.backend.clone() {
                             ConnectedBackend::Plugin(plugin_info) => {
                                 let read_polled = plugin_info.borrow().read_polled.clone();
-                                let write_polled = plugin_info.borrow().write_polled.clone();
-                                global.raise_polled(&read_polled);
-                                global.raise_polled(&write_polled);
+                                state.raise_polled(&read_polled);
                             }
                             ConnectedBackend::Fuzz(fuzz_endpoint) => {
                                 let read_polled = fuzz_endpoint.borrow().read_polled.clone();
-                                global.raise_polled(&read_polled);
+                                state.raise_polled(&read_polled);
                             }
                             _ => unreachable!(),
                         }
-                    }
-
-                    global
-                        .per_round_clients
-                        .push(PerRoundClientInfo {
-                            source_address,
-                            target_address,
-                            backend: client_backend,
-                        });
-                    {
-                        panic!("failed to insert to per_round_clients")
                     }
                 }
                 _ => unreachable!(),

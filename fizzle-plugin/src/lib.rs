@@ -78,8 +78,8 @@ pub enum IoEndpointVariant {
     SctpClient(SocketAddr),
 }
 
-/// An error that a plugin may return during calls to [`read()`](PluginObject::read) or
-/// [`write()`](PluginObject::write).
+/// An error that a plugin may return during calls to [`read()`](PluginModule::read) or
+/// [`write()`](PluginModule::write).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PluginError {
@@ -96,13 +96,13 @@ pub enum PluginError {
 ///
 /// Plugins can model pseudorandom configuration files, mimic network service dependencies,
 /// or even add structure- and protocol-awareness to otherwise arbitrary fuzzing inputs.
-pub trait Plugin: PluginObject {
+pub trait Plugin: PluginModule {
     /// Constructs an instance of this plugin, configured with `config`.
     fn new(config: HashMap<IoEndpointVariant, toml::Table>) -> Self;
 }
 
 /// Helper function to safely write data to the uninitialized buffer passed in
-/// [`write()`](PluginObject::write).
+/// [`write()`](PluginModule::write).
 pub fn write_to_uninit(data: &[u8], buf: &mut [MaybeUninit<u8>]) -> usize {
     let amount = cmp::min(data.len(), buf.len());
 
@@ -122,7 +122,7 @@ pub fn write_to_uninit(data: &[u8], buf: &mut [MaybeUninit<u8>]) -> usize {
 /// of the context is meant for plugins that implement multiple protocols (e.g., to share state
 /// between protocols), so it can be safely ignored for plugins that only have one [`Plugin`]
 /// implementation.
-pub trait PluginObject {
+pub trait PluginModule {
     /// Indicates the beginning of a new fuzzing round and loads a source of entropy (e.g., fuzzing
     /// input) that the plugin may base its behavior on.
     ///

@@ -186,7 +186,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let final_tokens = quote::quote! {
         #[allow(unused)]
-        use fizzle_plugin::{IoEndpointVariant, Plugin, PluginObject};
+        use fizzle_plugin::{IoEndpointVariant, Plugin, PluginModule};
         #[allow(unused)]
         use std::cell::RefCell;
         #[allow(unused)]
@@ -204,7 +204,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         #includes
 
-        pub fn populate_plugins(endpoints: &mut Vec<PluginEndpoint>, plugins: &mut Vec<Rc<RefCell<dyn PluginObject>>>) {
+        pub fn populate_plugins(endpoints: &mut Vec<PluginEndpoint>, plugins: &mut Vec<Rc<RefCell<dyn PluginModule>>>) {
             #plugins_impl
         }
 

@@ -1,7 +1,9 @@
 use std::alloc::{Allocator, Global};
 use std::cell::UnsafeCell;
+use std::marker::PhantomPinned;
 use std::mem::MaybeUninit;
 use std::rc::Rc;
+use std::sync::Arc;
 
 unsafe fn raw(s: &Semaphore) -> *mut libc::sem_t {
     s.inner.get().cast()
@@ -10,6 +12,7 @@ unsafe fn raw(s: &Semaphore) -> *mut libc::sem_t {
 #[derive(Debug)]
 pub struct Semaphore {
     inner: UnsafeCell<libc::sem_t>,
+    _phantom: PhantomPinned,
 }
 
 impl Semaphore {
@@ -62,9 +65,35 @@ impl Semaphore {
         unsafe { s.assume_init() }
     }
 
+    /// Constructs a new semaphore within an `Rc` memory region.
+    ///
+    /// This method is safe to use under most normal circumstances, but the enclosed `Sem` must
+    /// not be moved out of the box or undefined behavior will occur.
+    #[inline]
+    pub fn new_arc(value: u32) -> Arc<Semaphore> {
+        Self::new_arc_in(value, false, Global)
+    }
+
+    /// Constructs a new semaphore within an `Rc` memory region from the provided allocator.
+    ///
+    /// This method is safe to use under most normal circumstances, but the enclosed `Sem` must
+    /// not be moved out of the box or undefined behavior will occur.
+    pub fn new_arc_in<A>(value: u32, shared: bool, alloc: A) -> Arc<Semaphore, A>
+    where
+        A: Allocator,
+    {
+        let mut s: Arc<MaybeUninit<Semaphore>, A> = Arc::new_in(MaybeUninit::uninit(), alloc);
+
+        // SAFETY: `s` is the only reference, so `Rc::get_mut()` is guaranteed to return `Some()`.
+        Self::initialize(Arc::get_mut(&mut s).unwrap(), shared, value);
+
+        unsafe { s.assume_init() }
+    }
+
     /// Initializes a semaphore in-place.
     ///
-    /// This method is safe to use with shared memory to enable inter-process communication locks.
+    /// This method is safe to use with shared memory to enable inter-process communication locks,
+    /// provided the initialized memory region is not moved at all.
     pub fn initialize(
         sem: &mut MaybeUninit<Semaphore>,
         shared: bool,

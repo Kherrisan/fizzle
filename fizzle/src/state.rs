@@ -16,7 +16,7 @@ use fizzle_common::io::{
     AddressFamily, SocketAddrUnix, SocketType, TransportAddress, TransportProtocol, MAX_PATH_LEN,
 };
 use fizzle_common::path::{FilePath, SemaphorePath};
-use fizzle_plugin::{IoEndpointVariant, PluginObject, StreamId};
+use fizzle_plugin::{IoEndpointVariant, PluginModule, StreamId};
 use fxhash::FxBuildHasher;
 use heapless::FnvIndexMap;
 use rand::rngs::SmallRng;
@@ -413,6 +413,7 @@ impl FizzleState {
 
             // Initialize plugin endpoints
             log::info!("populating comptime-generated plugins...");
+            // [Plugins] 1. plugins are populated from comptime-generated code
             comptime::populate_plugins(&mut endpoints, &mut plugins);
             log::info!("comptime-generated plugins populated.");
 
@@ -424,6 +425,7 @@ impl FizzleState {
             });
 
             log::info!("calling `load_config_mappings()`...");
+            // [Plugins] 2. Configuration mappings are loaded for each plugin endpoint (e.g., state.global.plugins is populated)
             state.load_config_mappings(endpoints);
             log::info!("`load_config_mappings()` complete.");
             log::info!("`initialize_main_process()` complete.");
@@ -719,9 +721,9 @@ impl FizzleState {
                     IoEndpointVariant::TcpServer(addr) => {
                         let backend = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => ServerBackend::Feedback(()),
-                            IoEmulationType::Plugin(module_id) => ServerBackend::Plugin(
+                            IoEmulationType::Plugin(module) => ServerBackend::Plugin(
                                 self.global
-                                    .add_plugin(endpoint_variant.clone(), module_id.clone()),
+                                    .add_plugin(endpoint_variant.clone(), module.clone()),
                             ),
                             IoEmulationType::Sink => ServerBackend::Sink,
                             IoEmulationType::NullSink => ServerBackend::NullSink,
@@ -1020,7 +1022,7 @@ pub struct InheritedState {
 pub struct MainProcessState {
     pub onstartup_commands: Vec<Command>,
     pub onready_commands: Vec<Command>,
-    pub plugins: Vec<Rc<RefCell<dyn PluginObject>>>,
+    pub plugins: Vec<Rc<RefCell<dyn PluginModule>>>,
     pub pasture: HashMap<CowId, CowInfo>,
 }
 
@@ -1156,8 +1158,10 @@ pub struct InterprocessState {
 
     pub tasks:
         GlobalList<GlobalBox<dyn FnOnce(&mut FizzleSingleton) -> TaskResult + Send + 'static>>,
-
+    /// Plugin/fuzzing clients that are designated to be created and destroyed at each fuzzing
+    /// round.
     pub per_round_clients: GlobalVec<PerRoundClientInfo>,
+    /// Per-round plugin/fuzzing endpoints that are currently active.
     pub per_round_endpoints: GlobalVec<GlobalRc<SocketInfo>>,
     pub prefuzz_rng: rand::rngs::SmallRng,
     pub current_time: Duration,
@@ -1355,7 +1359,6 @@ impl InterprocessState {
                 state: SocketState::PendingConnection(PendingSocket {
                     rem_addr: rem_addr.clone(),
                     backend,
-                    next_pending: None,
                 }),
                 socktype: SocketType::Datagram,
                 protocol: src_addr.protocol(),
@@ -1374,6 +1377,13 @@ impl InterprocessState {
                     }),
                     fizzle_alloc(),
                 );
+                
+                let mut pending = LinkedList::new_in(fizzle_alloc());
+                pending.push_front(PendingInfo {
+                    client: client_socket_info.clone(),
+                    poll: polled,
+                });
+
                 if self
                     .socket_locations
                     .insert(
@@ -1381,57 +1391,27 @@ impl InterprocessState {
                         TransportLocationInfo {
                             reuse_port: false,
                             bound_sockets: LinkedList::new_in(fizzle_alloc()),
-                            pending: Some(PendingInfo {
-                                client: client_socket_info.clone(),
-                                poll: polled,
-                            }),
+                            pending,
                         },
                     )
                     .is_err()
                 {
-                    panic!("failed to insert to socket_locations")
+                    panic!("failed to insert client into socket_locations")
                 }
             }
             Some(location_info) => {
-                match &location_info.pending {
-                    Some(PendingInfo { client, .. }) => {
-                        let mut last_client = client.clone();
-                        let mut last_client_borrow = last_client.borrow();
-                        while let SocketState::PendingConnection(PendingSocket {
-                            next_pending: Some(id),
-                            ..
-                        }) = &last_client_borrow.state
-                        {
-                            let new_last_client = id.clone();
-                            drop(last_client_borrow);
-                            last_client = new_last_client;
-                            last_client_borrow = last_client.borrow();
-                        }
+                let polled = Rc::new_in(
+                    RefCell::new(PolledInfo {
+                        pollers: Vec::new_in(fizzle_alloc()),
+                        event_raised: false,
+                    }),
+                    fizzle_alloc(),
+                );
 
-                        let SocketState::PendingConnection(PendingSocket {
-                            next_pending: next_awaiting,
-                            ..
-                        }) = &mut last_client.borrow_mut().state
-                        else {
-                            panic!("unexpected internal fizzle state--chain of awaiting clients had invalid socket variant")
-                        };
-
-                        *next_awaiting = Some(client_socket_info.clone());
-                    }
-                    None => {
-                        let polled = Rc::new_in(
-                            RefCell::new(PolledInfo {
-                                pollers: Vec::new_in(fizzle_alloc()),
-                                event_raised: false,
-                            }),
-                            fizzle_alloc(),
-                        );
-                        location_info.pending = Some(PendingInfo {
-                            client: client_socket_info.clone(),
-                            poll: polled,
-                        });
-                    }
-                }
+                location_info.pending.push_back(PendingInfo {
+                    client: client_socket_info.clone(),
+                    poll: polled,
+                });
 
                 if let Some(socket_info) = location_info.bound_sockets.pop_front() {
                     log::debug!("found bound socket at location for pending connection");
@@ -1488,14 +1468,14 @@ impl InterprocessState {
                     .insert(
                         transport_addr.clone(),
                         TransportLocationInfo {
-                            pending: None,
                             reuse_port: false,
                             bound_sockets,
+                            pending: LinkedList::new_in(fizzle_alloc()),
                         },
-                    )
-                    .is_err()
+                    ).unwrap()
+                    .is_some()
                 {
-                    panic!("failed to insert to socket_locations")
+                    panic!("socket location {:?} was already bound", transport_addr)
                 }
             }
             Some(location_info) => {
@@ -1508,7 +1488,7 @@ impl InterprocessState {
     pub fn add_plugin(
         &mut self,
         endpoint: IoEndpointVariant,
-        module: Rc<RefCell<dyn PluginObject>>,
+        module: Rc<RefCell<dyn PluginModule>>,
     ) -> GlobalRc<PluginInfo> {
         let stream = self.next_stream_id;
         self.next_stream_id = StreamId::from(usize::from(stream) + 1);

@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use fizzle_plugin::{Context, IoEndpointVariant, PluginObject};
+use fizzle_plugin::{Context, IoEndpointVariant, PluginModule};
 
 use crate::scheduler::fizzle_alloc;
 use crate::state::FizzleState;
@@ -39,7 +39,7 @@ pub enum IoEmulationType {
     Feedback,
     /// Uses the plugin specified by the Rc to decide `read()`/`write()` behavior.
     #[allow(unused)]
-    Plugin(Rc<RefCell<dyn PluginObject>>),
+    Plugin(Rc<RefCell<dyn PluginModule>>),
     #[allow(unused)]
     Sink,
     #[allow(unused)]

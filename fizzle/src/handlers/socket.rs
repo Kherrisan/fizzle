@@ -3,6 +3,7 @@ use heapless::Entry;
 
 use std::cell::RefCell;
 use std::collections::LinkedList;
+use std::fmt::Debug;
 use std::mem::MaybeUninit;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
@@ -73,7 +74,7 @@ fn get_or_assign_local(
                             TransportLocationInfo {
                                 reuse_port,
                                 bound_sockets,
-                                pending: None,
+                                pending: LinkedList::new_in(fizzle_alloc()),
                             },
                         )
                         .is_err()
@@ -100,7 +101,17 @@ fn get_or_assign_local(
 pub struct TransportLocationInfo {
     pub reuse_port: bool,
     pub bound_sockets: GlobalList<GlobalRc<SocketInfo>>,
-    pub pending: Option<PendingInfo>,
+    pub pending: GlobalList<PendingInfo>,
+}
+
+impl Debug for TransportLocationInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TransportLocationInfo")
+            .field("reuse_port", &self.reuse_port)
+            .field("bound_sockets", &"<opaque>")
+            .field("pending", &"<opaque>")
+            .finish()
+    }
 }
 
 impl TransportLocationInfo {
@@ -241,7 +252,6 @@ pub struct ServerSocket {
 #[derive(Clone)]
 pub struct PendingSocket {
     pub backend: PendingBackend,
-    pub next_pending: Option<GlobalRc<SocketInfo>>,
     pub rem_addr: TransportAddress,
 }
 
@@ -543,7 +553,7 @@ impl Event for SocketCreatePairEvent {
                 TransportLocationInfo {
                     reuse_port: false,
                     bound_sockets,
-                    pending: None,
+                    pending: LinkedList::new_in(fizzle_alloc()),
                 },
             )
             .is_err()
@@ -562,7 +572,7 @@ impl Event for SocketCreatePairEvent {
                 TransportLocationInfo {
                     reuse_port: false,
                     bound_sockets,
-                    pending: None,
+                    pending: LinkedList::new_in(fizzle_alloc()),
                 },
             )
             .is_err()
@@ -685,7 +695,7 @@ impl Event for SocketBindEvent {
                 if v.insert(TransportLocationInfo {
                     reuse_port,
                     bound_sockets,
-                    pending: None,
+                    pending: LinkedList::new_in(fizzle_alloc()),
                 })
                 .is_err()
                 {
@@ -750,13 +760,13 @@ impl Event for SocketListenEvent {
             fizzle_alloc(),
         );
 
-        if state
+        if !state
             .global
             .socket_locations
             .get_mut(&addr)
             .unwrap()
             .pending
-            .is_some()
+            .is_empty()
         {
             state.raise_polled(&ready_to_connect);
         }
@@ -1051,40 +1061,15 @@ impl Event for SocketAcceptEvent {
                     .socket_locations
                     .get_mut(&server_address)
                     .unwrap();
-                if let Some(PendingInfo { mut client, poll }) = bound_info.pending.take() {
+                if let Some(PendingInfo { mut client, poll }) = bound_info.pending.pop_front() {
+                    if bound_info.pending.is_empty() && !has_connecting {
+                        state.lower_polled(&ready_to_connect);
+                    }
+
                     let _addr = get_or_assign_local(&mut client, state);
 
                     let mut client_mut = client.borrow_mut();
-                    let SocketState::PendingConnection(pending_info) = &mut client_mut.state else {
-                        unreachable!()
-                    };
-
-                    // Update the linked list of pending clients
-                    match pending_info.next_pending.clone() {
-                        Some(pending_id) => {
-                            state
-                                .global
-                                .socket_locations
-                                .get_mut(&server_address)
-                                .unwrap()
-                                .pending
-                                .as_mut()
-                                .unwrap()
-                                .client = pending_id
-                        }
-                        None => {
-                            state
-                                .global
-                                .socket_locations
-                                .get_mut(&server_address)
-                                .unwrap()
-                                .pending = None;
-
-                            if !has_connecting {
-                                state.lower_polled(&ready_to_connect);
-                            }
-                        }
-                    }
+                    assert!(matches!(&mut client_mut.state, SocketState::PendingConnection(_)));
 
                     state.raise_polled(&poll);
 
@@ -2622,7 +2607,7 @@ impl Event for SocketReadEvent<'_> {
             (
                 SocketReadState::Finish(poller_id),
                 SocketState::Connected(ConnectedSocket {
-                    backend: ConnectedBackend::Plugin(plugin_endpoint_id),
+                    backend: ConnectedBackend::Plugin(_),
                     ..
                 }),
             ) => {

@@ -8,7 +8,7 @@ use std::cmp;
 
 use asnfuzzgen_codecs::aper::AperCodec;
 use asnfuzzgen_codecs::PerCodecData;
-use fizzle_plugin::{Plugin, PluginError, PluginObject};
+use fizzle_plugin::{Plugin, PluginError, PluginModule};
 
 pub struct S1apFuzzClient {
     s1setup_bytes: Vec<u8>,
@@ -18,7 +18,7 @@ pub struct S1apFuzzClient {
 }
 
 #[allow(non_camel_case_types)]
-impl PluginObject for S1apFuzzClient {
+impl PluginModule for S1apFuzzClient {
     fn fuzz_round_start(&mut self, entropy: &[u8]) {
         self.s1setup_idx = 0;
         self.message_idx = 0;

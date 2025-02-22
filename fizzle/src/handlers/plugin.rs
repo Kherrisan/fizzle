@@ -2,7 +2,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use crate::{GlobalList, GlobalRc, GlobalVec};
 
-use fizzle_plugin::{IoEndpointVariant, PluginObject, StreamId};
+use fizzle_plugin::{IoEndpointVariant, PluginModule, StreamId};
 
 use super::polled::PolledInfo;
 
@@ -21,7 +21,7 @@ pub struct PluginInfo {
     pub endpoint: IoEndpointVariant,
     pub stream: StreamId,
     /// The plugin module to read/write from.
-    pub module: Rc<RefCell<dyn PluginObject>>,
+    pub module: Rc<RefCell<dyn PluginModule>>,
     pub read_buf: GlobalList<GlobalVec<u8>>,
     pub read_idx: usize,
     pub read_polled: GlobalRc<PolledInfo>,
