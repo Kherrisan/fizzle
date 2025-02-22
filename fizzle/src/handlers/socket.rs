@@ -2213,6 +2213,8 @@ impl Event for SocketReadEvent<'_> {
                     ..
                 }),
             ) => {
+                let read_polled = &regular.read_polled;
+
                 if let Some(poller) = poller_id.as_ref() {
                     state.delete_poller(poller.clone());
                 }
@@ -2220,6 +2222,9 @@ impl Event for SocketReadEvent<'_> {
                 match &mut self.data {
                     ReadData::Basic(data) => {
                         let message = regular.recv_buf.pop_front().unwrap();
+                        if regular.recv_buf.is_empty() {
+                            state.lower_polled(&read_polled);
+                        }
 
                         let mut idx = 0;
                         for s in data.iter_mut() {
@@ -2238,10 +2243,11 @@ impl Event for SocketReadEvent<'_> {
                         for out_msg in out_msgs.iter_mut() {
                             let Some(msg) = regular.recv_buf.pop_front() else {
                                 assert!(msg_count > 0);
+                                state.lower_polled(&read_polled);
                                 return Outcome::Success(msg_count);
                             };
 
-                            *out_msg.msg_flags = SocketMsgFlags::empty();
+                            *out_msg.msg_flags = SocketMsgFlags::EOR;
 
                             *out_msg.addrlen = msg.source.encode(&mut out_msg.addr_bytes) as u32;
                             for (out_byte, byte) in
@@ -2272,6 +2278,10 @@ impl Event for SocketReadEvent<'_> {
                             msg_count += 1;
                         }
 
+                        if regular.recv_buf.is_empty() {
+                            state.lower_polled(&read_polled);
+                        }
+
                         Outcome::Success(msg_count)
                     }
                 }
@@ -2283,6 +2293,8 @@ impl Event for SocketReadEvent<'_> {
                     ..
                 }),
             ) => {
+                let read_polled = &feedback.read_polled;
+
                 if let Some(poller) = poller_id.as_ref() {
                     state.delete_poller(poller.clone());
                 }
@@ -2290,6 +2302,9 @@ impl Event for SocketReadEvent<'_> {
                 match &mut self.data {
                     ReadData::Basic(data) => {
                         let message = feedback.recv_buf.pop_front().unwrap();
+                        if feedback.recv_buf.is_empty() {
+                            state.lower_polled(read_polled);
+                        }
 
                         let mut idx = 0;
                         for s in data.iter_mut() {
@@ -2308,10 +2323,11 @@ impl Event for SocketReadEvent<'_> {
                         for out_msg in out_msgs.iter_mut() {
                             let Some(msg) = feedback.recv_buf.pop_front() else {
                                 assert!(msg_count > 0);
+                                state.lower_polled(read_polled);
                                 return Outcome::Success(msg_count);
                             };
 
-                            *out_msg.msg_flags = SocketMsgFlags::empty();
+                            *out_msg.msg_flags = SocketMsgFlags::EOR;
 
                             *out_msg.addrlen = msg.source.encode(&mut out_msg.addr_bytes) as u32;
                             for (out_byte, byte) in
@@ -2340,6 +2356,10 @@ impl Event for SocketReadEvent<'_> {
                             *out_msg.buflen = total_read as u32;
 
                             msg_count += 1;
+                        }
+
+                        if feedback.recv_buf.is_empty() {
+                            state.lower_polled(&read_polled);
                         }
 
                         Outcome::Success(msg_count)
@@ -2479,30 +2499,38 @@ impl Event for SocketReadEvent<'_> {
                 SocketReadState::Finish(poller_id),
                 SocketState::Connected(ConnectedSocket {
                     backend: ConnectedBackend::Peered(regular),
-                    ..
+                    rem_addr,
+                    peer_closed, // TODO: handle this case
                 }),
             ) => {
+                let read_polled = &regular.read_polled;
+
                 if let Some(poller) = poller_id.as_ref() {
                     state.delete_poller(poller.clone());
                 }
+
+                let sockaddr = rem_addr.addr().clone();
 
                 match &mut self.data {
                     ReadData::Basic(data) => {
                         let Some(buf) = regular.recv_buf.pop_front() else {
                             unreachable!()
                         };
+                        if regular.recv_buf.is_empty() {
+                            state.lower_polled(read_polled);
+                        }
 
                         let mut read_idx = regular.read_idx;
                         let mut total_read = 0;
 
                         for s in data.iter_mut() {
                             let read = cmp::min(s.len(), buf.len() - read_idx);
-                            s.copy_from_slice(&buf[read_idx..read_idx + read]);
+                            s[..read].copy_from_slice(&buf[read_idx..read_idx + read]);
                             read_idx += read;
                             total_read += read;
                         }
 
-                        if read_idx == regular.read_idx {
+                        if read_idx == buf.len() {
                             regular.read_idx = 0;
                         } else {
                             regular.read_idx = read_idx;
@@ -2517,25 +2545,29 @@ impl Event for SocketReadEvent<'_> {
 
                         let mut msg_count = 0;
                         for out_msg in out_msgs.iter_mut() {
-                            *out_msg.msg_flags = SocketMsgFlags::empty();
+                            let Some(buf) = regular.recv_buf.pop_front() else {
+                                assert!(msg_count > 0);
+                                state.lower_polled(read_polled);
+                                return Outcome::Success(msg_count)
+                            };
 
-                            *out_msg.addrlen = 0; // TODO: encode peer addr
+                            *out_msg.msg_flags = SocketMsgFlags::EOR;
+                            
+                            *out_msg.addrlen = sockaddr.encode(out_msg.addr_bytes) as u32;
                             *out_msg.control_len = 0; // TODO: encode ancillary
 
-                            let Some(buf) = regular.recv_buf.pop_front() else {
-                                unreachable!()
-                            };
+
                             let mut read_idx = regular.read_idx;
 
                             let mut total_read = 0;
                             for s in out_msg.buf.iter_mut() {
                                 let read = cmp::min(buf.len() - read_idx, s.len());
-                                s.copy_from_slice(&buf[read_idx..read_idx + read]);
+                                s[..read].copy_from_slice(&buf[read_idx..read_idx + read]);
                                 read_idx += read;
                                 total_read += read;
                             }
 
-                            if read_idx == regular.read_idx {
+                            if read_idx == buf.len() {
                                 regular.read_idx = 0;
                             } else {
                                 regular.read_idx = read_idx;
@@ -2545,6 +2577,10 @@ impl Event for SocketReadEvent<'_> {
                             *out_msg.buflen = total_read as u32;
 
                             msg_count += 1;
+                        }
+
+                        if regular.recv_buf.is_empty() {
+                            state.lower_polled(&read_polled);
                         }
 
                         Outcome::Success(msg_count)
@@ -2610,15 +2646,92 @@ impl Event for SocketReadEvent<'_> {
             (
                 SocketReadState::Finish(poller_id),
                 SocketState::Connected(ConnectedSocket {
-                    backend: ConnectedBackend::Plugin(_),
-                    ..
+                    backend: ConnectedBackend::Plugin(plugin),
+                    rem_addr,
+                    peer_closed, // TODO: check
                 }),
             ) => {
+                let read_polled = plugin.borrow().read_polled.clone();
+
                 if let Some(poller) = poller_id.as_ref() {
                     state.delete_poller(poller.clone());
                 }
 
-                todo!("stateless socket plugins (e.g. UDP) not implemented")
+                let sockaddr = rem_addr.addr().clone();
+
+                match &mut self.data {
+                    ReadData::Basic(data) => {
+                        let Some(buf) = plugin.borrow_mut().read_buf.pop_front() else {
+                            unreachable!()
+                        };
+                        
+                        if plugin.borrow().read_buf.is_empty() {
+                            state.lower_polled(&read_polled);
+                        }
+
+                        let mut read_idx = plugin.borrow().read_idx;
+                        let mut total_read = 0;
+                        for s in data.iter_mut() {
+                            let read = cmp::min(s.len(), buf.len() - read_idx);
+                            s[..read].copy_from_slice(&buf[read_idx..read_idx + read]);
+                            read_idx += read;
+                            total_read += read;
+                        }
+
+                        if read_idx == buf.len() {
+                            plugin.borrow_mut().read_idx = 0;
+                        } else {
+                            plugin.borrow_mut().read_idx = read_idx;
+                            plugin.borrow_mut().read_buf.push_front(buf);
+                        }
+
+                        Outcome::Success(total_read)
+                    }
+                    ReadData::File(_data) => Outcome::Error(Errno::ESPIPE),
+                    ReadData::Socket(out_msgs, _socket_flags) => {
+                        // TODO: blocking incorrectly handled here (see the MSG_WAITFORONE flag in `man 2 recvmmsg`)
+
+                        let mut msg_count = 0;
+                        for out_msg in out_msgs.iter_mut() {
+                            let Some(buf) = plugin.borrow_mut().read_buf.pop_front() else {
+                                assert!(msg_count > 0);
+                                state.lower_polled(&read_polled);
+                                return Outcome::Success(msg_count)
+                            };
+
+                            *out_msg.msg_flags = SocketMsgFlags::EOR;
+
+                            *out_msg.addrlen = sockaddr.encode(out_msg.addr_bytes) as u32;
+                            *out_msg.control_len = 0; // TODO: encode ancillary
+
+                            let mut read_idx = plugin.borrow().read_idx;
+                            let mut total_read = 0;
+                            for s in out_msg.buf.iter_mut() {
+                                let read = cmp::min(buf.len() - read_idx, s.len());
+                                s[..read].copy_from_slice(&buf[read_idx..read_idx + read]);
+                                read_idx += read;
+                                total_read += read;
+                            }
+
+                            if read_idx == buf.len() {
+                                plugin.borrow_mut().read_idx = 0;
+                            } else {
+                                plugin.borrow_mut().read_idx = read_idx;
+                                plugin.borrow_mut().read_buf.push_front(buf);
+                            }
+
+                            *out_msg.buflen = total_read as u32;
+
+                            msg_count += 1;
+                        }
+
+                        if plugin.borrow().read_buf.is_empty() {
+                            state.lower_polled(&read_polled);
+                        }
+
+                        Outcome::Success(msg_count)
+                    }
+                }
             }
             (
                 SocketReadState::Finish(poller_id),
@@ -2799,7 +2912,7 @@ impl Event for SocketWriteEvent<'_> {
                         let mut data = Vec::new_in(fizzle_alloc());
                         data.extend_from_slice(s);
 
-                        let Some(mut peer) = conn.dst_socket(state) else {
+                        let Some(peer) = conn.dst_socket(state) else {
                             log::warn!("no destination for connectionless socket information to be received--dropping sent packet");
                             return Outcome::Success(s.len());
                         };
@@ -3089,6 +3202,7 @@ impl Event for SocketWriteEvent<'_> {
                                         unreachable!()
                                     };
 
+                                    *write_data.buflen = data.len() as u32;
                                     (ConnectionlessMessage {
                                         source: local_addr.addr().clone(),
                                         ancillary,
@@ -3103,6 +3217,7 @@ impl Event for SocketWriteEvent<'_> {
                                 }
                                 ConnectedBackend::Plugin(p) => {
                                     let mut plugin_ref = p.borrow_mut();
+                                    *write_data.buflen = data.len() as u32;
                                     plugin_ref.write_buf.push_back(data);
                                 }
                                 ConnectedBackend::Passthrough => unimplemented!(),
