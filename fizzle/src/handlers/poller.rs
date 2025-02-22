@@ -829,6 +829,9 @@ impl Event for EpollWaitEvent<'_> {
             EpollWaitState::CheckDescriptors => {
                 let mut total_ready = 0;
 
+                // TODO: BUG: ApplySigmask is called before this, but `return Outcome::Error` shortcuts
+                // don't revert that sigmask...
+
                 let mut read_pollers = HashMap::with_hasher(FxBuildHasher::default());
                 let mut write_pollers = HashMap::with_hasher(FxBuildHasher::default());
 
@@ -844,6 +847,7 @@ impl Event for EpollWaitEvent<'_> {
                     let mut fd_ready = false;
                     let fd = target_descriptor.as_raw_fd();
                     let direction = &interest.direction;
+                    let mut events = 0;
 
                     if let EpollDirection::Read(status) | EpollDirection::Both(status, _) =
                         direction
@@ -862,6 +866,7 @@ impl Event for EpollWaitEvent<'_> {
                                         fd
                                     );
                                     fd_ready = true;
+                                    events |= libc::EPOLLIN;
                                 }
                             }
                             PolledStatus::BadFd => {
@@ -881,6 +886,7 @@ impl Event for EpollWaitEvent<'_> {
                                     fd
                                 );
                                 fd_ready = true;
+                                events |= libc::EPOLLIN;
                             }
                         }
                     }
@@ -902,6 +908,7 @@ impl Event for EpollWaitEvent<'_> {
                                         fd
                                     );
                                     fd_ready = true;
+                                    events |= libc::EPOLLOUT;
                                 }
                             }
                             PolledStatus::BadFd => {
@@ -918,11 +925,14 @@ impl Event for EpollWaitEvent<'_> {
                                     fd
                                 );
                                 fd_ready = true;
+                                events |= libc::EPOLLOUT;
                             }
                         }
                     }
 
-                    if fd_ready {
+                    if fd_ready && total_ready < self.events.len() {
+                        self.events[total_ready].u64 = interest.user_data;
+                        self.events[total_ready].events = events as u32;
                         total_ready += 1;
                     }
                 }
@@ -972,35 +982,30 @@ impl Event for EpollWaitEvent<'_> {
                     return Outcome::Error(Errno::EINVAL);
                 };
 
-                let mut write_idx = 0;
 
                 for (target_descriptor, interest) in epoll.borrow().interests.iter() {
                     let mut fd_is_ready = false;
                     let fd = target_descriptor.as_raw_fd();
-
-                    if write_idx == self.events.len() {
-                        break;
-                    }
+                    let mut events = 0;
 
                     if let Some(polled_id) = read_pollers.get(&fd) {
                         if state.polled_is_ready(polled_id) {
-                            self.events[write_idx].events |= libc::POLLIN as u32;
-                            self.events[write_idx].u64 = interest.user_data;
                             fd_is_ready = true;
+                            events |= libc::EPOLLIN;
                         }
                     }
 
                     if let Some(polled_id) = write_pollers.get(&fd) {
                         if state.polled_is_ready(polled_id) {
-                            self.events[write_idx].events |= libc::POLLOUT as u32;
-                            self.events[write_idx].u64 = interest.user_data;
                             fd_is_ready = true;
+                            events |= libc::EPOLLOUT;
                         }
                     }
 
-                    if fd_is_ready {
+                    if fd_is_ready && total_ready < self.events.len() {
+                        self.events[total_ready].u64 = interest.user_data;
+                        self.events[total_ready].events = events as u32;
                         total_ready += 1;
-                        write_idx += 1;
                     }
                 }
 
@@ -1094,8 +1099,8 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                 PolledStatus::Pollable(fuzz_endpoint.borrow().read_polled.clone())
             }
         },
-        FdResource::Stdout => PolledStatus::NotPollable,
-        FdResource::Stderr => PolledStatus::NotPollable,
+        FdResource::Stdout => PolledStatus::ImmediatelyPollable,
+        FdResource::Stderr => PolledStatus::ImmediatelyPollable,
         FdResource::Socket(socket_info) => match &socket_info.borrow().state {
             SocketState::Connectionless(connectionless) => match &connectionless.backend {
                 ConnectionlessBackend::Passthrough => PolledStatus::ImmediatelyPollable,
@@ -1116,7 +1121,7 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
             },
             SocketState::Unassociated(_) => PolledStatus::NotPollable,
             SocketState::Server(server) => PolledStatus::Pollable(server.ready_to_connect.clone()),
-            SocketState::PendingConnection(_) => PolledStatus::NotPollable,
+            SocketState::PendingConnection(_) => unreachable!(),
             SocketState::Connecting(_) => PolledStatus::NotPollable, // Need to select for writing, not reading
             SocketState::Connected(connected) => match &connected.backend {
                 ConnectedBackend::Passthrough => PolledStatus::ImmediatelyPollable,
