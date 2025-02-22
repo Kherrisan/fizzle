@@ -982,7 +982,6 @@ impl Event for EpollWaitEvent<'_> {
                     return Outcome::Error(Errno::EINVAL);
                 };
 
-
                 for (target_descriptor, interest) in epoll.borrow().interests.iter() {
                     let mut fd_is_ready = false;
                     let fd = target_descriptor.as_raw_fd();

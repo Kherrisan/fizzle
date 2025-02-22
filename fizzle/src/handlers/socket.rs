@@ -1070,7 +1070,10 @@ impl Event for SocketAcceptEvent {
                     let _addr = get_or_assign_local(&mut client, state);
 
                     let mut client_mut = client.borrow_mut();
-                    assert!(matches!(&client_mut.state, SocketState::PendingConnection(_)));
+                    assert!(matches!(
+                        &client_mut.state,
+                        SocketState::PendingConnection(_)
+                    ));
 
                     state.raise_polled(&poll);
 
@@ -1183,7 +1186,7 @@ impl Event for SocketAcceptEvent {
                     SocketState::PendingConnection(pending_socket) => {
                         pending_socket.backend.clone()
                     }
-                    _ => unreachable!()
+                    _ => unreachable!(),
                 };
                 drop(connecting_info_mut);
 
@@ -1228,9 +1231,7 @@ impl Event for SocketAcceptEvent {
                             ),
                         })
                     }
-                    ConnectingBackend::Plugin(plugin_info) => {
-                        ConnectedBackend::Plugin(plugin_info)
-                    }
+                    ConnectingBackend::Plugin(plugin_info) => ConnectedBackend::Plugin(plugin_info),
                     ConnectingBackend::Sink => ConnectedBackend::Sink,
                     ConnectingBackend::NullSink => ConnectedBackend::NullSink,
                     ConnectingBackend::Fuzz(endpoint) => ConnectedBackend::Fuzz(endpoint),
@@ -1293,8 +1294,6 @@ impl Event for SocketAcceptEvent {
 
                     connecting_info.clone()
                 };
-
-
 
                 let new_fd = Descriptor::from_raw_fd(crate::create_descriptor());
                 // The two sockets are now joined--add a file descriptor to the accepted socket

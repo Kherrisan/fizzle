@@ -927,7 +927,13 @@ impl Scheduler {
                 SocketState::PendingConnection(pending) => {
                     let addr = pending.rem_addr.clone();
                     // Pending sockets are exclusively the result of per-round clients, so we just clear() wholesale here.
-                    state.global.socket_locations.get_mut(&addr).unwrap().pending.clear();
+                    state
+                        .global
+                        .socket_locations
+                        .get_mut(&addr)
+                        .unwrap()
+                        .pending
+                        .clear();
                 }
                 SocketState::Connected(connected) => {
                     log::debug!("removing connected fuzz/plugin client socket");

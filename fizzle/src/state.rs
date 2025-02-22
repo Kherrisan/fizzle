@@ -757,22 +757,19 @@ impl FizzleState {
                             .global
                             .ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
-                            self
-                                .global
-                                .per_round_clients
-                                .push(PerRoundClientInfo {
-                                    source_address,
-                                    target_address,
-                                    backend: match backend {
-                                        PendingBackend::Fuzz(fuzz_endpoint_id) => {
-                                            PerRoundClientBackend::Fuzz(fuzz_endpoint_id)
-                                        }
-                                        PendingBackend::Plugin(plugin_id) => {
-                                            PerRoundClientBackend::Plugin(plugin_id)
-                                        }
-                                        _ => unreachable!(),
-                                    },
-                                });
+                            self.global.per_round_clients.push(PerRoundClientInfo {
+                                source_address,
+                                target_address,
+                                backend: match backend {
+                                    PendingBackend::Fuzz(fuzz_endpoint_id) => {
+                                        PerRoundClientBackend::Fuzz(fuzz_endpoint_id)
+                                    }
+                                    PendingBackend::Plugin(plugin_id) => {
+                                        PerRoundClientBackend::Plugin(plugin_id)
+                                    }
+                                    _ => unreachable!(),
+                                },
+                            });
                         } else {
                             self.global
                                 .add_pending_client(source_address, target_address, backend);
@@ -819,22 +816,19 @@ impl FizzleState {
                             .global
                             .ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
-                            self
-                                .global
-                                .per_round_clients
-                                .push(PerRoundClientInfo {
-                                    source_address,
-                                    target_address,
-                                    backend: match backend {
-                                        PendingBackend::Fuzz(fuzz_endpoint_id) => {
-                                            PerRoundClientBackend::Fuzz(fuzz_endpoint_id)
-                                        }
-                                        PendingBackend::Plugin(plugin_id) => {
-                                            PerRoundClientBackend::Plugin(plugin_id)
-                                        }
-                                        _ => unreachable!(),
-                                    },
-                                });
+                            self.global.per_round_clients.push(PerRoundClientInfo {
+                                source_address,
+                                target_address,
+                                backend: match backend {
+                                    PendingBackend::Fuzz(fuzz_endpoint_id) => {
+                                        PerRoundClientBackend::Fuzz(fuzz_endpoint_id)
+                                    }
+                                    PendingBackend::Plugin(plugin_id) => {
+                                        PerRoundClientBackend::Plugin(plugin_id)
+                                    }
+                                    _ => unreachable!(),
+                                },
+                            });
                         } else {
                             self.global
                                 .add_pending_client(source_address, target_address, backend);
@@ -881,22 +875,19 @@ impl FizzleState {
                             .global
                             .ephemeral_address(target_address.family(), target_address.protocol());
                         if endpoint.is_per_round {
-                            self
-                                .global
-                                .per_round_clients
-                                .push(PerRoundClientInfo {
-                                    source_address,
-                                    target_address,
-                                    backend: match backend {
-                                        PendingBackend::Fuzz(fuzz_endpoint_id) => {
-                                            PerRoundClientBackend::Fuzz(fuzz_endpoint_id)
-                                        }
-                                        PendingBackend::Plugin(plugin_id) => {
-                                            PerRoundClientBackend::Plugin(plugin_id)
-                                        }
-                                        _ => unreachable!(),
-                                    },
-                                });
+                            self.global.per_round_clients.push(PerRoundClientInfo {
+                                source_address,
+                                target_address,
+                                backend: match backend {
+                                    PendingBackend::Fuzz(fuzz_endpoint_id) => {
+                                        PerRoundClientBackend::Fuzz(fuzz_endpoint_id)
+                                    }
+                                    PendingBackend::Plugin(plugin_id) => {
+                                        PerRoundClientBackend::Plugin(plugin_id)
+                                    }
+                                    _ => unreachable!(),
+                                },
+                            });
                         } else {
                             self.global
                                 .add_pending_client(source_address, target_address, backend);
@@ -1347,7 +1338,11 @@ impl InterprocessState {
         rem_addr: TransportAddress,
         backend: PendingBackend,
     ) -> GlobalRc<SocketInfo> {
-        log::info!("adding pending client (src={:?}, dst={:?})", src_addr, rem_addr);
+        log::info!(
+            "adding pending client (src={:?}, dst={:?})",
+            src_addr,
+            rem_addr
+        );
 
         let client_socket_info = Rc::new_in(
             RefCell::new(SocketInfo {
@@ -1373,7 +1368,7 @@ impl InterprocessState {
                     }),
                     fizzle_alloc(),
                 );
-                
+
                 let mut pending = LinkedList::new_in(fizzle_alloc());
                 pending.push_front(PendingInfo {
                     client: client_socket_info.clone(),
@@ -1468,7 +1463,8 @@ impl InterprocessState {
                             bound_sockets,
                             pending: LinkedList::new_in(fizzle_alloc()),
                         },
-                    ).unwrap()
+                    )
+                    .unwrap()
                     .is_some()
                 {
                     panic!("socket location {:?} was already bound", transport_addr)

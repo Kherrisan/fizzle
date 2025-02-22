@@ -749,7 +749,9 @@ impl Event for SignalWaitEvent {
                 let mut ready = None;
 
                 for signal in interest_signals.iter() {
-                    if let Some(r) = raised_signals[signal.lowest_signal_value() as usize - 1].take() {
+                    if let Some(r) =
+                        raised_signals[signal.lowest_signal_value() as usize - 1].take()
+                    {
                         ready = Some(r);
                         break;
                     }
