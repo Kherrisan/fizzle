@@ -204,7 +204,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         #includes
 
-        pub fn populate_plugins(endpoints: &mut Vec<PluginEndpoint>, plugins: &mut Vec<Rc<RefCell<dyn PluginModule>>>) {
+        pub fn populate_plugins(endpoints: &mut Vec<PluginEndpoint>) {
             #plugins_impl
         }
 
@@ -433,7 +433,6 @@ fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
         let key_id = quote::format_ident!("key_{}", module_id);
         comptime_output_tokens.extend(quote::quote! {
             let #key_id = Rc::new(RefCell::new((#module::#plugin::new(endpoint_toml_configs))));
-            plugins.push(#key_id.clone());
         });
     }
 

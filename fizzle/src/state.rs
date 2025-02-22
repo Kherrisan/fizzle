@@ -409,18 +409,16 @@ impl FizzleState {
 
             // Initialize plugins--these need to remain fixed in memory, so we use a Box with in-place initialization.
             let mut endpoints = Vec::new();
-            let mut plugins = Vec::new();
 
             // Initialize plugin endpoints
             log::info!("populating comptime-generated plugins...");
             // [Plugins] 1. plugins are populated from comptime-generated code
-            comptime::populate_plugins(&mut endpoints, &mut plugins);
+            comptime::populate_plugins(&mut endpoints);
             log::info!("comptime-generated plugins populated.");
 
             state.local.main_state = Some(MainProcessState {
                 onstartup_commands,
                 onready_commands,
-                plugins,
                 pasture: HashMap::default(),
             });
 
@@ -1022,7 +1020,6 @@ pub struct InheritedState {
 pub struct MainProcessState {
     pub onstartup_commands: Vec<Command>,
     pub onready_commands: Vec<Command>,
-    pub plugins: Vec<Rc<RefCell<dyn PluginModule>>>,
     pub pasture: HashMap<CowId, CowInfo>,
 }
 

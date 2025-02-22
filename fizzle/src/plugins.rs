@@ -73,7 +73,6 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
             stream_id: plugin_info_ref.stream,
         };
 
-        let read_idx = plugin_info_ref.read_idx;
         let write_idx = plugin_info_ref.write_idx;
         drop(plugin_info_ref);
 
