@@ -1016,7 +1016,7 @@ impl Scheduler {
 
         #[cfg(not(feature = "pcr"))]
         loop {
-            let prev_len = state.global.fuzz_input.len()
+            let prev_len = state.global.fuzz_input.len();
             let spare = state.global.fuzz_input.spare_capacity_mut().len();
             if spare < 16384 {
                 state.global.fuzz_input.reserve(16384 - spare);
