@@ -7,7 +7,7 @@ use std::fmt::Debug;
 use std::mem::MaybeUninit;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
-use std::{cmp, mem, slice};
+use std::{cmp, mem, ptr, slice};
 
 use crate::backend::{
     ConnectedBackend, ConnectingBackend, ConnectionlessBackend, PendingBackend, RegularConnected,
@@ -2141,6 +2141,16 @@ pub enum SocketReadState {
     Finish(Option<GlobalRc<PollerInfo>>),
 }
 
+#[repr(C)]
+pub struct SctpShutdownEvent {
+    pub sse_type: u16,
+    pub sse_flags: u16,
+    pub sse_length: u32,
+    pub sse_assoc_id: libc::sctp_assoc_t,
+}
+
+pub const SCTP_SHUTDOWN_EVENT: u16 = (1 << 15) + 5;
+
 pub struct SocketReadEvent<'a> {
     socket: GlobalRc<SocketInfo>,
     nonblocking: bool,
@@ -2661,6 +2671,10 @@ impl Event for SocketReadEvent<'_> {
 
                 match &mut self.data {
                     ReadData::Basic(data) => {
+                        if *peer_closed {
+                            return Outcome::Success(0)
+                        }
+
                         let Some(buf) = plugin.borrow_mut().read_buf.pop_front() else {
                             unreachable!()
                         };
@@ -2690,6 +2704,36 @@ impl Event for SocketReadEvent<'_> {
                     ReadData::File(_data) => Outcome::Error(Errno::ESPIPE),
                     ReadData::Socket(out_msgs, _socket_flags) => {
                         // TODO: blocking incorrectly handled here (see the MSG_WAITFORONE flag in `man 2 recvmmsg`)
+
+                        if *peer_closed {
+                            if rem_addr.protocol() == TransportProtocol::Sctp {
+                                let shutdown_msg = SctpShutdownEvent {
+                                    sse_type: SCTP_SHUTDOWN_EVENT,
+                                    sse_flags: 0,
+                                    sse_length: 0,
+                                    sse_assoc_id: 0,
+                                };
+
+                                let shutdown_data = unsafe {
+                                    slice::from_raw_parts((ptr::from_ref(&shutdown_msg)).cast::<u8>(), mem::size_of_val(&shutdown_msg))
+                                };
+
+                                *out_msgs[0].addrlen = sockaddr.encode(out_msgs[0].addr_bytes) as u32;
+                                *out_msgs[0].control_len = 0;
+                                *out_msgs[0].msg_flags = SocketMsgFlags::NOTIFICATION;
+
+                                let mut written = 0;
+                                for slice in out_msgs[0].buf.iter_mut() {
+                                    let to_write = cmp::min(shutdown_data.len() - written, slice.len());
+                                    slice[..to_write].copy_from_slice(&shutdown_data[written..written + to_write]);
+                                    written += to_write;
+                                }
+                                *out_msgs[0].buflen = shutdown_data.len() as u32;
+                                return Outcome::Success(1)
+                            }
+
+                            return Outcome::Success(0)
+                        }
 
                         let mut msg_count = 0;
                         for out_msg in out_msgs.iter_mut() {
