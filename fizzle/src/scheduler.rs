@@ -91,15 +91,7 @@ pub fn fizzle_alloc() -> GlobalHeap {
                 // Shared memory doesn't play well with the forkserver, so we need to make sure that
                 // processes are forked *before* any shared memory is created.
 
-                #[cfg(all(feature = "afl", feature = "pcr"))]
-                unsafe {    
-                    crate::__afl_sharedmem_fuzzing = 1;
-                }
-
-                #[cfg(feature = "afl")]
-                unsafe {
-                    crate::__afl_manual_init();
-                }
+                crate::afl_onetime_init();
 
                 let memfd = match env::var(FIZZLE_ALLOC_ENV) {
                     Ok(var) => {
@@ -968,19 +960,7 @@ impl Scheduler {
     }
 
     fn prepare_fuzz_input(state: &mut FizzleState) {
-        #[cfg(feature = "afl")]
-        if !state.global.afl_shmem_initialized {
-            state.global.afl_shmem_initialized = true;
-
-            #[cfg(feature = "pcr")]
-            unsafe {
-                crate::__afl_sharedmem_fuzzing = 1;
-            }
-
-            unsafe {
-                crate::__afl_manual_init();
-            }
-        }
+        crate::afl_onetime_init();
 
         #[cfg(not(feature = "pcr"))]
         if !state.global.fuzz_input.is_empty() {
@@ -1066,21 +1046,7 @@ impl Scheduler {
         let mut state = ctx.acquire();
 
         // Initialize AFL (forkservers and multi-process applications don't play well)
-        #[cfg(feature = "afl")]
-        if !state.global.afl_shmem_initialized {
-            state.global.afl_shmem_initialized = true;
-
-            #[cfg(feature = "pcr")]
-            unsafe {
-                crate::__afl_sharedmem_fuzzing = 1;
-            }
-
-            log::debug!("calling __afl_manual_init()");
-            unsafe {
-                crate::__afl_manual_init();
-            }
-            log::debug!("__afl_manual_init finished");
-        }
+        crate::afl_onetime_init();
 
         let parent_info = state.local.process_info.clone();
         let ppid = Pid::INIT;

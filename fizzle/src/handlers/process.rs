@@ -188,21 +188,7 @@ impl Event for ProcessForkEvent {
             }
             ProcessForkState::RunFork => {
                 // Initialize AFL (forkservers and multi-process applications don't play well)
-                #[cfg(feature = "afl")]
-                if !state.global.afl_shmem_initialized {
-                    state.global.afl_shmem_initialized = true;
-
-                    #[cfg(feature = "pcr")]
-                    unsafe {
-                        crate::__afl_sharedmem_fuzzing = 1;
-                    }
-
-                    log::debug!("calling __afl_manual_init()");
-                    unsafe {
-                        crate::__afl_manual_init();
-                    }
-                    log::debug!("__afl_manual_init finished");
-                }
+                crate::afl_onetime_init();
 
                 state.mark_thread_ready(thread::current().id());
 

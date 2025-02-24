@@ -288,21 +288,7 @@ impl Event for ThreadCreateEvent {
                 self.state = ThreadCreateState::Finish;
 
                 // Initialize AFL (forkservers and multithreading don't play well)
-                #[cfg(feature = "afl")]
-                if !state.global.afl_shmem_initialized {
-                    state.global.afl_shmem_initialized = true;
-
-                    #[cfg(feature = "pcr")]
-                    unsafe {
-                        crate::__afl_sharedmem_fuzzing = 1;
-                    }
-
-                    log::debug!("calling __afl_manual_init()");
-                    unsafe {
-                        crate::__afl_manual_init();
-                    }
-                    log::debug!("__afl_manual_init finished");
-                }
+                crate::afl_onetime_init();
 
                 // SAFETY: `self.wrapper` is guaranteed to remain in scope untio `pt_wrapper_fn`
                 // is called; it copies the internal pointers in `self.wrapper`.

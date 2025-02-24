@@ -463,15 +463,7 @@ impl FizzleState {
 
         // Shared memory doesn't play well with the forkserver, so we need to make sure that
         // processes are forked *before* any shared memory is created.
-        #[cfg(all(feature = "afl", feature = "pcr"))]
-        unsafe {
-            crate::__afl_sharedmem_fuzzing = 1;
-        }
-
-        #[cfg(feature = "afl")]
-        unsafe {
-            crate::__afl_manual_init();
-        }
+        crate::afl_onetime_init();
 
         let memfd = match env::var(FIZZLE_MEMORY_ENV) {
             Ok(var) => {
@@ -1103,7 +1095,6 @@ impl ProcessLocalState {
 }
 
 pub struct InterprocessState {
-    pub afl_shmem_initialized: bool,
     pub fuzz_endpoints: GlobalVec<FuzzEndpointInfo>,
     pub fuzz_input: GlobalVec<u8>,
 
@@ -1240,7 +1231,6 @@ impl InterprocessState {
 
             *ptr::addr_of_mut!((*state).next_inode) = 1_000_000;
 
-            *ptr::addr_of_mut!((*state).afl_shmem_initialized) = false;
             *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
             *ptr::addr_of_mut!((*state).sem_paths) = FnvIndexMap::new();
             *ptr::addr_of_mut!((*state).socket_locations) = FnvIndexMap::new();
