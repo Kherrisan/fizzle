@@ -976,6 +976,14 @@ impl Scheduler {
             }
         }
 
+        #[cfg(not(feature = "pcr"))]
+        if !state.global.fuzz_input.is_empty() {
+            // 
+            unsafe {
+                libc::_exit(0);
+            }
+        }
+
         // Deallocate the last buffer
         state.global.fuzz_input.clear();
 
