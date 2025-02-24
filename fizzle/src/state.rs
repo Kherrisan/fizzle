@@ -1346,7 +1346,7 @@ impl InterprocessState {
 
         let client_socket_info = Rc::new_in(
             RefCell::new(SocketInfo {
-                fd_count: 0,
+                fd_count: 1,
                 state: SocketState::PendingConnection(PendingSocket {
                     rem_addr: rem_addr.clone(),
                     backend,
@@ -1436,7 +1436,7 @@ impl InterprocessState {
 
         let socket_info = Rc::new_in(
             RefCell::new(SocketInfo {
-                fd_count: 0,
+                fd_count: 1,
                 state: SocketState::Server(ServerSocket {
                     backend,
                     connecting: LinkedList::new_in(fizzle_alloc()),
