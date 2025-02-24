@@ -435,6 +435,7 @@ bitflags! {
         const CTRUNC = libc::MSG_CTRUNC;
         const OOB = libc::MSG_OOB;
         const ERRQUEUE = libc::MSG_ERRQUEUE;
+        const NOTIFICATION = libc::MSG_NOTIFICATION;
     }
 }
 
