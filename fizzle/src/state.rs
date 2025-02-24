@@ -463,6 +463,11 @@ impl FizzleState {
 
         // Shared memory doesn't play well with the forkserver, so we need to make sure that
         // processes are forked *before* any shared memory is created.
+        #[cfg(all(feature = "afl", feature = "pcr"))]
+        unsafe {
+            crate::__afl_sharedmem_fuzzing = 1;
+        }
+
         #[cfg(feature = "afl")]
         unsafe {
             crate::__afl_manual_init();
