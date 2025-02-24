@@ -113,7 +113,7 @@ impl SockAddr {
                     }
                     Some(_) => {
                         // Named address
-                        let path = CStr::from_bytes_with_nul(&addr_bytes[path_start..])
+                        let path = CStr::from_bytes_until_nul(&addr_bytes[path_start..])
                             .map_err(|_| SockAddrError::MissingNullTerm)?;
                         Ok(SockAddr::Unix(SocketAddrUnix::Pathname(
                             FilePath::from_cstr(path)
