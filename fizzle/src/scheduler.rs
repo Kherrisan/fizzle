@@ -1005,29 +1005,38 @@ impl Scheduler {
             } else {
                 let afl_buf =
                     slice::from_raw_parts(crate::__afl_fuzz_ptr, *crate::__afl_fuzz_len as usize);
-                state.global.fuzz_input.copy_from_slice(afl_buf);
+                state.global.fuzz_input.extend_from_slice(afl_buf);
+
+                state
+                    .global
+                    .fuzz_input
+                    .set_len(*crate::__afl_fuzz_len as usize);
             };
-
-            state
-                .global
-                .fuzz_input
-                .set_len(*crate::__afl_fuzz_len as usize);
         }
-
-        panic!("You made it! If you're here then the server is ready to be fuzzed.");
 
         #[cfg(not(feature = "pcr"))]
         loop {
-            state.global.fuzz_input.reserve(16384);
-            let current_len = state.global.fuzz_input.len();
-            use std::io::Read;
-            match std::io::stdin().read(state.global.fuzz_input.as_mut_slice()) {
-                Err(e) => panic!("read() failed for fuzzing: {}", e),
-                Ok(0) => unsafe { libc::_exit(0) },
-                Ok(read_amount) => unsafe {
-                    state.global.fuzz_input.set_len(current_len + read_amount);
-                },
+            let prev_len = state.global.fuzz_input.len()
+            let spare = state.global.fuzz_input.spare_capacity_mut().len();
+            if spare < 16384 {
+                state.global.fuzz_input.reserve(16384 - spare);
             }
+
+            let spare_mut = state.global.fuzz_input.spare_capacity_mut();
+            assert!(!spare_mut.is_empty());
+
+            match unsafe { libc::read(0, spare_mut.as_mut_ptr().cast::<libc::c_void>(), spare_mut.len()) } {
+                ..=-1 => panic!("read() failed for fuzzing: errno {}", Errno::get_errno()),
+                0 => break,
+                read_amount => unsafe {
+                    state.global.fuzz_input.set_len(prev_len + read_amount as usize);
+                }
+            }
+        }
+
+        if state.global.fuzz_input.is_empty() {
+            log::error!("failed to read any fuzzing input in--exiting");
+            unsafe { libc::_exit(0) }
         }
 
         state.global.time_fuzz_idx = 0;
