@@ -575,7 +575,7 @@ hook_macros::hook! {
 
         match Scheduler::handle_event(&mut ctx, MutexInitEvent::new(mutex, kind, robustness)) {
             Ok(()) => {
-                crate::strace!("pthread_mutex_init(mutex={:?}, ...) -> 0", mutex);
+                crate::strace!("pthread_mutex_init(mutex={:?}, attr={{kind={:?}, robustness={:?}}}) -> 0", lock, kind, robustness);
                 0
             },
             Err(()) => unreachable!(),
