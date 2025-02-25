@@ -46,6 +46,24 @@ unsafe extern "C" {
     #[cfg(feature = "afl")]
     pub fn __afl_manual_init();
 
+    #[cfg(feature = "afl")]
+    pub fn __afl_coverage_on();
+
+    #[cfg(feature = "afl")]
+    pub fn __afl_coverage_off();
+
+    #[cfg(feature = "afl")]
+    pub fn __afl_coverage_discard();
+
+    #[cfg(feature = "afl")]
+    pub fn __afl_coverage_skip();
+
+    #[cfg(feature = "afl")]
+    pub static mut __afl_selective_coverage: libc::c_int;
+
+    #[cfg(feature = "afl")]
+    pub static mut __afl_selective_coverage_start_off: libc::c_int;
+
     // TODO: three underscores for Apple
     #[cfg(feature = "pcr")]
     pub fn __afl_persistent_loop(input: libc::c_uint) -> libc::c_int;
@@ -113,11 +131,16 @@ fn afl_onetime_init() {
             crate::__afl_sharedmem_fuzzing = 1;
         }
 
-        log::debug!("calling __afl_manual_init()");
+        #[cfg(feature = "afl")]
+        unsafe {
+            crate::__afl_selective_coverage = 1;
+            crate::__afl_selective_coverage_start_off = 1;
+        }
+
+        #[cfg(feature = "afl")]
         unsafe {
             crate::__afl_manual_init();
         }
-        log::debug!("__afl_manual_init finished");
     }
 }
 
