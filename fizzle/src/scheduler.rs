@@ -970,6 +970,11 @@ impl Scheduler {
             }
         }
 
+        #[cfg(feature = "afl")]
+        unsafe {
+            crate::__afl_coverage_on();
+        }
+
         // Deallocate the last buffer
         state.global.fuzz_input.clear();
 
