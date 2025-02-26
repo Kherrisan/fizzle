@@ -195,10 +195,10 @@ fn destroy_descriptor(fd: RawFd) {
 macro_rules! strace {
     // log_strace!(target: "my_target", key1 = 42, key2 = true; "a {} event", "log")
     // log_strace!(target: "my_target", "a {} event", "log")
-    (target: $target:expr, $($arg:tt)+) => (log::log!(target: $target, log::Level::Info, $($arg)+));
+    (target: $target:expr, $($arg:tt)+) => (log::log!(target: $target, log::Level::Trace, $($arg)+));
 
     // log_strace!("a {} event", "log")
-    ($($arg:tt)+) => (log::log!(log::Level::Info, $($arg)+))
+    ($($arg:tt)+) => (log::log!(log::Level::Trace, $($arg)+))
 }
 
 pub(crate) use strace;
