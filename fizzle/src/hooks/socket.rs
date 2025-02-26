@@ -457,37 +457,37 @@ hook_macros::hook! {
             }
         };
 
-        let input = match (level, optname) {
-            (libc::SOL_IP, libc::IP_TOS | libc::IP_MTU_DISCOVER | libc::IP_DROP_MEMBERSHIP | libc::IP_OPTIONS | libc::IP_MULTICAST_LOOP | libc::IP_ADD_MEMBERSHIP | libc::IP_MULTICAST_ALL | libc::IP_MULTICAST_TTL | libc::IP_FREEBIND) => {
+        let input = match (opt_level, optname) {
+            (OptLevel::Ip, libc::IP_TOS | libc::IP_MTU_DISCOVER | libc::IP_DROP_MEMBERSHIP | libc::IP_OPTIONS | libc::IP_MULTICAST_LOOP | libc::IP_ADD_MEMBERSHIP | libc::IP_MULTICAST_ALL | libc::IP_MULTICAST_TTL | libc::IP_FREEBIND) => {
                 crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> -1 (EINVAL)", sockfd, opt_level, optname, optval, optlen);
                 return 0
             }
-            (libc::SOL_IP, _) => {
+            (OptLevel::Ip, _) => {
                 log::error!("Unrecognized socket option: SOL_IP, optname {}", optname);
                 panic!("Unrecognized socket option: SOL_IP, optname {}", optname);
             }
             // Pretend to support (but don't)
-            (libc::SOL_TCP, libc::TCP_NODELAY | libc::TCP_MAXSEG | libc::TCP_USER_TIMEOUT | libc::TCP_FASTOPEN) => {
+            (OptLevel::Tcp, libc::TCP_NODELAY | libc::TCP_MAXSEG | libc::TCP_USER_TIMEOUT | libc::TCP_FASTOPEN) => {
                 crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> 0", sockfd, opt_level, optname, optval, optlen);
                 return 0
             }
-            (libc::SOL_TCP, libc::TCP_KEEPIDLE | libc::TCP_KEEPCNT | libc::TCP_KEEPINTVL | libc::TCP_SYNCNT) => return 0,
-            (libc::SOL_TCP, _) => {
+            (OptLevel::Tcp, libc::TCP_KEEPIDLE | libc::TCP_KEEPCNT | libc::TCP_KEEPINTVL | libc::TCP_SYNCNT) => return 0,
+            (OptLevel::Tcp, _) => {
                 panic!("Unrecognized socket option: SOL_TCP, optname {}", optname);
             }
             // Socket options that are readonly
-            (libc::SOL_SOCKET, libc::SO_ACCEPTCONN | libc::SO_DOMAIN | libc::SO_ERROR | libc::SO_PROTOCOL) => {
+            (OptLevel::Socket, libc::SO_ACCEPTCONN | libc::SO_DOMAIN | libc::SO_ERROR | libc::SO_PROTOCOL) => {
                 crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> -1 (EINVAL)", sockfd, opt_level, optname, optval, optlen);
                 Errno::EINVAL.set_errno();
                 return -1
             }
             // Socket options that we pretend to support (but don't)
-            (libc::SOL_SOCKET, libc::SO_KEEPALIVE | libc::SO_OOBINLINE | libc::SO_PRIORITY | libc::SO_RCVBUF | libc::SO_SNDLOWAT | libc::SO_RCVLOWAT | libc::SO_RCVTIMEO | libc::SO_SNDTIMEO | libc::SO_REUSEADDR | libc::SO_ZEROCOPY | libc::SO_SNDBUF) => { // TODO: configure SO_SNDBUF
+            (OptLevel::Socket, libc::SO_KEEPALIVE | libc::SO_OOBINLINE | libc::SO_PRIORITY | libc::SO_RCVBUF | libc::SO_SNDLOWAT | libc::SO_RCVLOWAT | libc::SO_RCVTIMEO | libc::SO_SNDTIMEO | libc::SO_REUSEADDR | libc::SO_ZEROCOPY | libc::SO_SNDBUF) => { // TODO: configure SO_SNDBUF
                 // Ignore received value
                 crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> 0", sockfd, opt_level, optname, optval, optlen);
                 return 0
             }
-            (libc::SOL_SOCKET, libc::SO_REUSEPORT) => {
+            (OptLevel::Socket, libc::SO_REUSEPORT) => {
                 if (optlen as usize) < mem::size_of::<libc::c_int>() {
                     crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> -1 (EINVAL)", sockfd, opt_level, optname, optval, optlen);
                     Errno::EINVAL.set_errno();
@@ -506,34 +506,34 @@ hook_macros::hook! {
 
                 SocketOption::SocketReusePort(reuse)
             }
-            (libc::SOL_SOCKET, libc::SO_ATTACH_FILTER | libc::SO_LOCK_FILTER | libc::SO_ATTACH_BPF | libc::SO_ATTACH_REUSEPORT_CBPF | libc::SO_ATTACH_REUSEPORT_EBPF) => {
+            (OptLevel::Socket, libc::SO_ATTACH_FILTER | libc::SO_LOCK_FILTER | libc::SO_ATTACH_BPF | libc::SO_ATTACH_REUSEPORT_CBPF | libc::SO_ATTACH_REUSEPORT_EBPF) => {
                 log::error!("unsupported BPF `setsockopt` option requested");
                 crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> -1 (EINVAL)", sockfd, opt_level, optname, optval, optlen);
                 Errno::EINVAL.set_errno();
                 return -1
             }
-            (libc::SOL_SOCKET, libc::SO_BINDTODEVICE) => {
+            (OptLevel::Socket, libc::SO_BINDTODEVICE) => {
                 log::error!("unsupported SO_BINDTODEVICE `setsockopt` option requested");
                 crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> -1 (EINVAL)", sockfd, opt_level, optname, optval, optlen);
                 Errno::EINVAL.set_errno();
                 return -1
             }
-            (libc::SOL_SOCKET, libc::SO_BROADCAST) => {
+            (OptLevel::Socket, libc::SO_BROADCAST) => {
                 log::error!("unsupported SO_BROADCAST `setsockopt` option requested");
                 crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> -1 (EINVAL)", sockfd, opt_level, optname, optval, optlen);
                 Errno::EINVAL.set_errno();
                 return -1
             }
-            (libc::SOL_SOCKET, libc::SO_LINGER) => {
+            (OptLevel::Socket, libc::SO_LINGER) => {
                 // Ignore received value
                 return 0
             }
             // TODO: implement SO_RXQ_OVFL, SO_TIMESTAMP, when implementing `cmsg`s
-            (libc::SOL_SOCKET, _) => {
+            (OptLevel::Socket, _) => {
                 log::error!("unsupported SOL_SOCKET option {}", optname);
                 panic!("Unrecognized socket option: SOL_SOCKET, optname {}", optname);
             }
-            (SOL_SCTP, SCTP_SOCKOPT_BINDX_ADD) => {
+            (OptLevel::Sctp, SCTP_SOCKOPT_BINDX_ADD) => {
                 log::info!("Binding SCTP socket with SCTP_SOCKOPT_BINDX_ADD");
                 let addr_bytes = slice::from_raw_parts(optval.cast::<u8>(), optlen as usize);
                 let Ok(addr) = SockAddr::decode(addr_bytes) else {
@@ -555,41 +555,41 @@ hook_macros::hook! {
                     },
                 }
             }
-            (SOL_SCTP, SCTP_SOCKOPT_BINDX_REM | SCTP_SOCKOPT_CONNECTX_OLD | SCTP_GET_PEER_ADDRS | SCTP_GET_LOCAL_ADDRS | SCTP_SOCKOPT_CONNECTX | SCTP_SOCKOPT_CONNECTX3 | SCTP_GET_ASSOC_STATS | SCTP_PR_SUPPORTED | libc::SCTP_I_WANT_MAPPED_V4_ADDR | libc::SCTP_FRAGMENT_INTERLEAVE) => {
+            (OptLevel::Sctp, SCTP_SOCKOPT_BINDX_REM | SCTP_SOCKOPT_CONNECTX_OLD | SCTP_GET_PEER_ADDRS | SCTP_GET_LOCAL_ADDRS | SCTP_SOCKOPT_CONNECTX | SCTP_SOCKOPT_CONNECTX3 | SCTP_GET_ASSOC_STATS | SCTP_PR_SUPPORTED | libc::SCTP_I_WANT_MAPPED_V4_ADDR | libc::SCTP_FRAGMENT_INTERLEAVE) => {
                 // ignore the received value
                 crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> 0", sockfd, opt_level, optname, optval, optlen);
                 return 0
             }
-            (SOL_SCTP, libc::SCTP_RTOINFO | libc::SCTP_ASSOCINFO | libc::SCTP_INITMSG | libc::SCTP_NODELAY | libc::SCTP_AUTOCLOSE | libc::SCTP_DISABLE_FRAGMENTS | libc::SCTP_PEER_ADDR_PARAMS | libc::SCTP_DEFAULT_SEND_PARAM | libc::SCTP_EVENTS | libc::SCTP_MAXSEG) => {
+            (OptLevel::Sctp, libc::SCTP_RTOINFO | libc::SCTP_ASSOCINFO | libc::SCTP_INITMSG | libc::SCTP_NODELAY | libc::SCTP_AUTOCLOSE | libc::SCTP_DISABLE_FRAGMENTS | libc::SCTP_PEER_ADDR_PARAMS | libc::SCTP_DEFAULT_SEND_PARAM | libc::SCTP_EVENTS | libc::SCTP_MAXSEG) => {
                 // Ignore received value
                 crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> 0", sockfd, opt_level, optname, optval, optlen);
                 return 0
             }
-            (SOL_SCTP, libc::SCTP_SET_PEER_PRIMARY_ADDR | libc::SCTP_PRIMARY_ADDR) => {
+            (OptLevel::Sctp, libc::SCTP_SET_PEER_PRIMARY_ADDR | libc::SCTP_PRIMARY_ADDR) => {
                 // Ignoring received value would cause issues
                 crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}", sockfd, opt_level, optname, optval, optlen);
                 Errno::EINVAL.set_errno();
                 return -1
             }
-            (SOL_SCTP, libc::SCTP_STATUS | libc::SCTP_GET_PEER_ADDR_INFO) => {
+            (OptLevel::Sctp, libc::SCTP_STATUS | libc::SCTP_GET_PEER_ADDR_INFO) => {
                 // readonly option
                 crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> -1 (EINVAL)", sockfd, opt_level, optname, optval, optlen);
                 Errno::EINVAL.set_errno();
                 return -1
             }
-            (SOL_SCTP, _) => {
+            (OptLevel::Sctp, _) => {
                 log::error!("unrecognized SOL_SCTP option {}", optname);
                 panic!("Unrecognized socket option: SOL_SCTP, optname {}", optname)
             }
-            (libc::SOL_IPV6, libc::IPV6_V6ONLY) => {
+            (OptLevel::Ipv6, libc::IPV6_V6ONLY) => {
                 crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> 0", sockfd, opt_level, optname, optval, optlen);
                 return 0 // Ignore received value
             }
-            (libc::SOL_IPV6, libc::IPV6_RECVPKTINFO) => {
+            (OptLevel::Ipv6, libc::IPV6_RECVPKTINFO) => {
                 crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> 0", sockfd, opt_level, optname, optval, optlen);
                 return 0 // ignore received value TODO: implement for recvmsg()
             }
-            (libc::SOL_IPV6, _) => {
+            (OptLevel::Ipv6, _) => {
                 log::error!("unrecognized SOL_IP6 option {}", optname);
                 panic!("Unrecognized socket option: SOL_IPV6, optname {}", optname)
             }
