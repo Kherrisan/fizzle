@@ -534,9 +534,10 @@ hook_macros::hook! {
                 panic!("Unrecognized socket option: SOL_SOCKET, optname {}", optname);
             }
             (SOL_SCTP, SCTP_SOCKOPT_BINDX_ADD) => {
+                log::info!("Binding SCTP socket with SCTP_SOCKOPT_BINDX_ADD");
                 let addr_bytes = slice::from_raw_parts(optval.cast::<u8>(), optlen as usize);
                 let Ok(addr) = SockAddr::decode(addr_bytes) else {
-                    log::error!("unsupported SO_BROADCAST `setsockopt` option requested");
+                    log::error!("invalid sockaddr for SCTP_SOCKOPT_BINDX_ADD");
                     crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> -1 (EINVAL)", sockfd, opt_level, optname, optval, optlen);
                     Errno::EINVAL.set_errno();
                     return -1
