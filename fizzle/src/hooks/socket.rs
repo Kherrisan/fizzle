@@ -543,13 +543,13 @@ hook_macros::hook! {
                     return -1
                 };
 
-                return match Scheduler::handle_event(&mut ctx, SocketBindEvent::new(Descriptor::from_raw_fd(sockfd), addr)) {
+                return match Scheduler::handle_event(&mut ctx, SocketBindEvent::new(Descriptor::from_raw_fd(sockfd), addr.clone())) {
                     Ok(()) => {
-                        crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> 0", sockfd, opt_level, optname, optval, optlen);
+                        crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}) -> 0", sockfd, opt_level, optname, addr);
                         0
                     },
                     Err(e) => {
-                        crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> -1 ({})", sockfd, opt_level, optname, optval, optlen, e);
+                        crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}) -> -1 ({})", sockfd, opt_level, optname, addr, e);
                         e.set_errno();
                         -1
                     },
