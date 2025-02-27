@@ -593,11 +593,11 @@ hook_macros::hook! {
 
         match Scheduler::handle_event(&mut ctx, MutexDestroyEvent::new(mutex)) {
             Ok(()) => {
-                crate::strace!("pthread_mutex_destroy(mutex={:?}) -> 0", mutex);
+                crate::strace!("pthread_mutex_destroy(mutex={:?}) -> 0", lock);
                 0
             },
             Err(e) => {
-                crate::strace!("pthread_mutex_destroy(mutex={:?}) -> -1 ({})", mutex, e);
+                crate::strace!("pthread_mutex_destroy(mutex={:?}) -> -1 ({})", lock, e);
                 e.set_errno();
                 -1
             }
@@ -614,11 +614,11 @@ hook_macros::hook! {
 
         match Scheduler::handle_event(&mut ctx, MutexLockEvent::new(mutex, WaitDuration::Indefinite)) {
             Ok(()) => {
-                crate::strace!("pthread_mutex_lock(mutex={:?}) -> 0", mutex);
+                crate::strace!("pthread_mutex_lock(mutex={:?}) -> 0", lock);
                 0
             },
             Err(e) => {
-                crate::strace!("pthread_mutex_lock(mutex={:?}) -> -1 ({})", mutex, e);
+                crate::strace!("pthread_mutex_lock(mutex={:?}) -> -1 ({})", lock, e);
                 e.set_errno();
                 -1
             }
@@ -636,11 +636,11 @@ hook_macros::hook! {
 
         match Scheduler::handle_event(&mut ctx, MutexLockEvent::new(mutex, WaitDuration::Immediate)) {
             Ok(()) => {
-                crate::strace!("pthread_mutex_trylock(mutex={:?}) -> 0", mutex);
+                crate::strace!("pthread_mutex_trylock(mutex={:?}) -> 0", lock);
                 0
             },
             Err(e) => {
-                crate::strace!("pthread_mutex_trylock(mutex={:?}) -> -1 ({})", mutex, e);
+                crate::strace!("pthread_mutex_trylock(mutex={:?}) -> -1 ({})", lock, e);
                 e.set_errno();
                 -1
             }
@@ -667,11 +667,11 @@ hook_macros::hook! {
 
         match Scheduler::handle_event(&mut ctx, MutexLockEvent::new(mutex, WaitDuration::Timed(duration))) {
             Ok(()) => {
-                crate::strace!("pthread_mutex_timedlock(mutex={:?}, abstime={:?}) -> 0", mutex, duration);
+                crate::strace!("pthread_mutex_timedlock(mutex={:?}, abstime={:?}) -> 0", lock, duration);
                 0
             },
             Err(e) => {
-                crate::strace!("pthread_mutex_timedlock(mutex={:?}, abstime={:?}) -> -1 ({})", mutex, duration, e);
+                crate::strace!("pthread_mutex_timedlock(mutex={:?}, abstime={:?}) -> -1 ({})", lock, duration, e);
                 e.set_errno();
                 -1
             }
@@ -699,11 +699,11 @@ hook_macros::hook! {
 
         match Scheduler::handle_event(&mut ctx, MutexLockEvent::new(mutex, WaitDuration::Timed(duration))) {
             Ok(()) => {
-                crate::strace!("pthread_mutex_timedlock(mutex={:?}, clock_id={}, abstime={:?}) -> 0", mutex, clock_id, duration);
+                crate::strace!("pthread_mutex_timedlock(mutex={:?}, clock_id={}, abstime={:?}) -> 0", lock, clock_id, duration);
                 0
             },
             Err(e) => {
-                crate::strace!("pthread_mutex_timedlock(mutex={:?}, clock_id={}, abstime={:?}) -> -1 ({})", mutex, clock_id, duration, e);
+                crate::strace!("pthread_mutex_timedlock(mutex={:?}, clock_id={}, abstime={:?}) -> -1 ({})", lock, clock_id, duration, e);
                 e.set_errno();
                 -1
             }
