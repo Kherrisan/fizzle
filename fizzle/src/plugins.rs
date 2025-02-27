@@ -125,6 +125,9 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
                     unsafe {
                         read_buf.set_len(amount);
                     }
+
+                    log::trace!("{:?}", read_buf.as_slice());
+
                     read_buf.shrink_to_fit();
 
                     plugin_info.borrow_mut().read_buf.push_back(read_buf);
