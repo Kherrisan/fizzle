@@ -2275,7 +2275,7 @@ impl Event for SocketReadEvent<'_> {
                             let mut total_read = 0;
                             for s in out_msg.buf.iter_mut() {
                                 let read = cmp::min(msg.data.len() - total_read, s.len());
-                                s.copy_from_slice(&msg.data[total_read..total_read + read]);
+                                s[..read].copy_from_slice(&msg.data[total_read..total_read + read]);
                                 total_read += read;
                             }
 
