@@ -38,11 +38,13 @@ hook_macros::hook! {
             _ => unimplemented!("unsupported socket type {}", socktype),
         };
 
-        let protocol = match (domain, protocol) {
-            (AddressFamily::Ipv4 | AddressFamily::Ipv6, 0 | libc::IPPROTO_TCP) => TransportProtocol::Tcp,
-            (AddressFamily::Ipv4 | AddressFamily::Ipv6, libc::IPPROTO_UDP) => TransportProtocol::Udp,
-            (AddressFamily::Ipv4 | AddressFamily::Ipv6, libc::IPPROTO_SCTP) => TransportProtocol::Sctp,
-            (AddressFamily::Unix, 0) => TransportProtocol::Unix,
+        let protocol = match (domain, socket_type, protocol) {
+            (AddressFamily::Ipv4 | AddressFamily::Ipv6, SocketType::Stream, 0) => TransportProtocol::Tcp,
+            (AddressFamily::Ipv4 | AddressFamily::Ipv6, SocketType::Datagram, 0) => TransportProtocol::Udp,
+            (AddressFamily::Ipv4 | AddressFamily::Ipv6, _, libc::IPPROTO_TCP) => TransportProtocol::Tcp,
+            (AddressFamily::Ipv4 | AddressFamily::Ipv6, _, libc::IPPROTO_UDP) => TransportProtocol::Udp,
+            (AddressFamily::Ipv4 | AddressFamily::Ipv6, _, libc::IPPROTO_SCTP) => TransportProtocol::Sctp,
+            (AddressFamily::Unix, _, 0) => TransportProtocol::Unix,
             _ => unimplemented!("unsupported socket domain/protocol pair {}, {}", domain, protocol),
         };
 
