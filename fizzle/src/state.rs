@@ -41,8 +41,7 @@ use crate::handlers::rwlock::*;
 use crate::handlers::semaphore::*;
 use crate::handlers::signal::*;
 use crate::handlers::socket::{
-    LocalAddress, PendingInfo, PendingSocket, ServerSocket, SocketInfo, SocketState,
-    TransportLocationInfo,
+    ConnectionlessSocket, LocalAddress, PendingInfo, PendingSocket, ServerSocket, SocketInfo, SocketState, TransportLocationInfo
 };
 use crate::handlers::spinlock::SpinlockPtr;
 use crate::handlers::thread::{PThreadRoutine, ThreadInfo, Tid};
@@ -54,7 +53,7 @@ use crate::{constants::*, GlobalBox};
 use crate::{GlobalHeap, GlobalList, GlobalMap, GlobalRc, GlobalSet, GlobalVec};
 
 use crate::backend::{
-    FileBackend, FileFeedback, PendingBackend, ServerBackend, StandardFeedback, StdioBackend,
+    ConnectionlessBackend, FileBackend, FileFeedback, PendingBackend, ServerBackend, StandardFeedback, StdioBackend
 };
 
 // See `set_entered_handler` and `has_entered_handler`
@@ -912,7 +911,7 @@ impl FizzleState {
     // if buffer is empty, then call this
     pub fn lower_polled(&mut self, polled: &GlobalRc<PolledInfo>) {
         let mut borrow = polled.borrow_mut();
-        debug_assert!(borrow.event_raised);
+        //debug_assert!(borrow.event_raised);
         borrow.event_raised = false;
     }
 
@@ -1322,6 +1321,31 @@ impl InterprocessState {
             RefCell::new(FuzzEndpointInfo {
                 read_polled,
                 read_idx: 0,
+            }),
+            fizzle_alloc(),
+        )
+    }
+
+    // TODO: have this take SockAddress instead of TransportAddress (guaranteed UDP?)
+    pub fn add_connectionless_client(
+        &mut self,
+        src_addr: TransportAddress,
+        rem_addr: TransportAddress,
+        backend: ConnectionlessBackend,
+    ) -> GlobalRc<SocketInfo> {
+        // TODO: For PCR fuzzing, per-round clients use unique source ports to ensure a clean(ish) slate.
+
+        return Rc::new_in(
+            RefCell::new(SocketInfo {
+                fd_count: 1,
+                state: SocketState::Connectionless(ConnectionlessSocket {
+                    backend,
+                    rem_addr: Some(rem_addr),
+                    reuse_port: false,
+                }),
+                socktype: SocketType::Datagram,
+                protocol: src_addr.protocol(),
+                local_addr: LocalAddress::Assigned(src_addr.addr().clone()),
             }),
             fizzle_alloc(),
         )

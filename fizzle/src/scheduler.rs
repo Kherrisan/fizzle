@@ -8,8 +8,9 @@ use std::time::Duration;
 use std::{cmp, env, mem, ptr, slice, thread};
 
 use embedded_alloc::TlsfHeap;
+use fizzle_common::io::TransportProtocol;
 
-use crate::backend::{ConnectedBackend, FileBackend, FileFeedback, PendingBackend};
+use crate::backend::{ConnectedBackend, ConnectionlessBackend, FileBackend, FileFeedback, PendingBackend};
 use crate::cell::{PanicOnceCell, SequentialRefCell};
 use crate::constants::{
     FIZZLE_ALLOC_ENV, FIZZLE_ALLOC_OFFSET_ENV, FIZZLE_HEAP_SIZE, FIZZLE_MEMORY_ENV,
@@ -892,16 +893,28 @@ impl Scheduler {
 
         // Add new pending per-round fuzzing clients
         for client_info in per_round_clients {
-            let socket_info = state.global.add_pending_client(
-                client_info.source_address,
-                client_info.target_address,
-                match client_info.backend {
-                    PerRoundClientBackend::Fuzz(fuzz_endpoint_id) => {
-                        PendingBackend::Fuzz(fuzz_endpoint_id)
-                    }
-                    PerRoundClientBackend::Plugin(plugin_id) => PendingBackend::Plugin(plugin_id),
-                },
-            );
+            let socket_info = if client_info.source_address.protocol() == TransportProtocol::Udp {
+                state.global.add_connectionless_client(
+                    client_info.source_address,
+                    client_info.target_address,
+                    match client_info.backend {
+                        PerRoundClientBackend::Fuzz(fuzz_endpoint_id) => ConnectionlessBackend::Fuzz(fuzz_endpoint_id),
+                        PerRoundClientBackend::Plugin(plugin_id) => ConnectionlessBackend::Plugin(plugin_id),
+                    },
+                )
+            } else {
+                state.global.add_pending_client(
+                    client_info.source_address,
+                    client_info.target_address,
+                    match client_info.backend {
+                        PerRoundClientBackend::Fuzz(fuzz_endpoint_id) => {
+                            PendingBackend::Fuzz(fuzz_endpoint_id)
+                        }
+                        PerRoundClientBackend::Plugin(plugin_id) => PendingBackend::Plugin(plugin_id),
+                    },
+                )
+            };
+
             log::debug!(
                 "added pending client with local addr {:?}",
                 socket_info.borrow().local_addr
