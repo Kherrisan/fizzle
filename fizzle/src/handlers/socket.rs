@@ -101,7 +101,7 @@ fn get_or_assign_local(
 pub struct TransportLocationInfo {
     pub reuse_port: bool,
     pub bound_sockets: GlobalList<GlobalRc<SocketInfo>>,
-    pub pending: GlobalList<PendingInfo>,
+    pub pending: GlobalList<GlobalRc<SocketInfo>>,
 }
 
 impl Debug for TransportLocationInfo {
@@ -120,12 +120,6 @@ impl TransportLocationInfo {
         self.bound_sockets.push_back(sock.clone());
         Some(sock)
     }
-}
-
-#[derive(Clone)]
-pub struct PendingInfo {
-    pub client: GlobalRc<SocketInfo>,
-    pub poll: GlobalRc<PolledInfo>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -760,14 +754,8 @@ impl Event for SocketListenEvent {
             fizzle_alloc(),
         );
 
-        if !state
-            .global
-            .socket_locations
-            .get_mut(&addr)
-            .unwrap()
-            .pending
-            .is_empty()
-        {
+        let connecting = mem::replace(&mut state.global.socket_locations.get_mut(&addr).unwrap().pending, LinkedList::new_in(fizzle_alloc()));
+        if !connecting.is_empty() {
             log::debug!("listen() socket had pending connections--raising polled");
             state.raise_polled(&ready_to_connect);
         }
@@ -777,7 +765,7 @@ impl Event for SocketListenEvent {
 
         sock_info_borrow.state = SocketState::Server(ServerSocket {
             backend: ServerBackend::Peered(()),
-            connecting: LinkedList::new_in(fizzle_alloc()),
+            connecting,
             ready_to_connect,
         });
 
@@ -877,7 +865,7 @@ impl Event for SocketConnectEvent {
                                 if connecting.len() >= FIZZLE_SOMAXCONN {
                                     return Outcome::Error(Errno::ECONNABORTED);
                                 }
-                                connecting.push_back(server_socket_info.clone());
+                                connecting.push_back(socket_info.clone());
 
                                 let server_poll = server_info.ready_to_connect.clone();
                                 state.raise_polled(&server_poll);
@@ -1032,7 +1020,7 @@ impl Event for SocketAcceptEvent {
                     return Outcome::Error(Errno::EBADF);
                 };
 
-                let nonblocking = fd_info.nonblocking;
+                let nonblocking = fd_info.nonblocking | self.nonblock;
 
                 let FdResource::Socket(server_socket_info) = fd_info.resource.clone() else {
                     return Outcome::Error(Errno::ENOTSOCK);
@@ -1062,20 +1050,18 @@ impl Event for SocketAcceptEvent {
                     .socket_locations
                     .get_mut(&server_address)
                     .unwrap();
-                if let Some(PendingInfo { mut client, poll }) = bound_info.pending.pop_front() {
+                if let Some(mut client) = bound_info.pending.pop_front() {
                     if bound_info.pending.is_empty() && !has_connecting {
                         state.lower_polled(&ready_to_connect);
                     }
 
                     let _addr = get_or_assign_local(&mut client, state);
 
-                    let mut client_mut = client.borrow_mut();
+                    let client_ref = client.borrow();
                     assert!(matches!(
-                        &client_mut.state,
+                        &client_ref.state,
                         SocketState::PendingConnection(_)
                     ));
-
-                    state.raise_polled(&poll);
 
                     self.state = SocketAcceptState::Finish(client.clone(), server_address);
                     Outcome::Yield(YieldUntil::Immediate)
@@ -1148,9 +1134,10 @@ impl Event for SocketAcceptEvent {
                 let mut connecting_info = server_info.connecting.pop_front().unwrap();
                 get_or_assign_local(&mut connecting_info, state);
 
-                let SocketState::Connecting(_) = &connecting_info.borrow().state else {
-                    unreachable!()
-                };
+                match &connecting_info.borrow().state {
+                    SocketState::Connecting(_) | SocketState::PendingConnection(_) => (),
+                    _ => unreachable!(),
+                }
 
                 if !more_connecting {
                     state.lower_polled(&polled_id);
@@ -1171,7 +1158,7 @@ impl Event for SocketAcceptEvent {
                     return Outcome::Error(Errno::EBADF);
                 };
 
-                let close_on_exec = fd_info.close_on_exec;
+                let close_on_exec = self.cloexec;
                 let nonblocking = fd_info.nonblocking;
 
                 let socktype = connecting_info.borrow().socktype;

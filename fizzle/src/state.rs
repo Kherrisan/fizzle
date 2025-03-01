@@ -41,7 +41,7 @@ use crate::handlers::rwlock::*;
 use crate::handlers::semaphore::*;
 use crate::handlers::signal::*;
 use crate::handlers::socket::{
-    ConnectionlessSocket, LocalAddress, PendingInfo, PendingSocket, ServerSocket, SocketInfo, SocketState, TransportLocationInfo
+    ConnectionlessSocket, LocalAddress, PendingSocket, ServerSocket, SocketInfo, SocketState, TransportLocationInfo
 };
 use crate::handlers::spinlock::SpinlockPtr;
 use crate::handlers::thread::{PThreadRoutine, ThreadInfo, Tid};
@@ -1380,19 +1380,8 @@ impl InterprocessState {
         // Add the client to the pending client chain, if applicable
         match self.socket_locations.get_mut(&rem_addr) {
             None => {
-                let polled = Rc::new_in(
-                    RefCell::new(PolledInfo {
-                        pollers: Vec::new_in(fizzle_alloc()),
-                        event_raised: false,
-                    }),
-                    fizzle_alloc(),
-                );
-
                 let mut pending = LinkedList::new_in(fizzle_alloc());
-                pending.push_front(PendingInfo {
-                    client: client_socket_info.clone(),
-                    poll: polled,
-                });
+                pending.push_back(client_socket_info.clone());
 
                 if self
                     .socket_locations
@@ -1418,24 +1407,21 @@ impl InterprocessState {
                     fizzle_alloc(),
                 );
 
-                location_info.pending.push_back(PendingInfo {
-                    client: client_socket_info.clone(),
-                    poll: polled,
-                });
-
                 if let Some(socket_info) = location_info.bound_sockets.pop_front() {
                     log::debug!("found bound socket at location for pending connection");
-
                     location_info.bound_sockets.push_back(socket_info.clone());
 
-                    match &socket_info.borrow().state {
+                    match &mut socket_info.borrow_mut ().state {
                         SocketState::Server(server_info) => {
                             log::debug!("notifying server that pending connection exists...");
+                            server_info.connecting.push_back(client_socket_info.clone());
                             let connect_poll = server_info.ready_to_connect.clone();
                             self.raise_polled(&connect_poll);
                         }
                         _ => unreachable!(),
                     }
+                } else {
+                    location_info.pending.push_back(client_socket_info.clone());
                 }
             }
         }
