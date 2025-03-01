@@ -405,11 +405,14 @@ impl Event for PollEvent<'_> {
                                         fd
                                     );
                                     read_pollers.insert(fd, polled_id);
+
                                 } else {
                                     log::trace!(
                                         "`poll`: fd {} was set for reading (Pollable | Ready)",
                                         fd
                                     );
+
+                                    pfd.revents |= libc::POLLIN;
                                     fd_ready = true;
                                 }
                             }
@@ -429,6 +432,8 @@ impl Event for PollEvent<'_> {
                                     "`poll`: fd {} was set for reading (ImmediatelyPollable)",
                                     fd
                                 );
+
+                                pfd.revents |= libc::POLLIN;
                                 fd_ready = true;
                             }
                         }
@@ -443,11 +448,14 @@ impl Event for PollEvent<'_> {
                                         fd
                                     );
                                     write_pollers.insert(fd, polled_id);
+
                                 } else {
                                     log::trace!(
                                         "`poll`: fd {} was set for writing (Pollable | Ready)",
                                         fd
                                     );
+
+                                    pfd.revents |= libc::POLLOUT;
                                     fd_ready = true;
                                 }
                             }
@@ -464,6 +472,8 @@ impl Event for PollEvent<'_> {
                                     "`poll`: fd {} was set for writing (ImmediatelyPollable)",
                                     fd
                                 );
+
+                                pfd.revents |= libc::POLLOUT;
                                 fd_ready = true;
                             }
                         }
