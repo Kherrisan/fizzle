@@ -3,6 +3,8 @@ use std::rc::Rc;
 
 use fizzle_plugin::{Context, IoEndpointVariant, PluginModule};
 
+use crate::backend::IoBackend;
+use crate::handlers::socket::{ConnectionlessMessage, LocalAddress, SocketState};
 use crate::scheduler::fizzle_alloc;
 use crate::state::FizzleState;
 
@@ -152,6 +154,62 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
 
     for write_polled in write {
         state.lower_polled(&write_polled);
+    }
+
+    // Handle connectionless client/server plugins
+    for endpoint in state.global.per_round_endpoints.clone() {
+        let endpoint_ref = endpoint.borrow();
+        match &endpoint_ref.state {
+            SocketState::Connectionless(conn) => match &conn.backend {
+                IoBackend::Plugin(plugin) => {
+                    let rem_addr = conn.rem_addr.clone().unwrap();
+                    let mut plugin_mut = plugin.borrow_mut();
+                    let mut read_polled = None;
+
+                    // TODO: hoist this functionality out of here
+                    if let Some(transport_info) = state.global.socket_locations.get_mut(&rem_addr) {
+                        if let Some(bound_socket) = transport_info.bound_sockets.pop_front() {
+                            let mut bound_socket_mut = bound_socket.borrow_mut();
+
+                            let SocketState::Connectionless(conn) = &mut bound_socket_mut.state else {
+                                unreachable!()
+                            };
+
+                            let IoBackend::Peered(peer_info) = &mut conn.backend else {
+                                unreachable!()
+                            };
+
+                            let LocalAddress::Assigned(local_addr) = endpoint_ref.local_addr.clone() else {
+                                unreachable!();
+                            };
+
+                            while let Some(data) = plugin_mut.read_buf.pop_front() {
+                                peer_info.recv_buf.push_back(ConnectionlessMessage {
+                                    source: local_addr.clone(),
+                                    ancillary: Vec::new_in(fizzle_alloc()),
+                                    data,
+                                });
+
+                                plugin_activated = true;
+                                read_polled = Some(peer_info.read_polled.clone());
+                            }
+
+                            drop(bound_socket_mut);
+                            transport_info.bound_sockets.push_back(bound_socket);
+                        }
+                    }
+
+                    if let Some(polled) = read_polled {
+                        state.raise_polled(&polled);
+                    }
+                }
+                IoBackend::Fuzz(fuzz_endpoint) => {
+                    todo!()
+                }
+                _ => (),
+            }
+            _ => (),
+        }
     }
 
     plugin_activated
