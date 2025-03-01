@@ -2,9 +2,8 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::rc::Rc;
-use std::time::Duration;
 use std::{array, mem};
-use std::{io::Error, ptr, thread};
+use std::{ptr, thread};
 
 use bitflags::bitflags;
 
