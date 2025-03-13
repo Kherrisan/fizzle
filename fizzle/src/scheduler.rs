@@ -788,11 +788,6 @@ impl Scheduler {
         let mut state = ctx.acquire();
         let current_worker = state.current_worker();
 
-        state.global.tasks.push_front(Box::new_in(
-            move |ctx| Scheduler::handle_expired_timer(ctx, pid, timer_type),
-            fizzle_alloc(),
-        ));
-
         // Need to ensure this is executing within the destination process
         if pid != current_worker.pid {
             // Re-schedule current task
