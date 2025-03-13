@@ -358,6 +358,40 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
+    unsafe fn getpeername(
+        sockfd: libc::c_int,
+        addr: *mut libc::sockaddr,
+        addrlen: *mut libc::socklen_t
+    ) -> libc::c_int => fizzle_getsockname(ctx) {
+        let descriptor_id = Descriptor::from_raw_fd(sockfd);
+
+        crate::strace!("getpeername(sockfd={}, addr={:?}, addrlen={:?}) -> ...", sockfd, addr, addrlen);
+
+        match Scheduler::handle_event(&mut ctx, SocketGetPeerNameEvent::new(descriptor_id)) {
+            Ok(sockaddr) => {
+
+                if !addr.is_null() && !addrlen.is_null() {
+                    // SAFETY: caller ensures addr points to a valid buffer of `adderlen` bytes.
+                    let addr_bytes = slice::from_raw_parts_mut(addr as *mut MaybeUninit<u8>, addrlen as usize);
+
+                    crate::strace!("getpeername(sockfd={}, addr={:?}, addrlen={:?} ({:?})) -> 0", sockfd, addr, addrlen, sockaddr);
+                    *addrlen = sockaddr.encode(addr_bytes) as u32;
+                } else {
+                    crate::strace!("getpeername(sockfd={}, addr={:?}, addrlen={:?}) -> 0", sockfd, addr, addrlen);
+                }
+
+                0
+            },
+            Err(e) => {
+                crate::strace!("getpeername(sockfd={}, addr={:?}, addrlen={:?}) -> 0", sockfd, addr, addrlen);
+                e.set_errno();
+                -1
+            },
+        }
+    }
+}
+
+hook_macros::hook! {
     unsafe fn getsockopt(
         sockfd: libc::c_int,
         level: libc::c_int,
@@ -435,6 +469,8 @@ hook_macros::hook! {
         }
     }
 }
+
+
 
 hook_macros::hook! {
     unsafe fn setsockopt(

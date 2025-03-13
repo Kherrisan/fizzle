@@ -1328,6 +1328,46 @@ impl Event for SocketGetNameEvent {
     }
 }
 
+pub struct SocketGetPeerNameEvent {
+    descriptor_id: Descriptor,
+}
+
+impl SocketGetPeerNameEvent {
+    pub fn new(descriptor_id: Descriptor) -> Self {
+        Self { descriptor_id }
+    }
+}
+
+impl Event for SocketGetPeerNameEvent {
+    type Success = SockAddr;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let Some(fd_info) = state.local.fds.get(&self.descriptor_id) else {
+            return Outcome::Error(Errno::EBADF);
+        };
+
+        let FdResource::Socket(socket_info) = fd_info.resource.clone() else {
+            return Outcome::Error(Errno::ENOTSOCK);
+        };
+
+        let socket_ref = socket_info.borrow();
+        let addr_opt = match &socket_ref.state {
+            SocketState::Connectionless(connectionless) => connectionless.rem_addr.as_ref().map(|a| a.addr()),
+            SocketState::Unassociated(_) => None,
+            SocketState::Server(_) => None,
+            SocketState::PendingConnection(_) => None,
+            SocketState::Connecting(_) => None,
+            SocketState::Connected(connected) => Some(connected.rem_addr.addr()),
+        };
+
+        match addr_opt {
+            Some(addr) => Outcome::Success(addr.clone()),
+            None => Outcome::Error(Errno::ENOTCONN),
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SctpRtoInfo {
