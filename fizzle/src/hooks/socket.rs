@@ -362,7 +362,7 @@ hook_macros::hook! {
         sockfd: libc::c_int,
         addr: *mut libc::sockaddr,
         addrlen: *mut libc::socklen_t
-    ) -> libc::c_int => fizzle_getsockname(ctx) {
+    ) -> libc::c_int => fizzle_getpeername(ctx) {
         let descriptor_id = Descriptor::from_raw_fd(sockfd);
 
         crate::strace!("getpeername(sockfd={}, addr={:?}, addrlen={:?}) -> ...", sockfd, addr, addrlen);
