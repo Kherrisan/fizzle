@@ -460,7 +460,7 @@ hook_macros::hook! {
         };
 
         let input = match (opt_level, optname) {
-            (OptLevel::Ip, libc::IP_TOS | libc::IP_MTU_DISCOVER | libc::IP_DROP_MEMBERSHIP | libc::IP_OPTIONS | libc::IP_MULTICAST_LOOP | libc::IP_ADD_MEMBERSHIP | libc::IP_MULTICAST_ALL | libc::IP_MULTICAST_TTL | libc::IP_FREEBIND) => {
+            (OptLevel::Ip, libc::IP_TOS | libc::IP_MTU_DISCOVER | libc::IP_DROP_MEMBERSHIP | libc::IP_OPTIONS | libc::IP_MULTICAST_LOOP | libc::IP_ADD_MEMBERSHIP | libc::IP_MULTICAST_ALL | libc::IP_MULTICAST_TTL | libc::IP_FREEBIND | libc::IP_RECVERR) => {
                 crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> -1 (EINVAL)", sockfd, opt_level, optname, optval, optlen);
                 return 0
             }
