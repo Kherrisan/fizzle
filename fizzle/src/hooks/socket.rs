@@ -250,7 +250,7 @@ hook_macros::hook! {
                 accept_fd
             },
             Err(e) => {
-                crate::strace!("connect(fd={}, addr={:?}, addrlen={:?}) -> -1 ({})", fd, addr, addrlen, e);
+                crate::strace!("accept(fd={}, addr={:?}, addrlen={:?}) -> -1 ({})", fd, addr, addrlen, e);
                 e.set_errno();
                 -1
             },
@@ -269,8 +269,10 @@ hook_macros::hook! {
         let nonblocking = flags & libc::SOCK_NONBLOCK > 0;
         let cloexec = flags & libc::SOCK_CLOEXEC > 0;
 
+        crate::strace!("accept4(fd={}, addr={:?}, addrlen={:?}, flags={}) -> ...", fd, addr, addrlen, flags);
+
         if flags & !(libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC) > 0 {
-            crate::strace!("accept(fd={}, addr={:?}, addrlen={:?}, flags={}) -> -1 (EINVAL)", fd, addr, addrlen, flags);
+            crate::strace!("accept4(fd={}, addr={:?}, addrlen={:?}, flags={}) -> -1 (EINVAL)", fd, addr, addrlen, flags);
             Errno::EINVAL.set_errno();
             return -1
         }
@@ -282,8 +284,6 @@ hook_macros::hook! {
             (true, true) => "SOCK_NONBLOCK|SOCK_CLOEXEC",
         };
 
-        crate::strace!("accept(fd={}, addr={:?}, addrlen={:?}, flags={}) -> ...", fd, addr, addrlen, flags_fmt);
-
         match Scheduler::handle_event(&mut ctx, SocketAcceptEvent::new(descriptor_id, false, false)) {
             Ok((descriptor_id, accept_addr)) => {
                 let accept_fd = descriptor_id.as_raw_fd();
@@ -293,16 +293,16 @@ hook_macros::hook! {
                     let addr_bytes = slice::from_raw_parts_mut(addr as *mut MaybeUninit<u8>, addrlen as usize);
                     *addrlen = accept_addr.encode(addr_bytes) as u32;
 
-                    crate::strace!("accept(fd={}, addr={:?}, addrlen={:?} ({}), flags={}) -> {}", fd, addr, addrlen, accept_addr, flags_fmt, accept_fd);
+                    crate::strace!("accept4(fd={}, addr={:?}, addrlen={:?} ({}), flags={}) -> {}", fd, addr, addrlen, accept_addr, flags_fmt, accept_fd);
 
                 } else {
-                    crate::strace!("accept(fd={}, addr={:?}, addrlen={:?}, flags={}) -> {}", fd, addr, addrlen, flags_fmt, accept_fd);
+                    crate::strace!("accept4(fd={}, addr={:?}, addrlen={:?}, flags={}) -> {}", fd, addr, addrlen, flags_fmt, accept_fd);
                 }
 
                 accept_fd
             },
             Err(e) => {
-                crate::strace!("connect(fd={}, addr={:?}, addrlen={:?}, flags={}) -> -1 ({})", fd, addr, addrlen, flags_fmt, e);
+                crate::strace!("connect4(fd={}, addr={:?}, addrlen={:?}, flags={}) -> -1 ({})", fd, addr, addrlen, flags_fmt, e);
                 e.set_errno();
                 -1
             },

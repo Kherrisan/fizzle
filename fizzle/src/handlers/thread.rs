@@ -396,7 +396,11 @@ impl Event for ThreadJoinEvent {
             ThreadJoinState::Start => {
                 self.state = ThreadJoinState::Finish;
 
-                let Some(target_thread) = state.local.pthreads.remove(&self.thread) else {
+                if self.thread == unsafe { libc::pthread_self() } {
+                    return Outcome::Error(Errno::EDEADLK);
+                }
+
+                let Some(target_thread) = state.local.pthreads.get_mut(&self.thread) else {
                     return Outcome::Error(Errno::EDEADLK);
                 };
 
@@ -417,6 +421,8 @@ impl Event for ThreadJoinEvent {
             }
             ThreadJoinState::Finish => {
                 // Waiting thread has now terminated--join properly
+                state.local.pthreads.remove(&self.thread).unwrap();
+
                 let ret = unsafe { libc::pthread_join(self.thread, self.retval) };
                 match ret {
                     0.. => Outcome::Success(()),

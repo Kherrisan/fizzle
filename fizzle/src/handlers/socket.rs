@@ -1038,12 +1038,8 @@ impl Event for SocketAcceptEvent {
                 };
 
                 let server_poll = server_info.ready_to_connect.clone();
-
                 let has_connecting = !server_info.connecting.is_empty();
-
                 let server_address = TransportAddress { sockaddr, protocol };
-
-                let ready_to_connect = server_info.ready_to_connect.clone();
 
                 let bound_info = state
                     .global
@@ -1052,7 +1048,7 @@ impl Event for SocketAcceptEvent {
                     .unwrap();
                 if let Some(mut client) = bound_info.pending.pop_front() {
                     if bound_info.pending.is_empty() && !has_connecting {
-                        state.lower_polled(&ready_to_connect);
+                        state.lower_polled(&server_poll);
                     }
 
                     let _addr = get_or_assign_local(&mut client, state);
@@ -1074,8 +1070,7 @@ impl Event for SocketAcceptEvent {
                         let _addr = get_or_assign_local(&mut connecting_info, state);
 
                         if server_info.connecting.is_empty() {
-                            // TODO: this used to be `len() == 1`--why?
-                            state.lower_polled(&ready_to_connect);
+                            state.lower_polled(&server_poll);
                         }
 
                         let mut connecting_info_mut = connecting_info.borrow_mut();
@@ -1096,15 +1091,17 @@ impl Event for SocketAcceptEvent {
                         Outcome::Error(Errno::EAGAIN)
                     } else {
                         if state.polled_is_ready(&server_poll) {
-                            panic!("`accept()` poller in unexpected state");
-                        } else {
-                            let poller_id = state.new_poller();
-                            state.register_poller(poller_id.clone(), server_poll);
-
-                            self.state = SocketAcceptState::Blocked(poller_id);
-                            // TODO: for `SO_SNDTIMEO`, this should be Some()
-                            Outcome::Yield(YieldUntil::None)
+                            log::warn!("accept() poller was unexpectedly raised");
+                            state.lower_polled(&server_poll);
+                            // panic!("`accept()` poller in unexpected state");
                         }
+
+                        let poller_id = state.new_poller();
+                        state.register_poller(poller_id.clone(), server_poll);
+
+                        self.state = SocketAcceptState::Blocked(poller_id);
+                        // TODO: for `SO_SNDTIMEO`, this should be Some()
+                        Outcome::Yield(YieldUntil::None)
                     }
                 }
             }
@@ -1128,7 +1125,7 @@ impl Event for SocketAcceptEvent {
                     return Outcome::Error(Errno::EINVAL);
                 };
 
-                let polled_id = server_info.ready_to_connect.clone();
+                let server_polled = server_info.ready_to_connect.clone();
                 let more_connecting = !server_info.connecting.is_empty();
 
                 let mut connecting_info = server_info.connecting.pop_front().unwrap();
@@ -1140,7 +1137,7 @@ impl Event for SocketAcceptEvent {
                 }
 
                 if !more_connecting {
-                    state.lower_polled(&polled_id);
+                    state.lower_polled(&server_polled);
                 }
 
                 self.state = SocketAcceptState::Finish(connecting_info.clone(), server_address);

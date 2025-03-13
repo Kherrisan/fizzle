@@ -546,7 +546,17 @@ impl Scheduler {
             .signal_handlers[raised.signum() as usize - 1]
             .clone();
 
+        if let SigDisposition::Ignore = disposition {
+            log::info!(
+                "Process-directed signal {} received and ignored",
+                raised.signum()
+            );
+            return TaskResult::Continue;
+        }
+
         if dst != current_worker.pid {
+            // TODO: this indirection could be removed if we put signal information in global rather than local
+
             // Re-schedule the current task to run in the destination process
             state.global.tasks.push_front(Box::new_in(
                 move |ctx| Scheduler::handle_process_signal(ctx, raised, dst),
@@ -570,35 +580,21 @@ impl Scheduler {
             return TaskResult::Suspend;
         }
 
-        if let SigDisposition::Ignore = disposition {
-            log::info!(
-                "Process-directed signal {} received and ignored",
-                raised.signum()
-            );
-            return TaskResult::Continue;
-        }
-
         // Now select the appropriate thread to handle the signal
         let Some(tid) = Scheduler::unblocked_thread(&mut state, raised.signum()) else {
             // TODO: make sure this gets checked whenever a thread unblocks itself
             log::debug!("Process-directed signal {} received but all threads were blocked--signal set to pending", raised.signum());
-            if state.local.pending_signals[raised.signum() as usize - 1]
-                .replace(raised)
-                .is_some()
-            {
-                // Signal was already raised--any `sigsuspend()`ed threads should already be notified
-                return TaskResult::Continue;
-            }
+            state.local.pending_signals[raised.signum() as usize - 1].replace(raised);
 
-            // Notify any thread waiting with `sigsuspend()`
+            // Notify any thread waiting with `sigwait()`
             let mut ready_worker = None;
             for (tid, siginfo) in state.local.signals.iter_mut() {
-                if siginfo.sigsuspend
-                    && siginfo
+                if siginfo
                         .sigwait_set
                         .intersects(SignalSet::from_signum(raised.signum()))
                 {
-                    siginfo.sigsuspend = false;
+                    // If more than one, we don't know what the right behavior is
+                    debug_assert!(ready_worker.is_none());
                     ready_worker = Some(Worker {
                         pid: current_worker.pid,
                         thread_id: *tid,
@@ -606,6 +602,7 @@ impl Scheduler {
                 }
             }
 
+            // TODO: Should all of the ready workers in the process be signalled, or only one?
             if let Some(worker) = ready_worker {
                 state.mark_worker_ready(worker);
             }
@@ -680,6 +677,18 @@ impl Scheduler {
             return TaskResult::Suspend;
         }
 
+        drop(state);
+        Scheduler::handle_local_signal(ctx, raised)
+    }
+
+    fn handle_local_signal(ctx: &mut FizzleSingleton, raised: RaisedSignalInfo) -> TaskResult {
+        let mut state = ctx.acquire();
+        let current_worker = state.current_worker();
+
+        let proc_siginfo = state.global.pids.get_mut(&current_worker.pid).unwrap();
+        let sig_handler =
+            proc_siginfo.borrow().signal_handlers[raised.signum() as usize - 1].clone();
+
         // Check to see if the signal has been blocked
         let siginfo = state
             .local
@@ -696,33 +705,24 @@ impl Scheduler {
                 raised.signum()
             );
 
-            // If the thread is waiting with `sigsuspend()`, awaken it
-            if siginfo.sigsuspend
-                && siginfo
+            if siginfo
                     .sigwait_set
                     .intersects(SignalSet::from_signum(raised.signum()))
             {
-                siginfo.sigsuspend = false;
                 state.mark_worker_ready(current_worker);
             }
 
             return TaskResult::Continue;
         }
 
-        drop(state);
-        Scheduler::handle_local_signal(ctx, raised)
-    }
-
-    fn handle_local_signal(ctx: &mut FizzleSingleton, raised: RaisedSignalInfo) -> TaskResult {
-        let mut state = ctx.acquire();
-        let current_worker = state.current_worker();
-
-        let proc_siginfo = state.global.pids.get_mut(&current_worker.pid).unwrap();
-        let sig_handler =
-            proc_siginfo.borrow().signal_handlers[raised.signum() as usize - 1].clone();
-
         match sig_handler {
             SigDisposition::Action(action) => {
+                // If the thread is waiting with `sigsuspend()`, awaken it
+                if siginfo.sigsuspend {
+                    siginfo.sigsuspend = false;
+                    state.mark_worker_ready(current_worker);
+                }
+
                 drop(state);
 
                 let mut siginfo = siginfo_t::from_raised(raised);
@@ -731,6 +731,12 @@ impl Scheduler {
                 });
             }
             SigDisposition::Handler(handler) => {
+                // If the thread is waiting with `sigsuspend()`, awaken it
+                if siginfo.sigsuspend {
+                    siginfo.sigsuspend = false;
+                    state.mark_worker_ready(current_worker);
+                }
+
                 drop(state);
                 Scheduler::run_outside_hook(ctx, || unsafe {
                     handler(raised.signum());
@@ -1154,13 +1160,17 @@ impl Scheduler {
         // Clean up local state of thread
         state.local.pthread_cleanup.remove(&thread_id);
         state.local.signals.remove(&thread_id);
+
+        // Leave thread_info
         let thread_info = state
             .local
             .pthreads
-            .remove(&unsafe { libc::pthread_self() })
+            .get_mut(&unsafe { libc::pthread_self() })
             .unwrap();
 
-        for mutex in thread_info.held_mutexes {
+        let mutexes = mem::replace(&mut thread_info.held_mutexes, Default::default());
+
+        for mutex in mutexes {
             let mutex_info = state.local.mutexes.get_mut(&mutex).unwrap();
             // Mark the thread as poisoned
             mutex_info.status = MutexStatus::Poisoned;

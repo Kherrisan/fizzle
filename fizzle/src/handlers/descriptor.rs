@@ -997,8 +997,14 @@ impl Event for StdoutWriteEvent<'_> {
         match (&self.state, state.global.stdio.clone()) {
             (_, StdioBackend::Passthrough) => {
                 log::info!("Data written to stdout"); // TODO: include actual data
-                let total_len = iovec.iter().map(|s| s.len()).sum();
-                Outcome::Success(total_len)
+
+                let res = unsafe {
+                    libc::writev(2, iovec.as_ptr().cast::<libc::iovec>(), iovec.len() as i32)
+                };
+                match res {
+                    0.. => Outcome::Success(res as usize),
+                    _ => Outcome::Error(Errno::get_errno()),
+                }
             }
             (_, StdioBackend::Peered(_)) => unreachable!(),
             (StdoutWriteState::Start, crate::backend::IoBackend::Feedback(feedback)) => {

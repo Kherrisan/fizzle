@@ -907,12 +907,14 @@ impl Event for SignalSetSigmaskEvent {
 
 pub enum SignalSuspendState {
     Start,
+    HandlePending(SignalSet),
     Finish(SignalSet),
 }
 
 pub struct SignalSuspendEvent {
     mask: SignalSet,
     state: SignalSuspendState,
+    received_signal: bool,
 }
 
 impl SignalSuspendEvent {
@@ -920,6 +922,7 @@ impl SignalSuspendEvent {
         Self {
             mask,
             state: SignalSuspendState::Start,
+            received_signal: false,
         }
     }
 }
@@ -934,10 +937,13 @@ impl Event for SignalSuspendEvent {
         match self.state {
             SignalSuspendState::Start => {
                 let old = state.local.signals.get(&thread_id).unwrap().masked;
-                self.state = SignalSuspendState::Finish(old);
 
-                let unblocked = old & !self.mask;
-
+                state.local.signals.get_mut(&thread_id).unwrap().masked = self.mask;
+                self.state = SignalSuspendState::HandlePending(old);
+                Outcome::Yield(YieldUntil::Immediate)
+            }
+            SignalSuspendState::HandlePending(old_mask) => {
+                let unblocked = old_mask & !self.mask;
                 let pid = state.local.process_info.borrow().pid;
 
                 let siginfo = state.local.signals.get_mut(&thread_id).unwrap();
@@ -945,6 +951,8 @@ impl Event for SignalSuspendEvent {
                     if let Some(raised_info) =
                         siginfo.pending[signal.lowest_signal_value() as usize - 1].take()
                     {
+                        self.received_signal = true;
+
                         // This entire function runs for as many times as is needed to handle all signals
                         return Outcome::RunTask(
                             Box::new_in(
@@ -962,14 +970,20 @@ impl Event for SignalSuspendEvent {
                     }
                 }
 
-                let signal_info = state.local.signals.get_mut(&thread_id).unwrap();
-                signal_info.masked = self.mask;
-                signal_info.sigsuspend = true;
-                Outcome::Yield(YieldUntil::None)
+                if !self.received_signal {
+                    self.state = SignalSuspendState::Finish(old_mask);
+                    let signal_info = state.local.signals.get_mut(&thread_id).unwrap();
+                    signal_info.sigsuspend = true;
+                    Outcome::Yield(YieldUntil::None)
+
+                } else {
+                    self.state = SignalSuspendState::Finish(old_mask);
+                    Outcome::Yield(YieldUntil::Immediate)
+                }
             }
-            SignalSuspendState::Finish(old) => {
+            SignalSuspendState::Finish(old_mask) => {
                 let signal_info = state.local.signals.get_mut(&thread_id).unwrap();
-                signal_info.masked = old;
+                signal_info.masked = old_mask;
                 signal_info.sigsuspend = false;
 
                 Outcome::Error(Errno::EINTR)
