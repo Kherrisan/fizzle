@@ -1075,8 +1075,6 @@ impl Event for SocketAcceptEvent {
 
                         let mut connecting_info_mut = connecting_info.borrow_mut();
 
-                        let SocketState::PendingConnection()
-
                         let SocketState::Connecting(connecting_socket_info) =
                             &mut connecting_info_mut.state
                         else {
