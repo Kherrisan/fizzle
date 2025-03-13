@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [features]
-default = ["passthroughfs", "pcr"]
+default = ["passthroughfs"]
 # Adds code needed to run AFL++ with deferred forkserver mode
 afl = []
 # Adds code needed to run AFL++ Persistent mode with Channel Reset (PCR)
