@@ -8,7 +8,7 @@ use std::time::Duration;
 use std::{cmp, env, mem, ptr, slice, thread};
 
 use embedded_alloc::TlsfHeap;
-use fizzle_common::io::TransportProtocol;
+use fizzle_common::io::{SocketType, TransportProtocol};
 
 use crate::backend::{ConnectedBackend, ConnectionlessBackend, FileBackend, FileFeedback, PendingBackend};
 use crate::cell::{PanicOnceCell, SequentialRefCell};
@@ -907,6 +907,7 @@ impl Scheduler {
                 state.global.add_pending_client(
                     client_info.source_address,
                     client_info.target_address,
+                    SocketType::Stream, // TODO: hardcoded--fix
                     match client_info.backend {
                         PerRoundClientBackend::Fuzz(fuzz_endpoint_id) => {
                             PendingBackend::Fuzz(fuzz_endpoint_id)

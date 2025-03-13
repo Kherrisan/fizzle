@@ -41,7 +41,7 @@ use crate::handlers::rwlock::*;
 use crate::handlers::semaphore::*;
 use crate::handlers::signal::*;
 use crate::handlers::socket::{
-    ConnectionlessSocket, LocalAddress, PendingSocket, ServerSocket, SocketInfo, SocketState, TransportLocationInfo
+    ConnectingSocket, ConnectionlessSocket, LocalAddress, PendingSocket, ServerSocket, SocketInfo, SocketState, TransportLocationInfo
 };
 use crate::handlers::spinlock::SpinlockPtr;
 use crate::handlers::thread::{PThreadRoutine, ThreadInfo, Tid};
@@ -53,7 +53,7 @@ use crate::{constants::*, GlobalBox};
 use crate::{GlobalHeap, GlobalList, GlobalMap, GlobalRc, GlobalSet, GlobalVec};
 
 use crate::backend::{
-    ConnectionlessBackend, FileBackend, FileFeedback, PendingBackend, ServerBackend, StandardFeedback, StdioBackend
+    ConnectingBackend, ConnectionlessBackend, FileBackend, FileFeedback, PendingBackend, ServerBackend, StandardFeedback, StdioBackend
 };
 
 // See `set_entered_handler` and `has_entered_handler`
@@ -768,7 +768,7 @@ impl FizzleState {
                             });
                         } else {
                             self.global
-                                .add_pending_client(source_address, target_address, backend);
+                                .add_pending_client(source_address, target_address, SocketType::Stream, backend);
                         }
                     }
                     IoEndpointVariant::UdpServer(addr) => {
@@ -827,7 +827,7 @@ impl FizzleState {
                             });
                         } else {
                             self.global
-                                .add_pending_client(source_address, target_address, backend);
+                                .add_pending_client(source_address, target_address, SocketType::Datagram, backend);
                         }
                     }
                     IoEndpointVariant::SctpServer(addr) => {
@@ -886,7 +886,7 @@ impl FizzleState {
                             });
                         } else {
                             self.global
-                                .add_pending_client(source_address, target_address, backend);
+                                .add_pending_client(source_address, target_address, SocketType::Stream, backend);
                         }
                     }
                     _ => panic!("unimplemented IoEndpoint type"),
@@ -1355,6 +1355,7 @@ impl InterprocessState {
         &mut self,
         src_addr: TransportAddress,
         rem_addr: TransportAddress,
+        socktype: SocketType,
         backend: PendingBackend,
     ) -> GlobalRc<SocketInfo> {
         log::info!(
@@ -1363,23 +1364,23 @@ impl InterprocessState {
             rem_addr
         );
 
-        let client_socket_info = Rc::new_in(
-            RefCell::new(SocketInfo {
-                fd_count: 1,
-                state: SocketState::PendingConnection(PendingSocket {
-                    rem_addr: rem_addr.clone(),
-                    backend,
-                }),
-                socktype: SocketType::Datagram,
-                protocol: src_addr.protocol(),
-                local_addr: LocalAddress::Assigned(src_addr.addr().clone()),
-            }),
-            fizzle_alloc(),
-        );
-
         // Add the client to the pending client chain, if applicable
         match self.socket_locations.get_mut(&rem_addr) {
             None => {
+                let client_socket_info = Rc::new_in(
+                    RefCell::new(SocketInfo {
+                        fd_count: 1,
+                        state: SocketState::PendingConnection(PendingSocket {
+                            rem_addr: rem_addr.clone(),
+                            backend,
+                        }),
+                        socktype,
+                        protocol: src_addr.protocol(),
+                        local_addr: LocalAddress::Assigned(src_addr.addr().clone()),
+                    }),
+                    fizzle_alloc(),
+                );
+
                 let mut pending = LinkedList::new_in(fizzle_alloc());
                 pending.push_back(client_socket_info.clone());
 
@@ -1397,12 +1398,33 @@ impl InterprocessState {
                 {
                     panic!("failed to insert client into socket_locations")
                 }
+
+                client_socket_info
             }
             Some(location_info) => {
-                let polled = Rc::new_in(
-                    RefCell::new(PolledInfo {
-                        pollers: Vec::new_in(fizzle_alloc()),
-                        event_raised: false,
+                let useless_polled = Rc::new_in(RefCell::new(PolledInfo {
+                    pollers: Vec::new_in(fizzle_alloc()),
+                    event_raised: false,
+                }), fizzle_alloc());
+
+                let client_socket_info = Rc::new_in(
+                    RefCell::new(SocketInfo {
+                        fd_count: 1,
+                        state: SocketState::Connecting(ConnectingSocket {
+                            connect_polled: useless_polled,
+                            backend: match backend {
+                                PendingBackend::Passthrough => ConnectingBackend::Passthrough,
+                                PendingBackend::Peered(_) => unreachable!(),
+                                PendingBackend::Feedback(f) => ConnectingBackend::Feedback(f),
+                                PendingBackend::Plugin(info) => ConnectingBackend::Plugin(info),
+                                PendingBackend::Sink => ConnectingBackend::Sink,
+                                PendingBackend::NullSink => ConnectingBackend::NullSink,
+                                PendingBackend::Fuzz(f) => ConnectingBackend::Fuzz(f),
+                            },
+                        }),
+                        socktype,
+                        protocol: src_addr.protocol(),
+                        local_addr: LocalAddress::Assigned(src_addr.addr().clone()),
                     }),
                     fizzle_alloc(),
                 );
@@ -1423,10 +1445,10 @@ impl InterprocessState {
                 } else {
                     location_info.pending.push_back(client_socket_info.clone());
                 }
+
+                client_socket_info
             }
         }
-
-        client_socket_info
     }
 
     pub fn add_server(&mut self, transport_addr: TransportAddress, backend: ServerBackend) {
