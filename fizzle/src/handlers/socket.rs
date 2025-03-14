@@ -3096,12 +3096,16 @@ impl Event for SocketWriteEvent<'_> {
 
                             let Some(dst_info) = state.global.socket_locations.get_mut(&addr)
                             else {
-                                write_error = Errno::EHOSTUNREACH;
+                                // write_error = Errno::EHOSTUNREACH;
+                                *write_data.buflen = write_data.buf.iter().map(|s| s.len()).sum::<usize>() as u32;
+                                num_written += 1;
                                 continue;
                             };
 
                             let Some(dst_socket) = dst_info.next_bound() else {
-                                write_error = Errno::EHOSTUNREACH;
+                                // write_error = Errno::EHOSTUNREACH;
+                                *write_data.buflen = write_data.buf.iter().map(|s| s.len()).sum::<usize>() as u32;
+                                num_written += 1;
                                 continue;
                             };
 
