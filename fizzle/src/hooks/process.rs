@@ -612,6 +612,14 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
+    unsafe fn _Exit(status: libc::c_int) => fizzle_exit3(ctx) {
+        crate::strace!("_Exit(status={}) -> !", status);
+        let _ = Scheduler::handle_event(&mut ctx, ProcessExitEvent::new(status, false));
+        panic!("_Exit() failed to exit")
+    }
+}
+
+hook_macros::hook! {
     unsafe fn atexit(cb: AtExitFunction) -> libc::c_int => fizzle_atexit(ctx) {
         crate::strace!("atexit(cb={:?}) -> ...", cb);
         match Scheduler::handle_event(&mut ctx, ProcessAtExitEvent::new(cb)) {
