@@ -104,6 +104,10 @@ pub fn fizzle_alloc() -> GlobalHeap {
             let is_singleprocess =
                 matches!(env::var(FIZZLE_SINGLEPROCESS_ENV), Ok(s) if s.as_str() == "1");
 
+            log::debug!("fizzle_alloc() being initialized for this process");
+
+            let is_first_process = !env::var(FIZZLE_MEMORY_ENV).is_ok();
+
             let location = if is_singleprocess {
                 let loc = unsafe {
                     libc::mmap(
@@ -212,12 +216,17 @@ pub fn fizzle_alloc() -> GlobalHeap {
                 loc.cast::<InterprocessAllocator>()
             };
 
+            if is_first_process {
+                unsafe {
+                    *(&raw mut (*location).heap) = TlsfHeap::empty();
+                    (*location).heap.init(
+                        (&raw const (*location).heap_memory) as usize,
+                        FIZZLE_HEAP_SIZE,
+                    );
+                }
+            }
+
             unsafe {
-                *(&raw mut (*location).heap) = TlsfHeap::empty();
-                (*location).heap.init(
-                    (&raw const (*location).heap_memory) as usize,
-                    FIZZLE_HEAP_SIZE,
-                );
                 &*(location.cast_const())
             }
         })
