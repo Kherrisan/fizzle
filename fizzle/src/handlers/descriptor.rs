@@ -89,13 +89,15 @@ impl Event for DescriptorCloseEvent {
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let Some(fd_info) = state.local.fds.get(&self.fd) else {
-            #[cfg(not(feature = "passthroughfs"))]
+            // #[cfg(not(feature = "passthroughfs"))]
             return Outcome::Error(Errno::EBADF);
+            /*
             #[cfg(feature = "passthroughfs")]
             return match unsafe { libc::close(self.fd.as_raw_fd()) } {
                 0 => Outcome::Success(()),
                 _ => Outcome::Error(Errno::get_errno()),
             };
+            */
         };
 
         if let FdResource::Socket(socket_info) = fd_info.resource.clone() {
