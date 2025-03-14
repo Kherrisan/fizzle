@@ -4,6 +4,7 @@ pub const FIZZLE_ALLOC_OFFSET_ENV: &str = "FIZZLE_ALLOC_OFFSET";
 pub const FIZZLE_ALLOC_ENV: &str = "FIZZLE_ALLOC";
 /// Indicates the shared memory key that child processes should access
 pub const FIZZLE_MEMORY_ENV: &str = "FIZZLE_MEMORY";
+pub const FIZZLE_MEMORY_OFFSET_ENV: &str = "FIZZLE_MEMORY_OFFSET";
 /// Indicates that the user will be fuzzing a single-process application.
 ///
 /// Setting this may slightly speed up the execution rate of a program due to deferred forkserver initialization.

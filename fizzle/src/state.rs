@@ -492,9 +492,14 @@ impl FizzleState {
             },
         };
 
+        let memory_offset = match env::var(FIZZLE_MEMORY_OFFSET_ENV) {
+            Ok(var) => var.parse::<usize>().unwrap() as *mut libc::c_void,
+            Err(_) => ptr::null_mut(),
+        };
+
         let location = unsafe {
             libc::mmap(
-                ptr::null_mut(),
+                memory_offset,
                 size,
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_SHARED,
@@ -505,6 +510,10 @@ impl FizzleState {
 
         if location == libc::MAP_FAILED {
             panic!("failed to mmap global memory: {}", Errno::get_errno());
+        }
+
+        if memory_offset.is_null() {
+            env::set_var(FIZZLE_MEMORY_OFFSET_ENV, location.addr().to_string());
         }
 
         unsafe { &mut *(location.cast::<MaybeUninit<InterprocessState>>()) }

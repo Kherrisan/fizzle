@@ -204,7 +204,10 @@ impl Event for ProcessForkEvent {
                                 // the parent's memory, but just to be safe...
                                 set_entered_handler(true);
 
-                                // Clean up child processes if the parent is ever killed
+                                // TODO: Shouldn't we need to upref all Rc<> types in LocalState here?
+                                // They could potentially be freed twice...
+
+                                // Clean up child processes of this process if it is ever killed
                                 unsafe {
                                     assert_eq!(
                                         libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM),

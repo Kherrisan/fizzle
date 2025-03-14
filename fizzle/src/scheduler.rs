@@ -12,10 +12,7 @@ use fizzle_common::io::{SocketType, TransportProtocol};
 
 use crate::backend::{ConnectedBackend, ConnectionlessBackend, FileBackend, FileFeedback, PendingBackend};
 use crate::cell::{PanicOnceCell, SequentialRefCell};
-use crate::constants::{
-    FIZZLE_ALLOC_ENV, FIZZLE_ALLOC_OFFSET_ENV, FIZZLE_HEAP_SIZE, FIZZLE_MEMORY_ENV,
-    FIZZLE_SINGLEPROCESS_ENV,
-};
+use crate::constants::*;
 use crate::errno::Errno;
 use crate::handlers::file::{CowInfo, FileInfo};
 use crate::handlers::id::Worker;
@@ -66,6 +63,7 @@ impl FizzleSingleton {
         let state = state_cell.into_inner();
         drop(state);
 
+        // SAFETY: this must come after `drop(state)`, as it deallocates objects on the heap.
         unsafe {
             fizzle_dealloc();
         }
@@ -1115,7 +1113,9 @@ impl Scheduler {
 
         cmd.env("LD_PRELOAD", std::env::var("LD_PRELOAD").unwrap());
         cmd.env(FIZZLE_MEMORY_ENV, std::env::var(FIZZLE_MEMORY_ENV).unwrap());
+        cmd.env(FIZZLE_MEMORY_OFFSET_ENV, std::env::var(FIZZLE_MEMORY_OFFSET_ENV).unwrap());
         cmd.env(FIZZLE_ALLOC_ENV, std::env::var(FIZZLE_ALLOC_ENV).unwrap());
+        cmd.env(FIZZLE_ALLOC_OFFSET_ENV, std::env::var(FIZZLE_ALLOC_OFFSET_ENV).unwrap());
         cmd.spawn().unwrap();
     }
 
