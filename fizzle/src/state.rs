@@ -183,6 +183,10 @@ impl FizzleState {
             0
         );
 
+        // fizzle_alloc() must be initialized before global memory is, otherwise it could
+        // point to invalid memory
+        fizzle_alloc();
+
         // NOTE: must go before `allocate_global_memory`, as this env variable gets set within it.
         let is_first_process = matches!(env::var(FIZZLE_MEMORY_ENV), Err(_));
 
