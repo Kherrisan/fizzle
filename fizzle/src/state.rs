@@ -378,7 +378,7 @@ impl FizzleState {
         local.file_objs.insert(
             stderr_ptr,
             FileObject {
-                source: FileStreamSource::Descriptor(1),
+                source: FileStreamSource::Descriptor(2),
                 buffer: FileStreamBuffer::Internal(Box::new([0u8; libc::BUFSIZ as usize])),
                 buffer_index: 0,
                 read_end: 0,
