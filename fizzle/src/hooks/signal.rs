@@ -214,6 +214,57 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
+    unsafe fn abort() => fizzle_abort(ctx) {
+        crate::strace!("abort() -> ...");
+
+        match Scheduler::handle_event(&mut ctx, SignalSetSigmaskEvent::new(SigmaskOp::Unblock, Some(SignalSet::SIGABRT))) {
+            Ok(_) => (),
+            Err(()) => unreachable!(),
+        }
+
+        let tid = unsafe { libc::pthread_self() };
+        match Scheduler::handle_event(&mut ctx, SignalSendEvent::new(SignalTarget::Thread(tid), libc::SIGABRT, None)) {
+            Ok(()) => (),
+            Err(_) => unreachable!(),
+        }
+
+        // The above action didn't kill the thread off immediately, which means it was ignored or caught by the process.
+        // Reset to the default disposition and run again
+
+        match Scheduler::handle_event(&mut ctx, SignalSetHandlerEvent::new(libc::SIGABRT, Some(SigDisposition::Default))) {
+            Ok(_) => (),
+            Err(_) => unreachable!(),
+        }
+
+        let tid = unsafe { libc::pthread_self() };
+        let _ = Scheduler::handle_event(&mut ctx, SignalSendEvent::new(SignalTarget::Thread(tid), libc::SIGABRT, None));
+
+        unreachable!()
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn raise(
+        sig: libc::c_int
+    ) -> libc::c_int => fizzle_raise(ctx) {
+        crate::strace!("raise(sig={}) -> ...", sig);
+
+        let tid = unsafe { libc::pthread_self() };
+        match Scheduler::handle_event(&mut ctx, SignalSendEvent::new(SignalTarget::Thread(tid), sig, None)) {
+            Ok(()) => {
+                crate::strace!("raise(sig={}) -> 0", sig);
+                0
+            },
+            Err(e) => {
+                crate::strace!("raise(sig={}) -> -1 ({})", sig, e);
+                e.set_errno();
+                -1
+            },
+        }
+    }
+}
+
+hook_macros::hook! {
     unsafe fn kill(
         pid: libc::pid_t,
         sig: libc::c_int
