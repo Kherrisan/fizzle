@@ -967,7 +967,7 @@ impl Scheduler {
                         }
                     }
                 }
-                SocketState::Connectionless(connectionless) => {
+                SocketState::Connectionless(_connectionless) => {
                     log::debug!("removing connectionless fuzz/plugin client socket");
                 }
                 _ => unreachable!(),
