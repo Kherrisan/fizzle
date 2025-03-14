@@ -425,6 +425,7 @@ impl Event for RegisterAtForkEvent {
     }
 }
 
+#[derive(Clone)]
 pub enum ExecLocation {
     File(FilePath<MAX_PATH_LEN>),
     ShellFile(FilePath<MAX_PATH_LEN>),
@@ -432,10 +433,17 @@ pub enum ExecLocation {
     AtDirectory(Descriptor, FilePath<MAX_PATH_LEN>),
 }
 
+
 pub struct ProcessExecEvent {
     cmd_location: ExecLocation,
     env: Option<Vec<CString>>,
     args: Vec<CString>,
+    state: ProcessExecState,
+}
+
+pub enum ProcessExecState {
+    Start,
+    Executed,
 }
 
 impl ProcessExecEvent {
@@ -444,62 +452,74 @@ impl ProcessExecEvent {
             cmd_location,
             env,
             args,
+            state: ProcessExecState::Start,
         }
     }
 }
+
+pub struct ExecArgs {
+    argp: [*const libc::c_char; 128],
+}
+
+unsafe impl Send for ExecArgs {}
+
+pub struct ExecEnv {
+    envp: [*const libc::c_char; 128],
+}
+
+unsafe impl Send for ExecEnv {}
 
 impl Event for ProcessExecEvent {
     type Success = ();
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        // TODO: cleanup here
+        match self.state {
+            ProcessExecState::Start => {
+                let process_info = state.local.process_info.clone();
+                let pid = process_info.borrow().pid;
+                let ppid = process_info.borrow().ppid;
+                let pgid = process_info.borrow().pgid;
+                let fds = state.local.fds.clone();
+                // From `man signal(7)`:
+                // "During an execve(2), the dispositions of handled signals are reset to the default; the
+                // dispositions of ignored signals are left unchanged."
+                let signal_handlers = process_info
+                    .borrow()
+                    .signal_handlers
+                    .clone()
+                    .map(|handler| match handler {
+                        SigDisposition::Ignore => SigDisposition::Ignore,
+                        _ => SigDisposition::Default,
+                    });
 
-        let process_info = state.local.process_info.clone();
-        let pid = process_info.borrow().pid;
-        let ppid = process_info.borrow().ppid;
-        let pgid = process_info.borrow().pgid;
-        let fds = state.local.fds.clone();
-        // From `man signal(7)`:
-        // "During an execve(2), the dispositions of handled signals are reset to the default; the
-        // dispositions of ignored signals are left unchanged."
-        let signal_handlers = process_info
-            .borrow()
-            .signal_handlers
-            .clone()
-            .map(|handler| match handler {
-                SigDisposition::Ignore => SigDisposition::Ignore,
-                _ => SigDisposition::Default,
-            });
+                let sigmask = state
+                    .local
+                    .signals
+                    .get(&thread::current().id())
+                    .unwrap()
+                    .masked;
 
-        let sigmask = state
-            .local
-            .signals
-            .get(&thread::current().id())
-            .unwrap()
-            .masked;
+                state.global.inherited_state = Some(InheritedState {
+                    pid, // TODO: are these meant to be switched up to reflect child relationship?
+                    ppid,
+                    pgid,
+                    fds,
+                    signal_handlers,
+                    sigmask,
+                });
 
-        state.global.inherited_state = Some(InheritedState {
-            pid, // TODO: are these meant to be switched up to reflect child relationship?
-            ppid,
-            pgid,
-            fds,
-            signal_handlers,
-            sigmask,
-        });
+                let argp: [*const libc::c_char; 128] = array::from_fn(|i| {
+                    if i < self.args.len() {
+                        self.args[i].as_ptr()
+                    } else {
+                        ptr::null()
+                    }
+                });
 
-        let argp: [*const libc::c_char; 128] = array::from_fn(|i| {
-            if i < self.args.len() {
-                self.args[i].as_ptr()
-            } else {
-                ptr::null()
-            }
-        });
+                let args = ExecArgs { argp };
 
-        match &self.cmd_location {
-            ExecLocation::File(f) => {
-                let cmd = f.data().as_ptr().cast::<libc::c_char>();
-                match &self.env {
+                let envs = match &self.env {
                     Some(e) => {
                         let envp: [*const libc::c_char; 128] = array::from_fn(|i| {
                             if i < e.len() {
@@ -509,82 +529,108 @@ impl Event for ProcessExecEvent {
                             }
                         });
 
-                        unsafe {
-                            libc::execve(cmd, argp.as_ptr(), envp.as_ptr());
-                        }
+                        Some(ExecEnv { envp, })
                     }
-                    None => unsafe {
-                        libc::execv(cmd, argp.as_ptr());
-                    },
-                }
-            }
-            ExecLocation::ShellFile(f) => {
-                let cmd = f.data().as_ptr().cast::<libc::c_char>();
-                match &self.env {
-                    Some(e) => {
-                        let envp: [*const libc::c_char; 128] = array::from_fn(|i| {
-                            if i < e.len() {
-                                e[i].as_ptr()
-                            } else {
-                                ptr::null()
+                    None => None,
+                };
+
+                let location = self.cmd_location.clone();
+
+                self.state = ProcessExecState::Executed;
+
+                Outcome::RunTask(
+                    Box::new_in(move |ctx| {
+                        let mut state = ctx.acquire();
+
+                        let passed_args = args;
+                        let argp = passed_args.argp;
+
+                        match &location {
+                            ExecLocation::File(f) => {
+                                let cmd = f.data().as_ptr().cast::<libc::c_char>();
+                                match envs {
+                                    Some(ExecEnv { envp }) => {
+                                        drop(state);
+
+                                        unsafe {
+                                            libc::execve(cmd, argp.as_ptr(), envp.as_ptr());
+                                        }
+                                    }
+                                    None => {
+                                        drop(state);
+                                        
+                                        unsafe {
+                                            libc::execv(cmd, argp.as_ptr());
+                                        }
+                                    },
+                                }
                             }
-                        });
+                            ExecLocation::ShellFile(f) => {
+                                let cmd = f.data().as_ptr().cast::<libc::c_char>();
+                                match envs {
+                                    Some(ExecEnv { envp }) => {
+                                        drop(state);
 
-                        unsafe {
-                            libc::execvpe(cmd, argp.as_ptr(), envp.as_ptr());
-                        }
-                    }
-                    None => unsafe {
-                        libc::execvp(cmd, argp.as_ptr());
-                    },
-                }
-            }
-            ExecLocation::Descriptor(descriptor) => {
-                let envp: [*const libc::c_char; 128] = self
-                    .env
-                    .as_ref()
-                    .map(|e| {
-                        array::from_fn(|i| {
-                            if i < e.len() {
-                                e[i].as_ptr()
-                            } else {
-                                ptr::null()
+                                        unsafe {
+                                            libc::execvpe(cmd, argp.as_ptr(), envp.as_ptr());
+                                        }
+                                    }
+                                    None => {
+                                        drop(state);
+
+                                        unsafe {
+                                            libc::execvp(cmd, argp.as_ptr());
+                                        }
+                                    },
+                                }
                             }
-                        })
-                    })
-                    .unwrap();
+                            ExecLocation::Descriptor(descriptor) => {
+                                let envp = envs.unwrap().envp;
 
-                match state.local.fds.get(&descriptor) {
-                    Some(fd_info) => {
-                        let FdResource::File(open_file) = &fd_info.resource else {
-                            state.global.inherited_state = None;
-                            return Outcome::Error(Errno::EINVAL);
-                        };
+                                match state.local.fds.get(&descriptor) {
+                                    Some(fd_info) => {
+                                        let FdResource::File(open_file) = &fd_info.resource else {
+                                            state.global.inherited_state = None;
+                                            panic!("fexecve called on unrecognized file descriptor")
+                                        };
 
-                        // TODO: must be opened read-only with O_PATH set and execute permissions
+                                        // TODO: must be opened read-only with O_PATH set and execute permissions
 
-                        let path = open_file.borrow().file.borrow().path.clone();
+                                        let path = open_file.borrow().file.borrow().path.clone();
+                                        let cmd = path.data().as_ptr().cast::<libc::c_char>();
 
-                        let cmd = path.data().as_ptr().cast::<libc::c_char>();
+                                        drop(state);
 
-                        unsafe {
-                            libc::execve(cmd, argp.as_ptr(), envp.as_ptr());
+                                        unsafe {
+                                            libc::execve(cmd, argp.as_ptr(), envp.as_ptr());
+                                        }
+                                    }
+                                    None => unsafe {
+                                        log::warn!("fexecve called on unknown file descriptor--passing through...");
+                                        drop(state);
+
+                                        libc::fexecve(descriptor.as_raw_fd(), argp.as_ptr(), envp.as_ptr());
+                                    },
+                                }
+                            }
+                            ExecLocation::AtDirectory(_fd, _path) => {
+                                todo!("execveat not implemented") // TODO: implement
+                            }
                         }
-                    }
-                    None => unsafe {
-                        log::warn!("fexecve called on unknown file descriptor--passing through...");
-                        libc::fexecve(descriptor.as_raw_fd(), argp.as_ptr(), envp.as_ptr());
-                    },
-                }
+
+                        TaskResult::Continue
+                    }, fizzle_alloc()),
+                    YieldUntil::Immediate,
+                )
             }
-            ExecLocation::AtDirectory(_fd, _path) => {
-                todo!("execveat not implemented") // TODO: implement
+            ProcessExecState::Executed => {
+                state.global.inherited_state = None;
+                panic!("exec event returned non-zero");
             }
         }
 
-        state.global.inherited_state = None;
 
-        Outcome::Error(Errno::get_errno())
+        
     }
 }
 
