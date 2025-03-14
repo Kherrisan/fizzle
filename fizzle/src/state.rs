@@ -184,13 +184,13 @@ impl FizzleState {
         );
 
         // NOTE: must go before `allocate_global_memory`, as this env variable gets set within it.
-        let is_main_process = matches!(env::var(FIZZLE_MEMORY_ENV), Err(_));
+        let is_first_process = matches!(env::var(FIZZLE_MEMORY_ENV), Err(_));
 
         // Allocate shared memory for process-shared state
         let global_uninit = Self::allocate_global_memory();
 
         // Perform bare-bones initialization of global state (if not done yet)
-        let global = if is_main_process {
+        let global = if is_first_process {
             InterprocessState::situate(global_uninit)
         } else {
             unsafe { global_uninit.assume_init_mut() }
@@ -283,16 +283,19 @@ impl FizzleState {
             let pid = inherited_state.pid;
             let pgid = inherited_state.pgid;
 
-            global.pids.insert(pid, local.process_info.clone());
+            if let Some(process_info) = global.pids.get(&pid).cloned() {
+                local.process_info = process_info;
+            } else {
+                global.pids.insert(pid, local.process_info.clone());
+                global.process_groups.get_mut(&pgid).unwrap().insert(pid);
+            }
 
-            let mut process_info = local.process_info.borrow_mut();
-            process_info.pid = pid;
-            process_info.ppid = inherited_state.ppid;
-            process_info.pgid = pgid;
-            process_info.signal_handlers = inherited_state.signal_handlers;
-            drop(process_info);
-
-            global.process_groups.get_mut(&pgid).unwrap().insert(pid);
+            let mut process_info_mut = local.process_info.borrow_mut();
+            process_info_mut.pid = pid;
+            process_info_mut.ppid = inherited_state.ppid;
+            process_info_mut.pgid = pgid;
+            process_info_mut.signal_handlers = inherited_state.signal_handlers;
+            drop(process_info_mut);
 
             // Receive inherited fds
             mem::swap(&mut local.fds, &mut inherited_state.fds);
@@ -395,7 +398,7 @@ impl FizzleState {
         state.global.worker_locks.insert(worker, worker_sem);
 
         // Now that everything else is initialized, time to populate startup processes/plugins.
-        if is_main_process {
+        if is_first_process {
             let mut onstartup_commands = Vec::new();
             let mut onready_commands = Vec::new();
 
