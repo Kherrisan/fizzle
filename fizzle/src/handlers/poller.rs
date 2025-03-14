@@ -1094,7 +1094,7 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
             PolledStatus::Pollable(pipe_info.borrow().read_polled.clone())
         }
         FdResource::Stdin => match &state.global.stdio {
-            StdioBackend::Passthrough => PolledStatus::ImmediatelyPollable,
+            StdioBackend::Passthrough => PolledStatus::NotPollable, // stdin is used by fuzzing, so it only gets use if specifically defined
             StdioBackend::Peered(_) => unreachable!(),
             StdioBackend::Feedback(feedback) => {
                 PolledStatus::Pollable(feedback.read_polled.clone())
