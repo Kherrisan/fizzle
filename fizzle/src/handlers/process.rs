@@ -549,6 +549,8 @@ impl Event for ProcessExecEvent {
                         let passed_args = args;
                         let argp = passed_args.argp;
 
+                        log::info!("calling exec() to execute a new process...");
+
                         match &loc {
                             ExecLocation::File(f) => {
                                 let cmd = f.data().as_ptr().cast::<libc::c_char>();
@@ -583,6 +585,7 @@ impl Event for ProcessExecEvent {
                                         }
                                     }
                                     None => unsafe {
+                                        ctx.dealloc();
                                         libc::execvp(cmd, argp.as_ptr());
                                     },
                                 }
@@ -617,7 +620,6 @@ impl Event for ProcessExecEvent {
                                         // SAFETY: data passed into this closure is specifically allocated on fizzle_alloc().
                                         // Referencing anything from there once `ctx.dealloc()` is called will result in SIGSEGV.
                                         ctx.dealloc();
-
                                         libc::fexecve(descriptor.as_raw_fd(), argp.as_ptr(), envp.as_ptr());
                                     },
                                 }
