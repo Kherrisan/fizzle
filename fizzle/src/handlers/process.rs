@@ -481,6 +481,7 @@ impl Event for ProcessExecEvent {
                 let ppid = process_info.borrow().ppid;
                 let pgid = process_info.borrow().pgid;
                 let fds = state.local.fds.clone();
+
                 // From `man signal(7)`:
                 // "During an execve(2), the dispositions of handled signals are reset to the default; the
                 // dispositions of ignored signals are left unchanged."
@@ -501,7 +502,7 @@ impl Event for ProcessExecEvent {
                     .masked;
 
                 state.global.inherited_state = Some(InheritedState {
-                    pid, // TODO: are these meant to be switched up to reflect child relationship?
+                    pid,
                     ppid,
                     pgid,
                     fds,
@@ -540,52 +541,52 @@ impl Event for ProcessExecEvent {
 
                 Outcome::RunTask(
                     Box::new_in(move |ctx| {
-                        let mut state = ctx.acquire();
+                        let loc = location;
 
                         let passed_args = args;
                         let argp = passed_args.argp;
 
-                        match &location {
+                        match &loc {
                             ExecLocation::File(f) => {
                                 let cmd = f.data().as_ptr().cast::<libc::c_char>();
-                                match envs {
-                                    Some(ExecEnv { envp }) => {
-                                        drop(state);
 
-                                        unsafe {
-                                            libc::execve(cmd, argp.as_ptr(), envp.as_ptr());
-                                        }
+                                match envs {
+                                    Some(ExecEnv { envp }) => unsafe {
+                                        let env = envp;
+                                        // SAFETY: data passed into this closure is specifically allocated on fizzle_alloc().
+                                        // Referencing anything from there once `ctx.dealloc()` is called will result in SIGSEGV.
+                                        ctx.dealloc();
+                                        libc::execve(cmd, argp.as_ptr(), env.as_ptr());
                                     }
-                                    None => {
-                                        drop(state);
-                                        
-                                        unsafe {
-                                            libc::execv(cmd, argp.as_ptr());
-                                        }
+                                    None => unsafe {
+                                        // SAFETY: data passed into this closure is specifically allocated on fizzle_alloc().
+                                        // Referencing anything from there once `ctx.dealloc()` is called will result in SIGSEGV.
+                                        ctx.dealloc();
+                                        libc::execv(cmd, argp.as_ptr());
                                     },
                                 }
                             }
                             ExecLocation::ShellFile(f) => {
                                 let cmd = f.data().as_ptr().cast::<libc::c_char>();
+
                                 match envs {
                                     Some(ExecEnv { envp }) => {
-                                        drop(state);
-
+                                        let env = envp;
                                         unsafe {
-                                            libc::execvpe(cmd, argp.as_ptr(), envp.as_ptr());
+                                            // SAFETY: data passed into this closure is specifically allocated on fizzle_alloc().
+                                            // Referencing anything from there once `ctx.dealloc()` is called will result in SIGSEGV.
+                                            ctx.dealloc();
+                                            libc::execvpe(cmd, argp.as_ptr(), env.as_ptr());
                                         }
                                     }
-                                    None => {
-                                        drop(state);
-
-                                        unsafe {
-                                            libc::execvp(cmd, argp.as_ptr());
-                                        }
+                                    None => unsafe {
+                                        libc::execvp(cmd, argp.as_ptr());
                                     },
                                 }
                             }
                             ExecLocation::Descriptor(descriptor) => {
                                 let envp = envs.unwrap().envp;
+                                let mut state = ctx.acquire();
 
                                 match state.local.fds.get(&descriptor) {
                                     Some(fd_info) => {
@@ -598,16 +599,21 @@ impl Event for ProcessExecEvent {
 
                                         let path = open_file.borrow().file.borrow().path.clone();
                                         let cmd = path.data().as_ptr().cast::<libc::c_char>();
-
                                         drop(state);
 
                                         unsafe {
+                                            // SAFETY: data passed into this closure is specifically allocated on fizzle_alloc().
+                                            // Referencing anything from there once `ctx.dealloc()` is called will result in SIGSEGV.
+                                            ctx.dealloc();
                                             libc::execve(cmd, argp.as_ptr(), envp.as_ptr());
                                         }
                                     }
                                     None => unsafe {
                                         log::warn!("fexecve called on unknown file descriptor--passing through...");
                                         drop(state);
+                                        // SAFETY: data passed into this closure is specifically allocated on fizzle_alloc().
+                                        // Referencing anything from there once `ctx.dealloc()` is called will result in SIGSEGV.
+                                        ctx.dealloc();
 
                                         libc::fexecve(descriptor.as_raw_fd(), argp.as_ptr(), envp.as_ptr());
                                     },

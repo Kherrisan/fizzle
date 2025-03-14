@@ -283,6 +283,7 @@ impl FizzleState {
             let pid = inherited_state.pid;
             let pgid = inherited_state.pgid;
 
+            // Rc<> pointer is null here
             if let Some(process_info) = global.pids.get(&pid).cloned() {
                 local.process_info = process_info;
             } else {
@@ -507,6 +508,12 @@ impl FizzleState {
         }
 
         unsafe { &mut *(location.cast::<MaybeUninit<InterprocessState>>()) }
+    }
+
+    unsafe fn deallocate_global_memory(global_state: &mut InterprocessState) {
+        let size = mem::size_of::<InterprocessState>();
+        let munmap_res = libc::munmap(ptr::from_mut(global_state).cast::<libc::c_void>(), size);
+        assert_eq!(munmap_res, 0, "munmap() failed");
     }
 
     /// Allocates a new Copy-on-Write (CoW) within the main process, returning its identifier.
@@ -991,6 +998,16 @@ impl FizzleState {
             pid: self.local.process_info.borrow().pid,
             thread_id: thread::current().id(),
         }
+    }
+}
+
+impl Drop for FizzleState {
+    fn drop(&mut self) {
+        unsafe {
+            Self::deallocate_global_memory(self.global);
+        }
+        
+        // Drop ProcessLocalState normally
     }
 }
 

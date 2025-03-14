@@ -21,13 +21,20 @@ impl<T> SequentialRefCell<T> {
     }
 
     /// Immutably borrows a wrapped value.
+    #[inline]
     pub fn borrow(&self) -> Ref<'_, T> {
         self.inner.borrow()
     }
 
     /// Mutably borrows a wrapped value.
+    #[inline]
     pub fn borrow_mut(&self) -> RefMut<'_, T> {
         self.inner.borrow_mut()
+    }
+
+    #[inline]
+    pub fn into_inner(self) -> T {
+        self.inner.into_inner()
     }
 }
 
@@ -80,6 +87,14 @@ impl<T> PanicOnceCell<T> {
             // 2nd MSB set: initialization complete
             unsafe { &*(self.inner.get().cast_const().cast::<T>()) }
         }
+    }
+
+    pub unsafe fn deinit(&self) -> T {
+        if self.state.fetch_and(0b0000_0000, Ordering::Relaxed) & 0b0000_0010 == 0 {
+            panic!("OnceCell deinit() called when not fully initialized")
+        }
+
+        (*self.inner.get()).assume_init_read()
     }
 
     // `inline(never)` and `cold` improve branch prediction, since `initialize()` only ever happens

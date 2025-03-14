@@ -45,6 +45,33 @@ pub struct FizzleSingleton {
     _private: (),
 }
 
+impl FizzleSingleton {
+    fn new() -> Self {
+        FizzleSingleton { _private: () }
+    }
+
+    /// Acquires the global shared state for mutable access.
+    ///
+    /// This access does not involve any atomic or locking operations.
+    pub fn acquire(&mut self) -> RefMut<'_, FizzleState> {
+        FIZZLE_STATE
+            .get_or_init(|| SequentialRefCell::new(FizzleState::new()))
+            .borrow_mut()
+    }
+
+    /// Deallocates shared memory for all global state (including the interprocess allocator),
+    /// and drops local state.
+    pub unsafe fn dealloc(&mut self) {
+        let state_cell = FIZZLE_STATE.deinit();
+        let state = state_cell.into_inner();
+        drop(state);
+
+        unsafe {
+            fizzle_dealloc();
+        }
+    }
+}
+
 /// Produces a new `FizzleSingleton` instance that can be used to acquire global state in a safe manner.
 ///
 /// WARNING: this function SHOULD NOT be used in any methods other than a) the hook macro, or b)
@@ -59,6 +86,17 @@ pub struct FizzleSingleton {
 /// to another thread acquiring the global state.
 pub unsafe fn fizzle_singleton() -> FizzleSingleton {
     FizzleSingleton::new()
+}
+
+unsafe fn fizzle_dealloc() {
+    let alloc = FIZZLE_ALLOC.deinit();
+
+    let len = mem::size_of_val(alloc);
+    let munmap_res = unsafe {
+        libc::munmap(ptr::from_ref(alloc).cast_mut().cast::<libc::c_void>(), len)
+    };
+    
+    assert_eq!(munmap_res, 0, "munmap() failed while fizzle_dealloc() was being called");
 }
 
 pub fn fizzle_alloc() -> GlobalHeap {
@@ -186,21 +224,6 @@ pub fn fizzle_alloc() -> GlobalHeap {
             }
         })
         .heap
-}
-
-impl FizzleSingleton {
-    fn new() -> Self {
-        FizzleSingleton { _private: () }
-    }
-
-    /// Acquires the global shared state for mutable access.
-    ///
-    /// This access does not involve any atomic or locking operations.
-    pub fn acquire(&mut self) -> RefMut<'_, FizzleState> {
-        FIZZLE_STATE
-            .get_or_init(|| SequentialRefCell::new(FizzleState::new()))
-            .borrow_mut()
-    }
 }
 
 #[derive(Clone, Debug)]
