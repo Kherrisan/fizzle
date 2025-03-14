@@ -618,9 +618,9 @@ impl Event for ProcessExecEvent {
                             }
                         }
 
-                        TaskResult::Continue
+                        panic!("exec call failed");
                     }, fizzle_alloc()),
-                    YieldUntil::Immediate,
+                    YieldUntil::None,
                 )
             }
             ProcessExecState::Executed => {
