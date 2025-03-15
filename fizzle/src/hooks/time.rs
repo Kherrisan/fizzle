@@ -171,12 +171,17 @@ hook_macros::hook! {
 
         // TODO: verify correctness of itimerval values
 
-        let new_value = ItimerValue { interval: Duration::ZERO, val: Duration::from_secs(seconds as u64) };
+        let new_value = if seconds > 0 {
+            Some(ItimerValue { interval: Duration::ZERO, val: Duration::from_secs(seconds as u64) })
+        } else {
+            None
+        };
 
-        match Scheduler::handle_event(&mut ctx, SetItimerEvent::new(TimerType::Real, Some(new_value))) {
+        match Scheduler::handle_event(&mut ctx, SetItimerEvent::new(TimerType::Real, new_value)) {
             Ok(old_value) => {
-                crate::strace!("alarm(seconds={}) -> 0", seconds);
-                old_value.val.as_secs() as u32
+                let remaining_secs = old_value.val.as_secs();
+                crate::strace!("alarm(seconds={}) -> {}", seconds, remaining_secs);
+                remaining_secs.try_into().unwrap()
             },
             Err(()) => unreachable!(),
         }
