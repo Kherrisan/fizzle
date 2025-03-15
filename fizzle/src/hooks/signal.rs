@@ -109,6 +109,18 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
+    unsafe fn siginterrupt(
+        sig: libc::c_int,
+        flag: libc::c_int
+    ) -> libc::c_int => fizzle_siginterrupt(_ctx) {
+        log::error!("siginterrupt() unimplemented");
+        // TODO: implement
+        crate::strace!("siginterrupt(sig={}, flag={}) -> 0", sig, flag);
+        return 0
+    }
+}
+
+hook_macros::hook! {
     unsafe fn signalfd(
         _fd: libc::c_int,
         _mask: *const libc::sigset_t,
