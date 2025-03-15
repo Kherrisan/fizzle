@@ -100,20 +100,21 @@ impl Event for SetItimerEvent {
             TimerType::Prof => &state.local.itimer_prof,
         };
 
-        let interval = match timer_info {
+        let old_interval = match timer_info {
             Some(info) => info.interval,
             None => Duration::ZERO,
         };
 
         let current_pid = state.local.process_info.borrow().pid;
 
+        // See if there's already a scheduled timer
         let ready = state.global.ready.iter().find(|r| match &r.info {
             ReadyInfo::Timer(pid, ty) if &current_pid == pid && &self.which == ty => true,
             _ => false,
         });
 
-        let val = match ready {
-            Some(ScheduledItem { timestamp, .. }) => current_time.saturating_sub(*timestamp),
+        let old_remaining = match ready {
+            Some(ScheduledItem { timestamp, .. }) => timestamp.saturating_sub(current_time),
             None => Duration::ZERO,
         };
 
@@ -154,17 +155,17 @@ impl Event for SetItimerEvent {
                 }
             }
 
-            let timestamp = if val.is_zero() { *interval } else { *val };
+            let timer_duration = if val.is_zero() { *interval } else { *val };
 
-            if !timestamp.is_zero() {
+            if !timer_duration.is_zero() {
                 // Add the new timer
                 state.global.ready.push(ScheduledItem {
                     info: ReadyInfo::Timer(current_pid, self.which),
-                    timestamp,
+                    timestamp: current_time + timer_duration,
                 });
             }
         };
 
-        Outcome::Success(ItimerValue { interval, val })
+        Outcome::Success(ItimerValue { interval: old_interval, val: old_remaining })
     }
 }
