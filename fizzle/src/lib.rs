@@ -78,6 +78,9 @@ unsafe extern "C" {
     pub static __afl_connected: libc::c_int;
 
     #[cfg(feature = "pcr")]
+    pub static __afl_already_initialized_second: u32;
+
+    #[cfg(feature = "pcr")]
     pub static mut __afl_sharedmem_fuzzing: libc::c_int;
 
     pub fn vasprintf(

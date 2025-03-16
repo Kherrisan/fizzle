@@ -797,15 +797,17 @@ impl ThreadSetSpecificEvent {
 
 impl Event for ThreadSetSpecificEvent {
     type Success = ();
-    type Error = ();
+    type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        state
-            .local
-            .pthread_key_values
-            .get_mut(&self.key)
-            .unwrap()
-            .insert(thread::current().id(), self.pointer);
+        let Some(key_val) = state
+                .local
+                .pthread_key_values
+                .get_mut(&self.key) else {
+            return Outcome::Error(Errno::EINVAL)
+        };
+
+        key_val.insert(thread::current().id(), self.pointer);
         Outcome::Success(())
     }
 }

@@ -209,7 +209,11 @@ hook_macros::hook! {
                 crate::strace!("pthread_setspecific(key={:?}, pointer={:?}) -> 0", key, pointer);
                 0
             },
-            Err(()) => unreachable!(),
+            Err(e) => {
+                crate::strace!("pthread_setspecific(key={:?}, pointer={:?}) -> -1 {}", key, pointer, e);
+                e.set_errno();
+                -1
+            }
         }
     }
 }

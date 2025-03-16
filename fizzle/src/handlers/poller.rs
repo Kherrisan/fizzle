@@ -179,7 +179,7 @@ impl Event for SelectEvent<'_> {
                             match fd_to_pollout(state, fd) {
                                 PolledStatus::Pollable(polled_id) => {
                                     if !state.polled_is_ready(&polled_id) {
-                                        log::trace!("`select`: fd {} was set for reading (Pollable | NotReady)", fd);
+                                        log::trace!("`select`: fd {} was set for writing (Pollable | NotReady)", fd);
                                         unsafe {
                                             libc::FD_CLR(fd, *writefds);
                                         }
@@ -352,6 +352,9 @@ impl<'a> PollEvent<'a> {
         }
     }
 }
+
+// TODO: when write end of connection-oriented stream (TCP, Unix, or pipes) is closed, need to return POLLERR
+//
 
 impl Event for PollEvent<'_> {
     type Success = usize;
@@ -1056,39 +1059,15 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
         return PolledStatus::BadFd;
     };
     match &fd_info.resource {
-        FdResource::Epoll(_) => panic!("polling an epoll descriptor not supported"),
+        FdResource::Epoll(_) => {
+            log::error!("polling an epoll descriptor not supported");
+            PolledStatus::NotPollable
+        }
         FdResource::EventFd(eventfd) => {
             PolledStatus::Pollable(eventfd.borrow().read_polled.clone())
         }
         FdResource::Directory(_) => PolledStatus::NotPollable,
         FdResource::File(_file_id) => PolledStatus::ImmediatelyPollable, // Polling a file is not generally supported
-        /*
-        match &state.global.files.get(&file_id).unwrap().backend {
-            FileBackend::Passthrough => PolledStatus::ImmediatelyPollable,
-            FileBackend::Peered(_) => unreachable!(),
-            FileBackend::Feedback(feedback) => PolledStatus::Pollable(feedback.read_polled.clone()),
-            FileBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                state
-                    .global
-                    .plugins
-                    .get(plugin_id)
-                    .unwrap()
-                    .read_polled
-                    .clone(),
-            ),
-            FileBackend::Sink => PolledStatus::NotPollable,
-            FileBackend::NullSink => PolledStatus::ImmediatelyPollable,
-            FileBackend::Fuzz(fuzz_endpoint_id) => PolledStatus::Pollable(
-                state
-                    .global
-                    .fuzz_endpoints
-                    .get(&fuzz_endpoint_id)
-                    .unwrap()
-                    .read_polled
-                    .clone(),
-            ),
-        },
-        */
         FdResource::MessageQueue(_) => todo!(),
         FdResource::Pipe(pipe_info) => {
             PolledStatus::Pollable(pipe_info.borrow().read_polled.clone())
@@ -1164,26 +1143,6 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
         }
         FdResource::Directory(_) => PolledStatus::NotPollable,
         FdResource::File(_file_id) => PolledStatus::ImmediatelyPollable,
-        /*
-        match &state.global.files.get(&file_id).unwrap().backend {
-            FileBackend::Passthrough | FileBackend::Peered(_) => unreachable!(),
-            FileBackend::Feedback(feedback) => {
-                PolledStatus::Pollable(feedback.write_polled.clone())
-            }
-            FileBackend::Plugin(plugin_id) => PolledStatus::Pollable(
-                state
-                    .global
-                    .plugins
-                    .get(&plugin_id)
-                    .unwrap()
-                    .write_polled
-                    .clone(),
-            ),
-            FileBackend::Sink => PolledStatus::ImmediatelyPollable,
-            FileBackend::NullSink => PolledStatus::ImmediatelyPollable,
-            FileBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
-        },
-        */
         FdResource::MessageQueue(_) => todo!(),
         FdResource::Pipe(pipe_info) => {
             if let Some(peer) = pipe_info.borrow().peer.upgrade() {

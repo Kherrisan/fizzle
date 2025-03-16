@@ -140,7 +140,7 @@ hook_macros::hook! {
             return libc::SIG_ERR
         }
 
-        crate::strace!("signal(signum={}, handler={}) -> ...", signum, handler);
+        crate::strace!("signal(signum={}, handler={:#x}) -> ...", signum, handler);
 
         let new_handler = match handler {
             libc::SIG_DFL => SigDisposition::Default,
@@ -157,7 +157,7 @@ hook_macros::hook! {
                     SigDisposition::Action(a) => unsafe { mem::transmute(a) },
                 };
 
-                crate::strace!("signal(signum={}, handler={}) -> {}", signum, handler, out);
+                crate::strace!("signal(signum={}, handler={:#X}) -> {:#x}", signum, handler, out);
                 out
             },
             Err(()) => unreachable!(),

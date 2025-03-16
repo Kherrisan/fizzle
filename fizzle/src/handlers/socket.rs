@@ -1,4 +1,4 @@
-use fizzle_common::io::{AddressFamily, SockAddr, SocketType, TransportAddress, TransportProtocol};
+use fizzle_common::io::*;
 use heapless::Entry;
 
 use std::cell::RefCell;
@@ -30,7 +30,7 @@ fn get_or_assign_local(
     let addr = socket_info.borrow().local_addr.clone();
     let protocol = socket_info.borrow().protocol;
 
-    let reuse_port = match &socket_info.borrow().state {
+    let mut reuse_port = match &socket_info.borrow().state {
         SocketState::Unassociated(u) => u.reuse_port,
         SocketState::Connectionless(c) => c.reuse_port,
         _ => false,
@@ -49,6 +49,10 @@ fn get_or_assign_local(
             // Check to see if the ephemeral address will bind
             loop {
                 let addr = state.global.ephemeral_address(family, proto);
+
+                if addr.addr() == &SockAddr::Unix(SocketAddrUnix::Unnamed) {
+                    reuse_port = true;
+                }
 
                 let wildcard_bound = if let Some(wildcard) = addr.wildcard() {
                     state

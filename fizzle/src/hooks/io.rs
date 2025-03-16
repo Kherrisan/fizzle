@@ -17,6 +17,12 @@ hook_macros::hook! {
 
         crate::strace!("write(fd={}, buf={:?}, len={}) -> ...", fd, buf, len);
 
+        // Pass through AFL socket creation tasks
+        #[cfg(feature = "afl")]
+        if fd == 199 {
+            return unsafe { libc::write(fd, buf, len) }
+        }
+
         let s = slice::from_raw_parts(buf as *const u8, len);
         let mut iov = IoSlice::new(s);
         let write_data = WriteData::BasicVec(slice::from_mut(&mut iov));

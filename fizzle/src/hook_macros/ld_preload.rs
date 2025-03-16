@@ -53,6 +53,11 @@ macro_rules! hook {
                         return $real_fn.get() ( $($v),* )
                     }
 
+                    #[cfg(feature = "pcr")]
+                    if crate::__afl_already_initialized_second == 0 {
+                        return $real_fn.get() ( $($v),* )
+                    }
+
                     crate::state::set_entered_handler(true);
 
                     if !crate::hook_macros::ld_preload::LOG_INITIALIZED.fetch_or(true, std::sync::atomic::Ordering::Relaxed) {
@@ -119,19 +124,3 @@ pub fn real_syscall() -> extern "C" fn(libc::c_long, ...) -> libc::c_long {
 
     unsafe { std::mem::transmute(REAL.with(|cell| *cell.get_or_init(|| dlsym_next("syscall\0")))) }
 }
-
-/*
-pub fn real_fcntl() -> extern "C" fn(libc::c_long, ...) -> libc::c_long {
-    std::thread_local! {
-        static REAL: OnceCell<*const u8> = OnceCell::new();
-    }
-
-    unsafe {
-        std::mem::transmute(REAL.with(|cell| {
-            *cell.get_or_init(|| {
-                dlsym_next("syscall\0")
-            })
-        }))
-    }
-}
-*/

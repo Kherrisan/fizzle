@@ -980,6 +980,7 @@ impl Scheduler {
                 }
                 SocketState::Connected(connected) => {
                     log::debug!("removing connected fuzz/plugin client socket");
+                    
                     if !connected.peer_closed {
                         connected.peer_closed = true;
 
@@ -1012,7 +1013,7 @@ impl Scheduler {
 
         #[cfg(not(feature = "pcr"))]
         if !state.global.fuzz_input.is_empty() {
-            // 
+            // Only one input per harness execution--end here
             unsafe {
                 libc::_exit(0);
             }
