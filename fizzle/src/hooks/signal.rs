@@ -487,7 +487,7 @@ hook_macros::hook! {
             None => None,
         };
 
-        crate::strace!("pthread_signask(how={:?}, set={:?}, oldset={:?}) -> ...", op, set, oldset);
+        crate::strace!("pthread_sigmask(how={:?}, set={:?}, oldset={:?}) -> ...", op, set, oldset);
 
         match Scheduler::handle_event(&mut ctx, SignalSetSigmaskEvent::new(op, mask)) {
             Ok(raised_info) => {
