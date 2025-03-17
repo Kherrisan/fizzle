@@ -53,14 +53,17 @@ macro_rules! hook {
                         return $real_fn.get() ( $($v),* )
                     }
 
-                    #[cfg(feature = "pcr")]
-                    if crate::__afl_already_initialized_second == 0 {
-                        return $real_fn.get() ( $($v),* )
-                    }
-
                     crate::state::set_entered_handler(true);
 
                     if !crate::hook_macros::ld_preload::LOG_INITIALIZED.fetch_or(true, std::sync::atomic::Ordering::Relaxed) {
+
+                        #[cfg(feature = "afl")]
+                        crate::__afl_auto_early();
+                        #[cfg(feature = "afl")]
+                        crate::__afl_auto_first();
+                        #[cfg(feature = "afl")]
+                        crate::__afl_auto_second();
+
                         use std::io::Write;
                         // Initialize the logger to print the current PID/TID with each message
                         env_logger::Builder::from_default_env()

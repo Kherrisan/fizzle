@@ -360,12 +360,10 @@ impl Event for MutexUnlockEvent {
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let Some(mutex_info) = state.local.mutexes.get_mut(&self.lock) else {
-            // panic!("[UB] `pthread_mutex_unlock()` called on uninitialized mutex")
             return Outcome::Error(Errno::EINVAL);
         };
 
         let Some(popped_thread) = mutex_info.queued_threads.front().cloned() else {
-            // panic!("[UB] `pthread_mutex_unlock()` called when mutex already unlocked")
             return Outcome::Error(Errno::EINVAL);
         };
 

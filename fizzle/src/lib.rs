@@ -59,6 +59,18 @@ unsafe extern "C" {
     pub fn __afl_coverage_skip();
 
     #[cfg(feature = "afl")]
+    pub fn __afl_auto_early();
+
+    #[cfg(feature = "afl")]
+    pub fn __afl_auto_first();
+
+    #[cfg(feature = "afl")]
+    pub fn __afl_auto_second();
+    
+    #[cfg(feature = "pcr")]
+    pub static __afl_already_initialized_second: u32;
+
+    #[cfg(feature = "afl")]
     pub static mut __afl_selective_coverage: libc::c_int;
 
     #[cfg(feature = "afl")]
@@ -76,9 +88,6 @@ unsafe extern "C" {
 
     #[cfg(feature = "pcr")]
     pub static __afl_connected: libc::c_int;
-
-    #[cfg(feature = "pcr")]
-    pub static __afl_already_initialized_second: u32;
 
     #[cfg(feature = "pcr")]
     pub static mut __afl_sharedmem_fuzzing: libc::c_int;
