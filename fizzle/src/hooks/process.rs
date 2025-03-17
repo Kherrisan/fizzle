@@ -799,14 +799,6 @@ hook_macros::hook! {
     unsafe fn getpid() -> libc::pid_t => fizzle_getpid(ctx) {
         crate::strace!("getpid() -> ...");
 
-        #[cfg(feature = "passthroughfs")]
-        let pid = unsafe { libc::getpid() };
-        #[cfg(feature = "passthroughfs")]
-        crate::strace!("getpid() -> {}", pid);
-        #[cfg(feature = "passthroughfs")]
-        return pid;
-
-        #[cfg(not(feature = "passthroughfs"))]
         match Scheduler::handle_event(&mut ctx, ProcessGetIdEvent::new()) {
             Ok(pid) => {
                 crate::strace!("getpid() -> {}", pid);
