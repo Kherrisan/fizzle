@@ -538,7 +538,7 @@ impl Event for ThreadCancelEvent {
                                 drop(state);
 
                                 log::trace!("[10] post() to {:?}", target_worker);
-                                target_sem.post();
+                                crate::scheduler::safe_post(target_sem);
                                 return TaskResult::Suspend;
                             }
 

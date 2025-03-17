@@ -1,5 +1,5 @@
 use std::cell::{RefCell, RefMut};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::RawFd;
 use std::process::{self, Command};
 use std::rc::Rc;
@@ -22,6 +22,7 @@ use crate::handlers::process::*;
 use crate::handlers::signal::*;
 use crate::handlers::socket::SocketState;
 use crate::handlers::time::ItimerInfo;
+use crate::semaphore::Semaphore;
 use crate::state;
 use crate::state::*;
 use crate::GlobalHeap;
@@ -233,6 +234,26 @@ pub fn fizzle_alloc() -> GlobalHeap {
         .heap
 }
 
+// Signals the given semaphore in a manner that safely downreferences the Rc<> wrapping the semaphore.
+//
+// This method ensures that the Rc<> wrapping the semaphore is downreferenced prior to posting to it.
+// This is important because once post() is called, multiple threads could be operating on the Rc<>,
+// which makes it unsafe to write to from a concurrency perspective. We *could* use Arc<> to resolve
+// this, but that adds overhead relative to this approach.
+pub fn safe_post(sem: Rc<Semaphore, GlobalHeap>) {
+    assert!(Rc::strong_count(&sem) > 1);
+
+    let sem_ptr = Rc::into_raw(sem);
+    unsafe {
+        Rc::decrement_strong_count(sem_ptr);
+    }
+
+    // SAFETY: sem_ptr must point to valid memory. This is guaranteed by the above assertion.
+    unsafe {
+        (*sem_ptr).post();
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum TerminationMethod {
     Cancellation,
@@ -413,8 +434,12 @@ impl Scheduler {
                 } else {
                     None
                 }
-            } else if Scheduler::plugins_have_output(ctx) {
-                None
+            } else if let Err(should_wait) = Scheduler::plugins_have_output(ctx) {
+                if should_wait {
+                    Some(worker_sem.clone())
+                } else {
+                    None
+                }
             } else if let Some(ready) = Scheduler::delayed_worker(ctx) {
                 let mut state = ctx.acquire();
                 let timestamp = state.global.current_time;
@@ -511,7 +536,7 @@ impl Scheduler {
                     let sem = state.global.worker_locks.get(&worker).unwrap().clone();
                     drop(state);
                     log::trace!("[1] post() to {:?}", worker);
-                    sem.post();
+                    safe_post(sem);
                     return Some(true);
                 }
             }
@@ -520,9 +545,21 @@ impl Scheduler {
         None
     }
 
-    fn plugins_have_output(ctx: &mut FizzleSingleton) -> bool {
+    fn plugins_have_output(ctx: &mut FizzleSingleton) -> Result<(), bool> {
         let mut state = ctx.acquire();
-        plugins::run_plugins(&mut state)
+
+        if state.local.process_info.borrow().pid == Pid::PRIMARY {
+            if plugins::run_plugins(&mut state) {
+                Err(false)
+            } else {
+                Ok(())
+            }
+        } else {
+            let lock = state.global.pids.get(&Pid::PRIMARY).unwrap().borrow().main_worker_lock.clone();
+            drop(state);
+            safe_post(lock);
+            Err(true)
+        }
     }
 
     fn delayed_worker(ctx: &mut FizzleSingleton) -> Option<ReadyInfo> {
@@ -605,7 +642,7 @@ impl Scheduler {
 
             drop(state);
             log::trace!("[2] post() to {:?}", dst);
-            dst_sem.post();
+            safe_post(dst_sem);
 
             return TaskResult::Suspend;
         }
@@ -655,7 +692,7 @@ impl Scheduler {
             let dst_sem = state.global.worker_locks.get(&dst_worker).unwrap().clone();
             drop(state);
             log::trace!("[3] post() to {:?}", dst_worker);
-            dst_sem.post();
+            safe_post(dst_sem);
 
             return TaskResult::Suspend;
         }
@@ -702,7 +739,7 @@ impl Scheduler {
             let dst_sem = state.global.worker_locks.get(&dst).unwrap().clone();
             drop(state);
             log::trace!("[4] post() to {:?}", dst);
-            dst_sem.post();
+            safe_post(dst_sem);
 
             return TaskResult::Suspend;
         }
@@ -837,7 +874,7 @@ impl Scheduler {
                 .clone();
             drop(state);
             log::trace!("[5] post() to {:?}", pid);
-            sem.post();
+            safe_post(sem);
 
             return TaskResult::Suspend;
         }
@@ -1109,6 +1146,7 @@ impl Scheduler {
         // Assign a pid to this process--use parent ProcessId TEMPORARILY until child id assigned
         let new_pid = state.global.next_pid();
         let pgid = Pgid::from_pid(new_pid);
+        state.global.process_groups.insert(pgid, BTreeSet::new_in(fizzle_alloc()));
 
         state.global.inherited_state = Some(InheritedState {
             fds: BTreeMap::new_in(fizzle_alloc()),
@@ -1221,7 +1259,7 @@ impl Scheduler {
             log::trace!("[6] post() to {:?}", worker);
 
             // Wake thread
-            sem.post();
+            safe_post(sem);
             // SAFETY: `state` is never held from this point onward
             match method {
                 TerminationMethod::Cancellation => unsafe {
@@ -1369,7 +1407,7 @@ impl Scheduler {
         drop(state);
 
         log::trace!("[7] post() to primary Pid");
-        delegate_sem.post();
+        safe_post(delegate_sem);
 
         match method {
             TerminationMethod::Cancellation => unsafe {
@@ -1409,7 +1447,7 @@ impl Scheduler {
                     drop(state);
 
                     log::trace!("[8] post() to primary Pid");
-                    sem.post();
+                    safe_post(sem);
                     TaskResult::Suspend
                 },
                 fizzle_alloc(),
@@ -1541,7 +1579,7 @@ impl Scheduler {
                     drop(state);
 
                     log::trace!("[9] post() to {:?}", origin_worker);
-                    sem.post();
+                    safe_post(sem);
                     TaskResult::Suspend
                 },
                 fizzle_alloc(),
