@@ -438,6 +438,8 @@ impl Event for SocketCreatePairEvent {
             fizzle_alloc(),
         );
 
+        let reuse_port = addr1.addr() == &SockAddr::Unix(SocketAddrUnix::Unnamed);
+
         let socket1 = Rc::new_in(
             RefCell::new(SocketInfo {
                 fd_count: 1,
@@ -459,7 +461,7 @@ impl Event for SocketCreatePairEvent {
                         })
                     }
                     SocketType::Datagram => SocketState::Connectionless(ConnectionlessSocket {
-                        reuse_port: false,
+                        reuse_port,
                         backend: ConnectionlessBackend::Peered(RegularConnectionless {
                             recv_buf: LinkedList::new_in(fizzle_alloc()),
                             read_polled: read_polled1,
@@ -496,7 +498,7 @@ impl Event for SocketCreatePairEvent {
                         })
                     }
                     SocketType::Datagram => SocketState::Connectionless(ConnectionlessSocket {
-                        reuse_port: false,
+                        reuse_port,
                         backend: ConnectionlessBackend::Peered(RegularConnectionless {
                             recv_buf: LinkedList::new_in(fizzle_alloc()),
                             read_polled: read_polled2,
@@ -549,7 +551,7 @@ impl Event for SocketCreatePairEvent {
             .insert(
                 addr1,
                 TransportLocationInfo {
-                    reuse_port: false,
+                    reuse_port,
                     bound_sockets,
                     pending: LinkedList::new_in(fizzle_alloc()),
                 },
@@ -568,7 +570,7 @@ impl Event for SocketCreatePairEvent {
             .insert(
                 addr2,
                 TransportLocationInfo {
-                    reuse_port: false,
+                    reuse_port,
                     bound_sockets,
                     pending: LinkedList::new_in(fizzle_alloc()),
                 },

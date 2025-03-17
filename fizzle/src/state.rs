@@ -13,7 +13,7 @@ use std::{array, env, mem, process, ptr, thread};
 
 use embedded_alloc::TlsfHeap;
 use fizzle_common::io::{
-    AddressFamily, SocketAddrUnix, SocketType, TransportAddress, TransportProtocol, MAX_PATH_LEN,
+    AddressFamily, SockAddr, SocketAddrUnix, SocketType, TransportAddress, TransportProtocol, MAX_PATH_LEN
 };
 use fizzle_common::path::{FilePath, SemaphorePath};
 use fizzle_plugin::{IoEndpointVariant, PluginModule, StreamId};
@@ -1368,13 +1368,15 @@ impl InterprocessState {
     ) -> GlobalRc<SocketInfo> {
         // TODO: For PCR fuzzing, per-round clients use unique source ports to ensure a clean(ish) slate.
 
+        let reuse_port = src_addr.addr() == &SockAddr::Unix(SocketAddrUnix::Unnamed);
+
         return Rc::new_in(
             RefCell::new(SocketInfo {
                 fd_count: 1,
                 state: SocketState::Connectionless(ConnectionlessSocket {
                     backend,
                     rem_addr: Some(rem_addr),
-                    reuse_port: false,
+                    reuse_port,
                 }),
                 socktype: SocketType::Datagram,
                 protocol: src_addr.protocol(),
@@ -1414,6 +1416,8 @@ impl InterprocessState {
                     fizzle_alloc(),
                 );
 
+                let reuse_port = src_addr.addr() == &SockAddr::Unix(SocketAddrUnix::Unnamed);
+
                 let mut pending = LinkedList::new_in(fizzle_alloc());
                 pending.push_back(client_socket_info.clone());
 
@@ -1422,7 +1426,7 @@ impl InterprocessState {
                     .insert(
                         rem_addr,
                         TransportLocationInfo {
-                            reuse_port: false,
+                            reuse_port,
                             bound_sockets: LinkedList::new_in(fizzle_alloc()),
                             pending,
                         },
