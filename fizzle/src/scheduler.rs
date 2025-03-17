@@ -313,7 +313,7 @@ impl Scheduler {
                     state.global.tasks.push_front(Box::new_in(
                         move |ctx| {
                             Scheduler::run_subprocess(ctx, onstartup);
-                            TaskResult::Continue
+                            TaskResult::Suspend
                         },
                         fizzle_alloc(),
                     ));
@@ -1121,11 +1121,7 @@ impl Scheduler {
 
         drop(state);
 
-        cmd.env("LD_PRELOAD", std::env::var("LD_PRELOAD").unwrap());
-        cmd.env(FIZZLE_MEMORY_ENV, std::env::var(FIZZLE_MEMORY_ENV).unwrap());
-        cmd.env(FIZZLE_MEMORY_OFFSET_ENV, std::env::var(FIZZLE_MEMORY_OFFSET_ENV).unwrap());
-        cmd.env(FIZZLE_ALLOC_ENV, std::env::var(FIZZLE_ALLOC_ENV).unwrap());
-        cmd.env(FIZZLE_ALLOC_OFFSET_ENV, std::env::var(FIZZLE_ALLOC_OFFSET_ENV).unwrap());
+        cmd.envs(std::env::vars());
         cmd.spawn().unwrap();
     }
 
