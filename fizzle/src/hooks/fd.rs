@@ -6,7 +6,7 @@ use crate::handlers::descriptor::{
     f_owner_ex, Descriptor, DescriptorCloseEvent, DescriptorDuplicateEvent, FcntlCommand,
     FcntlEvent,
 };
-use crate::scheduler::{fizzle_singleton, Scheduler};
+use crate::scheduler::Scheduler;
 use crate::{hook_macros, strace};
 
 hook_macros::hook! {
@@ -123,7 +123,7 @@ const F_GET_FILE_RW_HINT: libc::c_int = 1037;
 const F_SET_FILE_RW_HINT: libc::c_int = 1038;
 
 pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: ...) -> libc::c_int {
-    if crate::state::has_entered_handler() {
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
         return match cmd {
             libc::F_DUPFD
             | libc::F_DUPFD_CLOEXEC
@@ -164,11 +164,7 @@ pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: .
                 return -1;
             }
         };
-    }
-    crate::state::set_entered_handler(true);
-
-    // SAFETY: only one FizzleSingleton is ever owned at a time
-    let mut ctx = fizzle_singleton();
+    };
 
     strace!("fcntl(fd={}, cmd={}, ...) -> ...", fd, cmd);
 
@@ -229,13 +225,15 @@ pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: .
     ) {
         Ok(i) => {
             strace!("fcntl(fd={}, cmd={}, ...) -> {}", fd, cmd, i);
-            crate::state::set_entered_handler(false);
+            drop(ctx);
+            crate::hooks::post_hook();
             return i;
         }
         Err(e) => {
             strace!("fcntl(fd={}, cmd={}, ...) -> -1 ({})", fd, cmd, e);
             e.set_errno();
-            crate::state::set_entered_handler(false);
+            drop(ctx);
+            crate::hooks::post_hook();
             return -1;
         }
     }

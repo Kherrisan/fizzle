@@ -3,7 +3,7 @@ use std::{mem, slice};
 
 use crate::handlers::entropy::*;
 use crate::handlers::futex::*;
-use crate::scheduler::{fizzle_singleton, Scheduler};
+use crate::scheduler::Scheduler;
 use crate::{hook_macros, WaitDuration};
 
 /*
@@ -52,7 +52,7 @@ fn futex_op_fmt(futex_op: libc::c_int) -> String {
 
 #[no_mangle]
 pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc::c_long {
-    if crate::state::has_entered_handler() {
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
         return match number {
             libc::SYS_statx => {
                 let dirfd: libc::c_int = va_args.arg();
@@ -79,11 +79,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                 panic!("recursive calls to `syscall` not allowed")
             }
         };
-    }
-    crate::state::set_entered_handler(true);
-
-    // SAFETY: only one FizzleSingleton is ever owned at a time
-    let mut ctx = fizzle_singleton();
+    };
 
     let res = match number {
         libc::SYS_sched_getaffinity => {
@@ -366,6 +362,8 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
         _ => panic!("syscall({}, ...) unsupported by Fizzle", number),
     };
 
-    crate::state::set_entered_handler(false);
+    drop(ctx);
+    crate::hooks::post_hook();
+
     res
 }

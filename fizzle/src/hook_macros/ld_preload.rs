@@ -1,8 +1,6 @@
 // Uses code from `redhook` project, available under BSD 2-Clause License
 
-use std::{cell::OnceCell, sync::atomic::AtomicBool};
-
-pub static LOG_INITIALIZED: AtomicBool = AtomicBool::new(false);
+use std::cell::OnceCell;
 
 #[link(name = "dl")]
 unsafe extern "C" {
@@ -49,43 +47,12 @@ macro_rules! hook {
             #[no_mangle]
             pub unsafe extern "C" fn $real_fn ( $($v : $t),* ) -> $r {
                 ::std::panic::catch_unwind(|| {
-                    if crate::state::has_entered_handler() {
-                        return $real_fn.get() ( $($v),* )
-                    }
-
-                    crate::state::set_entered_handler(true);
-
-                    if !crate::hook_macros::ld_preload::LOG_INITIALIZED.fetch_or(true, std::sync::atomic::Ordering::Relaxed) {
-
-                        #[cfg(feature = "afl")]
-                        crate::__afl_auto_early();
-                        #[cfg(feature = "afl")]
-                        crate::__afl_auto_first();
-                        #[cfg(feature = "afl")]
-                        crate::__afl_auto_second();
-
-                        use std::io::Write;
-                        // Initialize the logger to print the current PID/TID with each message
-                        env_logger::Builder::from_default_env()
-                            .format(|buf, record| {
-                                writeln!(
-                                    buf,
-                                    "[PID({})|{:?}|{}] {}",
-                                    std::process::id(),
-                                    std::thread::current().id(),
-                                    record.level().as_str().to_uppercase(),
-                                    record.args()
-                                )
-                            })
-                            .init();
-                        log::info!("Logger initialized");
-                    }
-
-                    let res = {
-                        $hook_fn ( $($v),*)
+                    let Some($state) = crate::hooks::pre_hook() else {
+                        return $real_fn.get() ( $($v),* )                       
                     };
-                    crate::state::set_entered_handler(false);
 
+                    let res = $hook_fn ( $state, $($v),*);
+                    crate::hooks::post_hook();
                     res
 
                 }).unwrap_or_else(|_| {
@@ -94,12 +61,7 @@ macro_rules! hook {
             }
         }
 
-        pub unsafe fn $hook_fn ( $($v : $t),*) -> $r {
-            #[allow(unused_mut)]
-            let mut $state = unsafe {
-                crate::scheduler::fizzle_singleton()
-            };
-
+        pub unsafe fn $hook_fn ( #[allow(unused_mut)] mut $state: $crate::scheduler::FizzleSingleton, $($v : $t),*) -> $r {
             $body
         }
     };

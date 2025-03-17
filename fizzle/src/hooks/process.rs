@@ -14,7 +14,7 @@ use crate::handlers::id::*;
 use crate::handlers::process::*;
 use crate::handlers::signal::*;
 use crate::hook_macros;
-use crate::scheduler::{fizzle_singleton, Scheduler};
+use crate::scheduler::Scheduler;
 
 pub type CloneFunction = unsafe extern "C" fn(*mut libc::c_void) -> libc::c_int;
 
@@ -84,12 +84,9 @@ pub unsafe extern "C" fn execl(
     arg: *const libc::c_char,
     mut va_args: ...
 ) -> libc::c_int {
-    if crate::state::has_entered_handler() {
-        panic!("recursive calls to `execl` not allowed");
-    }
-    crate::state::set_entered_handler(true);
-
-    let mut ctx = fizzle_singleton();
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("calls to `execl()` within Fizzle not allowed");
+    };
 
     let mut args = vec![unsafe { CStr::from_ptr(arg).to_owned() }];
     loop {
@@ -113,9 +110,9 @@ pub unsafe extern "C" fn execl(
                 file_cstr,
                 args
             );
-            Errno::EINVAL.set_errno();
 
-            crate::state::set_entered_handler(false);
+            crate::hooks::post_hook();
+            Errno::EINVAL.set_errno();
             return -1;
         }
     };
@@ -127,9 +124,9 @@ pub unsafe extern "C" fn execl(
         Ok(()) => unreachable!(),
         Err(e) => {
             crate::strace!("execl(pathname={:?}, ...) -> -1 ({})", file_cstr, e);
-            e.set_errno();
 
-            crate::state::set_entered_handler(false);
+            crate::hooks::post_hook();
+            e.set_errno();
             return -1;
         }
     }
@@ -141,12 +138,9 @@ pub unsafe extern "C" fn execlp(
     arg: *const libc::c_char,
     mut va_args: ...
 ) -> libc::c_int {
-    if crate::state::has_entered_handler() {
-        panic!("recursive calls to `execlp` not allowed");
-    }
-    crate::state::set_entered_handler(true);
-
-    let mut ctx = fizzle_singleton();
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("calls to `execlp()` within Fizzle not allowed");
+    };
 
     let mut args = vec![unsafe { CStr::from_ptr(arg).to_owned() }];
     loop {
@@ -170,9 +164,9 @@ pub unsafe extern "C" fn execlp(
                 file_cstr,
                 args
             );
-            Errno::EINVAL.set_errno();
 
-            crate::state::set_entered_handler(false);
+            crate::hooks::post_hook();
+            Errno::EINVAL.set_errno();
             return -1;
         }
     };
@@ -184,9 +178,9 @@ pub unsafe extern "C" fn execlp(
         Ok(()) => unreachable!(),
         Err(e) => {
             crate::strace!("execlp(pathname={:?}, ...) -> -1 ({})", file_cstr, e);
-            e.set_errno();
 
-            crate::state::set_entered_handler(false);
+            crate::hooks::post_hook();
+            e.set_errno();
             return -1;
         }
     }
@@ -198,12 +192,9 @@ pub unsafe extern "C" fn execle(
     arg: *const libc::c_char,
     mut va_args: ...
 ) -> libc::c_int {
-    if crate::state::has_entered_handler() {
-        panic!("recursive calls to `execle` not allowed");
-    }
-    crate::state::set_entered_handler(true);
-
-    let mut ctx = fizzle_singleton();
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("calls to `execle()` within Fizzle not allowed");
+    };
 
     let mut args = vec![unsafe { CStr::from_ptr(arg).to_owned() }];
     loop {
@@ -252,9 +243,9 @@ pub unsafe extern "C" fn execle(
                 args,
                 env
             );
-            Errno::EINVAL.set_errno();
 
-            crate::state::set_entered_handler(false);
+            crate::hooks::post_hook();
+            Errno::EINVAL.set_errno();
             return -1;
         }
     };
@@ -266,9 +257,9 @@ pub unsafe extern "C" fn execle(
         Ok(()) => unreachable!(),
         Err(e) => {
             crate::strace!("execlp(pathname={:?}, ...) -> -1 ({})", file_cstr, e);
-            e.set_errno();
 
-            crate::state::set_entered_handler(false);
+            crate::hooks::post_hook();
+            e.set_errno();
             return -1;
         }
     }
@@ -783,16 +774,15 @@ pub unsafe extern "C" fn clone(
     _arg: *mut libc::c_void,
     mut _va_args: ...
 ) -> libc::c_int {
-    if crate::state::has_entered_handler() {
-        panic!("recursive calls to `clone()` not allowed");
-    }
-    crate::state::set_entered_handler(true);
+    let Some(_ctx) = crate::hooks::pre_hook() else {
+        panic!("calls to `clone()` within Fizzle not allowed");
+    };
 
     // Feels more like a thread initially...
     // But also kind of acts more like `fork()`
     unimplemented!("clone");
 
-    // crate::state::set_entered_handler(false);
+    // crate::hooks::post_hook();
 }
 
 hook_macros::hook! {
