@@ -2261,15 +2261,16 @@ impl Event for SocketReadEvent<'_> {
                 match &mut self.data {
                     ReadData::Basic(data) => {
                         let message = regular.recv_buf.pop_front().unwrap();
-                        if regular.recv_buf.is_empty() {
-                            state.lower_polled(&read_polled);
-                        }
 
                         let mut idx = 0;
                         for s in data.iter_mut() {
                             let read = cmp::min(s.len(), message.data.len() - idx);
                             s.copy_from_slice(&message.data[idx..idx + read]);
                             idx += read;
+                        }
+
+                        if regular.recv_buf.is_empty() {
+                            state.lower_polled(&read_polled);
                         }
 
                         Outcome::Success(idx)
@@ -2341,15 +2342,16 @@ impl Event for SocketReadEvent<'_> {
                 match &mut self.data {
                     ReadData::Basic(data) => {
                         let message = feedback.recv_buf.pop_front().unwrap();
-                        if feedback.recv_buf.is_empty() {
-                            state.lower_polled(read_polled);
-                        }
 
                         let mut idx = 0;
                         for s in data.iter_mut() {
                             let read = cmp::min(s.len(), message.data.len() - idx);
                             s.copy_from_slice(&message.data[idx..idx + read]);
                             idx += read;
+                        }
+
+                        if feedback.recv_buf.is_empty() {
+                            state.lower_polled(read_polled);
                         }
 
                         Outcome::Success(idx)
@@ -2552,12 +2554,13 @@ impl Event for SocketReadEvent<'_> {
 
                 match &mut self.data {
                     ReadData::Basic(data) => {
+                        if *peer_closed {
+                            return Outcome::Success(0)
+                        }
+
                         let Some(buf) = regular.recv_buf.pop_front() else {
                             unreachable!()
                         };
-                        if regular.recv_buf.is_empty() {
-                            state.lower_polled(read_polled);
-                        }
 
                         let mut read_idx = regular.read_idx;
                         let mut total_read = 0;
@@ -2576,6 +2579,10 @@ impl Event for SocketReadEvent<'_> {
                             regular.recv_buf.push_front(buf);
                         }
 
+                        if regular.recv_buf.is_empty() {
+                            state.lower_polled(read_polled);
+                        }
+
                         Outcome::Success(total_read)
                     }
                     ReadData::File(_data) => Outcome::Error(Errno::ESPIPE),
@@ -2587,7 +2594,7 @@ impl Event for SocketReadEvent<'_> {
                             let Some(buf) = regular.recv_buf.pop_front() else {
                                 assert!(msg_count > 0);
                                 state.lower_polled(read_polled);
-                                return Outcome::Success(msg_count)
+                                return Outcome::Success(0)
                             };
 
                             *out_msg.msg_flags = SocketMsgFlags::EOR;
@@ -2707,10 +2714,6 @@ impl Event for SocketReadEvent<'_> {
                         let Some(buf) = plugin.borrow_mut().read_buf.pop_front() else {
                             unreachable!()
                         };
-                        
-                        if plugin.borrow().read_buf.is_empty() {
-                            state.lower_polled(&read_polled);
-                        }
 
                         let mut read_idx = plugin.borrow().read_idx;
                         let mut total_read = 0;
@@ -2726,6 +2729,10 @@ impl Event for SocketReadEvent<'_> {
                         } else {
                             plugin.borrow_mut().read_idx = read_idx;
                             plugin.borrow_mut().read_buf.push_front(buf);
+                        }
+
+                        if plugin.borrow().read_buf.is_empty() {
+                            state.lower_polled(&read_polled);
                         }
 
                         Outcome::Success(total_read)
@@ -2885,6 +2892,11 @@ impl Event for SocketReadEvent<'_> {
                             total_read += read;
                         }
 
+                        if endpoint.borrow().read_idx == state.global.fuzz_input.len() {
+                            let read_polled = endpoint.borrow().read_polled.clone();
+                            state.lower_polled(&read_polled);
+                        }
+
                         Outcome::Success(total_read)
                     }
                     ReadData::File(_) => Outcome::Error(Errno::ESPIPE),
@@ -2903,6 +2915,11 @@ impl Event for SocketReadEvent<'_> {
                                 endpoint.borrow_mut().read_idx += read;
                                 total_read += read;
                             }
+                        }
+
+                        if endpoint.borrow().read_idx == state.global.fuzz_input.len() {
+                            let read_polled = endpoint.borrow().read_polled.clone();
+                            state.lower_polled(&read_polled);
                         }
 
                         Outcome::Success(total_read)
