@@ -6,8 +6,9 @@ use std::{mem, ptr, thread};
 use bitflags::bitflags;
 
 use crate::errno::Errno;
-use crate::scheduler::{fizzle_alloc, Event, Outcome, Scheduler, YieldUntil};
+use crate::scheduler::{Event, FizzleSingleton, HandleProcessSignalTask, HandleThreadSignalTask, Outcome, YieldUntil};
 use crate::state::{FizzleState, SignalDestination};
+use crate::task::{Task, TaskResult};
 
 use super::id::Worker;
 use super::process::{Pgid, Pid};
@@ -684,22 +685,31 @@ impl Event for SignalSendEvent {
                 };
 
                 Outcome::RunTask(
-                    Box::new_in(
-                        move |ctx| match destination {
-                            SignalDestination::Process(pid) => {
-                                log::debug!("Sending signal to process {:?}", pid);
-                                Scheduler::handle_process_signal(ctx, raised, pid)
-                            }
-                            SignalDestination::Thread(pid, thread_id) => {
-                                let worker = Worker { pid, thread_id };
-                                log::debug!("Sending signal to worker {:?}", worker);
-                                Scheduler::handle_thread_signal(ctx, raised, worker)
-                            }
-                        },
-                        fizzle_alloc(),
-                    ),
+                    Task::SendSignal(SendSignalTask { destination, raised }),
                     YieldUntil::Reschedule(Duration::ZERO),
                 )
+            }
+        }
+    }
+}
+
+pub struct SendSignalTask {
+    destination: SignalDestination,
+    raised: RaisedSignalInfo
+}
+
+impl SendSignalTask {
+    pub fn execute(self, ctx: &mut FizzleSingleton) -> TaskResult {
+        let raised = self.raised;
+        match self.destination {
+            SignalDestination::Process(pid) => {
+                log::debug!("Sending signal to process {:?}", pid);
+                HandleProcessSignalTask { raised, pid }.execute(ctx)
+            }
+            SignalDestination::Thread(pid, thread_id) => {
+                let worker = Worker { pid, thread_id };
+                log::debug!("Sending signal to worker {:?}", worker);
+                HandleThreadSignalTask { raised, dst: worker }.execute(ctx)
             }
         }
     }
@@ -886,16 +896,7 @@ impl Event for SignalSetSigmaskEvent {
             {
                 // This entire function runs for as many times as is needed to handle all signals
                 return Outcome::RunTask(
-                    Box::new_in(
-                        move |ctx| {
-                            let worker = Worker {
-                                pid,
-                                thread_id: thread::current().id(),
-                            };
-                            Scheduler::handle_thread_signal(ctx, raised_info, worker)
-                        },
-                        fizzle_alloc(),
-                    ),
+                    Task::HandleThreadSignal(HandleThreadSignalTask { raised: raised_info, dst: state.current_worker() }),
                     YieldUntil::Reschedule(Duration::ZERO),
                 );
             }
@@ -944,7 +945,6 @@ impl Event for SignalSuspendEvent {
             }
             SignalSuspendState::HandlePending(old_mask) => {
                 let unblocked = old_mask & !self.mask;
-                let pid = state.local.process_info.borrow().pid;
 
                 let siginfo = state.local.signals.get_mut(&thread_id).unwrap();
                 for signal in unblocked {
@@ -955,16 +955,7 @@ impl Event for SignalSuspendEvent {
 
                         // This entire function runs for as many times as is needed to handle all signals
                         return Outcome::RunTask(
-                            Box::new_in(
-                                move |ctx| {
-                                    let worker = Worker {
-                                        pid,
-                                        thread_id: thread::current().id(),
-                                    };
-                                    Scheduler::handle_thread_signal(ctx, raised_info, worker)
-                                },
-                                fizzle_alloc(),
-                            ),
+                            Task::HandleThreadSignal(HandleThreadSignalTask { raised: raised_info, dst: state.current_worker() }),
                             YieldUntil::Reschedule(Duration::ZERO),
                         );
                     }

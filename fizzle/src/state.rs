@@ -47,9 +47,10 @@ use crate::handlers::spinlock::SpinlockPtr;
 use crate::handlers::thread::{PThreadRoutine, ThreadInfo, Tid};
 use crate::handlers::time::ItimerInfo;
 use crate::plugins::{IoEmulationType, PluginEndpoint};
-use crate::scheduler::{fizzle_alloc, FizzleSingleton, TaskResult};
+use crate::scheduler::fizzle_alloc;
 use crate::semaphore::Semaphore;
-use crate::{constants::*, GlobalBox};
+use crate::task::Task;
+use crate::constants::*;
 use crate::{GlobalHeap, GlobalList, GlobalMap, GlobalRc, GlobalSet, GlobalVec};
 
 use crate::backend::{
@@ -1169,8 +1170,7 @@ pub struct InterprocessState {
     /// Pollers/Workers that should be scheduled once the system has reached a halted state.
     pub ready_delayed: GlobalList<ReadyInfo>,
 
-    pub tasks:
-        GlobalList<GlobalBox<dyn FnOnce(&mut FizzleSingleton) -> TaskResult + Send + 'static>>,
+    pub tasks: GlobalList<Task>,
     /// Plugin/fuzzing clients that are designated to be created and destroyed at each fuzzing
     /// round.
     pub per_round_clients: GlobalVec<PerRoundClientInfo>,

@@ -13,10 +13,11 @@ use fizzle_common::path::FilePath;
 use crate::errno::Errno;
 use crate::handlers::signal::SigDisposition;
 use crate::scheduler::{
-    fizzle_alloc, Event, Outcome, Scheduler, TaskResult, TerminationMethod, YieldUntil,
+    fizzle_alloc, Event, FizzleSingleton, Outcome, Scheduler, TerminateProcessTask, TerminationMethod, YieldUntil
 };
 use crate::semaphore::Semaphore;
 use crate::state::{set_entered_handler, FizzleState, InheritedState};
+use crate::task::{Task, TaskResult};
 use crate::{GlobalHeap, GlobalSet};
 
 use super::descriptor::{Descriptor, FdResource};
@@ -26,6 +27,10 @@ use super::thread::ThreadInfo;
 
 pub type AtExitFunction = unsafe extern "C" fn();
 pub type OnExitFunction = unsafe extern "C" fn(libc::c_int, *mut libc::c_void);
+
+std::thread_local! {
+    static CHILD_RES: RefCell<Option<Result<libc::pid_t, Errno>>> = const { RefCell::new(None) };
+}
 
 /*
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -146,10 +151,6 @@ impl Event for ProcessForkEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        std::thread_local! {
-            static CHILD_RES: RefCell<Option<Result<libc::pid_t, Errno>>> = const { RefCell::new(None) };
-        }
-
         match &mut self.state {
             ProcessForkState::Start => {
                 // Run pthread_atfork handlers (in LIFO order)
@@ -169,13 +170,7 @@ impl Event for ProcessForkEvent {
                         None => continue,
                         Some(f) => {
                             return Outcome::RunTask(
-                                Box::new_in(
-                                    move |ctx| {
-                                        Scheduler::run_outside_hook(ctx, || unsafe { f() });
-                                        TaskResult::Return
-                                    },
-                                    fizzle_alloc(),
-                                ),
+                                Task::ForkHandler(ForkHandlerTask(f)),
                                 YieldUntil::None,
                             )
                         }
@@ -194,171 +189,7 @@ impl Event for ProcessForkEvent {
                 self.state = ProcessForkState::RunPostHandlers;
 
                 Outcome::RunTask(
-                    Box::new_in(
-                        move |ctx| {
-                            let pid = unsafe { libc::fork() };
-
-                            if pid == 0 {
-                                // Child process
-                                // This *technically* shouldn't be needed since the child inherits a copy of
-                                // the parent's memory, but just to be safe...
-                                set_entered_handler(true);
-
-                                // TODO: Shouldn't we need to upref all Rc<> types in LocalState here?
-                                // They could potentially be freed twice...
-
-                                // Clean up child processes of this process if it is ever killed
-                                unsafe {
-                                    assert_eq!(
-                                        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM),
-                                        0
-                                    );
-                                }
-
-                                let mut state = ctx.acquire();
-
-                                // Make sure we don't mangle the parent's `local` state--deal with any
-                                // globally-allocated resources
-                                let mut fds = state.local.fds.clone();
-                                mem::swap(&mut fds, &mut state.local.fds);
-                                mem::forget(fds);
-                                for sem in state.local.named_semaphores.values() {
-                                    mem::forget(sem.clone()); // Upref GlobalRc<T> types
-                                }
-                                // Local state is now unique from parent (other than `process_info`).
-
-                                let pid = state.global.next_pid();
-                                let ppid = state.local.process_info.borrow().pid;
-                                let pgid = state.local.process_info.borrow().pgid;
-                                let signal_handlers =
-                                    state.local.process_info.borrow().signal_handlers.clone();
-
-                                let mut proc_info = Rc::new_in(
-                                    RefCell::new(ProcessInfo {
-                                        pid,
-                                        ppid,
-                                        pgid,
-                                        main_worker_lock: Semaphore::new_rc_in(
-                                            0,
-                                            true,
-                                            fizzle_alloc(),
-                                        ),
-                                        signal_handlers,
-                                        awaiting_death: None,
-                                        children: BTreeSet::new_in(fizzle_alloc()),
-                                    }),
-                                    fizzle_alloc(),
-                                );
-
-                                mem::swap(&mut proc_info, &mut state.local.process_info);
-                                // Add the child's process to the parent process's child list
-                                proc_info.borrow_mut().children.insert(pid);
-                                mem::forget(proc_info);
-
-                                let process_info = state.local.process_info.clone();
-                                state.global.pids.insert(pid, process_info);
-
-                                // Add the new worker's lock to the global worker lock pool.
-                                let worker = state.current_worker();
-                                let sem =
-                                    state.local.process_info.borrow().main_worker_lock.clone();
-                                state.global.worker_locks.insert(worker, sem);
-
-                                // Add the child process to the parent process's group
-                                state
-                                    .global
-                                    .process_groups
-                                    .get_mut(&pgid)
-                                    .unwrap()
-                                    .insert(pid);
-
-                                // Remove any state from main process
-                                state.local.main_state = None;
-
-                                // `fork()` only copies the current thread
-                                state.local.pthreads.clear();
-                                state.local.pthreads.insert(
-                                    unsafe { libc::pthread_self() },
-                                    ThreadInfo::new(thread::current().id(), false, true),
-                                );
-
-                                // Remove any pending signals
-                                state
-                                    .local
-                                    .signals
-                                    .get_mut(&thread::current().id())
-                                    .unwrap()
-                                    .pending = array::from_fn(|_| None);
-
-                                // Remove all pthread cleanup routines except for the current thread's
-                                let cleanup =
-                                    state.local.pthread_cleanup.remove(&thread::current().id());
-                                state.local.pthread_cleanup.clear();
-                                if let Some(cleanup) = cleanup {
-                                    state
-                                        .local
-                                        .pthread_cleanup
-                                        .insert(thread::current().id(), cleanup);
-                                }
-
-                                // The current (forking) thread isn't terminating
-                                state.local.terminated_threads.clear();
-                                state.local.awaiting_thread_death.clear();
-
-                                // Upref the resources each file descriptor points towards
-
-                                // TODO: upref the resources each file descriptor points towards
-                                /*
-                                let resources: Vec<_> = state.local.fds.values().map(|fd_info| fd_info.resource.clone()).collect();
-
-                                for resource in resources {
-                                    match resource {
-                                        FdResource::Directory(rc) => (),
-                                        FdResource::Epoll(rc) => (),
-                                        FdResource::EventFd(rc) => todo!(),
-                                        FdResource::File(rc) => todo!(),
-                                        FdResource::MessageQueue(rc) => todo!(),
-                                        FdResource::Pipe(rc) => todo!(),
-                                        FdResource::Stdin => todo!(),
-                                        FdResource::Stdout => todo!(),
-                                        FdResource::Stderr => todo!(),
-                                        FdResource::Socket(rc) => todo!(),
-                                    }
-                                }
-                                */
-
-                                // From the man pages:
-
-                                // TODO: Wipe process-local thread information (except for this thread)
-                                // TODO: Clear all pending signals
-                                // TODO: Remove any semaphore adjustments (e.g. from `semop`)
-                                // TODO: remove any `fcntl` record locks
-                                // TODO: remove any timers (`alarm()`, `setitimer()`, etc.)
-                                // TODO: remove any outstanding asynchronous I/O operations (aio_read, aio_write)
-                                // TODO: remove any dnotify notifications (see F_NOTIFY in fcntl)
-                                // TODO: remove PR_SET_PDEATHSIG prctl
-                                // TODO: Set default timer slack value to the parent's current timer slack value (PR_SET_TIMERSLACK in prctl)
-                                // TODO: set termination signal of child to SIGCHLD
-                                // TODO: after a fork() in a multithreaded program, the child can safely call only async-signal-safe functions until execve
-
-                                TaskResult::Return
-                            } else if pid > 0 {
-                                // Parent process
-                                CHILD_RES.with_borrow_mut(|res| {
-                                    *res = Some(Ok(pid));
-                                });
-                                TaskResult::Suspend
-                            } else {
-                                // Error
-                                let errno = Errno::get_errno();
-                                CHILD_RES.with_borrow_mut(|res| {
-                                    *res = Some(Err(errno));
-                                });
-                                TaskResult::Suspend
-                            }
-                        },
-                        fizzle_alloc(),
-                    ),
+                    Task::Fork(ForkTask { }),
                     YieldUntil::None,
                 )
             }
@@ -384,15 +215,7 @@ impl Event for ProcessForkEvent {
                     match f {
                         Some(f) => {
                             return Outcome::RunTask(
-                                Box::new_in(
-                                    move |_| {
-                                        unsafe {
-                                            f();
-                                        }
-                                        TaskResult::Return
-                                    },
-                                    fizzle_alloc(),
-                                ),
+                                Task::ForkHandler(ForkHandlerTask(f)),
                                 YieldUntil::None,
                             )
                         }
@@ -404,6 +227,189 @@ impl Event for ProcessForkEvent {
                 Outcome::Yield(YieldUntil::Immediate)
             }
             ProcessForkState::Finish(pid) => Outcome::Success(*pid),
+        }
+    }
+}
+
+pub struct ForkHandlerTask(unsafe extern "C" fn());
+
+impl ForkHandlerTask {
+    pub fn execute(self, ctx: &mut FizzleSingleton) -> TaskResult {
+        unsafe {
+            let func = self.0;
+            Scheduler::run_outside_hook(ctx, || {
+                func();
+            });
+        }
+        TaskResult::Return
+    }
+}
+
+pub struct ForkTask {
+
+}
+
+impl ForkTask {
+    pub fn execute(self, ctx: &mut FizzleSingleton) -> TaskResult {
+        let pid = unsafe { libc::fork() };
+
+        if pid == 0 {
+            // Child process
+            // This *technically* shouldn't be needed since the child inherits a copy of
+            // the parent's memory, but just to be safe...
+            set_entered_handler(true);
+
+            // TODO: Shouldn't we need to upref all Rc<> types in LocalState here?
+            // They could potentially be freed twice...
+
+            // Clean up child processes of this process if it is ever killed
+            unsafe {
+                assert_eq!(
+                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM),
+                    0
+                );
+            }
+
+            let mut state = ctx.acquire();
+
+            // Make sure we don't mangle the parent's `local` state--deal with any
+            // globally-allocated resources
+            let mut fds = state.local.fds.clone();
+            mem::swap(&mut fds, &mut state.local.fds);
+            mem::forget(fds);
+            for sem in state.local.named_semaphores.values() {
+                mem::forget(sem.clone()); // Upref GlobalRc<T> types
+            }
+            // Local state is now unique from parent (other than `process_info`).
+
+            let pid = state.global.next_pid();
+            let ppid = state.local.process_info.borrow().pid;
+            let pgid = state.local.process_info.borrow().pgid;
+            let signal_handlers =
+                state.local.process_info.borrow().signal_handlers.clone();
+
+            let mut proc_info = Rc::new_in(
+                RefCell::new(ProcessInfo {
+                    pid,
+                    ppid,
+                    pgid,
+                    main_worker_lock: Semaphore::new_rc_in(
+                        0,
+                        true,
+                        fizzle_alloc(),
+                    ),
+                    signal_handlers,
+                    awaiting_death: None,
+                    children: BTreeSet::new_in(fizzle_alloc()),
+                }),
+                fizzle_alloc(),
+            );
+
+            mem::swap(&mut proc_info, &mut state.local.process_info);
+            // Add the child's process to the parent process's child list
+            proc_info.borrow_mut().children.insert(pid);
+            mem::forget(proc_info);
+
+            let process_info = state.local.process_info.clone();
+            state.global.pids.insert(pid, process_info);
+
+            // Add the new worker's lock to the global worker lock pool.
+            let worker = state.current_worker();
+            let sem =
+                state.local.process_info.borrow().main_worker_lock.clone();
+            state.global.worker_locks.insert(worker, sem);
+
+            // Add the child process to the parent process's group
+            state
+                .global
+                .process_groups
+                .get_mut(&pgid)
+                .unwrap()
+                .insert(pid);
+
+            // Remove any state from main process
+            state.local.main_state = None;
+
+            // `fork()` only copies the current thread
+            state.local.pthreads.clear();
+            state.local.pthreads.insert(
+                unsafe { libc::pthread_self() },
+                ThreadInfo::new(thread::current().id(), false, true),
+            );
+
+            // Remove any pending signals
+            state
+                .local
+                .signals
+                .get_mut(&thread::current().id())
+                .unwrap()
+                .pending = array::from_fn(|_| None);
+
+            // Remove all pthread cleanup routines except for the current thread's
+            let cleanup =
+                state.local.pthread_cleanup.remove(&thread::current().id());
+            state.local.pthread_cleanup.clear();
+            if let Some(cleanup) = cleanup {
+                state
+                    .local
+                    .pthread_cleanup
+                    .insert(thread::current().id(), cleanup);
+            }
+
+            // The current (forking) thread isn't terminating
+            state.local.terminated_threads.clear();
+            state.local.awaiting_thread_death.clear();
+
+            // Upref the resources each file descriptor points towards
+
+            // TODO: upref the resources each file descriptor points towards
+            /*
+            let resources: Vec<_> = state.local.fds.values().map(|fd_info| fd_info.resource.clone()).collect();
+
+            for resource in resources {
+                match resource {
+                    FdResource::Directory(rc) => (),
+                    FdResource::Epoll(rc) => (),
+                    FdResource::EventFd(rc) => todo!(),
+                    FdResource::File(rc) => todo!(),
+                    FdResource::MessageQueue(rc) => todo!(),
+                    FdResource::Pipe(rc) => todo!(),
+                    FdResource::Stdin => todo!(),
+                    FdResource::Stdout => todo!(),
+                    FdResource::Stderr => todo!(),
+                    FdResource::Socket(rc) => todo!(),
+                }
+            }
+            */
+
+            // From the man pages:
+
+            // TODO: Wipe process-local thread information (except for this thread)
+            // TODO: Clear all pending signals
+            // TODO: Remove any semaphore adjustments (e.g. from `semop`)
+            // TODO: remove any `fcntl` record locks
+            // TODO: remove any timers (`alarm()`, `setitimer()`, etc.)
+            // TODO: remove any outstanding asynchronous I/O operations (aio_read, aio_write)
+            // TODO: remove any dnotify notifications (see F_NOTIFY in fcntl)
+            // TODO: remove PR_SET_PDEATHSIG prctl
+            // TODO: Set default timer slack value to the parent's current timer slack value (PR_SET_TIMERSLACK in prctl)
+            // TODO: set termination signal of child to SIGCHLD
+            // TODO: after a fork() in a multithreaded program, the child can safely call only async-signal-safe functions until execve
+
+            TaskResult::Return
+        } else if pid > 0 {
+            // Parent process
+            CHILD_RES.with_borrow_mut(|res| {
+                *res = Some(Ok(pid));
+            });
+            TaskResult::Suspend
+        } else {
+            // Error
+            let errno = Errno::get_errno();
+            CHILD_RES.with_borrow_mut(|res| {
+                *res = Some(Err(errno));
+            });
+            TaskResult::Suspend
         }
     }
 }
@@ -543,94 +549,7 @@ impl Event for ProcessExecEvent {
                 self.state = ProcessExecState::Executed;
 
                 Outcome::RunTask(
-                    Box::new_in(move |ctx| {
-                        let loc = location;
-
-                        let passed_args = args;
-                        let argp = passed_args.argp;
-
-                        log::info!("calling exec() to execute a new process...");
-
-                        match &loc {
-                            ExecLocation::File(f) => {
-                                let cmd = f.data().as_ptr().cast::<libc::c_char>();
-
-                                match envs {
-                                    Some(ExecEnv { envp }) => unsafe {
-                                        let env = envp;
-                                        // SAFETY: data passed into this closure is specifically allocated on fizzle_alloc().
-                                        // Referencing anything from there once `ctx.dealloc()` is called will result in SIGSEGV.
-                                        ctx.dealloc();
-                                        libc::execve(cmd, argp.as_ptr(), env.as_ptr());
-                                    }
-                                    None => unsafe {
-                                        // SAFETY: data passed into this closure is specifically allocated on fizzle_alloc().
-                                        // Referencing anything from there once `ctx.dealloc()` is called will result in SIGSEGV.
-                                        ctx.dealloc();
-                                        libc::execv(cmd, argp.as_ptr());
-                                    },
-                                }
-                            }
-                            ExecLocation::ShellFile(f) => {
-                                let cmd = f.data().as_ptr().cast::<libc::c_char>();
-
-                                match envs {
-                                    Some(ExecEnv { envp }) => {
-                                        let env = envp;
-                                        unsafe {
-                                            // SAFETY: data passed into this closure is specifically allocated on fizzle_alloc().
-                                            // Referencing anything from there once `ctx.dealloc()` is called will result in SIGSEGV.
-                                            ctx.dealloc();
-                                            libc::execvpe(cmd, argp.as_ptr(), env.as_ptr());
-                                        }
-                                    }
-                                    None => unsafe {
-                                        ctx.dealloc();
-                                        libc::execvp(cmd, argp.as_ptr());
-                                    },
-                                }
-                            }
-                            ExecLocation::Descriptor(descriptor) => {
-                                let envp = envs.unwrap().envp;
-                                let mut state = ctx.acquire();
-
-                                match state.local.fds.get(&descriptor) {
-                                    Some(fd_info) => {
-                                        let FdResource::File(open_file) = &fd_info.resource else {
-                                            state.global.inherited_state = None;
-                                            panic!("fexecve called on unrecognized file descriptor")
-                                        };
-
-                                        // TODO: must be opened read-only with O_PATH set and execute permissions
-
-                                        let path = open_file.borrow().file.borrow().path.clone();
-                                        let cmd = path.data().as_ptr().cast::<libc::c_char>();
-                                        drop(state);
-
-                                        unsafe {
-                                            // SAFETY: data passed into this closure is specifically allocated on fizzle_alloc().
-                                            // Referencing anything from there once `ctx.dealloc()` is called will result in SIGSEGV.
-                                            ctx.dealloc();
-                                            libc::execve(cmd, argp.as_ptr(), envp.as_ptr());
-                                        }
-                                    }
-                                    None => unsafe {
-                                        log::warn!("fexecve called on unknown file descriptor--passing through...");
-                                        drop(state);
-                                        // SAFETY: data passed into this closure is specifically allocated on fizzle_alloc().
-                                        // Referencing anything from there once `ctx.dealloc()` is called will result in SIGSEGV.
-                                        ctx.dealloc();
-                                        libc::fexecve(descriptor.as_raw_fd(), argp.as_ptr(), envp.as_ptr());
-                                    },
-                                }
-                            }
-                            ExecLocation::AtDirectory(_fd, _path) => {
-                                todo!("execveat not implemented") // TODO: implement
-                            }
-                        }
-
-                        panic!("exec call failed");
-                    }, fizzle_alloc()),
+                    Task::Exec(ExecTask { location, args, envs }),
                     YieldUntil::None,
                 )
             }
@@ -639,9 +558,104 @@ impl Event for ProcessExecEvent {
                 panic!("exec event returned non-zero");
             }
         }
+    }
+}
+
+pub struct ExecTask {
+    location: ExecLocation,
+    args: ExecArgs,
+    envs: Option<ExecEnv>,
+}
+
+impl ExecTask {
+    pub fn execute(self, ctx: &mut FizzleSingleton) -> ! {
+        let loc = self.location;
+        let envs = self.envs;
+        let passed_args = self.args;
+        let argp = passed_args.argp;
 
 
-        
+        log::info!("calling exec() to execute a new process...");
+
+        match &loc {
+            ExecLocation::File(f) => {
+                let cmd = f.data().as_ptr().cast::<libc::c_char>();
+
+                match envs {
+                    Some(ExecEnv { envp }) => unsafe {
+                        let env = envp;
+                        // SAFETY: data passed into this closure is specifically allocated on fizzle_alloc().
+                        // Referencing anything from there once `ctx.dealloc()` is called will result in SIGSEGV.
+                        ctx.dealloc();
+                        libc::execve(cmd, argp.as_ptr(), env.as_ptr());
+                    }
+                    None => unsafe {
+                        // SAFETY: data passed into this closure is specifically allocated on fizzle_alloc().
+                        // Referencing anything from there once `ctx.dealloc()` is called will result in SIGSEGV.
+                        ctx.dealloc();
+                        libc::execv(cmd, argp.as_ptr());
+                    },
+                }
+            }
+            ExecLocation::ShellFile(f) => {
+                let cmd = f.data().as_ptr().cast::<libc::c_char>();
+
+                match envs {
+                    Some(ExecEnv { envp }) => {
+                        let env = envp;
+                        unsafe {
+                            // SAFETY: data passed into this closure is specifically allocated on fizzle_alloc().
+                            // Referencing anything from there once `ctx.dealloc()` is called will result in SIGSEGV.
+                            ctx.dealloc();
+                            libc::execvpe(cmd, argp.as_ptr(), env.as_ptr());
+                        }
+                    }
+                    None => unsafe {
+                        ctx.dealloc();
+                        libc::execvp(cmd, argp.as_ptr());
+                    },
+                }
+            }
+            ExecLocation::Descriptor(descriptor) => {
+                let envp = envs.unwrap().envp;
+                let mut state = ctx.acquire();
+
+                match state.local.fds.get(&descriptor) {
+                    Some(fd_info) => {
+                        let FdResource::File(open_file) = &fd_info.resource else {
+                            state.global.inherited_state = None;
+                            panic!("fexecve called on unrecognized file descriptor")
+                        };
+
+                        // TODO: must be opened read-only with O_PATH set and execute permissions
+
+                        let path = open_file.borrow().file.borrow().path.clone();
+                        let cmd = path.data().as_ptr().cast::<libc::c_char>();
+                        drop(state);
+
+                        unsafe {
+                            // SAFETY: data passed into this closure is specifically allocated on fizzle_alloc().
+                            // Referencing anything from there once `ctx.dealloc()` is called will result in SIGSEGV.
+                            ctx.dealloc();
+                            libc::execve(cmd, argp.as_ptr(), envp.as_ptr());
+                        }
+                    }
+                    None => unsafe {
+                        log::warn!("fexecve called on unknown file descriptor--passing through...");
+                        drop(state);
+                        // SAFETY: data passed into this closure is specifically allocated on fizzle_alloc().
+                        // Referencing anything from there once `ctx.dealloc()` is called will result in SIGSEGV.
+                        ctx.dealloc();
+                        libc::fexecve(descriptor.as_raw_fd(), argp.as_ptr(), envp.as_ptr());
+                    },
+                }
+            }
+            ExecLocation::AtDirectory(_fd, _path) => {
+                todo!("execveat not implemented") // TODO: implement
+            }
+        }
+
+        panic!("exec call failed");
     }
 }
 
@@ -667,24 +681,11 @@ impl Event for ProcessExitEvent {
         let status = self.status;
         match self.run_cleanup {
             true => Outcome::RunTask(
-                Box::new_in(
-                    move |ctx| {
-                        Scheduler::terminate_process(ctx, TerminationMethod::ProcessExit(status))
-                    },
-                    fizzle_alloc(),
-                ),
+                Task::TerminateProcess(TerminateProcessTask(TerminationMethod::ProcessExit(status))),
                 YieldUntil::None,
             ),
             false => Outcome::RunTask(
-                Box::new_in(
-                    move |ctx| {
-                        Scheduler::terminate_process(
-                            ctx,
-                            TerminationMethod::ProcessImmediateExit(status),
-                        )
-                    },
-                    fizzle_alloc(),
-                ),
+                Task::TerminateProcess(TerminateProcessTask(TerminationMethod::ProcessImmediateExit(status))),
                 YieldUntil::None,
             ),
         }

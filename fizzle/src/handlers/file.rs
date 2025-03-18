@@ -14,8 +14,9 @@ use fizzle_common::path::FilePath;
 use crate::backend::{FileBackend, FileFeedback};
 use crate::errno::Errno;
 use crate::handlers::descriptor::*;
-use crate::scheduler::{fizzle_alloc, Event, Outcome, Scheduler, YieldUntil};
+use crate::scheduler::{fizzle_alloc, CreateCowTask, Event, Outcome, Scheduler, YieldUntil};
 use crate::state::{CreateCowSource, FizzleState};
+use crate::task::Task;
 use crate::GlobalRc;
 
 use super::descriptor::{Descriptor, ReadData, WriteData};
@@ -262,11 +263,12 @@ impl Event for FileOpenEvent {
                             .intersects(FileOpenFlags::WRITEONLY | FileOpenFlags::READWRITE)
                     {
                         // The file is immediately truncated, so it is as if it has been wiped
-                        Scheduler::create_cow(
-                            state,
-                            &CreateCowSource::New(path, self.mode.unwrap_or(state.local.umask)),
-                        );
-                        return Outcome::Yield(YieldUntil::Reschedule(Duration::ZERO));
+                        return Outcome::RunTask(
+                            Task::CreateCow(CreateCowTask(
+                                CreateCowSource::New(path, self.mode.unwrap_or(state.local.umask))
+                            )),
+                            YieldUntil::Reschedule(Duration::ZERO),
+                        )
                     }
 
                     let flag_bits = self
@@ -326,11 +328,12 @@ impl Event for FileOpenEvent {
 
                         Outcome::Success(fd)
                     } else if self.flags.contains(FileOpenFlags::CREATE) {
-                        Scheduler::create_cow(
-                            state,
-                            &CreateCowSource::New(path, self.mode.unwrap_or(state.local.umask)),
-                        );
-                        Outcome::Yield(YieldUntil::Reschedule(Duration::ZERO))
+                        return Outcome::RunTask(
+                            Task::CreateCow(CreateCowTask(
+                                CreateCowSource::New(path, self.mode.unwrap_or(state.local.umask))
+                            )),
+                            YieldUntil::Reschedule(Duration::ZERO),
+                        )
                     } else {
                         Outcome::Error(Errno::ENOENT)
                     }
@@ -338,8 +341,10 @@ impl Event for FileOpenEvent {
             },
             FileOpenState::CreateCow(cow_id) => {
                 self.state = FileOpenState::Finish;
-                Scheduler::create_cow(state, &CreateCowSource::Existing(cow_id));
-                return Outcome::Yield(YieldUntil::Reschedule(Duration::ZERO));
+                return Outcome::RunTask(
+                    Task::CreateCow(CreateCowTask(CreateCowSource::Existing(cow_id))),
+                    YieldUntil::Reschedule(Duration::ZERO),
+                )
             }
             FileOpenState::Finish => {
                 let file = state.global.file_paths.get(&path).unwrap();
@@ -394,8 +399,10 @@ impl Event for FileReadEvent<'_> {
                 let fd = if let Some(cow_id) = file.borrow().cow {
                     let Some(cow_info) = state.local.pasture.get(&cow_id) else {
                         self.cow_created = true;
-                        Scheduler::create_cow(state, &CreateCowSource::Existing(cow_id));
-                        return Outcome::Yield(YieldUntil::Reschedule(Duration::ZERO));
+                        return Outcome::RunTask(
+                            Task::CreateCow(CreateCowTask(CreateCowSource::Existing(cow_id))),
+                            YieldUntil::Reschedule(Duration::ZERO),
+                        )
                     };
 
                     cow_info.memfd
@@ -582,18 +589,19 @@ impl Event for FileWriteEvent<'_> {
                 let fd = if let Some(cow_id) = file_ref.cow {
                     let Some(cow_info) = state.local.pasture.get(&cow_id) else {
                         self.cow_created = true;
-                        Scheduler::create_cow(state, &CreateCowSource::Existing(cow_id));
-                        return Outcome::Yield(YieldUntil::Reschedule(Duration::ZERO));
+                        return Outcome::RunTask(
+                            Task::CreateCow(CreateCowTask(CreateCowSource::Existing(cow_id))),
+                            YieldUntil::Reschedule(Duration::ZERO),
+                        )
                     };
 
                     cow_info.memfd
                 } else {
                     self.cow_created = true;
-                    Scheduler::create_cow(
-                        state,
-                        &CreateCowSource::New(file_ref.path.clone(), file_ref.mode),
-                    );
-                    return Outcome::Yield(YieldUntil::Reschedule(Duration::ZERO));
+                    return Outcome::RunTask(
+                        Task::CreateCow(CreateCowTask(CreateCowSource::New(file_ref.path.clone(), file_ref.mode))),
+                        YieldUntil::Reschedule(Duration::ZERO),
+                    )
                 };
 
                 if self.cow_created {
@@ -1251,8 +1259,10 @@ impl Event for StatEvent<'_> {
             Some(cow_id) => {
                 let Some(cow_info) = state.local.pasture.get(&cow_id) else {
                     // Fetch CoW ID for this process and retry
-                    Scheduler::create_cow(state, &CreateCowSource::Existing(cow_id));
-                    return Outcome::Yield(YieldUntil::Reschedule(Duration::ZERO));
+                    return Outcome::RunTask(
+                        Task::CreateCow(CreateCowTask(CreateCowSource::Existing(cow_id))),
+                        YieldUntil::Reschedule(Duration::ZERO),
+                    )
                 };
 
                 unsafe {

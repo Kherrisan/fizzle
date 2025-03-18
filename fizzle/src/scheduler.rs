@@ -25,6 +25,7 @@ use crate::handlers::time::ItimerInfo;
 use crate::semaphore::Semaphore;
 use crate::state;
 use crate::state::*;
+use crate::task::{Task, TaskResult};
 use crate::GlobalHeap;
 use crate::{plugins, GlobalRc};
 
@@ -281,7 +282,7 @@ pub enum Outcome<S, E> {
     Success(S),
     Error(E),
     RunTask(
-        Box<dyn FnOnce(&mut FizzleSingleton) -> TaskResult + Send + 'static, &'static TlsfHeap>,
+        Task,
         YieldUntil,
     ),
     Yield(YieldUntil),
@@ -296,10 +297,900 @@ pub enum YieldUntil {
     None,
 }
 
-pub enum TaskResult {
-    Continue,
-    Suspend,
-    Return,
+pub struct RunSubprocessTask {
+    onstartup: Command,
+}
+
+impl RunSubprocessTask {
+    pub fn execute(self, ctx: &mut FizzleSingleton) -> TaskResult {
+        Scheduler::run_subprocess(ctx, self.onstartup);
+        TaskResult::Suspend
+    }
+}
+
+/// Returns immediately to execute the current worker's next run() step.
+pub struct ReturnTask;
+
+impl ReturnTask {
+    pub fn execute(self, _ctx: &mut FizzleSingleton) -> TaskResult {
+        TaskResult::Return
+    }
+}
+
+pub struct HandleExpiredTimerTask {
+    pid: Pid,
+    timer_type: TimerType,
+}
+
+impl HandleExpiredTimerTask {
+    pub fn execute(self, ctx: &mut FizzleSingleton) -> TaskResult {
+        let mut state = ctx.acquire();
+        let current_worker = state.current_worker();
+        let pid = self.pid;
+        let timer_type = self.timer_type;
+
+        // Need to ensure this is executing within the destination process
+        if pid != current_worker.pid {
+            // Re-schedule current task in the correct process
+            state.global.tasks.push_front(Task::HandleExpiredTimer(self));
+
+            // Awaken destination process
+            let sem = state
+                .global
+                .pids
+                .get(&pid)
+                .unwrap()
+                .borrow()
+                .main_worker_lock
+                .clone();
+            drop(state);
+            log::trace!("[5] post() to {:?}", pid);
+            safe_post(sem);
+
+            return TaskResult::Suspend;
+        }
+
+        let itimer_info = match timer_type {
+            TimerType::Prof => state.local.itimer_prof.clone(),
+            TimerType::Real => state.local.itimer_real.clone(),
+            TimerType::Virtual => state.local.itimer_virtual.clone(),
+        };
+
+        // Repeat timer if applicable
+        if let Some(ItimerInfo { interval }) = itimer_info {
+            let timestamp = state.global.current_time.saturating_add(interval);
+            state.global.ready.push(ScheduledItem {
+                info: ReadyInfo::Timer(pid, timer_type),
+                timestamp,
+            })
+        }
+
+        // Now handle the timer's signal behavior
+        let raised = RaisedSignalInfo::Timer(SigTimerInfo {
+            signum: timer_type.signum(),
+            overrun: 0, // TODO: implement correctly
+            timer_id: timer_type.timer_id(),
+        });
+
+        drop(state);
+        HandleProcessSignalTask { pid, raised }.execute(ctx)
+    }
+}
+
+pub struct HandleProcessSignalTask {
+    pub pid: Pid,
+    pub raised: RaisedSignalInfo,
+}
+
+impl HandleProcessSignalTask {
+    pub fn execute(self, ctx: &mut FizzleSingleton) -> TaskResult {
+        let mut state = ctx.acquire();
+        let current_worker = state.current_worker();
+
+        let dst = self.pid;
+        let raised = self.raised;
+
+        // Check to see if the signal should be ignored
+        let disposition = state
+            .global
+            .pids
+            .get(&dst)
+            .unwrap()
+            .borrow()
+            .signal_handlers[raised.signum() as usize - 1]
+            .clone();
+
+        if let SigDisposition::Ignore = disposition {
+            log::info!(
+                "Process-directed signal {} received and ignored",
+                raised.signum()
+            );
+            return TaskResult::Continue;
+        }
+
+        if dst != current_worker.pid {
+            // TODO: this indirection could be removed if we put signal information in global rather than local
+
+            // Re-schedule the current task to run in the destination process
+            state.global.tasks.push_front(Task::HandleProcessSignal(HandleProcessSignalTask { pid: dst, raised }));
+
+            // Awaken destination process
+            let dst_sem = state
+                .global
+                .pids
+                .get(&dst)
+                .unwrap()
+                .borrow()
+                .main_worker_lock
+                .clone();
+
+            drop(state);
+            log::trace!("[2] post() to {:?}", dst);
+            safe_post(dst_sem);
+
+            return TaskResult::Suspend;
+        }
+
+        // Now select the appropriate thread to handle the signal
+        let Some(tid) = Scheduler::unblocked_thread(&mut state, raised.signum()) else {
+            // TODO: make sure this gets checked whenever a thread unblocks itself
+            log::debug!("Process-directed signal {} received but all threads were blocked--signal set to pending", raised.signum());
+            state.local.pending_signals[raised.signum() as usize - 1].replace(raised);
+
+            // Notify any thread waiting with `sigwait()`
+            let mut ready_worker = None;
+            for (tid, siginfo) in state.local.signals.iter_mut() {
+                if siginfo
+                        .sigwait_set
+                        .intersects(SignalSet::from_signum(raised.signum()))
+                {
+                    // If more than one, we don't know what the right behavior is
+                    debug_assert!(ready_worker.is_none());
+                    ready_worker = Some(Worker {
+                        pid: current_worker.pid,
+                        thread_id: *tid,
+                    });
+                }
+            }
+
+            // TODO: Should all of the ready workers in the process be signalled, or only one?
+            if let Some(worker) = ready_worker {
+                state.mark_worker_ready(worker);
+            }
+
+            return TaskResult::Continue;
+        };
+
+        if tid != current_worker.thread_id {
+            // Re-schedule the task
+            state.global.tasks.push_front(Task::HandleLocalSignal(HandleLocalSignalTask { raised }));
+
+            // Awaken destination thread
+            let dst_worker = Worker {
+                pid: current_worker.pid,
+                thread_id: tid,
+            };
+            let dst_sem = state.global.worker_locks.get(&dst_worker).unwrap().clone();
+            drop(state);
+            log::trace!("[3] post() to {:?}", dst_worker);
+            safe_post(dst_sem);
+
+            return TaskResult::Suspend;
+        }
+
+        drop(state);
+        HandleLocalSignalTask { raised }.execute(ctx)
+    }
+}
+
+pub struct HandleLocalSignalTask {
+    raised: RaisedSignalInfo,
+}
+
+impl HandleLocalSignalTask {
+    pub fn execute(self, ctx: &mut FizzleSingleton) -> TaskResult {
+        let mut state = ctx.acquire();
+        let current_worker = state.current_worker();
+        let raised = self.raised;
+
+        let proc_siginfo = state.global.pids.get_mut(&current_worker.pid).unwrap();
+        let sig_handler =
+            proc_siginfo.borrow().signal_handlers[raised.signum() as usize - 1].clone();
+
+        // Check to see if the signal has been blocked
+        let siginfo = state
+            .local
+            .signals
+            .get_mut(&current_worker.thread_id)
+            .unwrap();
+        if siginfo
+            .masked
+            .intersects(SignalSet::from_signum(raised.signum()))
+        {
+            siginfo.pending[raised.signum() as usize - 1] = Some(raised);
+            log::debug!(
+                "Thread-directed signal {} received but blocked--set to pending",
+                raised.signum()
+            );
+
+            if siginfo
+                    .sigwait_set
+                    .intersects(SignalSet::from_signum(raised.signum()))
+            {
+                state.mark_worker_ready(current_worker);
+            }
+
+            return TaskResult::Continue;
+        }
+
+        match sig_handler {
+            SigDisposition::Action(action) => {
+                // If the thread is waiting with `sigsuspend()`, awaken it
+                if siginfo.sigsuspend {
+                    siginfo.sigsuspend = false;
+                    state.mark_worker_ready(current_worker);
+                }
+
+                drop(state);
+
+                let mut siginfo = siginfo_t::from_raised(raised);
+                Scheduler::run_outside_hook(ctx, || unsafe {
+                    action(raised.signum(), ptr::addr_of_mut!(siginfo), ptr::null_mut());
+                });
+            }
+            SigDisposition::Handler(handler) => {
+                // If the thread is waiting with `sigsuspend()`, awaken it
+                if siginfo.sigsuspend {
+                    siginfo.sigsuspend = false;
+                    state.mark_worker_ready(current_worker);
+                }
+
+                drop(state);
+                Scheduler::run_outside_hook(ctx, || unsafe {
+                    handler(raised.signum());
+                });
+            }
+            SigDisposition::Default => {
+                match SignalSet::from_signum(raised.signum()) {
+                    // Ignore the signal--do nothing
+                    SignalSet::SIGCHLD | SignalSet::SIGURG | SignalSet::SIGWINCH => (),
+                    // Unpause the process
+                    SignalSet::SIGCONT => {
+                        unimplemented!("`SIGCONT` signal");
+                    }
+                    // Stop the thread (process?)
+                    SignalSet::SIGSTOP
+                    | SignalSet::SIGTSTP
+                    | SignalSet::SIGTTIN
+                    | SignalSet::SIGTTOU => {
+                        unimplemented!("`SIGSTOP` family of signals");
+                    }
+                    _ => {
+                        drop(state);
+                        TerminateProcessTask(TerminationMethod::Signal(raised)).execute(ctx)
+                    }
+                }
+            }
+            SigDisposition::Ignore => unreachable!(), // should have been handled earlier
+        }
+
+        TaskResult::Continue
+    }
+}
+
+pub struct TerminateProcessTask(pub TerminationMethod);
+
+impl TerminateProcessTask {
+    pub fn execute(self, ctx: &mut FizzleSingleton) -> ! {
+        // TODO: remove all active file descriptors, handles from local state so they're freed from global
+        let method = self.0;
+
+        let on_exit_val = match method {
+            TerminationMethod::ThreadExit(_) => Some(0),
+            TerminationMethod::ProcessExit(val) => Some(val),
+            _ => None,
+        };
+
+        // handle registered `atexit()`/`on_exit()` functions
+        if let Some(on_exit_val) = on_exit_val {
+            let mut state = ctx.acquire();
+
+            let mut atexit_handlers = Vec::new();
+            let mut on_exit_handlers = Vec::new();
+            mem::swap(&mut atexit_handlers, &mut state.local.atexit_handlers);
+            mem::swap(&mut on_exit_handlers, &mut state.local.on_exit_handlers);
+            drop(state);
+
+            for handler in atexit_handlers {
+                Scheduler::run_outside_hook(ctx, || unsafe {
+                    handler();
+                });
+            }
+
+            for (handler, arg) in on_exit_handlers {
+                Scheduler::run_outside_hook(ctx, || unsafe {
+                    handler(on_exit_val, arg);
+                });
+            }
+        }
+
+        // Clean up process state
+        let state = ctx.acquire();
+        let pid = state.local.process_info.borrow().pid;
+        let ppid = state.local.process_info.borrow().ppid;
+
+        if pid == Pid::PRIMARY {
+            log::error!("main process forcibly terminated");
+            unsafe {
+                libc::_exit(1);
+            }
+        }
+
+        let sigchild = match method {
+            TerminationMethod::Cancellation | TerminationMethod::ThreadExit(_) => SigChildInfo {
+                code: SigChildCode::Exited,
+                pid: pid.as_raw(),
+                uid: unsafe { libc::getuid() },
+                status: 0,
+            },
+            TerminationMethod::ProcessExit(val) | TerminationMethod::ProcessImmediateExit(val) => {
+                SigChildInfo {
+                    code: SigChildCode::Exited,
+                    pid: pid.as_raw(),
+                    uid: unsafe { libc::getuid() },
+                    status: val,
+                }
+            }
+            TerminationMethod::Signal(raised_info) => SigChildInfo {
+                code: SigChildCode::Killed,
+                pid: raised_info.pid().unwrap_or(pid.as_raw()),
+                uid: raised_info.uid().unwrap_or(unsafe { libc::getuid() }),
+                status: raised_info.signum(),
+            },
+        };
+
+        drop(state);
+
+        // Send SIGCHLD to parent process
+        // NOTE: it is VERY IMPORTANT that this go towards the end of process termination.
+        if ppid != Pid::INIT {
+            log::info!("sending SIGCHLD to parent process {}", ppid.as_raw());
+            // TODO: if ppid == Pid::INIT, things should be reaped
+            Scheduler::handle_event(
+                ctx,
+                SignalSendEvent::new(SignalTarget::Pid(ppid), libc::SIGCHLD, None),
+            )
+            .unwrap();
+        }
+
+        let mut state = ctx.acquire();
+
+        // Mark this process as a zombie
+        // NOTE: it is VERY IMPORTANT that this block comes AFTER the SIGCHLD signal is sent.
+        // The reason for this is that `Scheduler::handle_event()` will pause the execution
+        // of this process to run signal handlers in the target process/thread of the signal.
+        // If userspace code access resources from this process, bad things could happen (?).
+        state.global.dead_pids.insert(pid, sigchild.clone());
+
+        // If a parent is awaiting this process's death, notify it
+        let awaiting = state.local.process_info.borrow_mut().awaiting_death.take();
+        if let Some(awaiting_worker) = awaiting {
+            state.mark_worker_ready(awaiting_worker);
+        }
+
+        state.global.pids.remove(&pid);
+        // TODO: mark process as able to be reaped
+
+        // TODO: if a parent dies before a child does, the child will never be reaped.
+        // Fix this...
+
+        // TODO: other global cleanup (such as of socket state from dropped fds) here
+
+        // Delegate execution to the primary process (it's guaranteed not to exit)
+        let delegate_sem = state
+            .global
+            .pids
+            .get(&Pid::PRIMARY)
+            .unwrap()
+            .borrow()
+            .main_worker_lock
+            .clone();
+
+        log::info!("Exiting process and delegating to main semaphore");
+
+        drop(state);
+
+        log::trace!("[7] post() to primary Pid");
+        safe_post(delegate_sem);
+
+        match method {
+            TerminationMethod::Cancellation => unsafe {
+                // This is the last thread in the group
+                libc::pthread_cancel(libc::pthread_self());
+                libc::sleep(1); // Acts as a backup cancellation point in case `pthread_cancel` didn't work
+                panic!("`pthread_cancel()` failed to kill current thread");
+            },
+            TerminationMethod::ThreadExit(retval) => unsafe { libc::pthread_exit(retval) },
+            TerminationMethod::ProcessExit(retval) => unsafe { libc::_exit(retval) },
+            TerminationMethod::ProcessImmediateExit(retval) => unsafe { libc::_exit(retval) },
+            TerminationMethod::Signal(signal) => unsafe {
+                // TODO: if SIGKILL (or any other signal that doesn't run `atexit()`), make sure our atexit handlers still work
+                libc::kill(libc::getpid(), signal.signum());
+                libc::sleep(1); // Acts as a backup cancellation point in case `pthread_kill` didn't work
+                panic!("`pthread_kill()` failed to kill current thread");
+            },
+        }
+    }
+}
+
+pub struct HandleThreadSignalTask {
+    pub dst: Worker,
+    pub raised: RaisedSignalInfo,
+}
+
+impl HandleThreadSignalTask {
+    pub fn execute(self, ctx: &mut FizzleSingleton) -> TaskResult {
+        let mut state = ctx.acquire();
+        let current_worker = state.current_worker();
+        let dst = self.dst;
+        let raised = self.raised;
+
+        // Check to see if the signal should be ignored
+        let disposition = state
+            .global
+            .pids
+            .get(&dst.pid)
+            .unwrap()
+            .borrow()
+            .signal_handlers[raised.signum() as usize - 1]
+            .clone();
+
+        if let SigDisposition::Ignore = disposition {
+            log::info!(
+                "Thread-directed signal {} received and ignored",
+                raised.signum()
+            );
+            return TaskResult::Continue;
+        }
+
+        // Move to the appropriate thread
+        if dst != current_worker {
+            // Re-schedule current task
+            state.global.tasks.push_front(Task::HandleLocalSignal(HandleLocalSignalTask { raised }));
+
+            // Awaken destination worker
+            let dst_sem = state.global.worker_locks.get(&dst).unwrap().clone();
+            drop(state);
+            log::trace!("[4] post() to {:?}", dst);
+            safe_post(dst_sem);
+
+            return TaskResult::Suspend;
+        }
+
+        drop(state);
+        HandleLocalSignalTask { raised }.execute(ctx)
+    }
+}
+
+pub struct TerminateThreadTask(pub TerminationMethod);
+
+impl TerminateThreadTask {
+    pub fn execute(self, ctx: &mut FizzleSingleton) -> ! {
+        log::info!("Thread being terminated...");
+        let method = self.0;
+
+        let thread_id = thread::current().id();
+        let mut state = ctx.acquire();
+
+        let mut cleanup_routines = state
+            .local
+            .pthread_cleanup
+            .remove(&thread_id)
+            .unwrap_or_default();
+
+        // Remove and gather cleanup routines for pthread keys
+        let pthread_keys: Vec<u32> = state.local.pthread_keys.keys().copied().collect();
+        for key in pthread_keys {
+            if let Some(values) = state.local.pthread_key_values.get_mut(&key) {
+                if let Some(p) = values.remove(&thread_id) {
+                    let mut destructor = *state.local.pthread_keys.get(&key).unwrap();
+                    destructor.arg = Some(p);
+                    cleanup_routines.push_back(destructor);
+                }
+            }
+        }
+
+        drop(state);
+
+        // Run cleanup routines, hooking any functions within the routines
+        let total = cleanup_routines.len();
+        for (i, routine) in cleanup_routines.into_iter().enumerate() {
+            log::debug!(
+                "pthread_key or cleanup routine {} of {} running...",
+                i + 1,
+                total
+            );
+            Scheduler::run_outside_hook(ctx, || {
+                routine.call();
+            });
+            log::debug!("routine {} of {} complete.", i + 1, total);
+        }
+
+        let mut state = ctx.acquire();
+        let current_worker = state.current_worker();
+
+        // Clean up this thread's semaphore
+        state.global.worker_locks.remove(&current_worker);
+
+        // Mark this thread as dead for future threads that may wait on it.
+        state.local.terminated_threads.insert(thread_id);
+
+        // Notify any threads awaiting this thread's death
+        if let Some(awaiting_threads) = state.local.awaiting_thread_death.remove(&thread_id) {
+            for thread_id in awaiting_threads {
+                state.mark_thread_ready(thread_id);
+            }
+        }
+
+        // Clean up local state of thread
+        state.local.pthread_cleanup.remove(&thread_id);
+        state.local.signals.remove(&thread_id);
+
+        // Leave thread_info
+        let thread_info = state
+            .local
+            .pthreads
+            .get_mut(&unsafe { libc::pthread_self() })
+            .unwrap();
+
+        let mutexes = mem::replace(&mut thread_info.held_mutexes, Default::default());
+
+        for mutex in mutexes {
+            let mutex_info = state.local.mutexes.get_mut(&mutex).unwrap();
+            // Mark the thread as poisoned
+            mutex_info.status = MutexStatus::Poisoned;
+            // Remove this thread from the queue
+            assert!(mutex_info.queued_threads.pop_front().is_some());
+            // If there are any other threads listening, mark the next one as ready to receive
+            // the (poisoned) mutex
+            if let Some(other_thread) = mutex_info.queued_threads.front().cloned() {
+                state.mark_thread_ready(other_thread);
+            }
+        }
+
+        // Delegate execution to...
+        if let Some(thread_id) = state.local.pthreads.values().next().map(|t| t.id) {
+            // ...another running thread in this process
+            let worker = Worker {
+                pid: current_worker.pid,
+                thread_id,
+            };
+            let sem = state.global.worker_locks.get(&worker).unwrap().clone();
+            drop(state);
+
+            log::trace!("[6] post() to {:?}", worker);
+
+            // Wake thread
+            safe_post(sem);
+            // SAFETY: `state` is never held from this point onward
+            match method {
+                TerminationMethod::Cancellation => unsafe {
+                    libc::pthread_cancel(libc::pthread_self());
+                    libc::sleep(1); // Acts as a backup cancellation point in case `pthread_cancel` didn't work
+                    unreachable!("`pthread_cancel` failed to kill current thread");
+                },
+                TerminationMethod::ThreadExit(retval) => unsafe { libc::pthread_exit(retval) },
+                TerminationMethod::Signal(raised_info) => unsafe {
+                    libc::pthread_kill(libc::pthread_self(), raised_info.signum());
+                    libc::sleep(1); // Acts as a backup cancellation point in case `pthread_kill` didn't work
+                    unreachable!("`pthread_kill` failed to kill current thread");
+                },
+                TerminationMethod::ProcessExit(_) | TerminationMethod::ProcessImmediateExit(_) => {
+                    unreachable!("terminate_thread() incorrectly used for process exit")
+                }
+            }
+        } else {
+            // ...another process, as this process is going out of scope.
+            drop(state);
+            // SAFETY: `state` isn't held from this point on
+            TerminateProcessTask(method).execute(ctx)
+        }
+
+        // TODO: What about when the main thread exits normally? Needs atexit() handler installed when process first created...
+    }
+}
+
+pub struct CreateCowTask(pub CreateCowSource);
+
+impl CreateCowTask {
+    pub fn execute(self, ctx: &mut FizzleSingleton) -> TaskResult {
+        let mut state = ctx.acquire();
+        let source = self.0;
+
+        let origin_worker = state.current_worker();
+        let origin_pid = state.local.process_info.borrow().pid;
+
+        let move_to_primary = if origin_pid != Pid::PRIMARY {
+            Some(Task::MoveToPrimary(MoveToPrimaryTask))
+        } else {
+            None
+        };
+
+        let cow_source = source.clone();
+        let create_cow_in_primary = Task::CreatePrimaryCow(
+            CreatePrimaryCowTask(cow_source)
+        );
+
+        let cow_source = source.clone();
+        let send_cow_to_origin = if origin_pid != Pid::PRIMARY {
+            Some(Task::TransportCow(
+                TransportCowTask(cow_source)
+            ))
+        } else {
+            None
+        };
+
+        let move_to_origin = if origin_pid != Pid::PRIMARY {
+            Some(Task::MoveToCowOrigin(
+                MoveToCowOriginTask(origin_worker)
+            ))
+        } else {
+            None
+        };
+
+        let cow_source = source.clone();
+        let recv_cow_at_origin = if origin_pid != Pid::PRIMARY {
+            Some(Task::RecvCowAtOrigin(
+                RecvCowAtOriginTask(cow_source)
+            ))
+        } else {
+            None
+        };
+
+        // Tasks need to be pushed on in reverse order of execution
+        if let Some(task) = recv_cow_at_origin {
+            state.global.tasks.push_front(task);
+        }
+
+        if let Some(task) = move_to_origin {
+            state.global.tasks.push_front(task);
+        }
+
+        if let Some(task) = send_cow_to_origin {
+            state.global.tasks.push_front(task);
+        }
+
+        state.global.tasks.push_front(create_cow_in_primary);
+
+        if let Some(task) = move_to_primary {
+            state.global.tasks.push_front(task);
+        }
+
+        TaskResult::Continue
+    }
+}
+
+pub struct MoveToPrimaryTask;
+
+impl MoveToPrimaryTask {
+    pub fn execute(self, ctx: &mut FizzleSingleton) -> TaskResult {
+        let state = ctx.acquire();
+        let sem = state
+            .global
+            .pids
+            .get(&Pid::PRIMARY)
+            .unwrap()
+            .borrow()
+            .main_worker_lock
+            .clone();
+        drop(state);
+
+        log::trace!("[8] post() to primary Pid");
+        safe_post(sem);
+        TaskResult::Suspend
+    }
+}
+
+pub struct CreatePrimaryCowTask(CreateCowSource);
+
+impl CreatePrimaryCowTask {
+    pub fn execute(self, ctx: &mut FizzleSingleton) -> TaskResult {
+        let mut state = ctx.acquire();
+        let cow_source = self.0;
+
+        let CreateCowSource::New(path, mode) = cow_source else {
+            return TaskResult::Continue;
+        };
+
+        // Create a CoW
+        let cow_id = state.allocate_cow();
+
+        let inode = state.global.next_inode();
+        let current_time = state.global.current_time;
+        let uid = state.global.uid;
+        let gid = state.global.gid;
+
+        if !state.global.file_paths.contains_key(&path) {
+            let file_info = Rc::new_in(
+                RefCell::new(FileInfo {
+                    path: path.clone(),
+                    cow: Some(cow_id),
+                    dev_id: 0xfe01,
+                    inode,
+                    mode,
+                    nlink: 1, // TODO: fix
+                    backend: FileBackend::Feedback(FileFeedback {}),
+                    uid,
+                    gid,
+                    atime: current_time,
+                    btime: current_time,
+                    mtime: current_time,
+                    ctime: current_time,
+                }),
+                fizzle_alloc(),
+            );
+
+            if state
+                .global
+                .file_paths
+                .insert(path.clone(), file_info)
+                .is_err()
+            {
+                panic!("failed to insert to file_paths")
+            }
+        } else {
+            let file_info = state.global.file_paths.get(&path).unwrap().clone();
+            file_info.borrow_mut().cow = Some(cow_id);
+        }
+
+        let memfd = state.local.pasture.get(&cow_id).unwrap().memfd;
+        copy_to_shmem(memfd, &path);
+
+        TaskResult::Continue
+    }
+}
+
+pub struct TransportCowTask(CreateCowSource);
+
+impl TransportCowTask {
+    pub fn execute(self, ctx: &mut FizzleSingleton) -> TaskResult {
+        let state = ctx.acquire();
+        let cow_source = self.0;
+
+        let cow_id = match cow_source {
+            CreateCowSource::Existing(cow_id) => cow_id,
+            CreateCowSource::New(path, _mode) => {
+                let file_info = state.global.file_paths.get(&path).unwrap();
+                file_info.borrow().cow.unwrap()
+            }
+        };
+        let memfd = state.local.pasture.get(&cow_id).unwrap().memfd;
+
+        let cmsghdr = libc::cmsghdr {
+            cmsg_len: mem::size_of::<libc::cmsghdr>() + mem::size_of::<RawFd>(),
+            cmsg_level: libc::SCM_RIGHTS,
+            cmsg_type: libc::SOL_SOCKET,
+        };
+
+        let mut control =
+            [0u8; mem::size_of::<libc::cmsghdr>() + mem::size_of::<RawFd>()];
+        control[..mem::size_of::<libc::cmsghdr>()]
+            .copy_from_slice(unsafe { slice::from_ref(&cmsghdr).align_to::<u8>().1 });
+        control[mem::size_of::<libc::cmsghdr>()..]
+            .copy_from_slice(&memfd.to_ne_bytes());
+
+        let msghdr = libc::msghdr {
+            msg_name: ptr::null_mut(),
+            msg_namelen: 0,
+            msg_iov: ptr::null_mut(),
+            msg_iovlen: 0,
+            msg_control: control.as_mut_ptr().cast::<libc::c_void>(),
+            msg_controllen: control.len(),
+            msg_flags: 0,
+        };
+
+        let len = unsafe {
+            libc::sendmsg(state.global.unix_write_fd, ptr::addr_of!(msghdr), 0)
+        };
+
+        assert_eq!(len, 0);
+
+        TaskResult::Continue
+    }
+}
+
+pub struct MoveToCowOriginTask(Worker);
+
+impl MoveToCowOriginTask {
+    pub fn execute(self, ctx: &mut FizzleSingleton) -> TaskResult {
+        let state = ctx.acquire();
+        let origin_worker = self.0;
+        let sem = state
+            .global
+            .worker_locks
+            .get(&origin_worker)
+            .unwrap()
+            .clone();
+        drop(state);
+
+        log::trace!("[9] post() to {:?}", origin_worker);
+        safe_post(sem);
+        TaskResult::Suspend
+    }
+}
+
+pub struct RecvCowAtOriginTask(CreateCowSource);
+
+impl RecvCowAtOriginTask {
+    pub fn execute(self, ctx: &mut FizzleSingleton) -> TaskResult {
+        let mut state = ctx.acquire();
+        let cow_source = self.0;
+
+        let cow_id = match cow_source {
+            CreateCowSource::Existing(cow_id) => cow_id,
+            CreateCowSource::New(path, _mode) => {
+                let file_info = state.global.file_paths.get(&path).unwrap();
+                file_info.borrow().cow.unwrap()
+            }
+        };
+
+        let mut msg = [0u8; 1024];
+
+        let mut msghdr = libc::msghdr {
+            msg_name: ptr::null_mut(),
+            msg_namelen: 0,
+            msg_iov: ptr::null_mut(),
+            msg_iovlen: 0,
+            msg_control: msg.as_mut_ptr().cast::<libc::c_void>(),
+            msg_controllen: 1024,
+            msg_flags: 0,
+        };
+
+        unsafe {
+            assert_eq!(
+                libc::recvmsg(state.global.unix_read_fd, ptr::addr_of_mut!(msghdr), 0),
+                0
+            );
+        }
+
+        let msg_len = msghdr.msg_controllen;
+        let mut msg_idx = 0;
+
+        while msg_len - msg_idx > mem::size_of::<libc::cmsghdr>() {
+            let (s1, m, _s2) = unsafe { msg[msg_idx..].align_to::<libc::cmsghdr>() };
+            assert!(s1.is_empty());
+            let hdr = &m[0];
+            if hdr.cmsg_len > msg_len {
+                break;
+            }
+
+            if hdr.cmsg_type == libc::SOL_SOCKET && hdr.cmsg_level == libc::SCM_RIGHTS {
+                let msg_data = &msg
+                    [msg_idx + mem::size_of::<libc::cmsghdr>()..msg_idx + hdr.cmsg_len];
+                let (s1, fds, s2) = unsafe { msg_data.align_to::<RawFd>() };
+                assert!(s1.is_empty() && s2.is_empty() && fds.len() == 1);
+
+                state
+                    .local
+                    .pasture
+                    .insert(cow_id, CowInfo { memfd: fds[0] });
+
+                return TaskResult::Continue;
+            }
+
+            // Update msg index
+            msg_idx = cmp::max(
+                CMSG_ALIGN(msg_idx + hdr.cmsg_len),
+                CMSG_ALIGN(msg_idx + mem::size_of::<libc::cmsghdr>()),
+            );
+
+            if msg_idx > msg_len {
+                break;
+            }
+        }
+
+        unreachable!("CoW msg had no SCM_RIGHTS")
+    }
 }
 
 pub struct Scheduler;
@@ -331,13 +1222,7 @@ impl Scheduler {
                     );
 
                     // Schedule the subprocess to be run
-                    state.global.tasks.push_front(Box::new_in(
-                        move |ctx| {
-                            Scheduler::run_subprocess(ctx, onstartup);
-                            TaskResult::Suspend
-                        },
-                        fizzle_alloc(),
-                    ));
+                    state.global.tasks.push_front(Task::RunSubprocess(RunSubprocessTask { onstartup }));
                     drop(state);
 
                     Scheduler::yield_worker(ctx);
@@ -364,7 +1249,9 @@ impl Scheduler {
             };
 
             if let Some(task) = task_opt {
+                log::trace!("task generated during event.run()");
                 state.global.tasks.push_front(task);
+                debug_assert!(!matches!(until, YieldUntil::Immediate));
             }
 
             match until {
@@ -417,10 +1304,10 @@ impl Scheduler {
             // Check for any available task to run
             let task_opt = ctx.acquire().global.tasks.pop_front();
 
-            let waiting_sem = if let Some(run_task) = task_opt {
+            let waiting_sem = if let Some(task) = task_opt {
                 log::trace!("running next task...");
-                // Immediately
-                let wait_on = run_task(ctx);
+                // SAFETY:
+                let wait_on = task.execute(ctx);
                 // Invariant: `ctx` must NOT be acquired between here and `sem.wait()`
 
                 match wait_on {
@@ -516,11 +1403,7 @@ impl Scheduler {
                 ReadyInfo::Worker(worker) => Some(worker),
                 ReadyInfo::Poller(poller) => Scheduler::poller_ready_worker(poller),
                 ReadyInfo::Timer(pid, timer_type) => {
-                    state.global.tasks.push_front(Box::new_in(
-                        move |ctx| Scheduler::handle_expired_timer(ctx, pid, timer_type),
-                        fizzle_alloc(),
-                    ));
-
+                    state.global.tasks.push_front(Task::HandleExpiredTimer(HandleExpiredTimerTask { pid, timer_type }));
                     return Some(false);
                 }
             };
@@ -529,7 +1412,7 @@ impl Scheduler {
                 state
                     .global
                     .tasks
-                    .push_front(Box::new_in(|_| TaskResult::Return, fizzle_alloc()));
+                    .push_front(Task::Return(ReturnTask));
                 if worker == current_worker {
                     return Some(false);
                 } else {
@@ -595,247 +1478,6 @@ impl Scheduler {
         state.global.current_time += Duration::from_micros(increment * 100);
     }
 
-    pub fn handle_process_signal(
-        ctx: &mut FizzleSingleton,
-        raised: RaisedSignalInfo,
-        dst: Pid,
-    ) -> TaskResult {
-        let mut state = ctx.acquire();
-        let current_worker = state.current_worker();
-
-        // Check to see if the signal should be ignored
-        let disposition = state
-            .global
-            .pids
-            .get(&dst)
-            .unwrap()
-            .borrow()
-            .signal_handlers[raised.signum() as usize - 1]
-            .clone();
-
-        if let SigDisposition::Ignore = disposition {
-            log::info!(
-                "Process-directed signal {} received and ignored",
-                raised.signum()
-            );
-            return TaskResult::Continue;
-        }
-
-        if dst != current_worker.pid {
-            // TODO: this indirection could be removed if we put signal information in global rather than local
-
-            // Re-schedule the current task to run in the destination process
-            state.global.tasks.push_front(Box::new_in(
-                move |ctx| Scheduler::handle_process_signal(ctx, raised, dst),
-                fizzle_alloc(),
-            ));
-
-            // Awaken destination process
-            let dst_sem = state
-                .global
-                .pids
-                .get(&dst)
-                .unwrap()
-                .borrow()
-                .main_worker_lock
-                .clone();
-
-            drop(state);
-            log::trace!("[2] post() to {:?}", dst);
-            safe_post(dst_sem);
-
-            return TaskResult::Suspend;
-        }
-
-        // Now select the appropriate thread to handle the signal
-        let Some(tid) = Scheduler::unblocked_thread(&mut state, raised.signum()) else {
-            // TODO: make sure this gets checked whenever a thread unblocks itself
-            log::debug!("Process-directed signal {} received but all threads were blocked--signal set to pending", raised.signum());
-            state.local.pending_signals[raised.signum() as usize - 1].replace(raised);
-
-            // Notify any thread waiting with `sigwait()`
-            let mut ready_worker = None;
-            for (tid, siginfo) in state.local.signals.iter_mut() {
-                if siginfo
-                        .sigwait_set
-                        .intersects(SignalSet::from_signum(raised.signum()))
-                {
-                    // If more than one, we don't know what the right behavior is
-                    debug_assert!(ready_worker.is_none());
-                    ready_worker = Some(Worker {
-                        pid: current_worker.pid,
-                        thread_id: *tid,
-                    });
-                }
-            }
-
-            // TODO: Should all of the ready workers in the process be signalled, or only one?
-            if let Some(worker) = ready_worker {
-                state.mark_worker_ready(worker);
-            }
-
-            return TaskResult::Continue;
-        };
-
-        if tid != current_worker.thread_id {
-            // Re-schedule the task
-            state.global.tasks.push_front(Box::new_in(
-                move |ctx| Scheduler::handle_local_signal(ctx, raised),
-                fizzle_alloc(),
-            ));
-
-            // Awaken destination thread
-            let dst_worker = Worker {
-                pid: current_worker.pid,
-                thread_id: tid,
-            };
-            let dst_sem = state.global.worker_locks.get(&dst_worker).unwrap().clone();
-            drop(state);
-            log::trace!("[3] post() to {:?}", dst_worker);
-            safe_post(dst_sem);
-
-            return TaskResult::Suspend;
-        }
-
-        drop(state);
-        Scheduler::handle_local_signal(ctx, raised)
-    }
-
-    pub fn handle_thread_signal(
-        ctx: &mut FizzleSingleton,
-        raised: RaisedSignalInfo,
-        dst: Worker,
-    ) -> TaskResult {
-        let mut state = ctx.acquire();
-        let current_worker = state.current_worker();
-
-        // Check to see if the signal should be ignored
-        let disposition = state
-            .global
-            .pids
-            .get(&dst.pid)
-            .unwrap()
-            .borrow()
-            .signal_handlers[raised.signum() as usize - 1]
-            .clone();
-
-        if let SigDisposition::Ignore = disposition {
-            log::info!(
-                "Thread-directed signal {} received and ignored",
-                raised.signum()
-            );
-            return TaskResult::Continue;
-        }
-
-        // Move to the appropriate thread
-        if dst != current_worker {
-            // Re-schedule current task
-            state.global.tasks.push_front(Box::new_in(
-                move |ctx| Scheduler::handle_local_signal(ctx, raised),
-                fizzle_alloc(),
-            ));
-
-            // Awaken destination worker
-            let dst_sem = state.global.worker_locks.get(&dst).unwrap().clone();
-            drop(state);
-            log::trace!("[4] post() to {:?}", dst);
-            safe_post(dst_sem);
-
-            return TaskResult::Suspend;
-        }
-
-        drop(state);
-        Scheduler::handle_local_signal(ctx, raised)
-    }
-
-    fn handle_local_signal(ctx: &mut FizzleSingleton, raised: RaisedSignalInfo) -> TaskResult {
-        let mut state = ctx.acquire();
-        let current_worker = state.current_worker();
-
-        let proc_siginfo = state.global.pids.get_mut(&current_worker.pid).unwrap();
-        let sig_handler =
-            proc_siginfo.borrow().signal_handlers[raised.signum() as usize - 1].clone();
-
-        // Check to see if the signal has been blocked
-        let siginfo = state
-            .local
-            .signals
-            .get_mut(&current_worker.thread_id)
-            .unwrap();
-        if siginfo
-            .masked
-            .intersects(SignalSet::from_signum(raised.signum()))
-        {
-            siginfo.pending[raised.signum() as usize - 1] = Some(raised);
-            log::debug!(
-                "Thread-directed signal {} received but blocked--set to pending",
-                raised.signum()
-            );
-
-            if siginfo
-                    .sigwait_set
-                    .intersects(SignalSet::from_signum(raised.signum()))
-            {
-                state.mark_worker_ready(current_worker);
-            }
-
-            return TaskResult::Continue;
-        }
-
-        match sig_handler {
-            SigDisposition::Action(action) => {
-                // If the thread is waiting with `sigsuspend()`, awaken it
-                if siginfo.sigsuspend {
-                    siginfo.sigsuspend = false;
-                    state.mark_worker_ready(current_worker);
-                }
-
-                drop(state);
-
-                let mut siginfo = siginfo_t::from_raised(raised);
-                Scheduler::run_outside_hook(ctx, || unsafe {
-                    action(raised.signum(), ptr::addr_of_mut!(siginfo), ptr::null_mut());
-                });
-            }
-            SigDisposition::Handler(handler) => {
-                // If the thread is waiting with `sigsuspend()`, awaken it
-                if siginfo.sigsuspend {
-                    siginfo.sigsuspend = false;
-                    state.mark_worker_ready(current_worker);
-                }
-
-                drop(state);
-                Scheduler::run_outside_hook(ctx, || unsafe {
-                    handler(raised.signum());
-                });
-            }
-            SigDisposition::Default => {
-                match SignalSet::from_signum(raised.signum()) {
-                    // Ignore the signal--do nothing
-                    SignalSet::SIGCHLD | SignalSet::SIGURG | SignalSet::SIGWINCH => (),
-                    // Unpause the process
-                    SignalSet::SIGCONT => {
-                        unimplemented!("`SIGCONT` signal");
-                    }
-                    // Stop the thread (process?)
-                    SignalSet::SIGSTOP
-                    | SignalSet::SIGTSTP
-                    | SignalSet::SIGTTIN
-                    | SignalSet::SIGTTOU => {
-                        unimplemented!("`SIGSTOP` family of signals");
-                    }
-                    _ => {
-                        drop(state);
-                        Scheduler::terminate_process(ctx, TerminationMethod::Signal(raised))
-                    }
-                }
-            }
-            SigDisposition::Ignore => unreachable!(), // should have been handled earlier
-        }
-
-        TaskResult::Continue
-    }
-
     // TODO: shouldn't this go in `LocalState`??
     fn unblocked_thread(state: &FizzleState, signum: libc::c_int) -> Option<ThreadId> {
         for (thread, siginfo) in state.local.signals.iter() {
@@ -845,64 +1487,6 @@ impl Scheduler {
         }
 
         None
-    }
-
-    pub fn handle_expired_timer(
-        ctx: &mut FizzleSingleton,
-        pid: Pid,
-        timer_type: TimerType,
-    ) -> TaskResult {
-        let mut state = ctx.acquire();
-        let current_worker = state.current_worker();
-
-        // Need to ensure this is executing within the destination process
-        if pid != current_worker.pid {
-            // Re-schedule current task
-            state.global.tasks.push_front(Box::new_in(
-                move |ctx| Scheduler::handle_expired_timer(ctx, pid, timer_type),
-                fizzle_alloc(),
-            ));
-
-            // Awaken destination process
-            let sem = state
-                .global
-                .pids
-                .get(&pid)
-                .unwrap()
-                .borrow()
-                .main_worker_lock
-                .clone();
-            drop(state);
-            log::trace!("[5] post() to {:?}", pid);
-            safe_post(sem);
-
-            return TaskResult::Suspend;
-        }
-
-        let itimer_info = match timer_type {
-            TimerType::Prof => state.local.itimer_prof.clone(),
-            TimerType::Real => state.local.itimer_real.clone(),
-            TimerType::Virtual => state.local.itimer_virtual.clone(),
-        };
-
-        // Repeat timer if applicable
-        if let Some(ItimerInfo { interval }) = itimer_info {
-            let timestamp = state.global.current_time.saturating_add(interval);
-            state.global.ready.push(ScheduledItem {
-                info: ReadyInfo::Timer(pid, timer_type),
-                timestamp,
-            })
-        }
-
-        // Now handle the timer's signal behavior
-        let raised = RaisedSignalInfo::Timer(SigTimerInfo {
-            signum: timer_type.signum(),
-            overrun: 0, // TODO: implement correctly
-            timer_id: timer_type.timer_id(),
-        });
-
-        drop(state);
-        Scheduler::handle_process_signal(ctx, raised, pid)
     }
 
     // TODO: clean this up better
@@ -1163,528 +1747,6 @@ impl Scheduler {
         cmd.spawn().unwrap();
     }
 
-    /// Terminates the current thread, cleaning up its resources along the way.
-    pub fn terminate_thread(ctx: &mut FizzleSingleton, method: TerminationMethod) -> ! {
-        log::info!("Thread being terminated...");
-
-        let thread_id = thread::current().id();
-        let mut state = ctx.acquire();
-
-        let mut cleanup_routines = state
-            .local
-            .pthread_cleanup
-            .remove(&thread_id)
-            .unwrap_or_default();
-
-        // Remove and gather cleanup routines for pthread keys
-        let pthread_keys: Vec<u32> = state.local.pthread_keys.keys().copied().collect();
-        for key in pthread_keys {
-            if let Some(values) = state.local.pthread_key_values.get_mut(&key) {
-                if let Some(p) = values.remove(&thread_id) {
-                    let mut destructor = *state.local.pthread_keys.get(&key).unwrap();
-                    destructor.arg = Some(p);
-                    cleanup_routines.push_back(destructor);
-                }
-            }
-        }
-
-        drop(state);
-
-        // Run cleanup routines, hooking any functions within the routines
-        let total = cleanup_routines.len();
-        for (i, routine) in cleanup_routines.into_iter().enumerate() {
-            log::debug!(
-                "pthread_key or cleanup routine {} of {} running...",
-                i + 1,
-                total
-            );
-            Self::run_outside_hook(ctx, || {
-                routine.call();
-            });
-            log::debug!("routine {} of {} complete.", i + 1, total);
-        }
-
-        let mut state = ctx.acquire();
-        let current_worker = state.current_worker();
-
-        // Clean up this thread's semaphore
-        state.global.worker_locks.remove(&current_worker);
-
-        // Mark this thread as dead for future threads that may wait on it.
-        state.local.terminated_threads.insert(thread_id);
-
-        // Notify any threads awaiting this thread's death
-        if let Some(awaiting_threads) = state.local.awaiting_thread_death.remove(&thread_id) {
-            for thread_id in awaiting_threads {
-                state.mark_thread_ready(thread_id);
-            }
-        }
-
-        // Clean up local state of thread
-        state.local.pthread_cleanup.remove(&thread_id);
-        state.local.signals.remove(&thread_id);
-
-        // Leave thread_info
-        let thread_info = state
-            .local
-            .pthreads
-            .get_mut(&unsafe { libc::pthread_self() })
-            .unwrap();
-
-        let mutexes = mem::replace(&mut thread_info.held_mutexes, Default::default());
-
-        for mutex in mutexes {
-            let mutex_info = state.local.mutexes.get_mut(&mutex).unwrap();
-            // Mark the thread as poisoned
-            mutex_info.status = MutexStatus::Poisoned;
-            // Remove this thread from the queue
-            assert!(mutex_info.queued_threads.pop_front().is_some());
-            // If there are any other threads listening, mark the next one as ready to receive
-            // the (poisoned) mutex
-            if let Some(other_thread) = mutex_info.queued_threads.front().cloned() {
-                state.mark_thread_ready(other_thread);
-            }
-        }
-
-        // Delegate execution to...
-        if let Some(thread_id) = state.local.pthreads.values().next().map(|t| t.id) {
-            // ...another running thread in this process
-            let worker = Worker {
-                pid: current_worker.pid,
-                thread_id,
-            };
-            let sem = state.global.worker_locks.get(&worker).unwrap().clone();
-            drop(state);
-
-            log::trace!("[6] post() to {:?}", worker);
-
-            // Wake thread
-            safe_post(sem);
-            // SAFETY: `state` is never held from this point onward
-            match method {
-                TerminationMethod::Cancellation => unsafe {
-                    libc::pthread_cancel(libc::pthread_self());
-                    libc::sleep(1); // Acts as a backup cancellation point in case `pthread_cancel` didn't work
-                    unreachable!("`pthread_cancel` failed to kill current thread");
-                },
-                TerminationMethod::ThreadExit(retval) => unsafe { libc::pthread_exit(retval) },
-                TerminationMethod::Signal(raised_info) => unsafe {
-                    libc::pthread_kill(libc::pthread_self(), raised_info.signum());
-                    libc::sleep(1); // Acts as a backup cancellation point in case `pthread_kill` didn't work
-                    unreachable!("`pthread_kill` failed to kill current thread");
-                },
-                TerminationMethod::ProcessExit(_) | TerminationMethod::ProcessImmediateExit(_) => {
-                    unreachable!("terminate_thread() incorrectly used for process exit")
-                }
-            }
-        } else {
-            // ...another process, as this process is going out of scope.
-            drop(state);
-            // SAFETY: `state` isn't held from this point on
-            Scheduler::terminate_process(ctx, method);
-        }
-
-        // TODO: What about when the main thread exits normally? Needs atexit() handler installed when process first created...
-    }
-
-    /// Removes any global state associated with the given process.
-    pub fn terminate_process(ctx: &mut FizzleSingleton, method: TerminationMethod) -> ! {
-        // TODO: remove all active file descriptors, handles from local state so they're freed from global
-
-        let on_exit_val = match method {
-            TerminationMethod::ThreadExit(_) => Some(0),
-            TerminationMethod::ProcessExit(val) => Some(val),
-            _ => None,
-        };
-
-        // handle registered `atexit()`/`on_exit()` functions
-        if let Some(on_exit_val) = on_exit_val {
-            let mut state = ctx.acquire();
-
-            let mut atexit_handlers = Vec::new();
-            let mut on_exit_handlers = Vec::new();
-            mem::swap(&mut atexit_handlers, &mut state.local.atexit_handlers);
-            mem::swap(&mut on_exit_handlers, &mut state.local.on_exit_handlers);
-            drop(state);
-
-            for handler in atexit_handlers {
-                Scheduler::run_outside_hook(ctx, || unsafe {
-                    handler();
-                });
-            }
-
-            for (handler, arg) in on_exit_handlers {
-                Scheduler::run_outside_hook(ctx, || unsafe {
-                    handler(on_exit_val, arg);
-                });
-            }
-        }
-
-        // Clean up process state
-        let state = ctx.acquire();
-        let pid = state.local.process_info.borrow().pid;
-        let ppid = state.local.process_info.borrow().ppid;
-
-        if pid == Pid::PRIMARY {
-            log::error!("main process forcibly terminated");
-            unsafe {
-                libc::_exit(1);
-            }
-        }
-
-        let sigchild = match &method {
-            TerminationMethod::Cancellation | TerminationMethod::ThreadExit(_) => SigChildInfo {
-                code: SigChildCode::Exited,
-                pid: pid.as_raw(),
-                uid: unsafe { libc::getuid() },
-                status: 0,
-            },
-            TerminationMethod::ProcessExit(val) | TerminationMethod::ProcessImmediateExit(val) => {
-                SigChildInfo {
-                    code: SigChildCode::Exited,
-                    pid: pid.as_raw(),
-                    uid: unsafe { libc::getuid() },
-                    status: *val,
-                }
-            }
-            TerminationMethod::Signal(raised_info) => SigChildInfo {
-                code: SigChildCode::Killed,
-                pid: raised_info.pid().unwrap_or(pid.as_raw()),
-                uid: raised_info.uid().unwrap_or(unsafe { libc::getuid() }),
-                status: raised_info.signum(),
-            },
-        };
-
-        drop(state);
-
-        // Send SIGCHLD to parent process
-        // NOTE: it is VERY IMPORTANT that this go towards the end of process termination.
-        if ppid != Pid::INIT {
-            log::info!("sending SIGCHLD to parent process {}", ppid.as_raw());
-            // TODO: if ppid == Pid::INIT, things should be reaped
-            Scheduler::handle_event(
-                ctx,
-                SignalSendEvent::new(SignalTarget::Pid(ppid), libc::SIGCHLD, None),
-            )
-            .unwrap();
-        }
-
-        let mut state = ctx.acquire();
-
-        // Mark this process as a zombie
-        // NOTE: it is VERY IMPORTANT that this block comes AFTER the SIGCHLD signal is sent.
-        // The reason for this is that `Scheduler::handle_event()` will pause the execution
-        // of this process to run signal handlers in the target process/thread of the signal.
-        // If userspace code access resources from this process, bad things could happen (?).
-        state.global.dead_pids.insert(pid, sigchild.clone());
-
-        // If a parent is awaiting this process's death, notify it
-        let awaiting = state.local.process_info.borrow_mut().awaiting_death.take();
-        if let Some(awaiting_worker) = awaiting {
-            state.mark_worker_ready(awaiting_worker);
-        }
-
-        state.global.pids.remove(&pid);
-        // TODO: mark process as able to be reaped
-
-        // TODO: if a parent dies before a child does, the child will never be reaped.
-        // Fix this...
-
-        // TODO: other global cleanup (such as of socket state from dropped fds) here
-
-        // Delegate execution to the primary process (it's guaranteed not to exit)
-        let delegate_sem = state
-            .global
-            .pids
-            .get(&Pid::PRIMARY)
-            .unwrap()
-            .borrow()
-            .main_worker_lock
-            .clone();
-
-        log::info!("Exiting process and delegating to main semaphore");
-
-        drop(state);
-
-        log::trace!("[7] post() to primary Pid");
-        safe_post(delegate_sem);
-
-        match method {
-            TerminationMethod::Cancellation => unsafe {
-                // This is the last thread in the group
-                libc::pthread_cancel(libc::pthread_self());
-                libc::sleep(1); // Acts as a backup cancellation point in case `pthread_cancel` didn't work
-                panic!("`pthread_cancel()` failed to kill current thread");
-            },
-            TerminationMethod::ThreadExit(retval) => unsafe { libc::pthread_exit(retval) },
-            TerminationMethod::ProcessExit(retval) => unsafe { libc::_exit(retval) },
-            TerminationMethod::ProcessImmediateExit(retval) => unsafe { libc::_exit(retval) },
-            TerminationMethod::Signal(signal) => unsafe {
-                // TODO: if SIGKILL (or any other signal that doesn't run `atexit()`), make sure our atexit handlers still work
-                libc::kill(libc::getpid(), signal.signum());
-                libc::sleep(1); // Acts as a backup cancellation point in case `pthread_kill` didn't work
-                panic!("`pthread_kill()` failed to kill current thread");
-            },
-        }
-    }
-
-    pub fn create_cow(state: &mut FizzleState, source: &CreateCowSource) {
-        let origin_worker = state.current_worker();
-        let origin_pid = state.local.process_info.borrow().pid;
-
-        let move_to_primary = if origin_pid != Pid::PRIMARY {
-            Some(Box::new_in(
-                move |ctx: &mut FizzleSingleton| {
-                    let state = ctx.acquire();
-                    let sem = state
-                        .global
-                        .pids
-                        .get(&Pid::PRIMARY)
-                        .unwrap()
-                        .borrow()
-                        .main_worker_lock
-                        .clone();
-                    drop(state);
-
-                    log::trace!("[8] post() to primary Pid");
-                    safe_post(sem);
-                    TaskResult::Suspend
-                },
-                fizzle_alloc(),
-            ))
-        } else {
-            None
-        };
-
-        let cow_source = source.clone();
-        let create_cow_in_primary = Box::new_in(
-            move |ctx: &mut FizzleSingleton| {
-                let mut state = ctx.acquire();
-
-                let CreateCowSource::New(path, mode) = cow_source else {
-                    return TaskResult::Continue;
-                };
-
-                // Create a CoW
-                let cow_id = state.allocate_cow();
-
-                let inode = state.global.next_inode();
-                let current_time = state.global.current_time;
-                let uid = state.global.uid;
-                let gid = state.global.gid;
-
-                if !state.global.file_paths.contains_key(&path) {
-                    let file_info = Rc::new_in(
-                        RefCell::new(FileInfo {
-                            path: path.clone(),
-                            cow: Some(cow_id),
-                            dev_id: 0xfe01,
-                            inode,
-                            mode,
-                            nlink: 1, // TODO: fix
-                            backend: FileBackend::Feedback(FileFeedback {}),
-                            uid,
-                            gid,
-                            atime: current_time,
-                            btime: current_time,
-                            mtime: current_time,
-                            ctime: current_time,
-                        }),
-                        fizzle_alloc(),
-                    );
-
-                    if state
-                        .global
-                        .file_paths
-                        .insert(path.clone(), file_info)
-                        .is_err()
-                    {
-                        panic!("failed to insert to file_paths")
-                    }
-                } else {
-                    let file_info = state.global.file_paths.get(&path).unwrap().clone();
-                    file_info.borrow_mut().cow = Some(cow_id);
-                }
-
-                let memfd = state.local.pasture.get(&cow_id).unwrap().memfd;
-                copy_to_shmem(memfd, &path);
-
-                TaskResult::Continue
-            },
-            fizzle_alloc(),
-        );
-
-        let cow_source = source.clone();
-        let send_cow_to_origin = if origin_pid != Pid::PRIMARY {
-            Some(Box::new_in(
-                move |ctx: &mut FizzleSingleton| {
-                    let state = ctx.acquire();
-
-                    let cow_id = match cow_source {
-                        CreateCowSource::Existing(cow_id) => cow_id,
-                        CreateCowSource::New(path, _mode) => {
-                            let file_info = state.global.file_paths.get(&path).unwrap();
-                            file_info.borrow().cow.unwrap()
-                        }
-                    };
-                    let memfd = state.local.pasture.get(&cow_id).unwrap().memfd;
-
-                    let cmsghdr = libc::cmsghdr {
-                        cmsg_len: mem::size_of::<libc::cmsghdr>() + mem::size_of::<RawFd>(),
-                        cmsg_level: libc::SCM_RIGHTS,
-                        cmsg_type: libc::SOL_SOCKET,
-                    };
-
-                    let mut control =
-                        [0u8; mem::size_of::<libc::cmsghdr>() + mem::size_of::<RawFd>()];
-                    control[..mem::size_of::<libc::cmsghdr>()]
-                        .copy_from_slice(unsafe { slice::from_ref(&cmsghdr).align_to::<u8>().1 });
-                    control[mem::size_of::<libc::cmsghdr>()..]
-                        .copy_from_slice(&memfd.to_ne_bytes());
-
-                    let msghdr = libc::msghdr {
-                        msg_name: ptr::null_mut(),
-                        msg_namelen: 0,
-                        msg_iov: ptr::null_mut(),
-                        msg_iovlen: 0,
-                        msg_control: control.as_mut_ptr().cast::<libc::c_void>(),
-                        msg_controllen: control.len(),
-                        msg_flags: 0,
-                    };
-
-                    let len = unsafe {
-                        libc::sendmsg(state.global.unix_write_fd, ptr::addr_of!(msghdr), 0)
-                    };
-
-                    assert_eq!(len, 0);
-
-                    TaskResult::Continue
-                },
-                fizzle_alloc(),
-            ))
-        } else {
-            None
-        };
-
-        let move_to_origin = if origin_pid != Pid::PRIMARY {
-            Some(Box::new_in(
-                move |ctx: &mut FizzleSingleton| {
-                    let state = ctx.acquire();
-                    let sem = state
-                        .global
-                        .worker_locks
-                        .get(&origin_worker)
-                        .unwrap()
-                        .clone();
-                    drop(state);
-
-                    log::trace!("[9] post() to {:?}", origin_worker);
-                    safe_post(sem);
-                    TaskResult::Suspend
-                },
-                fizzle_alloc(),
-            ))
-        } else {
-            None
-        };
-
-        let cow_source = source.clone();
-        let recv_cow_at_origin = if origin_pid != Pid::PRIMARY {
-            Some(Box::new_in(
-                move |ctx: &mut FizzleSingleton| {
-                    let mut state = ctx.acquire();
-
-                    let cow_id = match cow_source {
-                        CreateCowSource::Existing(cow_id) => cow_id,
-                        CreateCowSource::New(path, _mode) => {
-                            let file_info = state.global.file_paths.get(&path).unwrap();
-                            file_info.borrow().cow.unwrap()
-                        }
-                    };
-
-                    let mut msg = [0u8; 1024];
-
-                    let mut msghdr = libc::msghdr {
-                        msg_name: ptr::null_mut(),
-                        msg_namelen: 0,
-                        msg_iov: ptr::null_mut(),
-                        msg_iovlen: 0,
-                        msg_control: msg.as_mut_ptr().cast::<libc::c_void>(),
-                        msg_controllen: 1024,
-                        msg_flags: 0,
-                    };
-
-                    unsafe {
-                        assert_eq!(
-                            libc::recvmsg(state.global.unix_read_fd, ptr::addr_of_mut!(msghdr), 0),
-                            0
-                        );
-                    }
-
-                    let msg_len = msghdr.msg_controllen;
-                    let mut msg_idx = 0;
-
-                    while msg_len - msg_idx > mem::size_of::<libc::cmsghdr>() {
-                        let (s1, m, _s2) = unsafe { msg[msg_idx..].align_to::<libc::cmsghdr>() };
-                        assert!(s1.is_empty());
-                        let hdr = &m[0];
-                        if hdr.cmsg_len > msg_len {
-                            break;
-                        }
-
-                        if hdr.cmsg_type == libc::SOL_SOCKET && hdr.cmsg_level == libc::SCM_RIGHTS {
-                            let msg_data = &msg
-                                [msg_idx + mem::size_of::<libc::cmsghdr>()..msg_idx + hdr.cmsg_len];
-                            let (s1, fds, s2) = unsafe { msg_data.align_to::<RawFd>() };
-                            assert!(s1.is_empty() && s2.is_empty() && fds.len() == 1);
-
-                            state
-                                .local
-                                .pasture
-                                .insert(cow_id, CowInfo { memfd: fds[0] });
-
-                            return TaskResult::Continue;
-                        }
-
-                        // Update msg index
-                        msg_idx = cmp::max(
-                            CMSG_ALIGN(msg_idx + hdr.cmsg_len),
-                            CMSG_ALIGN(msg_idx + mem::size_of::<libc::cmsghdr>()),
-                        );
-
-                        if msg_idx > msg_len {
-                            break;
-                        }
-                    }
-
-                    unreachable!("CoW msg had no SCM_RIGHTS")
-                },
-                fizzle_alloc(),
-            ))
-        } else {
-            None
-        };
-
-        // Tasks need to be pushed on in reverse order of execution
-        if let Some(task) = recv_cow_at_origin {
-            state.global.tasks.push_front(task);
-        }
-
-        if let Some(task) = move_to_origin {
-            state.global.tasks.push_front(task);
-        }
-
-        if let Some(task) = send_cow_to_origin {
-            state.global.tasks.push_front(task);
-        }
-
-        state.global.tasks.push_front(create_cow_in_primary);
-
-        if let Some(task) = move_to_primary {
-            state.global.tasks.push_front(task);
-        }
-    }
-
     /// Runs the given routine outside of the context of the current method hook.
     ///
     /// Any system library calls performed by code within this closure will be hooked and handled
@@ -1697,7 +1759,7 @@ impl Scheduler {
         debug_assert!(state::has_entered_handler());
         state::set_entered_handler(false);
 
-        // Run the supplied closure outside handler bbounds
+        // Run the supplied closure outside handler bounds
         let ret = f();
 
         // Restore handler bounds

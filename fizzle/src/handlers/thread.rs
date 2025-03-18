@@ -10,11 +10,11 @@ use fxhash::FxBuildHasher;
 
 use crate::errno::Errno;
 use crate::scheduler::{
-    fizzle_alloc, fizzle_singleton, Event, FizzleSingleton, Outcome, Scheduler, TaskResult,
-    TerminationMethod, YieldUntil,
+    fizzle_alloc, fizzle_singleton, Event, FizzleSingleton, Outcome, Scheduler, TerminateThreadTask, TerminationMethod, YieldUntil
 };
 use crate::semaphore::Semaphore;
 use crate::state::{set_entered_handler, FizzleState};
+use crate::task::{Task, TaskResult};
 
 use super::id::Worker;
 use super::mutex::MutexPtr;
@@ -299,13 +299,7 @@ impl Event for ThreadCreateEvent {
                 };
 
                 Outcome::RunTask(
-                    Box::new_in(
-                        move |_| {
-                            thread_create(thread_ctx);
-                            TaskResult::Suspend
-                        },
-                        fizzle_alloc(),
-                    ),
+                    Task::CreateThread(CreateThreadTask(thread_ctx)),
                     YieldUntil::Reschedule(Duration::ZERO),
                 )
             }
@@ -314,16 +308,27 @@ impl Event for ThreadCreateEvent {
     }
 }
 
+pub struct CreateThreadTask(ThreadCreateContext);
+
+impl CreateThreadTask {
+    pub fn execute(self, ctx: &mut FizzleSingleton) -> TaskResult {
+        let thread_ctx = self.0;
+
+        let res = unsafe {
+            libc::pthread_create(
+                thread_ctx.pthread,
+                thread_ctx.attrs,
+                pt_wrapper_fn,
+                thread_ctx.arg,
+            )
+        };
+        assert_eq!(res, 0);
+        TaskResult::Suspend
+    }
+}
+
 fn thread_create(thread_ctx: ThreadCreateContext) {
-    let res = unsafe {
-        libc::pthread_create(
-            thread_ctx.pthread,
-            thread_ctx.attrs,
-            pt_wrapper_fn,
-            thread_ctx.arg,
-        )
-    };
-    assert_eq!(res, 0);
+
 }
 
 pub struct ThreadExitRetval {
@@ -356,14 +361,10 @@ impl Event for ThreadExitEvent {
         let retval = ThreadExitRetval::new(self.retval);
 
         Outcome::RunTask(
-            Box::new_in(move |ctx| exit_thread(ctx, retval), fizzle_alloc()),
+            Task::TerminateThread(TerminateThreadTask(TerminationMethod::ThreadExit(retval.retval))),
             YieldUntil::None,
         )
     }
-}
-
-fn exit_thread(ctx: &mut FizzleSingleton, retval: ThreadExitRetval) -> ! {
-    Scheduler::terminate_thread(ctx, TerminationMethod::ThreadExit(retval.retval))
 }
 
 pub enum ThreadJoinState {
@@ -500,12 +501,7 @@ impl Event for ThreadCancelEvent {
 
                 if self.thread == unsafe { libc::pthread_self() } {
                     return Outcome::RunTask(
-                        Box::new_in(
-                            move |ctx| {
-                                Scheduler::terminate_thread(ctx, TerminationMethod::Cancellation)
-                            },
-                            fizzle_alloc(),
-                        ),
+                        Task::TerminateThread(TerminateThreadTask(TerminationMethod::Cancellation)),
                         YieldUntil::None,
                     );
                 }
@@ -513,44 +509,42 @@ impl Event for ThreadCancelEvent {
                 let thread_id = target_thread.id;
 
                 Outcome::RunTask(
-                    Box::new_in(
-                        move |ctx| {
-                            if thread::current().id() != thread_id {
-                                let mut state = ctx.acquire();
-                                let pid = state.local.process_info.borrow().pid;
-                                state.mark_thread_ready(thread::current().id());
-                                let target_worker = Worker { pid, thread_id };
-                                let target_sem = state
-                                    .global
-                                    .worker_locks
-                                    .get(&target_worker)
-                                    .unwrap()
-                                    .clone();
-                                state.global.tasks.push_front(Box::new_in(
-                                    |ctx| {
-                                        Scheduler::terminate_thread(
-                                            ctx,
-                                            TerminationMethod::Cancellation,
-                                        )
-                                    },
-                                    fizzle_alloc(),
-                                ));
-                                drop(state);
-
-                                log::trace!("[10] post() to {:?}", target_worker);
-                                crate::scheduler::safe_post(target_sem);
-                                return TaskResult::Suspend;
-                            }
-
-                            Scheduler::terminate_thread(ctx, TerminationMethod::Cancellation)
-                        },
-                        fizzle_alloc(),
-                    ),
+                    Task::CancelThread(CancelThreadTask(thread_id)),
                     YieldUntil::Reschedule(Duration::ZERO),
                 )
             }
             ThreadCancelState::Finish => Outcome::Success(()),
         }
+    }
+}
+
+pub struct CancelThreadTask(ThreadId);
+
+impl CancelThreadTask {
+    pub fn execute(self, ctx: &mut FizzleSingleton) -> TaskResult {
+        let thread_id = self.0;
+        if thread::current().id() != thread_id {
+            let mut state = ctx.acquire();
+            let pid = state.local.process_info.borrow().pid;
+            state.mark_thread_ready(thread::current().id());
+            let target_worker = Worker { pid, thread_id };
+            let target_sem = state
+                .global
+                .worker_locks
+                .get(&target_worker)
+                .unwrap()
+                .clone();
+            state.global.tasks.push_front(Task::TerminateThread(
+                TerminateThreadTask(TerminationMethod::Cancellation)
+            ));
+            drop(state);
+
+            log::trace!("[10] post() to {:?}", target_worker);
+            crate::scheduler::safe_post(target_sem);
+            return TaskResult::Suspend;
+        }
+
+        TerminateThreadTask(TerminationMethod::Cancellation).execute(ctx)
     }
 }
 
@@ -735,10 +729,7 @@ impl Event for ThreadCancellableEvent {
 
         if thread_info.cancellable && thread_info.cancel_requested {
             Outcome::RunTask(
-                Box::new_in(
-                    |ctx| Scheduler::terminate_thread(ctx, TerminationMethod::Cancellation),
-                    fizzle_alloc(),
-                ),
+                Task::TerminateThread(TerminateThreadTask(TerminationMethod::Cancellation)),
                 YieldUntil::Reschedule(Duration::ZERO),
             )
         } else {

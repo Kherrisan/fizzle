@@ -18,6 +18,7 @@ mod scheduler;
 mod semaphore;
 mod state;
 mod streams;
+mod task;
 
 use critical_section::RawRestoreState;
 use embedded_alloc::TlsfHeap;
@@ -119,7 +120,7 @@ unsafe impl critical_section::Impl for MyCriticalSection {
         // no-op
     }
 
-    unsafe fn release(token: RawRestoreState) {
+    unsafe fn release(_token: RawRestoreState) {
         // no-op
     }
 }
