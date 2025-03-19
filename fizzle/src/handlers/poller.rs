@@ -685,6 +685,10 @@ impl Event for EpollCtlEvent {
                 let mut read_status = None;
                 let mut write_status = None;
 
+                if (ev.events & libc::EPOLLEXCLUSIVE as u32) != 0 && (ev.events & libc::EPOLLONESHOT as u32) != 0 {
+                    return Outcome::Error(Errno::EINVAL)
+                }
+
                 if (ev.events & libc::EPOLLIN as u32) != 0 {
                     read_status = Some(fd_to_pollin(state, target_fd));
                 }
