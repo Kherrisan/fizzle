@@ -1527,7 +1527,7 @@ impl SocketOption {
                 v.len()
             }
             Self::TcpUserTimeout(d) => {
-                let millis: libc::c_int = d.as_millis().try_into().unwrap();
+                let millis: libc::c_uint = d.as_millis().try_into().unwrap();
                 let millis_bytes = millis.to_be_bytes();
 
                 for (dst, src) in out.iter_mut().zip(millis_bytes) {
