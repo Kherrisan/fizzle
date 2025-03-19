@@ -1373,14 +1373,15 @@ impl InterprocessState {
         return Rc::new_in(
             RefCell::new(SocketInfo {
                 fd_count: 1,
+                socktype: SocketType::Datagram,
+                protocol: src_addr.protocol(),
+                local_addr: LocalAddress::Assigned(src_addr.addr().clone()),
+                options: Default::default(),
                 state: SocketState::Connectionless(ConnectionlessSocket {
                     backend,
                     rem_addr: Some(rem_addr),
                     reuse_port,
                 }),
-                socktype: SocketType::Datagram,
-                protocol: src_addr.protocol(),
-                local_addr: LocalAddress::Assigned(src_addr.addr().clone()),
             }),
             fizzle_alloc(),
         )
@@ -1405,6 +1406,7 @@ impl InterprocessState {
                 let client_socket_info = Rc::new_in(
                     RefCell::new(SocketInfo {
                         fd_count: 1,
+                        options: Default::default(),
                         state: SocketState::PendingConnection(PendingSocket {
                             rem_addr: rem_addr.clone(),
                             backend,
@@ -1447,6 +1449,7 @@ impl InterprocessState {
                 let client_socket_info = Rc::new_in(
                     RefCell::new(SocketInfo {
                         fd_count: 1,
+                        options: Default::default(),
                         state: SocketState::Connecting(ConnectingSocket {
                             connect_polled: useless_polled,
                             backend: match backend {
@@ -1501,6 +1504,7 @@ impl InterprocessState {
         let socket_info = Rc::new_in(
             RefCell::new(SocketInfo {
                 fd_count: 1,
+                options: Default::default(),
                 state: SocketState::Server(ServerSocket {
                     backend,
                     connecting: LinkedList::new_in(fizzle_alloc()),

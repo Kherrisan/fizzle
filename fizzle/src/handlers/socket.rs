@@ -141,6 +141,18 @@ impl LocalAddress {
     }
 }
 
+pub struct SocketOptions {
+    pub tcp_user_timeout: Option<Duration>,
+}
+
+impl Default for SocketOptions {
+    fn default() -> Self {
+        Self {
+            tcp_user_timeout: None,
+        }
+    }
+}
+
 pub struct SocketInfo {
     /// The number of file descriptors currently referencing the socket.
     pub fd_count: usize,
@@ -153,6 +165,7 @@ pub struct SocketInfo {
     ///
     /// By default, this is an ephemeral address assigned at socket creation.
     pub local_addr: LocalAddress,
+    pub options: SocketOptions,
     pub state: SocketState,
 }
 
@@ -167,6 +180,7 @@ impl SocketInfo {
             socktype,
             protocol,
             local_addr: LocalAddress::Ephemeral(family),
+            options: Default::default(),
             state: SocketState::Unassociated(UnassociatedSocket { reuse_port: false }),
         }
     }
@@ -329,6 +343,7 @@ impl Event for SocketCreateEvent {
                 socktype: self.socket_type,
                 protocol: self.protocol,
                 local_addr: LocalAddress::Ephemeral(self.domain),
+                options: Default::default(),
                 state: match self.socket_type {
                     SocketType::SeqPacket | SocketType::Stream => {
                         SocketState::Unassociated(UnassociatedSocket { reuse_port: false })
@@ -446,6 +461,7 @@ impl Event for SocketCreatePairEvent {
                 socktype: self.socket_type,
                 protocol: self.protocol,
                 local_addr: LocalAddress::Assigned(addr1.addr().clone()),
+                options: Default::default(),
                 state: match self.socket_type {
                     SocketType::SeqPacket | SocketType::Stream => {
                         SocketState::Connected(ConnectedSocket {
@@ -483,6 +499,7 @@ impl Event for SocketCreatePairEvent {
                 socktype: self.socket_type,
                 protocol: self.protocol,
                 local_addr: LocalAddress::Assigned(addr2.addr().clone()),
+                options: Default::default(),
                 state: match self.socket_type {
                     SocketType::SeqPacket | SocketType::Stream => {
                         SocketState::Connected(ConnectedSocket {
@@ -1235,6 +1252,7 @@ impl Event for SocketAcceptEvent {
                             socktype,
                             protocol,
                             local_addr: LocalAddress::Assigned(server_address.sockaddr.clone()),
+                            options: Default::default(),
                             state: SocketState::Connected(ConnectedSocket {
                                 rem_addr: connecting_address.clone(),
                                 backend: accepting_backend,
@@ -2034,8 +2052,13 @@ impl Event for SocketGetOptionEvent {
                 panic!("unrecognized SOL_SCTP sockopt {}", self.optname)
             }
             (OptLevel::Tcp, libc::TCP_USER_TIMEOUT) => {
-                // TODO: implement assigning (and enforcing) timeout on sockets
-                Outcome::Success(SocketOption::TcpUserTimeout(Duration::from_millis(20000)))
+                let sock_ref = socket_info.borrow();
+                if sock_ref.protocol != TransportProtocol::Tcp {
+                    log::warn!("getsockopt(SOL_TCP, TCP_USER_TIMEOUT) called on non-TCP socket");
+                    return Outcome::Error(Errno::ENOPROTOOPT)
+                }
+
+                Outcome::Success(SocketOption::TcpUserTimeout(sock_ref.options.tcp_user_timeout.unwrap_or(Duration::ZERO)))
             }
             (OptLevel::Tcp, libc::TCP_NODELAY) => {
                 // TODO: implement assigning nodelay on sockets
@@ -2158,7 +2181,21 @@ impl Event for SocketSetOptionEvent {
             // TODO: implement
             SocketOption::SctpAssocInfo(_params) => Outcome::Success(()),
             // TODO: implement
-            SocketOption::TcpUserTimeout(_duration) => Outcome::Success(()),
+            SocketOption::TcpUserTimeout(duration) => {
+                let mut sock_mut = socket_info.borrow_mut();
+                if sock_mut.protocol != TransportProtocol::Tcp {
+                    log::warn!("setsockopt(SOL_TCP, TCP_USER_TIMEOUT) called on non-TCP socket");
+                    return Outcome::Error(Errno::ENOPROTOOPT)
+                }
+
+                sock_mut.options.tcp_user_timeout = if duration == &Duration::ZERO {
+                    None
+                } else {
+                    Some(*duration)
+                };
+
+                Outcome::Success(())
+            },
             // TODO: implement
             SocketOption::TcpNoDelay(_) => Outcome::Success(()),
             // TODO: implement

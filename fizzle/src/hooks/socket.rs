@@ -1,5 +1,6 @@
 use std::mem::MaybeUninit;
-use std::{cmp, mem, slice};
+use std::time::Duration;
+use std::{array, cmp, mem, slice};
 
 use crate::errno::Errno;
 use crate::handlers::descriptor::Descriptor;
@@ -470,8 +471,6 @@ hook_macros::hook! {
     }
 }
 
-
-
 hook_macros::hook! {
     unsafe fn setsockopt(
         sockfd: libc::c_int,
@@ -504,8 +503,20 @@ hook_macros::hook! {
                 log::error!("Unrecognized socket option: SOL_IP, optname {}", optname);
                 panic!("Unrecognized socket option: SOL_IP, optname {}", optname);
             }
+            (OptLevel::Tcp, libc::TCP_USER_TIMEOUT) => {
+                if optlen < mem::size_of::<libc::c_uint>() as u32 {
+                    log::warn!("setsockopt(SOL_TCP, TCP_USER_TIMEOUT) received with insufficient buffer length");
+                    crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> -1 (EINVAL)", sockfd, opt_level, optname, optval, optlen);
+                    Errno::EINVAL.set_errno();
+                    return -1
+                }
+
+                let millis_bytes = *optval.cast::<[u8; mem::size_of::<libc::c_uint>()]>();
+                let millis = libc::c_uint::from_le_bytes(millis_bytes);
+                SocketOption::TcpUserTimeout(Duration::from_millis(millis.into()))
+            }
             // Pretend to support (but don't)
-            (OptLevel::Tcp, libc::TCP_NODELAY | libc::TCP_MAXSEG | libc::TCP_USER_TIMEOUT | libc::TCP_FASTOPEN) => {
+            (OptLevel::Tcp, libc::TCP_NODELAY | libc::TCP_MAXSEG | libc::TCP_FASTOPEN) => {
                 crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> 0", sockfd, opt_level, optname, optval, optlen);
                 return 0
             }
