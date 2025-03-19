@@ -213,9 +213,10 @@ unsafe extern "C" fn fizzle_handle_sigchld(signal: libc::c_int) {
     }
 }
 
-unsafe extern "C" fn fizzle_handle_term_signal(signal: libc::c_int) {
+unsafe extern "C" fn fizzle_handle_term_signal(signum: libc::c_int) {
     // Kill all processes in the Fizzle harness (process group is always kept the same; changes by subprocesses are emulated)
     libc::kill(0, libc::SIGTERM);
+    libc::_exit(-signum);
 }
 
 /// Utility for logging the `strace`-formatted output of each glibc call.

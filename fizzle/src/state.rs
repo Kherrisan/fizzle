@@ -199,7 +199,7 @@ impl FizzleState {
         );
 
         // Set termination handlers
-        for signum in [libc::SIGABRT, libc::SIGBUS, libc::SIGFPE, libc::SIGHUP, libc::SIGILL, libc::SIGINT, libc::SIGIO, libc::SIGPROF, libc::SIGPWR, libc::SIGQUIT, libc::SIGSEGV, libc::SIGSTOP, libc::SIGSYS, libc::SIGTERM, libc::SIGTRAP, libc::SIGXFSZ] {
+        for signum in [libc::SIGABRT, libc::SIGBUS, libc::SIGFPE, libc::SIGHUP, libc::SIGILL, libc::SIGINT, libc::SIGIO, libc::SIGPROF, libc::SIGPWR, libc::SIGQUIT, libc::SIGSEGV, libc::SIGSYS, libc::SIGTERM, libc::SIGTRAP, libc::SIGXFSZ] {
             let sa = libc::sigaction {
                 sa_sigaction: crate::fizzle_handle_term_signal as usize,
                 sa_mask: SignalSet::empty().to_sigset(),
