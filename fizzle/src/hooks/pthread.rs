@@ -129,7 +129,9 @@ hook_macros::hook! {
         crate::strace!("pthread_cleanup_push(routine={:?}, arg={:?}) -> ...", routine, arg);
 
         match Scheduler::handle_event(&mut ctx, ThreadCleanupPushEvent::new(routine, arg)) {
-            Ok(()) => crate::strace!("pthread_cleanup_push(routine={:?}, arg={:?}) -> 0", routine, arg),
+            Ok(()) => {
+                crate::strace!("pthread_cleanup_push(routine={:?}, arg={:?}) -> 0", routine, arg);
+            },
             Err(()) => unreachable!(),
         }
     }

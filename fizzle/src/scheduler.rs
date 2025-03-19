@@ -1242,7 +1242,10 @@ impl Scheduler {
             log::trace!("next iteration of event.run() loop");
             let mut state = ctx.acquire();
             let (task_opt, until) = match event.run(&mut state) {
-                Outcome::Success(s) => return Ok(s),
+                Outcome::Success(s) => {
+                    Errno::SUCCESS.set_errno();
+                    return Ok(s)
+                }
                 Outcome::Error(e) => return Err(e),
                 Outcome::RunTask(task, until) => (Some(task), until),
                 Outcome::Yield(until) => (None, until),

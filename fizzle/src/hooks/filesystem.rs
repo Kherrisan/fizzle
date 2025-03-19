@@ -956,10 +956,10 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_renameat2(ctx) {
         let rename_flags = RenameFlags::from_bits_truncate(flags);
 
+        strace!("renameat2(olddirfd={}, oldpath={:?}, newdirfd={}, newpath={:?}, flags={:?}) -> ...", olddirfd, oldpath, newdirfd, newpath, rename_flags);
+
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::renameat2(olddirfd, oldpath, newdirfd, newpath, flags) };
-
-        strace!("renameat2(olddirfd={}, oldpath={:?}, newdirfd={}, newpath={:?}, flags={:?}) -> ...", olddirfd, oldpath, newdirfd, newpath, rename_flags);
 
         let Ok(rel_oldpath) = FilePath::from_cstr(CStr::from_ptr(oldpath)) else {
             strace!("renameat2(olddirfd={}, oldpath={:?}, newdirfd={}, newpath={:?}, flags={:?}) -> -1 (EINVAL)", olddirfd, oldpath, newdirfd, newpath, rename_flags);
