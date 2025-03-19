@@ -253,8 +253,7 @@ impl ForkTask {
     pub fn execute(self, ctx: &mut FizzleSingleton) -> TaskResult {
         let pid = unsafe { libc::fork() };
 
-        if pid == 0 {
-            // Child process
+        if pid == 0 { // Child process
             // This *technically* shouldn't be needed since the child inherits a copy of
             // the parent's memory, but just to be safe...
             set_entered_handler(true);
@@ -262,7 +261,9 @@ impl ForkTask {
             // TODO: Shouldn't we need to upref all Rc<> types in LocalState here?
             // They could potentially be freed twice...
 
-            // Clean up child processes of this process if it is ever killed
+            // Clean up this process if its parent is ever killed
+            // TODO: this will create unexpected behavior if multiprocess systems
+            // call children that are meant to die without indicating process crash
             unsafe {
                 assert_eq!(
                     libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM),
