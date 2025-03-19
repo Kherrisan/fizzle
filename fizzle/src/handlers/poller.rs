@@ -693,6 +693,22 @@ impl Event for EpollCtlEvent {
                     write_status = Some(fd_to_pollout(state, target_fd));
                 }
 
+                if (ev.events & libc::EPOLLET as u32) != 0 {
+                    log::error!("unimplemented EPOLLET specified in epoll_ctl(EPOLL_CTL_ADD)");
+                }
+
+                if (ev.events & libc::EPOLLONESHOT as u32) != 0 {
+                    log::error!("unimplemented EPOLLONESHOT specified in epoll_ctl(EPOLL_CTL_ADD)");
+                }
+
+                if (ev.events & libc::EPOLLWAKEUP as u32) != 0 {
+                    log::error!("unimplemented EPOLLWAKEUP specified in epoll_ctl(EPOLL_CTL_ADD)");
+                }
+
+                if (ev.events & libc::EPOLLEXCLUSIVE as u32) != 0 {
+                    log::error!("unimplemented EPOLLEXCLUSIVE specified in epoll_ctl(EPOLL_CTL_ADD)");
+                }
+
                 let direction = match (read_status, write_status) {
                     (None, None) => EpollDirection::None,
                     (Some(status), None) => EpollDirection::Read(status),
@@ -735,6 +751,11 @@ impl Event for EpollCtlEvent {
                 let mut read_status = None;
                 let mut write_status = None;
 
+                if (ev.events & libc::EPOLLEXCLUSIVE as u32) != 0 {
+                    log::warn!("EPOLLEXCLUSIVE not allowed in epoll_ctl(EPOLL_CTL_MOD)");
+                    return Outcome::Error(Errno::EINVAL)
+                }
+
                 if (ev.events & libc::EPOLLIN as u32) != 0 {
                     read_status = Some(fd_to_pollin(state, self.target_descriptor.as_raw_fd()));
                 }
@@ -742,6 +763,19 @@ impl Event for EpollCtlEvent {
                 if (ev.events & libc::EPOLLOUT as u32) != 0 {
                     write_status = Some(fd_to_pollout(state, self.target_descriptor.as_raw_fd()));
                 }
+
+                if (ev.events & libc::EPOLLET as u32) != 0 {
+                    log::error!("unimplemented EPOLLET specified in epoll_ctl(EPOLL_CTL_MOD)");
+                }
+
+                if (ev.events & libc::EPOLLONESHOT as u32) != 0 {
+                    log::error!("unimplemented EPOLLONESHOT specified in epoll_ctl(EPOLL_CTL_MOD)");
+                }
+
+                if (ev.events & libc::EPOLLWAKEUP as u32) != 0 {
+                    log::error!("unimplemented EPOLLWAKEUP specified in epoll_ctl(EPOLL_CTL_MOD)");
+                }
+
 
                 let direction = match (read_status, write_status) {
                     (None, None) => EpollDirection::None,
