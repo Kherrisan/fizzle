@@ -1,5 +1,6 @@
 use std::alloc::{Allocator, Global};
 use std::cell::UnsafeCell;
+use std::cmp;
 use std::marker::PhantomPinned;
 use std::mem::MaybeUninit;
 use std::rc::Rc;
@@ -134,6 +135,17 @@ impl Semaphore {
         if res != 0 {
             panic!("semaphore internal error during post()");
         }
+    }
+
+    /// Increments the semaphore by one.
+    pub fn get_value(&self) -> u32 {
+        let mut value = 0i32;
+        let res = unsafe { libc::sem_getvalue(raw(self), &raw mut value) };
+        if res != 0 {
+            panic!("semaphore internal error during get_value()");
+        }
+
+        cmp::max(0, value) as u32
     }
 }
 
