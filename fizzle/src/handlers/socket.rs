@@ -1528,7 +1528,7 @@ impl SocketOption {
             }
             Self::TcpUserTimeout(d) => {
                 let millis: libc::c_uint = d.as_millis().try_into().unwrap();
-                let millis_bytes = millis.to_be_bytes();
+                let millis_bytes = millis.to_ne_bytes();
 
                 for (dst, src) in out.iter_mut().zip(millis_bytes) {
                     dst.write(src);
@@ -1555,7 +1555,7 @@ impl SocketOption {
                     false => 0,
                 };
 
-                let flag_bytes = flag.to_be_bytes();
+                let flag_bytes = flag.to_ne_bytes();
 
                 for (dst, src) in out.iter_mut().zip(flag_bytes) {
                     dst.write(src);
@@ -1570,7 +1570,7 @@ impl SocketOption {
             | Self::SocketSendLowWatermark(u)
             | Self::SocketRecvLowWatermark(u)
             | Self::SctpMaxSegment(u) => {
-                let u_bytes = u.to_be_bytes();
+                let u_bytes = u.to_ne_bytes();
 
                 for (dst, src) in out.iter_mut().zip(u_bytes) {
                     dst.write(src);
@@ -1579,7 +1579,7 @@ impl SocketOption {
                 mem::size_of_val(&u)
             }
             Self::SocketDomain(f) => {
-                let domain_bytes = f.raw().to_be_bytes();
+                let domain_bytes = f.raw().to_ne_bytes();
 
                 for (dst, src) in out.iter_mut().zip(domain_bytes) {
                     dst.write(src);
@@ -1594,7 +1594,7 @@ impl SocketOption {
                     SocketType::SeqPacket => libc::SOCK_SEQPACKET,
                     SocketType::Raw => libc::SOCK_RAW,
                 }
-                .to_be_bytes();
+                .to_ne_bytes();
 
                 for (dst, src) in out.iter_mut().zip(type_bytes) {
                     dst.write(src);
@@ -1603,7 +1603,7 @@ impl SocketOption {
                 mem::size_of::<libc::c_int>()
             }
             Self::SocketError(error) => {
-                let error_bytes = error.to_be_bytes();
+                let error_bytes = error.to_ne_bytes();
 
                 for (dst, src) in out.iter_mut().zip(error_bytes) {
                     dst.write(src);
@@ -1644,7 +1644,7 @@ impl SocketOption {
                     TransportProtocol::Unix => 0,
                 };
 
-                let p_bytes = p_int.to_be_bytes();
+                let p_bytes = p_int.to_ne_bytes();
 
                 for (dst, src) in out.iter_mut().zip(p_bytes) {
                     dst.write(src);

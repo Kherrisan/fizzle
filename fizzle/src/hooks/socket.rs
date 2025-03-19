@@ -512,7 +512,7 @@ hook_macros::hook! {
                 }
 
                 let millis_bytes = *optval.cast::<[u8; mem::size_of::<libc::c_uint>()]>();
-                let millis = libc::c_uint::from_le_bytes(millis_bytes);
+                let millis = libc::c_uint::from_ne_bytes(millis_bytes);
                 SocketOption::TcpUserTimeout(Duration::from_millis(millis.into()))
             }
             // Pretend to support (but don't)
