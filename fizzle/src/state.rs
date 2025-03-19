@@ -169,8 +169,22 @@ pub struct FizzleState {
 impl FizzleState {
     /// Allocates and initizes all of Fizzle's state.
     pub fn new() -> Self {
+        // NOTE: must go before `allocate_global_memory`, as this env variable gets set within it.
+        let is_first_process = matches!(env::var(FIZZLE_MEMORY_ENV), Err(_));
+        if is_first_process {
+            // Set the process group ID of the main Fizzle process to itself.
+            // This enables us to kill all processes in Fizzle when we detect a crash without
+            // accidentally killing whatever process called Fizzle.
+            assert_eq! {
+                unsafe {
+                    libc::setpgid(libc::getpid(), libc::getpid())
+                },
+                0
+            }
+        }
+
         // Set signal mask to be inherited by all threads/processes of Fizzle
-        let new_set = (SignalSet::SIGPIPE | SignalSet::SIGCHLD).to_sigset();
+        let new_set = SignalSet::SIGPIPE.to_sigset();
         let mut old_set = SignalSet::empty().to_sigset();
         assert_eq!(
             // Safety: `new_set` and `old_set` pointers are valid
@@ -184,12 +198,49 @@ impl FizzleState {
             0
         );
 
+        // Set termination handlers
+        for signum in [libc::SIGABRT, libc::SIGBUS, libc::SIGFPE, libc::SIGHUP, libc::SIGILL, libc::SIGINT, libc::SIGIO, libc::SIGPROF, libc::SIGPWR, libc::SIGQUIT, libc::SIGSEGV, libc::SIGSTOP, libc::SIGSYS, libc::SIGTERM, libc::SIGTRAP, libc::SIGXFSZ] {
+            let sa = libc::sigaction {
+                sa_sigaction: crate::fizzle_handle_term_signal as usize,
+                sa_mask: SignalSet::empty().to_sigset(),
+                sa_flags: 0,
+                sa_restorer: None,
+            };
+
+            assert_eq!(
+                unsafe {
+                    libc::sigaction(
+                        signum,
+                        &sa,
+                        ptr::null_mut(),
+                    )
+                },
+                0
+            );
+        }
+
+        // Set SIGCHLD hanlder
+        let sa = libc::sigaction {
+            sa_sigaction: crate::fizzle_handle_sigchld as usize,
+            sa_mask: SignalSet::empty().to_sigset(),
+            sa_flags: 0,
+            sa_restorer: None,
+        };
+
+        assert_eq!(
+            unsafe {
+                libc::sigaction(
+                    libc::SIGCHLD,
+                    &sa,
+                    ptr::null_mut(),
+                )
+            },
+            0
+        );
+
         // fizzle_alloc() must be initialized before global memory is, otherwise it could
         // point to invalid memory
         fizzle_alloc();
-
-        // NOTE: must go before `allocate_global_memory`, as this env variable gets set within it.
-        let is_first_process = matches!(env::var(FIZZLE_MEMORY_ENV), Err(_));
 
         // Allocate shared memory for process-shared state
         let global_uninit = Self::allocate_global_memory();

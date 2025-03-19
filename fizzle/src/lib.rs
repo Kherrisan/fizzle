@@ -20,9 +20,10 @@ mod state;
 mod streams;
 mod task;
 
+pub(crate) use hook_macros::hook;
+
 use critical_section::RawRestoreState;
 use embedded_alloc::TlsfHeap;
-pub(crate) use hook_macros::hook;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, LinkedList};
@@ -201,6 +202,20 @@ fn destroy_descriptor(fd: RawFd) {
     unsafe {
         libc::close(fd);
     }
+}
+
+unsafe extern "C" fn fizzle_handle_sigchld(signal: libc::c_int) {
+    loop {
+        // Avoids zombie process buildup during persistent-mode fuzzing
+        if libc::waitpid(-1, ptr::null_mut(), libc::WNOHANG) < 0 {
+            return
+        }
+    }
+}
+
+unsafe extern "C" fn fizzle_handle_term_signal(signal: libc::c_int) {
+    // Kill all processes in the Fizzle harness (process group is always kept the same; changes by subprocesses are emulated)
+    libc::kill(0, libc::SIGTERM);
 }
 
 /// Utility for logging the `strace`-formatted output of each glibc call.

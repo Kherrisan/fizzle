@@ -32,3 +32,18 @@ within a specific process's space, the Scheduler ensures that this will happen.
 
 The Handler layer handles the business logic associated with each hook function. These routines are
 always executed in a single-threaded manner.
+
+
+
+### Handling process termination
+
+Unexpected: one of `SIGBUS`, `SIGFPE`, `SIGILL`, `SIGSEGV`, `SIGSYS`, `SIGTRAP`, `SIGXCPU`, or `SIGXFSZ` is raised
+- If signal handler receives one of these, send `SIGTERM` to parent and all children
+
+Expected: one of `SIGINT`, `SIGTERM` or `SIGQUIT` is raised
+- If signal handler receives one of these, send `SIGTERM` to parent and all children
+
+Other: `SIGCHLD`
+- If signal 
+
+root process doesn't send signals to parent
