@@ -1,5 +1,7 @@
 // Environment variables
 
+use std::time::Duration;
+
 pub const FIZZLE_ALLOC_OFFSET_ENV: &str = "FIZZLE_ALLOC_OFFSET";
 pub const FIZZLE_ALLOC_ENV: &str = "FIZZLE_ALLOC";
 /// Indicates the shared memory key that child processes should access
@@ -9,6 +11,12 @@ pub const FIZZLE_MEMORY_OFFSET_ENV: &str = "FIZZLE_MEMORY_OFFSET";
 ///
 /// Setting this may slightly speed up the execution rate of a program due to deferred forkserver initialization.
 pub const FIZZLE_SINGLEPROCESS_ENV: &str = "FIZZLE_SINGLEPROCESS";
+
+pub const FIZZLE_TICK_ENV: &str = "FIZZLE_TICK";
+pub const FIZZLE_TIMEOUT_ENV: &str = "FIZZLE_TIMEOUT";
+
+pub const FIZZLE_DEFAULT_TICK: Duration = Duration::from_micros(10);
+pub const FIZZLE_DEFAULT_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub const FIZZLE_HEAP_SIZE: usize = 30 * 1024 * 1024; // 30 MB by default
 

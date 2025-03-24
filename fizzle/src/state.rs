@@ -360,6 +360,14 @@ impl FizzleState {
             let sigmask = inherited_state.sigmask;
             local.initialize_thread(Tid::from_raw(pid.as_raw()), Some(sigmask));
         } else {
+            if let Ok(tick_str) = env::var(FIZZLE_TICK_ENV) {
+                global.tick = Duration::from_micros(tick_str.parse().unwrap());
+            }
+
+            if let Ok(timeout_str) = env::var(FIZZLE_TIMEOUT_ENV) {
+                global.timeout = Duration::from_micros(timeout_str.parse().unwrap());
+            }
+
             let pid = local.process_info.borrow().pid;
             let pgid = local.process_info.borrow().pgid;
             let tid = Tid::from_raw(pid.as_raw());
@@ -1229,6 +1237,8 @@ pub struct InterprocessState {
     pub per_round_endpoints: GlobalVec<GlobalRc<SocketInfo>>,
     pub prefuzz_rng: rand::rngs::SmallRng,
     pub current_time: Duration,
+    pub tick: Duration,
+    pub timeout: Duration,
     pub time_fuzz_idx: usize,
     pub uid: libc::uid_t,
     pub gid: libc::gid_t,
@@ -1343,6 +1353,9 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).plugins) = Vec::new_in(fizzle_alloc());
 
             *ptr::addr_of_mut!((*state).tasks) = LinkedList::new_in(fizzle_alloc());
+
+            *ptr::addr_of_mut!((*state).tick) = FIZZLE_DEFAULT_TICK;
+            *ptr::addr_of_mut!((*state).timeout) = FIZZLE_DEFAULT_TIMEOUT;
 
             *ptr::addr_of_mut!((*state).next_pid) = Pid::PRIMARY.next();
             &mut (*state)

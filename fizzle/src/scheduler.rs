@@ -1392,7 +1392,7 @@ impl Scheduler {
         while let Some(ScheduledItem { info, timestamp }) = state.global.ready.pop() {
             log::trace!("next ReadyInfo popped off queue");
 
-            if timestamp > state.global.current_time + Duration::from_secs(2) {
+            if timestamp > state.global.current_time + state.global.timeout {
                 log::info!(
                     "next available worker would suspend execution by {} seconds--moving on",
                     (timestamp - state.global.current_time).as_secs()
@@ -1468,18 +1468,21 @@ impl Scheduler {
 
     fn increment_time(ctx: &mut FizzleSingleton) {
         let mut state = ctx.acquire();
+        let tick = state.global.tick;
+        state.global.current_time += tick;
 
+        // TODO: allow fuzzing of tick amount
+        /*
         let idx = state.global.time_fuzz_idx;
-        let increment = if state.global.fuzz_input.is_empty() {
-            20
+        let divisor = if state.global.fuzz_input.is_empty() {
+            1
         } else {
-            // Randomly between 0 and 3100 microsecond offset
+            // Randomly between 1 and 32 microsecond offset
             let offset = ((state.global.fuzz_input[idx] ^ 0x7f) / 8) as u64;
             state.global.time_fuzz_idx = (idx + 1) % state.global.fuzz_input.len();
             offset
         };
-
-        state.global.current_time += Duration::from_micros(increment * 100);
+        */
     }
 
     // TODO: shouldn't this go in `LocalState`??
