@@ -19,7 +19,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_fanotify_init(_ctx) {
         crate::strace!("fanotify_init(flags={}, event_f_flags={}) -> ...", flags, event_f_flags);
 
-        log::error!("`fanotify_init()` unimplemented");
+        log::warn!("`fanotify_init()` unimplemented");
         let res = unsafe { libc::fanotify_init(flags, event_f_flags) };
 
         if res < 0 {
@@ -63,7 +63,7 @@ hook_macros::hook! {
         }
         */
 
-        log::error!("`fdopen()` unimplemented");
+        log::warn!("`fdopen()` unimplemented");
         let res = unsafe { libc::fdopen(fd, mode) };
 
         if res.is_null() {
@@ -88,7 +88,7 @@ hook_macros::hook! {
         let mode_cstr = unsafe { CStr::from_ptr(mode) };
         crate::strace!("fopen(pathname={:?}, mode={:?}) -> ...", path_cstr, mode_cstr);
 
-        log::error!("`fopen()` unimplemented");
+        log::warn!("`fopen()` unimplemented");
         let res = unsafe { libc::fopen(pathname, mode) };
 
         if res.is_null() {
@@ -158,7 +158,7 @@ hook_macros::hook! {
         let mode_cstr = unsafe { CStr::from_ptr(mode) };
         crate::strace!("fopen64(pathname={:?}, mode={:?}) -> ...", path_cstr, mode_cstr);
 
-        log::error!("`fopen64()` unimplemented");
+        log::warn!("`fopen64()` unimplemented");
         let res = unsafe { libc::fopen64(pathname, mode) };
 
         if res.is_null() {
@@ -296,7 +296,7 @@ hook_macros::hook! {
         let mode_cstr = unsafe { CStr::from_ptr(mode) };
         crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> ...", path_cstr, mode_cstr, stream);
 
-        log::error!("`freopen()` unimplemented");
+        log::warn!("`freopen()` unimplemented");
         let res = unsafe { libc::freopen(pathname, mode, stream) };
 
         if res.is_null() {
@@ -384,7 +384,7 @@ hook_macros::hook! {
         let mode_cstr = unsafe { CStr::from_ptr(mode) };
         crate::strace!("freopen64(pathname={:?}, mode={:?}, stream={:?}) -> ...", path_cstr, mode_cstr, stream);
 
-        log::error!("`freopen64()` unimplemented");
+        log::warn!("`freopen64()` unimplemented");
         let res = unsafe { libc::freopen64(pathname, mode, stream) };
 
         if res.is_null() {
@@ -569,7 +569,7 @@ hook_macros::hook! {
             return -1
         };
 
-        log::error!("`fclose()` unimplemented");
+        log::warn!("`fclose()` unimplemented");
         let res = unsafe { libc::fclose(stream) };
 
         if res < 0 {
