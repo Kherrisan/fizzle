@@ -7,6 +7,7 @@ pub mod eventfd;
 pub mod fd;
 pub mod filestream;
 pub mod filesystem;
+pub mod inotify;
 pub mod io;
 pub mod io_uring;
 pub mod mem;

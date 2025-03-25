@@ -12,48 +12,6 @@ use crate::handlers::filestream::*;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
 
-
-
-hook_macros::hook! {
-    unsafe fn inotify_init() -> libc::c_int => fizzle_inotify_init(_ctx) {
-        crate::strace!("inotify_init() -> ...");
-
-        log::error!("`inotify_init()` unimplemented");
-        let res = unsafe { libc::inotify_init() };
-
-        if res < 0 {
-            let e = Errno::get_errno();
-            crate::strace!("inotify_init() -> -1 ({})", e);
-            e.set_errno();
-        } else {
-            crate::strace!("inotify_init() -> {}", res);
-        }
-
-        res
-    }
-}
-
-hook_macros::hook! {
-    unsafe fn inotify_init1(
-        flags: libc::c_int
-    ) -> libc::c_int => fizzle_inotify_init1(_ctx) {
-        crate::strace!("inotify_init1(flags={}) -> ...", flags);
-
-        log::error!("`inotify_init1()` unimplemented");
-        let res = unsafe { libc::inotify_init1(flags) };
-
-        if res < 0 {
-            let e = Errno::get_errno();
-            crate::strace!("inotify_init1(flags={}) -> -1 ({})", flags, e);
-            e.set_errno();
-        } else {
-            crate::strace!("inotify_init(flags={}) -> {}", flags, res);
-        }
-
-        res
-    }
-}
-
 hook_macros::hook! {
     unsafe fn fanotify_init(
         flags: libc::c_uint,

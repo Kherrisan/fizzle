@@ -6,6 +6,8 @@ use std::os::fd::RawFd;
 use std::ptr::NonNull;
 use std::{cmp, mem};
 
+use bitflags::bitflags;
+
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome, YieldUntil};
 use crate::state::FizzleState;

@@ -9,6 +9,7 @@ use super::epoll::*;
 use super::eventfd::*;
 use super::file::*;
 use super::fuzz_endpoint::FuzzEndpointInfo;
+use super::inotify::InotifyInfo;
 use super::mq::*;
 use super::pipe::*;
 use super::poller::PollerInfo;
@@ -57,6 +58,7 @@ pub enum FdResource {
     EventFd(GlobalRc<EventfdInfo>),
     /// Files that are accessed via the virtual filesystem.
     File(GlobalRc<OpenFileInfo>),
+    Inotify(GlobalRc<InotifyInfo>),
     /// Cross-process message queues.
     #[allow(unused)]
     MessageQueue(GlobalRc<MqId>),
@@ -589,6 +591,7 @@ impl Event for DescriptorReadEvent<'_> {
                             self.data.take().unwrap(),
                         ));
                     }
+                    FdResource::Inotify(_) => unimplemented!(),
                     FdResource::Opaque => unreachable!(),
                 }
                 Outcome::Yield(YieldUntil::Immediate)
@@ -1008,6 +1011,7 @@ impl Event for DescriptorWriteEvent<'_> {
                             self.data.take().unwrap(),
                         ));
                     }
+                    FdResource::Inotify(_) => unimplemented!("inotify write()"),
                     FdResource::Opaque => unreachable!(),
                 }
                 Outcome::Yield(YieldUntil::Immediate)

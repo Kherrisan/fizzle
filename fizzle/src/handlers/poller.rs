@@ -1167,6 +1167,9 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                 }
             },
         },
+        FdResource::Inotify(inotify) => {
+            PolledStatus::Pollable(inotify.borrow().polled.clone())
+        }
         FdResource::Opaque => unimplemented!(),
     }
 }
@@ -1255,6 +1258,7 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
             },
             // SocketState::Error => PolledStatus::ImmediatelyPollable,
         },
+        FdResource::Inotify(_) => PolledStatus::NotPollable,
         FdResource::Opaque => unimplemented!(),
     }
 }

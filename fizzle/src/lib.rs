@@ -31,7 +31,7 @@ use std::ffi::VaList;
 use std::os::fd::RawFd;
 use std::ptr;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Duration;
 
 pub type GlobalRc<T> = Rc<RefCell<T>, GlobalHeap>;
@@ -106,6 +106,8 @@ unsafe extern "C" {
 
     static mut stderr: *mut libc::FILE;
 }
+
+static NEXT_WATCH_DESCRIPTOR: AtomicI32 = AtomicI32::new(0);
 
 // # SAFETY
 //
@@ -202,6 +204,10 @@ fn destroy_descriptor(fd: RawFd) {
     unsafe {
         libc::close(fd);
     }
+}
+
+fn create_inotify_watch() -> libc::c_int {
+    NEXT_WATCH_DESCRIPTOR.fetch_add(1, Ordering::Relaxed)
 }
 
 unsafe extern "C" fn fizzle_handle_sigchld(signal: libc::c_int) {

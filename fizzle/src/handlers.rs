@@ -10,6 +10,7 @@ pub mod filestream;
 pub mod futex;
 pub mod fuzz_endpoint;
 pub mod id;
+pub mod inotify;
 pub mod mq;
 pub mod mutex;
 pub mod pipe;
