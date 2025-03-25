@@ -1170,7 +1170,10 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
         FdResource::Inotify(inotify) => {
             PolledStatus::Pollable(inotify.borrow().polled.clone())
         }
-        FdResource::Opaque => unimplemented!(),
+        FdResource::Opaque => {
+            log::error!("POLLIN for opaque socket unimplemented");
+            PolledStatus::NotPollable
+        },
     }
 }
 
