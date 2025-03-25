@@ -225,7 +225,7 @@ impl Event for PipeReadEvent<'_> {
                 let write_polled = self.pipe_info.borrow().write_polled.clone();
                 let read_polled = self.pipe_info.borrow().read_polled.clone();
 
-                if buf.borrow().is_empty() {
+                if buf_mut.is_empty() {
                     assert!(peer_is_closed);
                     // TODO: sigpipe to self?
                     return Outcome::Success(0);
@@ -263,7 +263,7 @@ impl Event for PipeReadEvent<'_> {
                     }
                 };
 
-                if buf.borrow().is_empty() {
+                if buf_mut.is_empty() {
                     state.lower_polled(&read_polled);
                 }
                 state.raise_polled(&write_polled);
