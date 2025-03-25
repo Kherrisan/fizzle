@@ -402,6 +402,29 @@ impl Event for SocketCreateEvent {
     }
 }
 
+pub struct NetlinkCreateEvent {
+    pub fd: libc::c_int,
+}
+
+impl Event for NetlinkCreateEvent {
+    type Success = ();
+    type Error = ();
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        state.local.fds.insert(
+            Descriptor::from_raw_fd(self.fd),
+            DescriptorInfo {
+                close_on_exec: false,
+                nonblocking: false,
+                is_passthrough: true,
+                resource: FdResource::Opaque,
+            },
+        );
+
+        Outcome::Success(())
+    }
+}
+
 pub struct SocketCreatePairEvent {
     pub domain: AddressFamily,
     pub socket_type: SocketType,
@@ -601,16 +624,16 @@ impl Event for SocketCreatePairEvent {
     }
 }
 
-pub struct SocketBindEvent {
+pub struct SocketBindEvent<'a> {
     descriptor_id: Descriptor,
-    sockaddr: SockAddr,
+    addr_bytes: &'a [u8],
 }
 
-impl SocketBindEvent {
-    pub fn new(descriptor_id: Descriptor, sockaddr: SockAddr) -> Self {
+impl<'a> SocketBindEvent<'a> {
+    pub fn new(descriptor_id: Descriptor, addr_bytes: &'a [u8]) -> Self {
         Self {
             descriptor_id,
-            sockaddr,
+            addr_bytes,
         }
     }
 
@@ -626,7 +649,7 @@ impl SocketBindEvent {
     }
 }
 
-impl Event for SocketBindEvent {
+impl Event for SocketBindEvent<'_> {
     type Success = ();
     type Error = Errno;
 
@@ -635,11 +658,27 @@ impl Event for SocketBindEvent {
             return Outcome::Error(Errno::EBADF);
         };
 
+        if fd_info.is_passthrough {
+            let ret = unsafe {
+                libc::bind(self.descriptor_id.as_raw_fd(), self.addr_bytes.as_ptr().cast::<libc::sockaddr>(), self.addr_bytes.len() as u32)
+            };
+
+            return if ret < 0 {
+                Outcome::Error(Errno::get_errno())
+            } else {
+                Outcome::Success(())
+            }
+        }
+
         let FdResource::Socket(socket_info) = fd_info.resource.clone() else {
             return Outcome::Error(Errno::ENOTSOCK);
         };
 
-        let mut sockaddr = self.sockaddr.clone();
+        let Ok(mut sockaddr) = SockAddr::decode(self.addr_bytes) else {
+            return Outcome::Error(Errno::EINVAL)
+        };
+
+        log::debug!("binding socket {} to address {}...", self.descriptor_id.as_raw_fd(), sockaddr);
 
         // If port is 0, bind to an ephemerally-chosen port
         match &mut sockaddr {
@@ -1322,18 +1361,19 @@ impl Event for SocketAcceptEvent {
     }
 }
 
-pub struct SocketGetNameEvent {
+pub struct SocketGetNameEvent<'a> {
     descriptor_id: Descriptor,
+    addr_bytes: &'a mut [MaybeUninit<u8>],
 }
 
-impl SocketGetNameEvent {
-    pub fn new(descriptor_id: Descriptor) -> Self {
-        Self { descriptor_id }
+impl<'a> SocketGetNameEvent<'a> {
+    pub fn new(descriptor_id: Descriptor, addr_bytes: &'a mut [MaybeUninit<u8>]) -> Self {
+        Self { descriptor_id, addr_bytes }
     }
 }
 
-impl Event for SocketGetNameEvent {
-    type Success = Result<SockAddr, AddressFamily>;
+impl Event for SocketGetNameEvent<'_> {
+    type Success = usize;
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
@@ -1341,14 +1381,37 @@ impl Event for SocketGetNameEvent {
             return Outcome::Error(Errno::EBADF);
         };
 
+        if fd_info.is_passthrough {
+            let mut addrlen = self.addr_bytes.len() as u32;
+            let ret = unsafe {
+                libc::getsockname(self.descriptor_id.as_raw_fd(), self.addr_bytes.as_mut_ptr().cast::<libc::sockaddr>(), &raw mut addrlen)
+            };
+
+            return if ret < 0 {
+                Outcome::Error(Errno::get_errno())
+            } else {
+                Outcome::Success(addrlen as usize)
+            }
+        }
+
         let FdResource::Socket(socket_info) = &fd_info.resource else {
             return Outcome::Error(Errno::ENOTSOCK);
         };
 
-        Outcome::Success(match &socket_info.borrow().local_addr {
-            LocalAddress::Ephemeral(address_family) => Err(address_family.clone()),
-            LocalAddress::Assigned(sock_addr) => Ok(sock_addr.clone()),
-        })
+        match &socket_info.borrow().local_addr {
+            LocalAddress::Ephemeral(address_family) => {
+                self.addr_bytes.fill(MaybeUninit::new(0));
+                let family_bytes = address_family.raw().to_be_bytes().map(|i| MaybeUninit::new(i));
+
+                let family_bytelen = cmp::min(family_bytes.len(), family_bytes.len());
+                self.addr_bytes[..family_bytelen].copy_from_slice(&family_bytes);
+                Outcome::Success(family_bytelen)
+            },
+            LocalAddress::Assigned(sock_addr) => {
+                let addrlen = sock_addr.encode(self.addr_bytes);
+                Outcome::Success(addrlen)
+            }
+        }
     }
 }
 
@@ -3076,7 +3139,7 @@ impl Event for SocketWriteEvent<'_> {
 
                         Outcome::Success(s.len())
                     }
-                    WriteData::BasicVec(v) => {
+                    WriteData::Iovec(v) => {
                         let full_len = v.iter().map(|s| s.len()).sum::<usize>();
                         let Some(peer) = conn.dst_socket(state) else {
                             log::warn!("no destination for connectionless socket information to be received--dropping sent packet");
@@ -3264,7 +3327,7 @@ impl Event for SocketWriteEvent<'_> {
 
                         Outcome::Success(s.len())
                     }
-                    WriteData::BasicVec(v) => {
+                    WriteData::Iovec(v) => {
                         let mut data = Vec::new_in(fizzle_alloc());
                         for s in v.iter() {
                             data.extend_from_slice(s);

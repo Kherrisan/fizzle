@@ -1167,6 +1167,7 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                 }
             },
         },
+        FdResource::Opaque => unimplemented!(),
     }
 }
 
@@ -1254,5 +1255,6 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
             },
             // SocketState::Error => PolledStatus::ImmediatelyPollable,
         },
+        FdResource::Opaque => unimplemented!(),
     }
 }

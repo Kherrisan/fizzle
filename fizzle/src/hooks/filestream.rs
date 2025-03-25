@@ -1,6 +1,5 @@
 use core::slice;
 use std::ffi::CStr;
-use std::ffi::VaList;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::ptr;
@@ -11,34 +10,69 @@ use crate::errno::Errno;
 use crate::handlers::file::*;
 use crate::handlers::filestream::*;
 use crate::hook_macros;
-use crate::scheduler::fizzle_singleton;
 use crate::scheduler::Scheduler;
 
-/*
+
 
 hook_macros::hook! {
-    unsafe fn inotify_init() => fizzle_inotify_init(_ctx) {
-        log::error!("`inotify_init()` not implemented by Fizzle");
-        unimplemented!("inotify_init()")
+    unsafe fn inotify_init() -> libc::c_int => fizzle_inotify_init(_ctx) {
+        crate::strace!("inotify_init() -> ...");
+
+        log::error!("`inotify_init()` unimplemented");
+        let res = unsafe { libc::inotify_init() };
+
+        if res < 0 {
+            let e = Errno::get_errno();
+            crate::strace!("inotify_init() -> -1 ({})", e);
+            e.set_errno();
+        } else {
+            crate::strace!("inotify_init() -> {}", res);
+        }
+
+        res
     }
 }
 
 hook_macros::hook! {
     unsafe fn inotify_init1(
-        _flags: libc::c_int
-    ) => fizzle_inotify_init1(_ctx) {
-        log::error!("`inotify_init1()` not implemented by Fizzle");
-        unimplemented!("inotify_init1()")
+        flags: libc::c_int
+    ) -> libc::c_int => fizzle_inotify_init1(_ctx) {
+        crate::strace!("inotify_init1(flags={}) -> ...", flags);
+
+        log::error!("`inotify_init1()` unimplemented");
+        let res = unsafe { libc::inotify_init1(flags) };
+
+        if res < 0 {
+            let e = Errno::get_errno();
+            crate::strace!("inotify_init1(flags={}) -> -1 ({})", flags, e);
+            e.set_errno();
+        } else {
+            crate::strace!("inotify_init(flags={}) -> {}", flags, res);
+        }
+
+        res
     }
 }
 
 hook_macros::hook! {
     unsafe fn fanotify_init(
-        _flags: libc::c_uint,
-        _event_f_flags: libc::c_uint
-    ) => fizzle_fanotify_init(_ctx) {
-        log::error!("`fanotify_init()` not implemented by Fizzle");
-        unimplemented!("fanotify_init()")
+        flags: libc::c_uint,
+        event_f_flags: libc::c_uint
+    ) -> libc::c_int => fizzle_fanotify_init(_ctx) {
+        crate::strace!("fanotify_init(flags={}, event_f_flags={}) -> ...", flags, event_f_flags);
+
+        log::error!("`fanotify_init()` unimplemented");
+        let res = unsafe { libc::fanotify_init(flags, event_f_flags) };
+
+        if res < 0 {
+            let e = Errno::get_errno();
+            crate::strace!("fanotify_init(flags={}, event_f_flags={}) -> -1 ({})", flags, event_f_flags, e);
+            e.set_errno();
+        } else {
+            crate::strace!("fanotify_init(flags={}, event_f_flags={}) -> {}", flags, event_f_flags, res);
+        }
+
+        res
     }
 }
 
@@ -46,12 +80,12 @@ hook_macros::hook! {
     unsafe fn fdopen(
         fd: libc::c_int,
         mode: *const libc::c_char
-    ) -> *mut libc::FILE => fizzle_fdopen(ctx) {
+    ) -> *mut libc::FILE => fizzle_fdopen(_ctx) {
         // SAFETY: caller guarantees `mode` points to a null-terminated string
-        let mode_cstr = unsafe { CStr::from_ptr(mode) };
-
+        let mode_cstr = CStr::from_ptr(mode);
         crate::strace!("fdopen(fd={}, mode={:?}) -> ...", fd, mode_cstr);
 
+        /*
         let source = FileStreamSource::Descriptor(fd);
         let Some(stream_mode) = FileStreamMode::from_cstr(mode_cstr) else {
             Errno::EINVAL.set_errno();
@@ -69,6 +103,20 @@ hook_macros::hook! {
                 ptr::null_mut()
             }
         }
+        */
+
+        log::error!("`fdopen()` unimplemented");
+        let res = unsafe { libc::fdopen(fd, mode) };
+
+        if res.is_null() {
+            let e = Errno::get_errno();
+            crate::strace!("fdopen(fd={}, mode={:?}) -> NULL ({})", fd, mode_cstr, e);
+            e.set_errno();
+        } else {
+            crate::strace!("fdopen(fd={}, mode={:?}) -> {:?}", fd, mode_cstr, res);
+        }
+
+        res
     }
 }
 
@@ -76,13 +124,27 @@ hook_macros::hook! {
     unsafe fn fopen(
         pathname: *const libc::c_char,
         mode: *const libc::c_char
-    ) -> *mut libc::FILE => fizzle_fopen(ctx) {
+    ) -> *mut libc::FILE => fizzle_fopen(_ctx) {
         // SAFETY: caller guarantees `pathaname` and `mode` point to a null-terminated string
         let path_cstr = unsafe { CStr::from_ptr(pathname) };
         let mode_cstr = unsafe { CStr::from_ptr(mode) };
-
         crate::strace!("fopen(pathname={:?}, mode={:?}) -> ...", path_cstr, mode_cstr);
 
+        log::error!("`fopen()` unimplemented");
+        let res = unsafe { libc::fopen(pathname, mode) };
+
+        if res.is_null() {
+            let e = Errno::get_errno();
+            crate::strace!("fopen(pathname={:?}, mode={:?}) -> NULL ({})", path_cstr, mode_cstr, e);
+            e.set_errno();
+        } else {
+            crate::strace!("fopen(pathname={:?}, mode={:?}) -> {:?}", path_cstr, mode_cstr, res);
+        }
+
+        res
+
+
+        /*
         let Ok(path) = FilePath::from_cstr(path_cstr) else {
             crate::strace!("fopen(pathname={:?}, mode={:?}) -> NULL (EINVAL)", path_cstr, mode_cstr);
             Errno::EINVAL.set_errno();
@@ -124,6 +186,7 @@ hook_macros::hook! {
                 ptr::null_mut()
             }
         }
+        */
     }
 }
 
@@ -131,13 +194,26 @@ hook_macros::hook! {
     unsafe fn fopen64(
         pathname: *const libc::c_char,
         mode: *const libc::c_char
-    ) -> *mut libc::FILE => fizzle_fopen64(ctx) {
+    ) -> *mut libc::FILE => fizzle_fopen64(_ctx) {
         // SAFETY: caller guarantees `pathaname` and `mode` point to a null-terminated string
         let path_cstr = unsafe { CStr::from_ptr(pathname) };
         let mode_cstr = unsafe { CStr::from_ptr(mode) };
-
         crate::strace!("fopen64(pathname={:?}, mode={:?}) -> ...", path_cstr, mode_cstr);
 
+        log::error!("`fopen64()` unimplemented");
+        let res = unsafe { libc::fopen64(pathname, mode) };
+
+        if res.is_null() {
+            let e = Errno::get_errno();
+            crate::strace!("fopen64(pathname={:?}, mode={:?}) -> NULL ({})", path_cstr, mode_cstr, e);
+            e.set_errno();
+        } else {
+            crate::strace!("fopen64(pathname={:?}, mode={:?}) -> {:?}", path_cstr, mode_cstr, res);
+        }
+
+        res
+
+        /*
         let Ok(path) = FilePath::from_cstr(path_cstr) else {
             crate::strace!("fopen64(pathname={:?}, mode={:?}) -> NULL (EINVAL)", path_cstr, mode_cstr);
             Errno::EINVAL.set_errno();
@@ -179,6 +255,7 @@ hook_macros::hook! {
                 ptr::null_mut()
             }
         }
+        */
     }
 }
 
@@ -186,11 +263,23 @@ hook_macros::hook! {
     unsafe fn _IO_fopen(
         pathname: *const libc::c_char,
         mode: *const libc::c_char
-    ) -> *mut libc::FILE => fizzle__IO_fopen(ctx) {
+    ) -> *mut libc::FILE => fizzle_io_fopen(_ctx) {
+        let path_cstr = unsafe { CStr::from_ptr(pathname) };
+        let mode_cstr = unsafe { CStr::from_ptr(mode) };
+        crate::strace!("_IO_fopen(pathname={:?}, mode={:?}) -> ...", path_cstr, mode_cstr);
+        unimplemented!("_IO_fopen")
+    }
+}
+
+/*
+hook_macros::hook! {
+    unsafe fn _IO_fopen(
+        pathname: *const libc::c_char,
+        mode: *const libc::c_char
+    ) -> *mut libc::FILE => fizzle_io_fopen(ctx) {
         // SAFETY: caller guarantees `pathaname` and `mode` point to a null-terminated string
         let path_cstr = unsafe { CStr::from_ptr(pathname) };
         let mode_cstr = unsafe { CStr::from_ptr(mode) };
-
         crate::strace!("_IO_fopen(pathname={:?}, mode={:?}) -> ...", path_cstr, mode_cstr);
 
         let Ok(path) = FilePath::from_cstr(path_cstr) else {
@@ -236,19 +325,33 @@ hook_macros::hook! {
         }
     }
 }
+*/
 
 hook_macros::hook! {
     unsafe fn freopen(
         pathname: *const libc::c_char,
         mode: *const libc::c_char,
         stream: *mut libc::FILE
-    ) -> *mut libc::FILE => fizzle_freopen(ctx) {
+    ) -> *mut libc::FILE => fizzle_freopen(_ctx) {
         // SAFETY: caller guarantees `pathaname` and `mode` point to a null-terminated string
         let path_cstr = unsafe { CStr::from_ptr(pathname) };
         let mode_cstr = unsafe { CStr::from_ptr(mode) };
-
         crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> ...", path_cstr, mode_cstr, stream);
 
+        log::error!("`freopen()` unimplemented");
+        let res = unsafe { libc::freopen(pathname, mode, stream) };
+
+        if res.is_null() {
+            let e = Errno::get_errno();
+            crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> NULL ({})", path_cstr, mode_cstr, stream, e);
+            e.set_errno();
+        } else {
+            crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> {:?}", path_cstr, mode_cstr, stream, res);
+        }
+
+        res
+
+        /*
         let Ok(path) = FilePath::from_cstr(path_cstr) else {
             crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> NULL (EINVAL)", path_cstr, mode_cstr, stream);
             Errno::EINVAL.set_errno();
@@ -308,6 +411,7 @@ hook_macros::hook! {
                 ptr::null_mut()
             }
         }
+        */
     }
 }
 
@@ -316,13 +420,26 @@ hook_macros::hook! {
         pathname: *const libc::c_char,
         mode: *const libc::c_char,
         stream: *mut libc::FILE
-    ) -> *mut libc::FILE => fizzle_freopen64(ctx) {
+    ) -> *mut libc::FILE => fizzle_freopen64(_ctx) {
         // SAFETY: caller guarantees `pathaname` and `mode` point to a null-terminated string
         let path_cstr = unsafe { CStr::from_ptr(pathname) };
         let mode_cstr = unsafe { CStr::from_ptr(mode) };
-
         crate::strace!("freopen64(pathname={:?}, mode={:?}, stream={:?}) -> ...", path_cstr, mode_cstr, stream);
 
+        log::error!("`freopen64()` unimplemented");
+        let res = unsafe { libc::freopen64(pathname, mode, stream) };
+
+        if res.is_null() {
+            let e = Errno::get_errno();
+            crate::strace!("freopen64(pathname={:?}, mode={:?}, stream={:?}) -> NULL ({})", path_cstr, mode_cstr, stream, e);
+            e.set_errno();
+        } else {
+            crate::strace!("freopen64(pathname={:?}, mode={:?}, stream={:?}) -> {:?}", path_cstr, mode_cstr, stream, res);
+        }
+
+        res
+
+        /*
         let Ok(path) = FilePath::from_cstr(path_cstr) else {
             crate::strace!("freopen64(pathname={:?}, mode={:?}, stream={:?}) -> NULL (EINVAL)", path_cstr, mode_cstr, stream);
             Errno::EINVAL.set_errno();
@@ -382,6 +499,7 @@ hook_macros::hook! {
                 ptr::null_mut()
             }
         }
+        */
     }
 }
 
@@ -391,13 +509,15 @@ hook_macros::hook! {
         pathname: *const libc::c_char,
         mode: *const libc::c_char,
         is32: libc::c_int
-    ) -> *mut libc::FILE => fizzle__IO_file_fopen(ctx) {
+    ) -> *mut libc::FILE => fizzle_io_file_fopen(_ctx) {
         // SAFETY: caller guarantees `pathaname` and `mode` point to a null-terminated string
         let path_cstr = unsafe { CStr::from_ptr(pathname) };
         let mode_cstr = unsafe { CStr::from_ptr(mode) };
-
         crate::strace!("_IO_file_fopen(stream={:?}, pathname={:?}, mode={:?}, is32={}) -> ...", stream, path_cstr, mode_cstr, is32);
 
+        unimplemented!("_IO_file_fopen")
+
+        /*
         let Ok(path) = FilePath::from_cstr(path_cstr) else {
             crate::strace!("_IO_file_fopen(stream={:?}, pathname={:?}, mode={:?}, is32={}) -> NULL (EINVAL)", stream, path_cstr, mode_cstr, is32);
             Errno::EINVAL.set_errno();
@@ -457,6 +577,7 @@ hook_macros::hook! {
                 ptr::null_mut()
             }
         }
+        */
     }
 }
 
@@ -483,13 +604,27 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn fclose(
         stream: *mut libc::FILE
-    ) -> libc::c_int => fizzle_fclose(ctx) {
-        let Some(stream_ptr) = FilePtr::from_raw(stream) else {
+    ) -> libc::c_int => fizzle_fclose(_ctx) {
+        let Some(_stream_ptr) = FilePtr::from_raw(stream) else {
             crate::strace!("fclose(stream={:?}) -> -1 (EINVAL)", stream);
             Errno::EINVAL.set_errno();
             return -1
         };
 
+        log::error!("`fclose()` unimplemented");
+        let res = unsafe { libc::fclose(stream) };
+
+        if res < 0 {
+            let e = Errno::get_errno();
+            crate::strace!("fclose(stream={:?}) -> -1 ({})", stream, e);
+            e.set_errno();
+        } else {
+            crate::strace!("fclose(stream={:?}) -> {:?}", stream, res);
+        }
+        
+        res
+
+        /*
         if let Err(e) = Scheduler::handle_event(&mut ctx, FileStreamFlushEvent::new(Some(stream_ptr))) {
             crate::strace!("fclose(stream={:?}) -> -1 ({})", stream, e);
             e.set_errno();
@@ -507,15 +642,28 @@ hook_macros::hook! {
                 -1
             }
         }
+        */
     }
 }
 
 hook_macros::hook! {
-    unsafe fn fflush(stream: *mut libc::FILE) -> libc::c_int => fizzle_fflush(ctx) {
-        let stream_ptr_opt = FilePtr::from_raw(stream);
-
+    unsafe fn fflush(stream: *mut libc::FILE) -> libc::c_int => fizzle_fflush(_ctx) {
         crate::strace!("fflush(stream={:?}) -> ...", stream);
 
+        log::warn!("`fflush()` unimplemented");
+        let res = unsafe { libc::fflush(stream) };
+
+        if res < 0 {
+            let e = Errno::get_errno();
+            crate::strace!("fflush(stream={:?}) -> -1 ({})", stream, e);
+            e.set_errno();
+        } else {
+            crate::strace!("fflush(stream={:?}) -> {:?}", stream, res);
+        }
+        
+        res
+
+        /*
         match Scheduler::handle_event(&mut ctx, FileStreamFlushEvent::new(stream_ptr_opt)) {
             Ok(()) => {
                 crate::strace!("fflush(stream={:?}) -> 0", stream);
@@ -527,12 +675,13 @@ hook_macros::hook! {
                 -1
             }
         }
+        */
     }
 }
 
 hook_macros::hook! {
-    unsafe fn fileno(stream: *mut libc::FILE) -> libc::c_int => fizzle_fileno(ctx) {
-        let Some(stream_ptr) = FilePtr::from_raw(stream) else {
+    unsafe fn fileno(stream: *mut libc::FILE) -> libc::c_int => fizzle_fileno(_ctx) {
+        let Some(_stream_ptr) = FilePtr::from_raw(stream) else {
             crate::strace!("fileno(stream={:?}) -> -1 (EINVAL)", stream);
             Errno::EINVAL.set_errno();
             return -1
@@ -540,6 +689,20 @@ hook_macros::hook! {
 
         crate::strace!("fileno(stream={:?}) -> ...", stream);
 
+        log::warn!("`fileno()` unimplemented");
+        let res = unsafe { libc::fileno(stream) };
+
+        if res < 0 {
+            let e = Errno::get_errno();
+            crate::strace!("fileno(stream={:?}) -> -1 ({})", stream, e);
+            e.set_errno();
+        } else {
+            crate::strace!("fileno(stream={:?}) -> {:?}", stream, res);
+        }
+        
+        res
+
+        /*
         match Scheduler::handle_event(&mut ctx, FileStreamDescriptorEvent::new(stream_ptr)) {
             Ok(fd) => {
                 crate::strace!("fileno(stream={:?}) -> {}", stream, fd);
@@ -551,6 +714,7 @@ hook_macros::hook! {
                 -1
             }
         }
+        */
     }
 }
 
@@ -560,15 +724,22 @@ hook_macros::hook! {
         size: libc::size_t,
         nmemb: libc::size_t,
         stream: *mut libc::FILE
-    ) -> libc::size_t => fizzle_fwrite(ctx) {
+    ) -> libc::size_t => fizzle_fwrite(_ctx) {
         crate::strace!("fwrite(ptr={:?}, size={}, nmemb={}, stream={:?}) -> ...", ptr, size, nmemb, stream);
 
-        let Some(stream_ptr) = FilePtr::from_raw(stream) else {
+        let Some(_stream_ptr) = FilePtr::from_raw(stream) else {
             crate::strace!("fwrite(ptr={:?}, size={}, nmemb={}, stream={:?}) -> -1 (EINVAL)", ptr, size, nmemb, stream);
             Errno::EINVAL.set_errno();
             return 0
         };
 
+        log::warn!("`fwrite()` unimplemented");
+        let res = unsafe { libc::fwrite(ptr, size, nmemb, stream) };
+
+        crate::strace!("fwrite(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {:?}", ptr, size, nmemb, stream, res);
+        res
+
+        /*
         let buf = slice::from_raw_parts(ptr.cast::<u8>(), size * nmemb);
         let io_slice = IoSlice::new(buf);
 
@@ -583,6 +754,7 @@ hook_macros::hook! {
                 0
             }
         }
+        */
     }
 }
 
@@ -592,15 +764,22 @@ hook_macros::hook! {
         size: libc::size_t,
         nmemb: libc::size_t,
         stream: *mut libc::FILE
-    ) -> libc::size_t => fizzle_fread(ctx) {
+    ) -> libc::size_t => fizzle_fread(_ctx) {
         crate::strace!("fread(ptr={:?}, size={}, nmemb={}, stream={:?}) -> ...", ptr, size, nmemb, stream);
 
-        let Some(stream_ptr) = FilePtr::from_raw(stream) else {
+        let Some(_stream_ptr) = FilePtr::from_raw(stream) else {
             crate::strace!("fread(ptr={:?}, size={}, nmemb={}, stream={:?}) -> -1 (EINVAL)", ptr, size, nmemb, stream);
             Errno::EINVAL.set_errno();
             return 0
         };
 
+        log::warn!("`fread()` unimplemented");
+        let res = unsafe { libc::fread(ptr, size, nmemb, stream) };
+        crate::strace!("fread(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, res);
+        
+        res
+
+        /*
         let buf = slice::from_raw_parts_mut(ptr.cast::<u8>(), size * nmemb);
         let mut io_slice = IoSliceMut::new(buf);
 
@@ -615,14 +794,21 @@ hook_macros::hook! {
                 0
             }
         }
+        */
     }
 }
 
 hook_macros::hook! {
     unsafe fn fgetc(
-        _stream: *mut libc::FILE
+        stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_fgetc(_ctx) {
-        panic!("fgetc() unimplemented")
+        crate::strace!("fgetc(stream={:?}) -> ...", stream);
+
+        log::warn!("`fgetc()` unimplemented");
+        let res = unsafe { libc::fgetc(stream) };
+        crate::strace!("fgetc(stream={:?}) -> {}", stream, res);
+        
+        res
     }
 }
 
@@ -630,18 +816,30 @@ hook_macros::hook! {
     unsafe fn fgets(
         s: *mut libc::c_char,
         size: libc::c_int,
-        _stream: *mut libc::FILE
-    ) -> libc::c_int => fizzle_fgets(_ctx) {
-        panic!("fgets() unimplemented")
+        stream: *mut libc::FILE
+    ) -> *mut libc::c_char => fizzle_fgets(_ctx) {
+        crate::strace!("fgets(s={:?}, size={}, stream={:?}) -> ...", s, size, stream);
+
+        log::warn!("`fgets()` unimplemented");
+        let res = unsafe { libc::fgets(s, size, stream) };
+        crate::strace!("fgets(s={:?}, size={}, stream={:?}) -> {:?}", s, size, stream, res);
+        
+        res
     }
 }
 
 hook_macros::hook! {
     unsafe fn ungetc(
-        _c: libc::c_int,
-        _stream: *mut libc::FILE
+        c: libc::c_int,
+        stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_ungetc(_ctx) {
-        panic!("ungetc() unimplemented")
+        crate::strace!("ungetc(c={:?}, stream={:?}) -> ...", c, stream);
+
+        log::warn!("`ungetc()` unimplemented");
+        let res = unsafe { libc::ungetc(c, stream) };
+        crate::strace!("ungetc(c={:?}, stream={:?}) -> {:?}", c, stream, res);
+        
+        res
     }
 }
 
@@ -649,8 +847,16 @@ hook_macros::hook! {
     unsafe fn fputc(
         c: libc::c_int,
         stream: *mut libc::FILE
-    ) -> libc::c_int => fizzle_fputc(ctx) {
+    ) -> libc::c_int => fizzle_fputc(_ctx) {
         crate::strace!("fputc(c={}, stream={:?}) -> ...", c, stream);
+
+        log::warn!("`fputc()` unimplemented");
+        let res = unsafe { libc::fputc(c, stream) };
+        crate::strace!("fputc(c={:?}, stream={:?}) -> {}", c, stream, res);
+        
+        res
+
+        /*
         let c = c as u8;
 
         let Some(stream_ptr) = FilePtr::from_raw(stream) else {
@@ -672,15 +878,23 @@ hook_macros::hook! {
                 libc::EOF
             }
         }
+        */
     }
 }
 
 hook_macros::hook! {
     unsafe fn putchar(
         c: libc::c_int
-    ) -> libc::c_int => fizzle_putchar(ctx) {
+    ) -> libc::c_int => fizzle_putchar(_ctx) {
         crate::strace!("putchar(c={}) -> ...", c);
 
+        log::warn!("`putchar()` unimplemented");
+        let res = unsafe { libc::putchar(c) };
+        crate::strace!("putchar(c={:?}) -> {}", c, res);
+        
+        res
+
+        /*
         let c = c as u8;
 
         let stream_ptr = FilePtr::from_raw(unsafe { crate::stdout }).unwrap();
@@ -698,6 +912,7 @@ hook_macros::hook! {
                 libc::EOF
             }
         }
+        */
     }
 }
 
@@ -708,6 +923,13 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_fputs(ctx) {
         crate::strace!("fputs(s={:?}, stream={:?}) -> ...", s, stream);
 
+        log::warn!("`fputs()` unimplemented");
+        let res = unsafe { libc::fputs(s, stream) };
+        crate::strace!("fputs(s={:?}, stream={:?}) -> {}", s, stream, res);
+        
+        res
+
+        /*
         let Some(stream_ptr) = FilePtr::from_raw(stream) else {
             crate::strace!("fputs(s={:?}, stream={:?}) -> EOF (EINVAL)", s, stream);
             Errno::EINVAL.set_errno();
@@ -730,15 +952,23 @@ hook_macros::hook! {
                 libc::EOF
             }
         }
+        */
     }
 }
 
 hook_macros::hook! {
     unsafe fn puts(
         s: *const libc::c_char
-    ) -> libc::c_int => fizzle_puts(ctx) {
+    ) -> libc::c_int => fizzle_puts(_ctx) {
         crate::strace!("puts(s={:?}) -> ...", s);
 
+        log::warn!("`puts()` unimplemented");
+        let res = unsafe { libc::puts(s) };
+        crate::strace!("puts(s={:?}) -> {}", s, res);
+        
+        res
+
+        /*
         let stream_ptr = FilePtr::from_raw(unsafe { crate::stdout }).unwrap();
 
         let cstr = unsafe { CStr::from_ptr(s) };
@@ -758,6 +988,7 @@ hook_macros::hook! {
                 libc::EOF
             }
         }
+        */
     }
 }
 
@@ -776,12 +1007,11 @@ pub struct cookie_io_functions {
 
 hook_macros::hook! {
     unsafe fn fopencookie(
-        _cookie: *mut libc::c_void,
-        _mode: *const libc::c_char,
-        _io_funcs: cookie_io_functions
+        cookie: *mut libc::c_void,
+        mode: *const libc::c_char,
+        io_funcs: cookie_io_functions
     ) -> *mut libc::FILE => fizzle_fopencookie(_ctx) {
-        unimplemented!("fopencookie()")
-        // hook_macros::real!(fopencookie)(cookie, mode, io_funcs)
+        unimplemented!("fopencookie")
     }
 }
 
@@ -790,24 +1020,54 @@ hook_macros::hook! {
         stream: *mut libc::FILE,
         offset: libc::c_long,
         whence: libc::c_int
-    ) -> libc::c_int => fizzle_fseek(ctx) {
-        unimplemented!("fseek()")
+    ) -> libc::c_int => fizzle_fseek(_ctx) {
+        crate::strace!("fseek(stream={:?}, offset={}, whence={}) -> ...", stream, offset, whence);
+
+        log::warn!("`fseek()` unimplemented");
+        let res = unsafe { libc::fseek(stream, offset, whence) };
+        if res < 0 {
+            let e = Errno::get_errno();
+            crate::strace!("fseek(stream={:?}, offset={}, whence={}) -> -1 ({})", stream, offset, whence, e);
+            e.set_errno();
+        } else {
+            crate::strace!("fseek(stream={:?}, offset={}, whence={}) -> {}", stream, offset, whence, res);
+        }
+
+        res
     }
 }
 
 hook_macros::hook! {
     unsafe fn ftell(
         stream: *mut libc::FILE
-    ) -> libc::c_int => fizzle_ftell(ctx) {
-        unimplemented!("ftell()")
+    ) -> libc::c_long => fizzle_ftell(_ctx) {
+        crate::strace!("ftell(stream={:?}) -> ...", stream);
+
+        log::warn!("`ftell()` unimplemented");
+        let res = unsafe { libc::ftell(stream) };
+        if res < 0 {
+            let e = Errno::get_errno();
+            crate::strace!("ftell(stream={:?}) -> -1 ({})", stream, e);
+            e.set_errno();
+        } else {
+            crate::strace!("ftell(stream={:?}) -> {}", stream, res);
+        }
+
+        res
     }
 }
 
 hook_macros::hook! {
     unsafe fn rewind(
         stream: *mut libc::FILE
-    ) -> libc::c_int => fizzle_rewind(ctx) {
-        unimplemented!("frewind()")
+    ) => fizzle_rewind(_ctx) {
+        crate::strace!("rewind(stream={:?}) -> ...", stream);
+
+        log::warn!("`rewind()` unimplemented");
+        let res = unsafe { libc::rewind(stream) };
+        crate::strace!("rewind(stream={:?}) -> ()", stream);
+
+        res
     }
 }
 
@@ -815,8 +1075,20 @@ hook_macros::hook! {
     unsafe fn fgetpos(
         stream: *mut libc::FILE,
         pos: *mut libc::fpos_t
-    ) -> libc::c_int => fizzle_fgetpos(ctx) {
-        unimplemented!("fgetpos()")
+    ) -> libc::c_int => fizzle_fgetpos(_ctx) {
+        crate::strace!("fgetpos(stream={:?}, pos={:?}) -> ...", stream, pos);
+
+        log::warn!("`fgetpos()` unimplemented");
+        let res = unsafe { libc::fgetpos(stream, pos) };
+        if res < 0 {
+            let e = Errno::get_errno();
+            crate::strace!("fgetpos(stream={:?}, pos={:?}) -> -1 ({})", stream, pos, e);
+            e.set_errno();
+        } else {
+            crate::strace!("fsetpos(stream={:?}, pos={:?}) -> {}", stream, pos, res);
+        }
+
+        res
     }
 }
 
@@ -824,37 +1096,63 @@ hook_macros::hook! {
     unsafe fn fsetpos(
         stream: *mut libc::FILE,
         pos: *const libc::fpos_t
-    ) -> libc::c_int => fizzle_fsetpos(ctx) {
-        unimplemented!("fsetpos()")
+    ) -> libc::c_int => fizzle_fsetpos(_ctx) {
+        crate::strace!("fsetpos(stream={:?}, pos={:?}) -> ...", stream, pos);
+
+        log::warn!("`fsetpos()` unimplemented");
+        let res = unsafe { libc::fsetpos(stream, pos) };
+        if res < 0 {
+            let e = Errno::get_errno();
+            crate::strace!("fsetpos(stream={:?}, pos={:?}) -> -1 ({})", stream, pos, e);
+            e.set_errno();
+        } else {
+            crate::strace!("fsetpos(stream={:?}, pos={:?}) -> {}", stream, pos, res);
+        }
+
+        res
     }
 }
 
 hook_macros::hook! {
     unsafe fn clearerr(
-        _stream: *mut libc::FILE
+        stream: *mut libc::FILE
     ) => fizzle_clearerr(_ctx) {
-        unimplemented!("clearerr()")
+        crate::strace!("clearerr(stream={:?}) -> ...", stream);
+
+        log::warn!("`clearerr()` unimplemented");
+        unsafe { libc::clearerr(stream) };
+        crate::strace!("clearerr(stream={:?}) -> ()", stream);
     }
 }
 
 hook_macros::hook! {
     unsafe fn feof(
-        _stream: *mut libc::FILE
+        stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_feof(_ctx) {
-        unimplemented!("feof()")
+        crate::strace!("feof(stream={:?}) -> ...", stream);
+
+        log::warn!("`feof()` unimplemented");
+        let res = unsafe { libc::feof(stream) };
+        crate::strace!("feof(stream={:?}) -> {}", stream, res);
+        res
     }
 }
 
 hook_macros::hook! {
     unsafe fn ferror(
-        _stream: *mut libc::FILE
+        stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_ferror(_ctx) {
-        unimplemented!("ferror()")
+        crate::strace!("ferror(stream={:?}) -> ...", stream);
+
+        log::warn!("`ferror()` unimplemented");
+        let res = unsafe { libc::ferror(stream) };
+        crate::strace!("ferror(stream={:?}) -> {}", stream, res);
+        res
     }
 }
 
 
-
+/*
 
 hook_macros::hook! {
     unsafe fn __fbufsize(

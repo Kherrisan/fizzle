@@ -14,7 +14,7 @@ use fizzle_common::path::FilePath;
 use crate::backend::{FileBackend, FileFeedback};
 use crate::errno::Errno;
 use crate::handlers::descriptor::*;
-use crate::scheduler::{fizzle_alloc, CreateCowTask, Event, Outcome, Scheduler, YieldUntil};
+use crate::scheduler::{fizzle_alloc, CreateCowTask, Event, Outcome, YieldUntil};
 use crate::state::{CreateCowSource, FizzleState};
 use crate::task::Task;
 use crate::GlobalRc;
@@ -634,7 +634,7 @@ impl Event for FileWriteEvent<'_> {
 
                         Outcome::Success(written as usize)
                     }
-                    WriteData::BasicVec(data) => {
+                    WriteData::Iovec(data) => {
                         let written = unsafe {
                             libc::pwritev(
                                 fd,
@@ -691,19 +691,19 @@ impl Event for FileWriteEvent<'_> {
             }
             FileBackend::Sink => match &self.data {
                 WriteData::BasicSlice(slice) => Outcome::Success(slice.len()),
-                WriteData::BasicVec(data) => Outcome::Success(data.iter().map(|s| s.len()).sum()),
+                WriteData::Iovec(data) => Outcome::Success(data.iter().map(|s| s.len()).sum()),
                 WriteData::File(data) => Outcome::Success(data.buf.iter().map(|s| s.len()).sum()),
                 WriteData::Socket(_, _) => return Outcome::Error(Errno::ENOTSOCK),
             },
             FileBackend::NullSink => match &self.data {
                 WriteData::BasicSlice(slice) => Outcome::Success(slice.len()),
-                WriteData::BasicVec(data) => Outcome::Success(data.iter().map(|s| s.len()).sum()),
+                WriteData::Iovec(data) => Outcome::Success(data.iter().map(|s| s.len()).sum()),
                 WriteData::File(data) => Outcome::Success(data.buf.iter().map(|s| s.len()).sum()),
                 WriteData::Socket(_, _) => return Outcome::Error(Errno::ENOTSOCK),
             },
             FileBackend::Fuzz(_) => match &self.data {
                 WriteData::BasicSlice(slice) => Outcome::Success(slice.len()),
-                WriteData::BasicVec(data) => Outcome::Success(data.iter().map(|s| s.len()).sum()),
+                WriteData::Iovec(data) => Outcome::Success(data.iter().map(|s| s.len()).sum()),
                 WriteData::File(data) => Outcome::Success(data.buf.iter().map(|s| s.len()).sum()),
                 WriteData::Socket(_, _) => return Outcome::Error(Errno::ENOTSOCK),
             },

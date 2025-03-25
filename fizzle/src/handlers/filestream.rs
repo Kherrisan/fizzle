@@ -491,7 +491,7 @@ impl Event for FileStreamWriteEvent<'_> {
                             self.state =
                                 FileStreamWriteState::Descriptor(DescriptorWriteEvent::new(
                                     desc,
-                                    WriteData::BasicVec(slice::from_ref(self.buf)),
+                                    WriteData::Iovec(slice::from_ref(self.buf)),
                                 ));
                             Outcome::Yield(YieldUntil::Immediate)
                         }

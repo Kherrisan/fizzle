@@ -1,6 +1,6 @@
 use std::mem::MaybeUninit;
 use std::time::Duration;
-use std::{array, cmp, mem, slice};
+use std::{mem, slice};
 
 use crate::errno::Errno;
 use crate::handlers::descriptor::Descriptor;
@@ -23,7 +23,7 @@ hook_macros::hook! {
         let cloexec = (socktype & libc::SOCK_CLOEXEC) != 0;
         let socktype = socktype & !(libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC);
 
-        let domain = match domain {
+        let addr_family = match domain {
             libc::AF_INET => AddressFamily::Ipv4,
             libc::AF_INET6 => AddressFamily::Ipv6,
             libc::AF_UNIX => AddressFamily::Unix,
@@ -39,28 +39,53 @@ hook_macros::hook! {
             _ => unimplemented!("unsupported socket type {}", socktype),
         };
 
-        let protocol = match (domain, socket_type, protocol) {
+        if addr_family == AddressFamily::Netlink {
+            // TODO: Netlink sockets are currently passthrough
+
+            let fd = unsafe { libc::socket(domain, socktype, protocol) };
+            if fd >= 0 {
+                match Scheduler::handle_event(&mut ctx, NetlinkCreateEvent { fd, }) {
+                    Ok(()) => (),
+                    Err(()) => unreachable!(),
+                }
+
+                crate::strace!("socket(domain={}, socktype={}, protocol={}) -> {}", domain, socktype, protocol, fd);
+                return fd
+            } else {
+                let e = Errno::get_errno();
+                crate::strace!("socket(domain={}, socktype={}, protocol={}) -> -1 ({})", domain, socktype, protocol, e);
+                e.set_errno();
+                return -1
+            }
+        }
+
+        let protocol = match (addr_family, socket_type, protocol) {
             (AddressFamily::Ipv4 | AddressFamily::Ipv6, SocketType::Stream, 0) => TransportProtocol::Tcp,
             (AddressFamily::Ipv4 | AddressFamily::Ipv6, SocketType::Datagram, 0) => TransportProtocol::Udp,
             (AddressFamily::Ipv4 | AddressFamily::Ipv6, _, libc::IPPROTO_TCP) => TransportProtocol::Tcp,
             (AddressFamily::Ipv4 | AddressFamily::Ipv6, _, libc::IPPROTO_UDP) => TransportProtocol::Udp,
             (AddressFamily::Ipv4 | AddressFamily::Ipv6, _, libc::IPPROTO_SCTP) => TransportProtocol::Sctp,
             (AddressFamily::Unix, _, 0) => TransportProtocol::Unix,
-            _ => unimplemented!("unsupported socket domain/protocol pair {}, {}", domain, protocol),
+            _ => {
+                log::error!("unsupported socket domain/protocol pair {}, {}", addr_family, protocol);
+                crate::strace!("socket(domain={}, socktype={}, protocol={}) -> -1 (EPROTONOSUPPORT)", addr_family, socket_type, protocol);
+                Errno::EPROTONOSUPPORT.set_errno();
+                return -1
+            }
         };
 
-        let socket_create_event = SocketCreateEvent {
-            domain,
+        let socket_create_ev = SocketCreateEvent {
+            domain: addr_family,
             socket_type,
             protocol,
             nonblocking,
-            cloexec
+            cloexec,
         };
 
-        match Scheduler::handle_event(&mut ctx, socket_create_event) {
+        match Scheduler::handle_event(&mut ctx, socket_create_ev) {
             Ok(descriptor_id) => {
                 let fd = descriptor_id.as_raw_fd();
-                crate::strace!("socket(domain={}, socktype={}, protocol={}) -> {}", domain, socktype, protocol, fd);
+                crate::strace!("socket(domain={}, socktype={}, protocol={}) -> {}", addr_family, socktype, protocol, fd);
                 fd
             },
             Err(()) => unreachable!(),
@@ -148,19 +173,13 @@ hook_macros::hook! {
 
         crate::strace!("bind(fd={}, addr={:?}, addrlen={} ({:?})) -> ...", fd, addr, addrlen, addr_bytes);
 
-        let Ok(sockaddr) = SockAddr::decode(addr_bytes) else {
-            crate::strace!("bind(fd={}, addr={:?}, addrlen={} ({:?})) -> -1 (EINVAL)", fd, addr, addrlen, addr_bytes);
-            Errno::EINVAL.set_errno();
-            return -1
-        };
-
-        match Scheduler::handle_event(&mut ctx, SocketBindEvent::new(Descriptor::from_raw_fd(fd), sockaddr.clone())) {
+        match Scheduler::handle_event(&mut ctx, SocketBindEvent::new(Descriptor::from_raw_fd(fd), addr_bytes)) {
             Ok(()) => {
-                crate::strace!("bind(fd={}, addr={:?}, addrlen={} ({:?})) -> 0", fd, addr, addrlen, sockaddr);
+                crate::strace!("bind(fd={}, addr={:?}, addrlen={}) -> 0", fd, addr, addrlen);
                 0
             },
             Err(e) => {
-                crate::strace!("bind(fd={}, addr={:?}, addrlen={} ({:?})) -> 0", fd, addr, addrlen, sockaddr);
+                crate::strace!("bind(fd={}, addr={:?}, addrlen={}) -> 0", fd, addr, addrlen);
                 e.set_errno();
                 -1
             },
@@ -321,32 +340,16 @@ hook_macros::hook! {
 
         crate::strace!("getsockname(sockfd={}, addr={:?}, addrlen={:?}) -> ...", sockfd, addr, addrlen);
 
-        match Scheduler::handle_event(&mut ctx, SocketGetNameEvent::new(descriptor_id)) {
-            Ok(socket_addr) => {
+        let addr_bytes = if addr.is_null() || addrlen.is_null() {
+            &mut []
+        } else {
+            slice::from_raw_parts_mut(addr.cast::<MaybeUninit<u8>>(), *addrlen as usize)
+        };
 
-                if !addr.is_null() && !addrlen.is_null() {
-                    // SAFETY: caller ensures addr points to a valid buffer of `adderlen` bytes.
-                    let addr_bytes = slice::from_raw_parts_mut(addr as *mut MaybeUninit<u8>, addrlen as usize);
-
-                    match socket_addr {
-                        Ok(sockaddr) => {
-                            crate::strace!("getsockname(sockfd={}, addr={:?}, addrlen={:?} ({:?})) -> 0", sockfd, addr, addrlen, sockaddr);
-                            *addrlen = sockaddr.encode(addr_bytes) as u32;
-                        }
-                        Err(family) => {
-                            crate::strace!("getsockname(sockfd={}, addr={:?}, addrlen={:?} (<unbound>)) -> 0", sockfd, addr, addrlen);
-                            addr_bytes.fill(MaybeUninit::new(0));
-
-                            let family_bytes = family.raw().to_be_bytes().map(|i| MaybeUninit::new(i));
-
-                            let family_bytelen = cmp::min(family_bytes.len(), addr_bytes.len());
-                            addr_bytes[..family_bytelen].copy_from_slice(&family_bytes);
-                        }
-                    }
-                } else {
-                    crate::strace!("getsockname(sockfd={}, addr={:?}, addrlen={:?}) -> 0", sockfd, addr, addrlen);
-                }
-
+        match Scheduler::handle_event(&mut ctx, SocketGetNameEvent::new(descriptor_id, addr_bytes)) {
+            Ok(len) => {
+                *addrlen = len as libc::socklen_t;               
+                crate::strace!("getsockname(sockfd={}, addr={:?}, addrlen={:?}) -> 0", sockfd, addr, addrlen);
                 0
             },
             Err(e) => {
@@ -585,20 +588,14 @@ hook_macros::hook! {
             (OptLevel::Sctp, SCTP_SOCKOPT_BINDX_ADD) => {
                 log::info!("Binding SCTP socket with SCTP_SOCKOPT_BINDX_ADD");
                 let addr_bytes = slice::from_raw_parts(optval.cast::<u8>(), optlen as usize);
-                let Ok(addr) = SockAddr::decode(addr_bytes) else {
-                    log::error!("invalid sockaddr for SCTP_SOCKOPT_BINDX_ADD");
-                    crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> -1 (EINVAL)", sockfd, opt_level, optname, optval, optlen);
-                    Errno::EINVAL.set_errno();
-                    return -1
-                };
 
-                return match Scheduler::handle_event(&mut ctx, SocketBindEvent::new(Descriptor::from_raw_fd(sockfd), addr.clone())) {
+                return match Scheduler::handle_event(&mut ctx, SocketBindEvent::new(Descriptor::from_raw_fd(sockfd), addr_bytes)) {
                     Ok(()) => {
-                        crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}) -> 0", sockfd, opt_level, optname, addr);
+                        crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}) -> 0", sockfd, opt_level, optname, optval);
                         0
                     },
                     Err(e) => {
-                        crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}) -> -1 ({})", sockfd, opt_level, optname, addr, e);
+                        crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}) -> -1 ({})", sockfd, opt_level, optname, optval, e);
                         e.set_errno();
                         -1
                     },

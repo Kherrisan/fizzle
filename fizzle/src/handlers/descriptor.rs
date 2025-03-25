@@ -1,4 +1,4 @@
-use std::cmp;
+use std::{cmp, ptr};
 use std::io::{IoSlice, IoSliceMut};
 use std::mem::MaybeUninit;
 use std::os::fd::RawFd;
@@ -70,6 +70,8 @@ pub enum FdResource {
     Stderr,
     /// Network sockets.
     Socket(GlobalRc<SocketInfo>),
+    /// An opaque fd meant only to be used in passthrough
+    Opaque,
 }
 
 pub struct DescriptorCloseEvent {
@@ -477,7 +479,7 @@ impl Event for DescriptorReadEvent<'_> {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match &mut self.state {
             DescriptorReadState::Start => {
-                let Some(fd_info) = state.local.fds.get(&self.fd) else {
+                let Some(fd_info @ DescriptorInfo { is_passthrough: false, .. }) = state.local.fds.get(&self.fd) else {
                     #[cfg(not(feature = "passthroughfs"))]
                     return Outcome::Error(Errno::EBADF);
                     #[cfg(feature = "passthroughfs")]
@@ -504,7 +506,33 @@ impl Event for DescriptorReadEvent<'_> {
                             ..=-1 => Outcome::Error(Errno::get_errno()),
                             len @ 0.. => Outcome::Success(len as usize),
                         },
-                        ReadData::Socket(_msgs, _msgflags) => unreachable!(), // Passthrough sockets not allowed
+                        ReadData::Socket(msgs, msgflags) => {
+                            if msgs.len() != 1 {
+                                unimplemented!()
+                            }
+
+                            let msg = &mut msgs[0];
+                            let mut msghdr = libc::msghdr {
+                                msg_name: msg.addr_bytes.as_mut_ptr().cast::<libc::c_void>(),
+                                msg_namelen: msg.addr_bytes.len() as u32,
+                                msg_iov: msg.buf.as_mut_ptr().cast::<libc::iovec>(),
+                                msg_iovlen: msg.buf.len(),
+                                msg_control: msg.control_info.as_mut_ptr().cast::<libc::c_void>(),
+                                msg_controllen: msg.control_info.len(),
+                                msg_flags: msg.msg_flags.bits(),
+                            };
+
+                            let ret = unsafe {
+                                libc::recvmsg(self.fd.as_raw_fd(), &raw mut msghdr, msgflags.bits())
+                            };
+
+                            if ret < 0 {
+                                Outcome::Error(Errno::get_errno())
+                            } else {
+                                *msg.buflen = ret as u32;
+                                Outcome::Success(1)
+                            }
+                        }
                     };
                 };
 
@@ -561,6 +589,7 @@ impl Event for DescriptorReadEvent<'_> {
                             self.data.take().unwrap(),
                         ));
                     }
+                    FdResource::Opaque => unreachable!(),
                 }
                 Outcome::Yield(YieldUntil::Immediate)
             }
@@ -794,7 +823,7 @@ impl Event for StdinReadEvent<'_> {
 
 pub enum WriteData<'a> {
     BasicSlice(&'a [u8]),
-    BasicVec(&'a [IoSlice<'a>]),
+    Iovec(&'a [IoSlice<'a>]),
     File(FileWriteData<'a>),
     Socket(&'a mut [SocketWriteData<'a>], SocketFlags),
 }
@@ -850,7 +879,7 @@ impl Event for DescriptorWriteEvent<'_> {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match &mut self.state {
             DescriptorWriteState::Start => {
-                let Some(fd_info) = state.local.fds.get(&self.fd) else {
+                let Some(fd_info @ DescriptorInfo { is_passthrough: false, .. }) = state.local.fds.get(&self.fd) else {
                     #[cfg(not(feature = "passthroughfs"))]
                     return Outcome::Error(Errno::EBADF);
                     #[cfg(feature = "passthroughfs")]
@@ -861,7 +890,7 @@ impl Event for DescriptorWriteEvent<'_> {
                             ..=-1 => Outcome::Error(Errno::get_errno()),
                             len @ 0.. => Outcome::Success(len as usize),
                         },
-                        WriteData::BasicVec(io_slice) => match unsafe {
+                        WriteData::Iovec(io_slice) => match unsafe {
                             libc::writev(
                                 self.fd.as_raw_fd(),
                                 io_slice.as_ptr().cast(),
@@ -883,7 +912,40 @@ impl Event for DescriptorWriteEvent<'_> {
                             ..=-1 => Outcome::Error(Errno::get_errno()),
                             len @ 0.. => Outcome::Success(len as usize),
                         },
-                        WriteData::Socket(_msgs, _msgflags) => unreachable!(), // Passthrough sockets not allowed
+                        WriteData::Socket(msgs, msgflags) => {
+                            let mut total_sent = 0;
+                            let mut error = None;
+                            for msg in msgs {
+                                let msghdr = libc::msghdr {
+                                    msg_name: msg.addr_bytes.map(|s| s.as_ptr()).unwrap_or(ptr::null()).cast::<libc::c_void>().cast_mut(), // TODO: UB?
+                                    msg_namelen: msg.addr_bytes.map(|s| s.len()).unwrap_or(0) as u32,
+                                    msg_iov: msg.buf.as_ptr().cast::<libc::iovec>().cast_mut(),
+                                    msg_iovlen: msg.buf.len(),
+                                    msg_control: msg.control_info.as_ptr().cast::<libc::c_void>().cast_mut(),
+                                    msg_controllen: msg.control_info.len(),
+                                    msg_flags: msg.msg_flags.bits(),
+                                };
+
+                                let ret = unsafe {
+                                    libc::sendmsg(self.fd.as_raw_fd(), &raw const msghdr, msgflags.bits())
+                                };
+
+                                if ret < 0 {
+                                    if error.is_none() {
+                                        error = Some(Errno::get_errno());
+                                    }
+                                } else {
+                                    *msg.buflen = ret as u32;
+                                    total_sent += 1;
+                                }
+                            }
+
+                            return if total_sent > 0 {
+                                Outcome::Success(total_sent)
+                            } else {
+                                Outcome::Error(error.unwrap())
+                            }
+                        },
                     };
                 };
 
@@ -946,6 +1008,7 @@ impl Event for DescriptorWriteEvent<'_> {
                             self.data.take().unwrap(),
                         ));
                     }
+                    FdResource::Opaque => unreachable!(),
                 }
                 Outcome::Yield(YieldUntil::Immediate)
             }
@@ -990,7 +1053,7 @@ impl Event for StdoutWriteEvent<'_> {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let nonblocking = state.local.fds.get(&self.fd).unwrap().nonblocking;
 
-        let WriteData::BasicVec(iovec) = self.data else {
+        let WriteData::Iovec(iovec) = self.data else {
             unreachable!(
                 "internal error--buffer other than WriteData::Basic passed to StdoutWriteEvent"
             );
@@ -1128,7 +1191,7 @@ impl Event for StderrWriteEvent<'_> {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let WriteData::BasicVec(iovec) = self.data else {
+        let WriteData::Iovec(iovec) = self.data else {
             unreachable!(
                 "internal error--buffer other than WriteData::Basic passed to StderrWriteEent"
             );
