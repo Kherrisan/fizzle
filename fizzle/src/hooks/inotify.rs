@@ -1,48 +1,49 @@
 use std::ffi::CStr;
 
-use crate::errno::Errno;
 use crate::handlers::descriptor::Descriptor;
 use crate::handlers::inotify::*;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
 
 hook_macros::hook! {
-    unsafe fn inotify_init() -> libc::c_int => fizzle_inotify_init(_ctx) {
+    unsafe fn inotify_init() -> libc::c_int => fizzle_inotify_init(ctx) {
         crate::strace!("inotify_init() -> ...");
 
-        log::error!("`inotify_init()` unimplemented");
-        let res = unsafe { libc::inotify_init() };
-
-        if res < 0 {
-            let e = Errno::get_errno();
-            crate::strace!("inotify_init() -> -1 ({})", e);
-            e.set_errno();
-        } else {
-            crate::strace!("inotify_init() -> {}", res);
+        match Scheduler::handle_event(&mut ctx, InotifyInitEvent::new(None)) {
+            Ok(fd) => {
+                crate::strace!("inotify_init() -> {}", fd);
+                fd
+            },
+            Err(e) => {
+                crate::strace!("inotify_init() -> -1 ({})", e);
+                e.set_errno();
+                -1
+            },
         }
-
-        res
     }
 }
 
 hook_macros::hook! {
     unsafe fn inotify_init1(
         flags: libc::c_int
-    ) -> libc::c_int => fizzle_inotify_init1(_ctx) {
+    ) -> libc::c_int => fizzle_inotify_init1(ctx) {
         crate::strace!("inotify_init1(flags={}) -> ...", flags);
+        let Some(flags) = InotifyFlags::from_bits(flags) else {
+            log::error!("unrecognized flags in inotify_init1");
+            unimplemented!()
+        };
 
-        log::error!("`inotify_init1()` unimplemented");
-        let res = unsafe { libc::inotify_init1(flags) };
-
-        if res < 0 {
-            let e = Errno::get_errno();
-            crate::strace!("inotify_init1(flags={}) -> -1 ({})", flags, e);
-            e.set_errno();
-        } else {
-            crate::strace!("inotify_init(flags={}) -> {}", flags, res);
+        match Scheduler::handle_event(&mut ctx, InotifyInitEvent::new(Some(flags))) {
+            Ok(fd) => {
+                crate::strace!("inotify_init1(flags={:?}) -> {}", flags, fd);
+                fd
+            },
+            Err(e) => {
+                crate::strace!("inotify_init1(flags={:?}) -> -1 ({})", flags, e);
+                e.set_errno();
+                -1
+            },
         }
-
-        res
     }
 }
 
