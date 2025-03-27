@@ -305,18 +305,6 @@ impl FizzleState {
             working_directory,
         };
 
-        // TODO: do we need to initialize the INIT Pid?
-        /*
-        // 1 is the PID for the `init` process
-        state.global.ids.allocate_with_key(
-            WorkerId::from_id(1),
-            WorkerInfo {
-                process_id: ProcessId::from(usize::MAX),
-                thread_id: thread::current().id(),
-            },
-        ).unwrap();
-        */
-
         let mut unix_fds: [RawFd; 2] = [0; 2];
         let res = unsafe {
             libc::socketpair(
