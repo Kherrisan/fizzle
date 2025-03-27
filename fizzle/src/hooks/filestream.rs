@@ -13,39 +13,18 @@ use crate::hook_macros;
 use crate::scheduler::Scheduler;
 
 hook_macros::hook! {
-    unsafe fn fanotify_init(
-        flags: libc::c_uint,
-        event_f_flags: libc::c_uint
-    ) -> libc::c_int => fizzle_fanotify_init(_ctx) {
-        crate::strace!("fanotify_init(flags={}, event_f_flags={}) -> ...", flags, event_f_flags);
-
-        log::warn!("`fanotify_init()` unimplemented");
-        let res = unsafe { libc::fanotify_init(flags, event_f_flags) };
-
-        if res < 0 {
-            let e = Errno::get_errno();
-            crate::strace!("fanotify_init(flags={}, event_f_flags={}) -> -1 ({})", flags, event_f_flags, e);
-            e.set_errno();
-        } else {
-            crate::strace!("fanotify_init(flags={}, event_f_flags={}) -> {}", flags, event_f_flags, res);
-        }
-
-        res
-    }
-}
-
-hook_macros::hook! {
     unsafe fn fdopen(
         fd: libc::c_int,
         mode: *const libc::c_char
-    ) -> *mut libc::FILE => fizzle_fdopen(_ctx) {
+    ) -> *mut libc::FILE => fizzle_fdopen(ctx) {
         // SAFETY: caller guarantees `mode` points to a null-terminated string
         let mode_cstr = CStr::from_ptr(mode);
         crate::strace!("fdopen(fd={}, mode={:?}) -> ...", fd, mode_cstr);
-
-        /*
+        
         let source = FileStreamSource::Descriptor(fd);
         let Some(stream_mode) = FileStreamMode::from_cstr(mode_cstr) else {
+            log::warn!("invalid or unrecognized `mode` encountered in fdopen() call");
+            crate::strace!("fdopen(fd={}, mode={:?}) -> NULL (EINVAL)", fd, mode_cstr);
             Errno::EINVAL.set_errno();
             return ptr::null_mut()
         };
@@ -61,8 +40,8 @@ hook_macros::hook! {
                 ptr::null_mut()
             }
         }
-        */
 
+        /*
         log::warn!("`fdopen()` unimplemented");
         let res = unsafe { libc::fdopen(fd, mode) };
 
@@ -75,6 +54,7 @@ hook_macros::hook! {
         }
 
         res
+        */
     }
 }
 
@@ -1109,9 +1089,65 @@ hook_macros::hook! {
     }
 }
 
+/*
+hook_macros::hook! {
+    unsafe fn flockfile(
+        stream: *mut libc::FILE
+    ) -> libc::c_int => fizzle_flockfile(_ctx) {
+        crate::strace!("flockfile(stream={:?}) -> ...", stream);
+
+        log::warn!("`flockfile()` unimplemented");
+        let res = unsafe { libc::flockfile(stream) };
+        crate::strace!("flockfile(stream={:?}) -> {}", stream, res);
+        res
+    }
+}
+*/
 
 /*
+hook_macros::hook! {
+    unsafe fn funlockfile(
+        stream: *mut libc::FILE
+    ) -> libc::c_int => fizzle_funlockfile(_ctx) {
+        crate::strace!("funlockfile(stream={:?}) -> ...", stream);
 
+        log::warn!("`funlockfile()` unimplemented");
+        let res = unsafe { libc::funlockfile(stream) };
+        crate::strace!("funlockfile(stream={:?}) -> {}", stream, res);
+        res
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn ftrylockfile(
+        stream: *mut libc::FILE
+    ) -> libc::c_int => fizzle_ftrylockfile(_ctx) {
+        crate::strace!("ftrylockfile(stream={:?}) -> ...", stream);
+
+        log::warn!("`ftrylockfile()` unimplemented");
+        let res = unsafe { libc::ftrylockfile(stream) };
+        crate::strace!("ftrylockfile(stream={:?}) -> {}", stream, res);
+        res
+    }
+}
+*/
+
+/*
+hook_macros::hook! {
+    unsafe fn fpurge(
+        stream: *mut libc::FILE
+    ) -> libc::c_int => fizzle_fpurge(_ctx) {
+        crate::strace!("fpurge(stream={:?}) -> ...", stream);
+
+        log::warn!("`fpurge()` unimplemented");
+        let res = unsafe { libc::__fpurge(stream) };
+        crate::strace!("fpurge(stream={:?}) -> {}", stream, res);
+        res
+    }
+}
+*/
+
+/*
 hook_macros::hook! {
     unsafe fn __fbufsize(
         stream: *mut libc::FILE
@@ -1186,7 +1222,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn __fpurge(
         stream: *mut libc::FILE
-    ) => fizzle_fpurge(ctx) {
+    ) => fizzle_fpurge2(ctx) {
         unimplemented!("__fpurge()")
     }
 }
