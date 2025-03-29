@@ -405,44 +405,29 @@ impl FizzleState {
 
         local.file_objs.insert(
             stdin_ptr,
-            FileObject {
-                source: FileStreamSource::Descriptor(0),
-                buffer: FileStreamBuffer::Internal(Box::new([0u8; libc::BUFSIZ as usize])),
-                buffer_index: 0,
-                read_end: 0,
-                access_mode: FileAccessMode::ReadOnly,
-                buffering_mode: FileBufferMode::Line,
-                err: false,
-                eof: false,
-            },
+            FileObject::new(
+                FileStreamSource::Descriptor(0), 
+                FileAccessMode::ReadOnly, 
+                FileOrientation::Regular
+            ),
         );
 
         local.file_objs.insert(
             stdout_ptr,
-            FileObject {
-                source: FileStreamSource::Descriptor(1),
-                buffer: FileStreamBuffer::Internal(Box::new([0u8; libc::BUFSIZ as usize])),
-                buffer_index: 0,
-                read_end: 0,
-                access_mode: FileAccessMode::WriteOnly,
-                buffering_mode: FileBufferMode::Line,
-                err: false,
-                eof: false,
-            },
+            FileObject::new(
+                FileStreamSource::Descriptor(1), 
+                FileAccessMode::WriteOnly, 
+                FileOrientation::Regular
+            ),
         );
 
         local.file_objs.insert(
             stderr_ptr,
-            FileObject {
-                source: FileStreamSource::Descriptor(2),
-                buffer: FileStreamBuffer::Internal(Box::new([0u8; libc::BUFSIZ as usize])),
-                buffer_index: 0,
-                read_end: 0,
-                access_mode: FileAccessMode::WriteOnly,
-                buffering_mode: FileBufferMode::Unbuffered,
-                err: false,
-                eof: false,
-            },
+            FileObject::new(
+                FileStreamSource::Descriptor(2), 
+                FileAccessMode::WriteOnly, 
+                FileOrientation::Regular
+            ),
         );
 
         let mut state = Self { local, global };

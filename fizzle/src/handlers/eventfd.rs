@@ -125,7 +125,7 @@ impl Event for EventfdReadEvent<'_> {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let ReadData::Basic(iovec) = &mut self.data else {
+        let ReadData::Iovec(iovec) = &mut self.data else {
             unreachable!(
                 "internal error--buffer other than ReadData::Basic passed to EventfdReadEvent"
             );

@@ -291,7 +291,7 @@ hook_macros::hook! {
 
         let s = slice::from_raw_parts_mut(buf as *mut u8, len);
         let mut iov = IoSliceMut::new(s);
-        let read_data = ReadData::Basic(slice::from_mut(&mut iov));
+        let read_data = ReadData::Iovec(slice::from_mut(&mut iov));
 
         match Scheduler::handle_event(&mut ctx, DescriptorReadEvent::new(descriptor_id, read_data)) {
             Ok(amount) => {
@@ -566,7 +566,7 @@ hook_macros::hook! {
         crate::strace!("readv(fd={}, iov={:?}, iovcnt={}) -> ...", fd, iov, iovcnt);
 
         let iov_slice = slice::from_raw_parts_mut(iov.cast::<IoSliceMut<'_>>(), iovcnt as usize);
-        let read_data = ReadData::Basic(iov_slice);
+        let read_data = ReadData::Iovec(iov_slice);
 
         match Scheduler::handle_event(&mut ctx, DescriptorReadEvent::new(descriptor_id, read_data)) {
             Ok(amount) => {

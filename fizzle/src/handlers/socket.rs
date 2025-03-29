@@ -2361,7 +2361,19 @@ impl Event for SocketReadEvent<'_> {
                 }
 
                 match &mut self.data {
-                    ReadData::Basic(data) => {
+                    ReadData::BasicSlice(s) => {
+                        let message = regular.recv_buf.pop_front().unwrap();
+
+                        let read = cmp::min(s.len(), message.data.len());
+                        s.copy_from_slice(&message.data[..read]);
+
+                        if regular.recv_buf.is_empty() {
+                            state.lower_polled(&read_polled);
+                        }
+
+                        Outcome::Success(read)
+                    }
+                    ReadData::Iovec(data) => {
                         let message = regular.recv_buf.pop_front().unwrap();
 
                         let mut idx = 0;
@@ -2442,7 +2454,19 @@ impl Event for SocketReadEvent<'_> {
                 }
 
                 match &mut self.data {
-                    ReadData::Basic(data) => {
+                    ReadData::BasicSlice(s) => {
+                        let message = feedback.recv_buf.pop_front().unwrap();
+
+                        let read = cmp::min(s.len(), message.data.len());
+                        s.copy_from_slice(&message.data[..read]);
+
+                        if feedback.recv_buf.is_empty() {
+                            state.lower_polled(read_polled);
+                        }
+
+                        Outcome::Success(read)
+                    }
+                    ReadData::Iovec(data) => {
                         let message = feedback.recv_buf.pop_front().unwrap();
 
                         let mut idx = 0;
@@ -2547,7 +2571,11 @@ impl Event for SocketReadEvent<'_> {
                 }
 
                 match &mut self.data {
-                    ReadData::Basic(out_slices) => {
+                    ReadData::BasicSlice(out_slice) => {
+                        out_slice.fill(0);
+                        Outcome::Success(out_slice.len())
+                    }
+                    ReadData::Iovec(out_slices) => {
                         let mut total_read = 0;
                         for s in out_slices.iter_mut() {
                             for b in s.iter_mut() {
@@ -2586,7 +2614,20 @@ impl Event for SocketReadEvent<'_> {
                 }
 
                 match &mut self.data {
-                    ReadData::Basic(out_slices) => {
+                    ReadData::BasicSlice(s) => {
+                        let read = cmp::min(
+                            s.len(),
+                            state.global.fuzz_input.len() - fuzz_endpoint.borrow().read_idx,
+                        );
+                        s.copy_from_slice(
+                            &state.global.fuzz_input[fuzz_endpoint.borrow().read_idx
+                                ..fuzz_endpoint.borrow().read_idx + read],
+                        );
+                        fuzz_endpoint.borrow_mut().read_idx += read;
+                        
+                        Outcome::Success(read)
+                    }
+                    ReadData::Iovec(out_slices) => {
                         let mut total_read = 0;
                         for s in out_slices.iter_mut() {
                             let read = cmp::min(
@@ -2643,7 +2684,7 @@ impl Event for SocketReadEvent<'_> {
                 SocketState::Connected(ConnectedSocket {
                     backend: ConnectedBackend::Peered(regular),
                     rem_addr,
-                    peer_closed, // TODO: handle this case
+                    peer_closed,
                 }),
             ) => {
                 let read_polled = &regular.read_polled;
@@ -2655,13 +2696,42 @@ impl Event for SocketReadEvent<'_> {
                 let sockaddr = rem_addr.addr().clone();
 
                 match &mut self.data {
-                    ReadData::Basic(data) => {
-                        if *peer_closed {
-                            return Outcome::Success(0)
+                    ReadData::BasicSlice(data) => {
+                        let Some(buf) = regular.recv_buf.pop_front() else {
+                            if *peer_closed {
+                                return Outcome::Success(0)
+                            }
+
+                            unreachable!("socket read event awakened despite no data being available")
+                        };
+
+                        let mut read_idx = regular.read_idx;
+                        let mut total_read = 0;
+
+                        let read = cmp::min(data.len(), buf.len() - read_idx);
+                        data[..read].copy_from_slice(&buf[read_idx..read_idx + read]);
+                        read_idx += read;
+
+                        if read_idx == buf.len() {
+                            regular.read_idx = 0;
+                        } else {
+                            regular.read_idx = read_idx;
+                            regular.recv_buf.push_front(buf);
                         }
 
+                        if regular.recv_buf.is_empty() && !*peer_closed {
+                            state.lower_polled(read_polled);
+                        }
+
+                        Outcome::Success(total_read)
+                    }
+                    ReadData::Iovec(data) => {
                         let Some(buf) = regular.recv_buf.pop_front() else {
-                            unreachable!()
+                            if *peer_closed {
+                                return Outcome::Success(0)
+                            }
+
+                            unreachable!("socket read event awakened despite no data being available")
                         };
 
                         let mut read_idx = regular.read_idx;
@@ -2681,7 +2751,7 @@ impl Event for SocketReadEvent<'_> {
                             regular.recv_buf.push_front(buf);
                         }
 
-                        if regular.recv_buf.is_empty() {
+                        if regular.recv_buf.is_empty() && !*peer_closed {
                             state.lower_polled(read_polled);
                         }
 
@@ -2694,9 +2764,12 @@ impl Event for SocketReadEvent<'_> {
                         let mut msg_count = 0;
                         for out_msg in out_msgs.iter_mut() {
                             let Some(buf) = regular.recv_buf.pop_front() else {
-                                assert!(msg_count > 0);
-                                state.lower_polled(read_polled);
-                                return Outcome::Success(0)
+                                if !*peer_closed {
+                                    state.lower_polled(read_polled);
+                                }
+
+                                debug_assert!(msg_count > 0, "socket read event awakened despite no data being available");
+                                return Outcome::Success(msg_count)
                             };
 
                             *out_msg.msg_flags = SocketMsgFlags::EOR;
@@ -2727,7 +2800,7 @@ impl Event for SocketReadEvent<'_> {
                             msg_count += 1;
                         }
 
-                        if regular.recv_buf.is_empty() {
+                        if regular.recv_buf.is_empty() && !*peer_closed {
                             state.lower_polled(&read_polled);
                         }
 
@@ -2796,7 +2869,7 @@ impl Event for SocketReadEvent<'_> {
                 SocketState::Connected(ConnectedSocket {
                     backend: ConnectedBackend::Plugin(plugin),
                     rem_addr,
-                    peer_closed, // TODO: check
+                    peer_closed,
                 }),
             ) => {
                 let read_polled = plugin.borrow().read_polled.clone();
@@ -2808,13 +2881,40 @@ impl Event for SocketReadEvent<'_> {
                 let sockaddr = rem_addr.addr().clone();
 
                 match &mut self.data {
-                    ReadData::Basic(data) => {
-                        if *peer_closed {
-                            return Outcome::Success(0)
+                    ReadData::BasicSlice(data) => {
+                        let Some(buf) = plugin.borrow_mut().read_buf.pop_front() else {
+                            if *peer_closed {
+                                return Outcome::Success(0)
+                            }
+
+                            unreachable!("socket read event awakened despite no data being available")
+                        };
+
+                        let mut read_idx = plugin.borrow().read_idx;
+                        let read = cmp::min(data.len(), buf.len() - read_idx);
+                        data[..read].copy_from_slice(&buf[read_idx..read_idx + read]);
+                        read_idx += read;
+
+                        if read_idx == buf.len() {
+                            plugin.borrow_mut().read_idx = 0;
+                        } else {
+                            plugin.borrow_mut().read_idx = read_idx;
+                            plugin.borrow_mut().read_buf.push_front(buf);
                         }
 
+                        if plugin.borrow().read_buf.is_empty() && !*peer_closed {
+                            state.lower_polled(&read_polled);
+                        }
+
+                        Outcome::Success(read)
+                    }
+                    ReadData::Iovec(data) => {
                         let Some(buf) = plugin.borrow_mut().read_buf.pop_front() else {
-                            unreachable!()
+                            if *peer_closed {
+                                return Outcome::Success(0)
+                            }
+
+                            unreachable!("socket read event awakened despite no data being available")
                         };
 
                         let mut read_idx = plugin.borrow().read_idx;
@@ -2833,7 +2933,7 @@ impl Event for SocketReadEvent<'_> {
                             plugin.borrow_mut().read_buf.push_front(buf);
                         }
 
-                        if plugin.borrow().read_buf.is_empty() {
+                        if plugin.borrow().read_buf.is_empty() && !*peer_closed {
                             state.lower_polled(&read_polled);
                         }
 
@@ -2843,41 +2943,40 @@ impl Event for SocketReadEvent<'_> {
                     ReadData::Socket(out_msgs, _socket_flags) => {
                         // TODO: blocking incorrectly handled here (see the MSG_WAITFORONE flag in `man 2 recvmmsg`)
 
-                        if *peer_closed {
-                            if rem_addr.protocol() == TransportProtocol::Sctp {
-                                let shutdown_msg = SctpShutdownEvent {
-                                    sse_type: SCTP_SHUTDOWN_EVENT,
-                                    sse_flags: 0,
-                                    sse_length: 0,
-                                    sse_assoc_id: 0,
-                                };
+                        if *peer_closed && rem_addr.protocol() == TransportProtocol::Sctp {
+                            let shutdown_msg = SctpShutdownEvent {
+                                sse_type: SCTP_SHUTDOWN_EVENT,
+                                sse_flags: 0,
+                                sse_length: 0,
+                                sse_assoc_id: 0,
+                            };
 
-                                let shutdown_data = unsafe {
-                                    slice::from_raw_parts((ptr::from_ref(&shutdown_msg)).cast::<u8>(), mem::size_of_val(&shutdown_msg))
-                                };
+                            let shutdown_data = unsafe {
+                                slice::from_raw_parts((ptr::from_ref(&shutdown_msg)).cast::<u8>(), mem::size_of_val(&shutdown_msg))
+                            };
 
-                                *out_msgs[0].addrlen = sockaddr.encode(out_msgs[0].addr_bytes) as u32;
-                                *out_msgs[0].control_len = 0;
-                                *out_msgs[0].msg_flags = SocketMsgFlags::NOTIFICATION;
+                            *out_msgs[0].addrlen = sockaddr.encode(out_msgs[0].addr_bytes) as u32;
+                            *out_msgs[0].control_len = 0;
+                            *out_msgs[0].msg_flags = SocketMsgFlags::NOTIFICATION;
 
-                                let mut written = 0;
-                                for slice in out_msgs[0].buf.iter_mut() {
-                                    let to_write = cmp::min(shutdown_data.len() - written, slice.len());
-                                    slice[..to_write].copy_from_slice(&shutdown_data[written..written + to_write]);
-                                    written += to_write;
-                                }
-                                *out_msgs[0].buflen = shutdown_data.len() as u32;
-                                return Outcome::Success(1)
+                            let mut written = 0;
+                            for slice in out_msgs[0].buf.iter_mut() {
+                                let to_write = cmp::min(shutdown_data.len() - written, slice.len());
+                                slice[..to_write].copy_from_slice(&shutdown_data[written..written + to_write]);
+                                written += to_write;
                             }
-
-                            return Outcome::Success(0)
+                            *out_msgs[0].buflen = shutdown_data.len() as u32;
+                            return Outcome::Success(1)
                         }
 
                         let mut msg_count = 0;
                         for out_msg in out_msgs.iter_mut() {
                             let Some(buf) = plugin.borrow_mut().read_buf.pop_front() else {
-                                assert!(msg_count > 0);
-                                state.lower_polled(&read_polled);
+                                if !*peer_closed {
+                                    state.lower_polled(&read_polled);
+                                }
+
+                                debug_assert!(msg_count > 0, "socket read event awakened despite no data being available");
                                 return Outcome::Success(msg_count)
                             };
 
@@ -2907,7 +3006,7 @@ impl Event for SocketReadEvent<'_> {
                             msg_count += 1;
                         }
 
-                        if plugin.borrow().read_buf.is_empty() {
+                        if plugin.borrow().read_buf.is_empty() && !*peer_closed {
                             state.lower_polled(&read_polled);
                         }
 
@@ -2940,7 +3039,12 @@ impl Event for SocketReadEvent<'_> {
                 }
 
                 match &mut self.data {
-                    ReadData::Basic(out_slices) => {
+                    ReadData::BasicSlice(s) => {
+                        s.fill(0);
+
+                        Outcome::Success(s.len())
+                    }
+                    ReadData::Iovec(out_slices) => {
                         let mut total_read = 0;
                         for s in out_slices.iter_mut() {
                             for b in s.iter_mut() {
@@ -2979,7 +3083,25 @@ impl Event for SocketReadEvent<'_> {
                 }
 
                 match &mut self.data {
-                    ReadData::Basic(out_slices) => {
+                    ReadData::BasicSlice(s) => {
+                        let read = cmp::min(
+                            s.len(),
+                            state.global.fuzz_input.len() - endpoint.borrow().read_idx,
+                        );
+                        s.copy_from_slice(
+                            &state.global.fuzz_input
+                                [endpoint.borrow().read_idx..endpoint.borrow().read_idx + read],
+                        );
+                        endpoint.borrow_mut().read_idx += read;
+
+                        if endpoint.borrow().read_idx == state.global.fuzz_input.len() {
+                            let read_polled = endpoint.borrow().read_polled.clone();
+                            state.lower_polled(&read_polled);
+                        }
+
+                        Outcome::Success(read)
+                    }
+                    ReadData::Iovec(out_slices) => {
                         let mut total_read = 0;
                         for s in out_slices.iter_mut() {
                             let read = cmp::min(

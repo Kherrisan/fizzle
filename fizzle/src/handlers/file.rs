@@ -421,7 +421,29 @@ impl Event for FileReadEvent<'_> {
                 let offset = open_file.borrow().offset;
 
                 match &mut self.data {
-                    ReadData::Basic(data) => {
+                    ReadData::BasicSlice(data) => {
+                        let read = unsafe {
+                            libc::pread(
+                                fd,
+                                data.as_mut_ptr().cast(),
+                                data.len(),
+                                offset as i64,
+                            )
+                        };
+                        if read < 0 {
+                            let e = Errno::get_errno();
+                            log::warn!(
+                                "pread() failed with {} when reading data from file backend",
+                                e
+                            );
+                            return Outcome::Error(e);
+                        }
+
+                        open_file.borrow_mut().offset += read as usize;
+
+                        Outcome::Success(read as usize)
+                    }
+                    ReadData::Iovec(data) => {
                         let read = unsafe {
                             libc::preadv(
                                 fd,
@@ -478,7 +500,11 @@ impl Event for FileReadEvent<'_> {
             }
             FileBackend::Sink => return Outcome::Success(0),
             FileBackend::NullSink => match &mut self.data {
-                ReadData::Basic(data) => {
+                ReadData::BasicSlice(data) => {
+                    data.fill(0);
+                    Outcome::Success(data.len())
+                }
+                ReadData::Iovec(data) => {
                     let mut total_read = 0;
                     for s in data.iter_mut() {
                         s.fill(0);
@@ -499,7 +525,19 @@ impl Event for FileReadEvent<'_> {
                 ReadData::Socket(_, _) => return Outcome::Error(Errno::ENOTSOCK),
             },
             FileBackend::Fuzz(fuzz_endpoint) => match &mut self.data {
-                ReadData::Basic(data) => {
+                ReadData::BasicSlice(data) => {
+                    let read = cmp::min(
+                        data.len(),
+                        state.global.fuzz_input.len() - fuzz_endpoint.borrow().read_idx,
+                    );
+                    data.copy_from_slice(
+                        &state.global.fuzz_input[fuzz_endpoint.borrow().read_idx
+                            ..fuzz_endpoint.borrow().read_idx + read]);
+                    fuzz_endpoint.borrow_mut().read_idx += read;
+
+                    Outcome::Success(read)
+                }
+                ReadData::Iovec(data) => {
                     let mut total_read = 0;
                     for s in data.iter_mut() {
                         let read = cmp::min(

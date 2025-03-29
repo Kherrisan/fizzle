@@ -387,7 +387,8 @@ impl Event for DescriptorDuplicateEvent {
 }
 
 pub enum ReadData<'a> {
-    Basic(&'a mut [IoSliceMut<'a>]),
+    BasicSlice(&'a mut [u8]),
+    Iovec(&'a mut [IoSliceMut<'a>]),
     File(FileReadData<'a>),
     Socket(&'a mut [SocketReadData<'a>], SocketFlags),
 }
@@ -458,8 +459,8 @@ enum DescriptorReadState<'a> {
 }
 
 pub struct DescriptorReadEvent<'a> {
-    fd: Descriptor,
-    data: Option<ReadData<'a>>,
+    pub fd: Descriptor,
+    pub data: Option<ReadData<'a>>,
     state: DescriptorReadState<'a>,
 }
 
@@ -486,7 +487,17 @@ impl Event for DescriptorReadEvent<'_> {
                     return Outcome::Error(Errno::EBADF);
                     #[cfg(feature = "passthroughfs")]
                     return match self.data.take().unwrap() {
-                        ReadData::Basic(io_slice) => match unsafe {
+                        ReadData::BasicSlice(s) => match unsafe {
+                            libc::read(
+                                self.fd.as_raw_fd(),
+                                s.as_mut_ptr().cast(),
+                                s.len(),
+                            )
+                        } {
+                            ..=-1 => Outcome::Error(Errno::get_errno()),
+                            len @ 0.. => Outcome::Success(len as usize),
+                        },
+                        ReadData::Iovec(io_slice) => match unsafe {
                             libc::readv(
                                 self.fd.as_raw_fd(),
                                 io_slice.as_ptr().cast(),
@@ -637,7 +648,7 @@ impl Event for StdinReadEvent<'_> {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let nonblocking = state.local.fds.get(&self.fd).unwrap().nonblocking;
 
-        let ReadData::Basic(iovec) = &mut self.data else {
+        let ReadData::Iovec(iovec) = &mut self.data else {
             unreachable!(
                 "internal error--buffer other than ReadData::Basic passed to StdinReadEent"
             );
