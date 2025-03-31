@@ -1,7 +1,6 @@
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::ffi::CStr;
-use std::io::IoSlice;
 use std::os::fd::RawFd;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -57,8 +56,8 @@ pub enum PushbackChar {
 
 pub enum FileStreamSource {
     Descriptor(RawFd),
-    Slice(Cell<NonNull<[u8]>>, usize),
-    Buffer(Cell<Vec<u8>>, usize),
+    Slice(Cell<NonNull<[u8]>>),
+    Buffer(Cell<Vec<u8>>),
 }
 
 pub enum FileStreamBuffer {
@@ -611,116 +610,409 @@ impl Event for StreamDescriptorEvent {
 
 pub enum StreamWriteState<'a> {
     Start,
-    Descriptor(DescriptorWriteEvent<'a>),
+    WriteToBuffer,
+    WriteToDescriptor {
+        ev: DescriptorWriteEvent<'a>,
+        scratch_len: usize,
+        scratch_ptr: *mut [u8; FIZZLE_FILE_BUFSIZ],
+    },
+    Finish(Option<Errno>),
+    Invalid,
 }
 
 pub struct StreamWriteEvent<'a> {
     stream: FilePtr,
-    buf: &'a IoSlice<'a>,
+    in_buf: &'a [u8],
     chunk_size: usize,
+    written: usize,
+    unlocked: bool,
     state: StreamWriteState<'a>,
 }
 
 impl<'a> StreamWriteEvent<'a> {
     #[inline]
-    pub fn new(stream: FilePtr, buf: &'a IoSlice<'a>, chunk_size: usize) -> Self {
+    pub fn new(stream: FilePtr, buf: &'a [u8], chunk_size: usize, unlocked: bool) -> Self {
         Self {
             stream,
-            buf,
+            in_buf: buf,
             chunk_size,
+            written: 0,
+            unlocked,
             state: StreamWriteState::Start,
         }
     }
 }
 
 impl Event for StreamWriteEvent<'_> {
-    type Success = usize;
-    type Error = Errno;
+    type Success = ();
+    type Error = usize;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        match &mut self.state {
-            StreamWriteState::Start => {
-                let local = &mut state.local;
+        std::thread_local! {
+            static SCRATCHPAD: Cell<Option<Box<[u8; FIZZLE_FILE_BUFSIZ]>>> = {
+                Cell::new(Some(Box::new([0u8; FIZZLE_FILE_BUFSIZ])))
+            };
+        }
 
-                if self.chunk_size != 1 {
-                    // TODO: chunks cannot be partially written; this needs to be implemented
-                    log::warn!("`fwrite()` with member size > 1 not fully implemented--partial writes may occur")
+        let mut write_state = StreamWriteState::Invalid;
+        mem::swap(&mut write_state, &mut self.state);
+
+        match (write_state, self.unlocked) {
+            (StreamWriteState::Start, false) => {
+                // First, lock the FILE*
+                let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
+                    panic!("unrecognized FILE* pointer")
+                };
+
+                self.state = StreamWriteState::WriteToBuffer;
+                let outcome = if file_obj.queued_threads.is_empty() {
+                    Outcome::Yield(YieldUntil::Immediate)
+                } else {
+                    Outcome::Yield(YieldUntil::None)
+                };
+
+                file_obj.queued_threads.push_back(thread::current().id());
+                return outcome
+            }
+            (StreamWriteState::Start, true) | (StreamWriteState::WriteToBuffer, _) => {
+                let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
+                    panic!("unrecognized FILE* pointer")
+                };
+
+                let rw_split = file_obj.rw_split;
+                let buf_write_idx = file_obj.write_idx;
+                let buffer = match &mut file_obj.buffer {
+                    FileStreamBuffer::Internal(filebuf) => &mut filebuf[buf_write_idx..],
+                    FileStreamBuffer::Slice(filebuf_ptr) => unsafe { &mut filebuf_ptr.as_mut()[buf_write_idx..] },
+                    FileStreamBuffer::None(_) => &mut [],
+                };
+
+                let should_flush = match file_obj.buffering_mode {
+                    FileBufferMode::Unbuffered => true,
+                    FileBufferMode::Line => buffer.len() < self.in_buf.len() || self.in_buf.contains(&b'\n'),
+                    FileBufferMode::Block => buffer.len() < self.in_buf.len(),
+                };
+
+                // Now write directly to the buffer and return if possible
+                file_obj.last_op = LastFileOperation::Writing;
+                if self.in_buf.is_empty() {
+                    self.state = StreamWriteState::Finish(None);
+                    return Outcome::Yield(YieldUntil::Immediate)
                 }
 
-                match local.file_objs.get_mut(&self.stream) {
-                    Some(obj) => match &mut obj.source {
+                if !should_flush {
+                    let written = cmp::min(buffer.len(), self.in_buf.len());
+                    buffer[..written].copy_from_slice(self.in_buf);
+                    file_obj.write_idx += written;
+                    self.written += written;
+
+                    self.state = StreamWriteState::Finish(None);
+                    return Outcome::Yield(YieldUntil::Immediate)
+                } else {
+                    // BUG: when a newline is encountered, *everything* is flushed. Should this
+                    // be changed to only flush up to the last newline?
+
+                    let buffer = match &mut file_obj.buffer {
+                        FileStreamBuffer::Internal(filebuf) => &mut filebuf[rw_split..buf_write_idx],
+                        FileStreamBuffer::Slice(filebuf_ptr) => unsafe { &mut filebuf_ptr.as_mut()[rw_split..buf_write_idx] },
+                        FileStreamBuffer::None(_) => &mut [],
+                    };
+
+                    match &mut file_obj.source {
                         FileStreamSource::Descriptor(fd) => {
-                            let desc = Descriptor::from_raw_fd(*fd);
-                            self.state =
-                                StreamWriteState::Descriptor(DescriptorWriteEvent::new(
-                                    desc,
-                                    WriteData::Iovec(slice::from_ref(self.buf)),
-                                ));
+                            let mut scratch = SCRATCHPAD.take().unwrap();
+                            let scratch_len = cmp::min(scratch.len(), buffer.len());
+                            scratch.as_mut_slice()[..scratch_len].copy_from_slice(&buffer[..scratch_len]);
+
+                            let scratch_ptr = Box::into_raw(scratch);
+                            let scratch_buf = unsafe {
+                                slice::from_raw_parts(scratch_ptr.cast_const().cast::<u8>(), scratch_len)
+                            };
+                            
+                            self.state = StreamWriteState::WriteToDescriptor {
+                                ev: DescriptorWriteEvent::new(
+                                    Descriptor::from_raw_fd(*fd),
+                                    WriteData::BasicSlice(scratch_buf),
+                                ),
+                                scratch_len,
+                                scratch_ptr,
+                            };
+                        },
+                        FileStreamSource::Slice(cell) => {
+                            let offset = file_obj.offset;
+                            let dst = unsafe { &mut cell.get_mut().as_mut()[offset..] };
+
+                            let buffer_len = cmp::min(buffer.len(), dst.len());
+                            dst[..buffer_len].copy_from_slice(buffer);
+                            file_obj.write_idx -= buffer_len;
+                            file_obj.offset += buffer_len;
+
+                            if buffer_len < buffer.len() {
+                                // Shift remainder of buffer back
+                                for i in 0..buffer.len() - buffer_len {
+                                    buffer[i] = buffer[buffer_len + i];
+                                }
+
+                                self.state = StreamWriteState::Finish(Some(Errno::SUCCESS));
+                                return Outcome::Yield(YieldUntil::Immediate)
+                            }
+
+                            let copy_len = cmp::min(self.in_buf.len(), dst.len() - buffer_len);
+                            dst[buffer_len..buffer_len + copy_len].copy_from_slice(buffer);
+
+                            file_obj.write_idx += copy_len;
+                            file_obj.offset += copy_len;
+                            self.written += copy_len;
+
+                            if copy_len == self.in_buf.len() {
+                                self.state = StreamWriteState::Finish(None);
+                            } else {
+                                self.state = StreamWriteState::Finish(Some(Errno::SUCCESS));
+                            }
+                        }
+                        FileStreamSource::Buffer(cell) => {
+                            let offset = file_obj.offset;
+                            let dst = &mut cell.get_mut().as_mut_slice() [offset..];
+
+                            let buffer_len = cmp::min(buffer.len(), dst.len());
+                            dst[..buffer_len].copy_from_slice(buffer);
+                            file_obj.write_idx -= buffer_len;
+                            file_obj.offset += buffer_len;
+
+                            if buffer_len < buffer.len() {
+                                // Shift remainder of buffer back
+                                for i in 0..buffer.len() - buffer_len {
+                                    buffer[i] = buffer[buffer_len + i];
+                                }
+
+                                self.state = StreamWriteState::Finish(Some(Errno::SUCCESS));
+                                return Outcome::Yield(YieldUntil::Immediate)
+                            }
+
+                            let copy_len = cmp::min(self.in_buf.len(), dst.len() - buffer_len);
+                            dst[buffer_len..buffer_len + copy_len].copy_from_slice(buffer);
+
+                            file_obj.write_idx += copy_len;
+                            file_obj.offset += copy_len;
+                            self.written += copy_len;
+
+                            if copy_len == self.in_buf.len() {
+                                self.state = StreamWriteState::Finish(None);
+                            } else {
+                                self.state = StreamWriteState::Finish(Some(Errno::SUCCESS));
+                            }
+                        }
+                    }
+                }
+
+                Outcome::Yield(YieldUntil::Immediate)
+            }
+            (StreamWriteState::WriteToDescriptor { mut ev, scratch_len, scratch_ptr }, _) => {
+                let fd = ev.fd;
+                match ev.run(state) {
+                    Outcome::Success(0) => {
+                        let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
+                            panic!("unrecognized FILE* pointer")
+                        };
+
+                        file_obj.err = true;
+                        let buffer_len = file_obj.write_idx - file_obj.rw_split;
+
+                        if self.written > 0 && self.written < buffer_len {
+                            // A partial write from the output buffer occurred, but then the
+                            // underlying destination returned 0. We need to shift the remaining
+                            // bytes in the buffer that weren't written.
+
+                            let rw_split = file_obj.rw_split;
+                            let buf_write_idx = file_obj.write_idx;
+
+                            let buffer = match &mut file_obj.buffer {
+                                FileStreamBuffer::Internal(filebuf) => &mut filebuf[rw_split..buf_write_idx],
+                                FileStreamBuffer::Slice(filebuf_ptr) => unsafe { &mut filebuf_ptr.as_mut()[rw_split..buf_write_idx] },
+                                FileStreamBuffer::None(_) => &mut [],
+                            };
+
+                            for i in 0..buffer_len - self.written {
+                                buffer[i] = buffer[self.written + i];
+                            }
+
+                            file_obj.write_idx = buffer_len - self.written;
+                        }
+
+                        SCRATCHPAD.set(Some(unsafe { Box::from_raw(scratch_ptr) }));
+                        self.state = StreamWriteState::Finish(Some(Errno::SUCCESS));
+                        Outcome::Yield(YieldUntil::Immediate)
+                    }
+                    Outcome::Success(written) => {
+                        let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
+                            panic!("unrecognized FILE* pointer")
+                        };
+
+                        self.written += written;
+                        if written < scratch_len {
+                            let new_buf: &[u8] = unsafe {
+                                slice::from_raw_parts(scratch_ptr.cast_const().cast::<u8>().add(self.written), scratch_len - written)
+                            };
+
+                            self.state = StreamWriteState::WriteToDescriptor {
+                                ev: DescriptorWriteEvent::new(fd, WriteData::BasicSlice(new_buf)),
+                                scratch_len: new_buf.len(),
+                                scratch_ptr,
+                            };
+                            
+                            return Outcome::Yield(YieldUntil::Immediate)
+                        } else {
+                            // Mark buffer as cleared
+                            file_obj.write_idx = file_obj.rw_split;
+                        }
+
+                        // The scratch buffer has been fully written; what remains to be written
+                        // is the out_buf.
+
+                        // TODO: should line-buffered and block-buffered write modulo remainder?
+                        
+                        if scratch_len == 0  {
+                            self.in_buf = &self.in_buf[written..];
+                        }
+
+                        if self.in_buf.is_empty() {
+                            SCRATCHPAD.set(Some(unsafe { Box::from_raw(scratch_ptr) }));
+                            self.state = StreamWriteState::Finish(None);
+                            Outcome::Yield(YieldUntil::Immediate)
+                        } else {
+                            self.state = StreamWriteState::WriteToDescriptor {
+                                ev: DescriptorWriteEvent::new(fd, WriteData::BasicSlice(self.in_buf)),
+                                scratch_len: 0,
+                                scratch_ptr,
+                            };
                             Outcome::Yield(YieldUntil::Immediate)
                         }
-                        FileStreamSource::Slice(cell, write_idx) => {
-                            let written = cmp::min(cell.get().len() - *write_idx, self.buf.len());
-                            let write_buf = unsafe { cell.get_mut().as_mut() };
+                    }
+                    Outcome::Error(e) => {
+                        let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
+                            panic!("unrecognized FILE* pointer")
+                        };
 
-                            write_buf[*write_idx..*write_idx + written]
-                                .copy_from_slice(&self.buf[..written]);
-                            *write_idx += written;
-                            if *write_idx == cell.get().len() {
-                                obj.eof = true; // TODO: is this meant to be set here?
+                        file_obj.err = true;
+                        let buffer_len = file_obj.write_idx - file_obj.rw_split;
+
+                        if self.written > 0 && self.written < buffer_len {
+                            // A partial write from the output buffer occurred, but then the
+                            // underlying destination returned 0. We need to shift the remaining
+                            // bytes in the buffer that weren't written.
+
+                            let rw_split = file_obj.rw_split;
+                            let buf_write_idx = file_obj.write_idx;
+
+                            let buffer = match &mut file_obj.buffer {
+                                FileStreamBuffer::Internal(filebuf) => &mut filebuf[rw_split..buf_write_idx],
+                                FileStreamBuffer::Slice(filebuf_ptr) => unsafe { &mut filebuf_ptr.as_mut()[rw_split..buf_write_idx] },
+                                FileStreamBuffer::None(_) => &mut [],
+                            };
+
+                            for i in 0..buffer_len - self.written {
+                                buffer[i] = buffer[self.written + i];
                             }
-                            Outcome::Success(written)
+
+                            file_obj.write_idx = buffer_len - self.written;
                         }
-                        FileStreamSource::Buffer(cell, write_idx) => {
-                            let v = cell.get_mut();
 
-                            let overwrite_len = cmp::min(v.len() - *write_idx, self.buf.len());
-
-                            v[*write_idx..*write_idx + overwrite_len]
-                                .copy_from_slice(&self.buf[..overwrite_len]);
-
-                            v.extend_from_slice(&self.buf[overwrite_len..]);
-                            *write_idx += self.buf.len();
-
-                            Outcome::Success(self.buf.len())
-                        }
-                    },
-                    None => panic!("UB: `fileno()` called on invalid stream pointer"),
+                        SCRATCHPAD.set(Some(unsafe { Box::from_raw(scratch_ptr) }));
+                        self.state = StreamWriteState::Finish(Some(e));
+                        Outcome::Yield(YieldUntil::Immediate)
+                    }
+                    Outcome::RunTask(t, y) => {
+                        self.state = StreamWriteState::WriteToDescriptor {
+                            ev,
+                            scratch_len,
+                            scratch_ptr,   
+                        };
+                        Outcome::RunTask(t, y)
+                    }
+                    Outcome::Yield(y) => {
+                        self.state = StreamWriteState::WriteToDescriptor {
+                            ev,
+                            scratch_len,
+                            scratch_ptr,   
+                        };
+                        Outcome::Yield(y)
+                    }
                 }
             }
-            StreamWriteState::Descriptor(ev) => {
-                let mut res = ev.run(state);
-                if let Outcome::Success(u) = &mut res {
-                    *u /= self.chunk_size;
+            (StreamWriteState::Finish(errno), unlocked) => {
+                let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
+                    panic!("unrecognized FILE* pointer")
+                };
+
+                file_obj.offset += self.written;
+
+                if !unlocked {
+                    assert_eq!(file_obj.queued_threads.pop_front(), Some(thread::current().id()));
+                    if let Some(&next_thread) = file_obj.queued_threads.front() {
+                        state.mark_thread_ready(next_thread);
+                    }
                 }
-                res
+
+                if let Some(errno) = errno {
+                    errno.set_errno();
+                    Outcome::Error(self.written / self.chunk_size)
+                } else {
+                    Outcome::Success(())
+                }
             }
+            (StreamWriteState::Invalid, _) => unreachable!(),
         }
     }
+}
+
+fn find_first(buf: &[u8], value: u8) -> Option<usize> {
+    for i in (0..buf.len()) {
+        if buf[i] == value {
+            return Some(i)
+        }
+    }
+
+    None
+}
+
+fn _find_last(buf: &[u8], value: u8) -> Option<usize> {
+    for i in (0..buf.len()).rev() {
+        if buf[i] == value {
+            return Some(i)
+        }
+    }
+
+    None
 }
 
 pub enum StreamReadState<'a> {
     Start(&'a mut [u8]),
     ReadFromBuffer(&'a mut [u8]),
     ReadFromDescriptor(DescriptorReadEvent<'a>, &'a mut [u8], *mut [u8; FIZZLE_FILE_BUFSIZ]),
-    Finish,
+    Finish(Option<Errno>),
     Invalid,
 }
 
+// `stop_at_newline` is necessary for `ftegs` behavior. The length returned
+// by Outcome::Success will always be equal to the input length * chunk_size
+// unless stop_at_newline is true and a newline is encountered.
 pub struct StreamReadEvent<'a> {
     stream: FilePtr,
     chunk_size: usize,
     unlocked: bool,
+    stop_at_newline: bool,
     bytes_read: usize,
     state: StreamReadState<'a>,
 }
 
 impl<'a> StreamReadEvent<'a> {
     #[inline]
-    pub fn new(stream: FilePtr, buf: &'a mut [u8], chunk_size: usize, unlocked: bool) -> Self {
+    pub fn new(stream: FilePtr, buf: &'a mut [u8], chunk_size: usize, unlocked: bool, stop_at_newline: bool) -> Self {
         Self {
             stream,
             chunk_size,
             unlocked,
+            stop_at_newline,
             bytes_read: 0,
             state: StreamReadState::Start(buf),
         }
@@ -728,8 +1020,11 @@ impl<'a> StreamReadEvent<'a> {
 }
 
 impl Event for StreamReadEvent<'_> {
-    type Success = ();
+    type Success = usize;
     type Error = usize;
+
+    // BUG: "The file position indicator for the stream is advanced by the number of bytes suc‐
+    // cessfully read or written." Our implementation may not adhere to this on partial reads.
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         std::thread_local! {
@@ -743,6 +1038,7 @@ impl Event for StreamReadEvent<'_> {
 
         match (read_state, self.unlocked) {
             (StreamReadState::Start(buf), false) => {
+                // First, lock the FILE*
                 let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
                     panic!("unrecognized FILE* pointer")
                 };
@@ -757,19 +1053,25 @@ impl Event for StreamReadEvent<'_> {
                 file_obj.queued_threads.push_back(thread::current().id());
                 return outcome
             }
-            (StreamReadState::Start(out), true) | (StreamReadState::ReadFromBuffer(out), _) => {
+            (StreamReadState::Start(mut out), true) | (StreamReadState::ReadFromBuffer(mut out), _) => {
                 let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
                     panic!("unrecognized FILE* pointer")
                 };
 
                 file_obj.last_op = LastFileOperation::Reading;
                 if out.is_empty() {
-                    self.state = StreamReadState::Finish;
+                    self.state = StreamReadState::Finish(None);
                     return Outcome::Yield(YieldUntil::Immediate)
                 }
 
                 match &mut file_obj.buffer {
                     FileStreamBuffer::Internal(filebuf) => {
+                        if self.stop_at_newline {
+                            if let Some(newline_idx) = find_first(filebuf, b'\n') {
+                                out = &mut out[..newline_idx + 1];
+                            }
+                        }
+
                         let read = cmp::min(file_obj.rw_split - file_obj.read_idx, out.len());
                         out[..read].copy_from_slice(&filebuf[file_obj.read_idx..file_obj.read_idx + read]);
                         file_obj.read_idx += read;
@@ -777,6 +1079,12 @@ impl Event for StreamReadEvent<'_> {
                     }
                     FileStreamBuffer::Slice(filebuf_ptr) => {
                         let filebuf = unsafe { filebuf_ptr.as_ref() };
+                        if self.stop_at_newline {
+                            if let Some(newline_idx) = find_first(filebuf, b'\n') {
+                                out = &mut out[..newline_idx + 1];
+                            }
+                        }
+
                         let read = cmp::min(file_obj.rw_split - file_obj.read_idx, out.len());
                         out[..read].copy_from_slice(&filebuf[file_obj.read_idx..file_obj.read_idx + read]);
                         file_obj.read_idx += read;
@@ -785,6 +1093,10 @@ impl Event for StreamReadEvent<'_> {
                     FileStreamBuffer::None(pushback) => {
                         match pushback {
                             PushbackChar::Regular(c) => {
+                                if self.stop_at_newline && *c == b'\n' {
+                                    out = &mut out[..1];
+                                }
+
                                 out[0] = *c;
                                 *pushback = PushbackChar::None;
                                 self.bytes_read += 1;
@@ -796,20 +1108,23 @@ impl Event for StreamReadEvent<'_> {
                 }
 
                 if self.bytes_read == out.len() {
-                    self.state = StreamReadState::Finish;
+                    self.state = StreamReadState::Finish(None);
                     return Outcome::Yield(YieldUntil::Immediate)
                 }
                 assert_eq!(file_obj.read_idx, file_obj.readbuf_capacity());
 
-                let out = &mut out[self.bytes_read..];
+                let mut out = &mut out[self.bytes_read..];
 
                 let readbuf_cap = file_obj.readbuf_capacity();
+                let offset = file_obj.offset;
 
                 // Read bytes from the underlying source into the FILE* buffer/destination
-                let (source, read_idx) = match &mut file_obj.source {
+                let source = match &mut file_obj.source {
                     FileStreamSource::Descriptor(fd) => {
                         let desc = Descriptor::from_raw_fd(*fd);
-                        let scratch_len = cmp::min(FIZZLE_FILE_BUFSIZ, out.len() + (file_obj.readbuf_capacity().saturating_sub(1)));
+                        // If the read is meant to stop at newlines, it needs to fit within the readbuf's capacity
+                        // (plus 1 character for the newline that is written out).
+                        let scratch_len = cmp::min(FIZZLE_FILE_BUFSIZ, file_obj.readbuf_capacity() + 1);
 
                         // Using a thread-local buffer makes this code non-reentrant, so
                         // we need to take care not to call `StreamReadEvent` recursively.
@@ -850,21 +1165,28 @@ impl Event for StreamReadEvent<'_> {
                         );
                         return Outcome::Yield(YieldUntil::Immediate)
                     }
-                    FileStreamSource::Slice(cell, read_idx) => {
-                        let source_buf = &(unsafe { cell.get_mut().as_ref() })[*read_idx..];
-                        (source_buf, read_idx)
+                    FileStreamSource::Slice(cell) => {
+                        let source_buf = &(unsafe { cell.get_mut().as_ref() })[offset..];
+                        source_buf
                     }
-                    FileStreamSource::Buffer(cell, read_idx) => {
-                        let source_buf = &cell.get_mut().as_slice()[*read_idx..];
-                        (source_buf, read_idx)
+                    FileStreamSource::Buffer(cell) => {
+                        let source_buf = &cell.get_mut().as_slice()[offset..];
+                        source_buf
                     }
                 };
+
+                if self.stop_at_newline {
+                    if let Some(newline_idx) = find_first(source, b'\n') {
+                        out = &mut out[..newline_idx + 1];
+                    }
+                }
 
                 // First, copy as much data to the output buffer 
                 let out_len = cmp::min(out.len(), source.len());
                 out[..out_len].copy_from_slice(&source[..out_len]);
+                let out = &mut out[out_len..];
 
-                *read_idx += out_len;
+                file_obj.offset += out_len;
                 self.bytes_read += out_len;
                 let source = &source[out_len..];
 
@@ -890,13 +1212,29 @@ impl Event for StreamReadEvent<'_> {
                     FileStreamBuffer::None(_) => (),
                 }
 
-                *read_idx += readbuf_len;
+                file_obj.offset += readbuf_len;
 
-                self.state = StreamReadState::Finish;
+                if out.is_empty() {
+                    self.state = StreamReadState::Finish(None);
+                } else {
+                    file_obj.eof = true;
+                    self.state = StreamReadState::Finish(Some(Errno::SUCCESS)); // No error, just eof
+                }
+
                 return Outcome::Yield(YieldUntil::Immediate)
             }
-            (StreamReadState::ReadFromDescriptor(mut ev, out, scratch_ptr), _) => {
+            (StreamReadState::ReadFromDescriptor(mut ev, mut out, scratch_ptr), _) => {
                 match ev.run(state) {
+                    Outcome::Success(0) => {
+                        let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
+                            panic!("unrecognized FILE* pointer")
+                        };
+
+                        // TODO: set error somewhere?
+                        file_obj.eof = true;
+                        self.state = StreamReadState::Finish(Some(Errno::SUCCESS));
+                        Outcome::Yield(YieldUntil::Immediate)
+                    }
                     Outcome::Success(read) => {
                         let fd = ev.fd;
                         // SAFETY: the exclusive reference `ev` holds to `scratch_ptr` needs to be
@@ -909,6 +1247,11 @@ impl Event for StreamReadEvent<'_> {
                             slice::from_raw_parts(scratch_ptr.cast_const().cast(), read)
                         };
 
+                        if self.stop_at_newline {
+                            if let Some(newline_idx) = find_first(readbuf, b'\n') {
+                                out = &mut out[..newline_idx + 1];
+                            }
+                        }
 
                         let out_len = cmp::min(out.len(), read);
                         out[..out_len].copy_from_slice(&readbuf[..out_len]);
@@ -946,11 +1289,11 @@ impl Event for StreamReadEvent<'_> {
                         }
 
                         if out.is_empty() {
-                            self.state = StreamReadState::Invalid;
+                            self.state = StreamReadState::Finish(None);
                             SCRATCHPAD.set(unsafe {
                                 Some(Box::from_raw(scratch_ptr))
                             });
-                            Outcome::Success(())
+                            Outcome::Yield(YieldUntil::Immediate)
 
                         } else {
                             let scratch_len = cmp::min(FIZZLE_FILE_BUFSIZ, out.len() + (file_obj.readbuf_capacity().saturating_sub(1)));
@@ -969,32 +1312,41 @@ impl Event for StreamReadEvent<'_> {
                         }
 
                     },
-                    Outcome::Error(_) => {
+                    Outcome::Error(e) => {
                         let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
                             panic!("unrecognized FILE* pointer")
                         };
 
                         // TODO: set error somewhere?
                         file_obj.err = true;
-                        Outcome::Error(self.bytes_read / self.chunk_size)
+                        self.state = StreamReadState::Finish(Some(e));
+                        Outcome::Yield(YieldUntil::Immediate)
                     }
                     Outcome::RunTask(task, yield_until) => Outcome::RunTask(task, yield_until),
                     Outcome::Yield(yield_until) => Outcome::Yield(yield_until),
                 }
             }
-            (StreamReadState::Finish, _) => {
+            (StreamReadState::Finish(errno), unlocked) => {
                 let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
                     panic!("unrecognized FILE* pointer")
                 };
 
-                if !self.unlocked {
+                if !unlocked {
                     assert_eq!(file_obj.queued_threads.pop_front(), Some(thread::current().id()));
                     if let Some(&next_thread) = file_obj.queued_threads.front() {
                         state.mark_thread_ready(next_thread);
                     }
                 }
 
-                Outcome::Success(())
+                // This is handled elsewhere
+                // file_obj.offset += self.bytes_read;
+
+                if let Some(errno) = errno {
+                    errno.set_errno();
+                    Outcome::Error(self.bytes_read / self.chunk_size)
+                } else {
+                    Outcome::Success(self.bytes_read / self.chunk_size)
+                }
             }
             (StreamReadState::Invalid, _) => unreachable!(),
         }
@@ -1169,7 +1521,7 @@ impl StreamEofEvent {
         Self {
             stream,
             unlocked,
-            state: StreamEofState::Finish
+            state: StreamEofState::Start,
         }
     }
 }

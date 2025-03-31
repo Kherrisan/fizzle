@@ -870,7 +870,7 @@ enum DescriptorWriteState<'a> {
 }
 
 pub struct DescriptorWriteEvent<'a> {
-    fd: Descriptor,
+    pub fd: Descriptor,
     data: Option<WriteData<'a>>,
     state: DescriptorWriteState<'a>,
 }

@@ -1,13 +1,8 @@
 use core::slice;
 use std::ffi::CStr;
-use std::io::IoSlice;
-use std::io::IoSliceMut;
 use std::ptr;
 
-use fizzle_common::path::FilePath;
-
 use crate::errno::Errno;
-use crate::handlers::file::*;
 use crate::handlers::filestream::*;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
@@ -618,7 +613,7 @@ hook_macros::hook! {
         size: libc::size_t,
         nmemb: libc::size_t,
         stream: *mut libc::FILE
-    ) -> libc::size_t => fizzle_fwrite(_ctx) {
+    ) -> libc::size_t => fizzle_fwrite(ctx) {
         crate::strace!("fwrite(ptr={:?}, size={}, nmemb={}, stream={:?}) -> ...", ptr, size, nmemb, stream);
 
         let Some(file_ptr) = FilePtr::from_raw(stream) else {
@@ -627,28 +622,18 @@ hook_macros::hook! {
             return 0
         };
 
-        log::warn!("`fwrite()` unimplemented");
-        let res = unsafe { libc::fwrite(ptr, size, nmemb, stream) };
-
-        crate::strace!("fwrite(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {:?}", ptr, size, nmemb, stream, res);
-        res
-
-        /*
         let buf = slice::from_raw_parts(ptr.cast::<u8>(), size * nmemb);
-        let io_slice = IoSlice::new(buf);
 
-        match Scheduler::handle_event(&mut ctx, FileStreamWriteEvent::new(stream_ptr, &io_slice, size)) {
-            Ok(written) => {
+        match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, buf, size, false)) {
+            Ok(()) => {
+                crate::strace!("fwrite(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, nmemb);
+                nmemb
+            }
+            Err(written) => {
                 crate::strace!("fwrite(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, written);
                 written
             }
-            Err(e) => {
-                crate::strace!("fwrite(ptr={:?}, size={}, nmemb={}, stream={:?}) -> -1 ({})", ptr, size, nmemb, stream, e);
-                e.set_errno(); // TODO: this doesn't need to be set
-                0
-            }
         }
-        */
     }
 }
 
@@ -658,51 +643,77 @@ hook_macros::hook! {
         size: libc::size_t,
         nmemb: libc::size_t,
         stream: *mut libc::FILE
-    ) -> libc::size_t => fizzle_fread(_ctx) {
+    ) -> libc::size_t => fizzle_fread(ctx) {
         crate::strace!("fread(ptr={:?}, size={}, nmemb={}, stream={:?}) -> ...", ptr, size, nmemb, stream);
 
-        let Some(_stream_ptr) = FilePtr::from_raw(stream) else {
+        let Some(stream_ptr) = FilePtr::from_raw(stream) else {
             crate::strace!("fread(ptr={:?}, size={}, nmemb={}, stream={:?}) -> -1 (EINVAL)", ptr, size, nmemb, stream);
             Errno::EINVAL.set_errno();
             return 0
         };
 
-        log::warn!("`fread()` unimplemented");
-        let res = unsafe { libc::fread(ptr, size, nmemb, stream) };
-        crate::strace!("fread(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, res);
-        
-        res
-
-        /*
         let buf = slice::from_raw_parts_mut(ptr.cast::<u8>(), size * nmemb);
-        let mut io_slice = IoSliceMut::new(buf);
 
-        match Scheduler::handle_event(&mut ctx, FileStreamReadEvent::new(stream_ptr, &mut io_slice, size)) {
-            Ok(written) => {
+        match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, buf, size, false, false)) {
+            Ok(_) => {
+                crate::strace!("fread(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, nmemb);
+                nmemb
+            }
+            Err(written) => {
                 crate::strace!("fread(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, written);
                 written
             }
-            Err(e) => {
-                crate::strace!("fread(ptr={:?}, size={}, nmemb={}, stream={:?}) -> -1 ({})", ptr, size, nmemb, stream, e);
-                e.set_errno(); // TODO: this doesn't need to be set
-                0
-            }
         }
-        */
     }
 }
 
 hook_macros::hook! {
     unsafe fn fgetc(
         stream: *mut libc::FILE
-    ) -> libc::c_int => fizzle_fgetc(_ctx) {
+    ) -> libc::c_int => fizzle_fgetc(ctx) {
         crate::strace!("fgetc(stream={:?}) -> ...", stream);
 
-        log::warn!("`fgetc()` unimplemented");
-        let res = unsafe { libc::fgetc(stream) };
-        crate::strace!("fgetc(stream={:?}) -> {}", stream, res);
-        
-        res
+        let Some(stream_ptr) = FilePtr::from_raw(stream) else {
+            panic!("invalid FILE* pointer passed to fgetc()")
+        };
+
+        let mut buf = [0u8; 1];
+
+        match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf, 1, false, false)) {
+            Ok(_) => {
+                crate::strace!("fgetc(stream={:?}) -> {}", stream, buf[0]);
+                buf[0] as libc::c_int
+            }
+            Err(_written) => {
+                crate::strace!("fgetc(stream={:?}) -> EOF", stream);
+                libc::EOF
+            }
+        }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn fgetc_unlocked(
+        stream: *mut libc::FILE
+    ) -> libc::c_int => fizzle_fgetc_unlocked(ctx) {
+        crate::strace!("fgetc_unlocked(stream={:?}) -> ...", stream);
+
+        let Some(stream_ptr) = FilePtr::from_raw(stream) else {
+            panic!("invalid FILE* pointer passed to fgetc_unlocked()")
+        };
+
+        let mut buf = [0u8; 1];
+
+        match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf, 1, true, false)) {
+            Ok(_) => {
+                crate::strace!("fgetc_unlocked(stream={:?}) -> {}", stream, buf[0]);
+                buf[0] as libc::c_int
+            }
+            Err(_written) => {
+                crate::strace!("fgetc_unlocked(stream={:?}) -> EOF", stream);
+                libc::EOF
+            }
+        }
     }
 }
 
@@ -711,14 +722,86 @@ hook_macros::hook! {
         s: *mut libc::c_char,
         size: libc::c_int,
         stream: *mut libc::FILE
-    ) -> *mut libc::c_char => fizzle_fgets(_ctx) {
+    ) -> *mut libc::c_char => fizzle_fgets(ctx) {
         crate::strace!("fgets(s={:?}, size={}, stream={:?}) -> ...", s, size, stream);
 
-        log::warn!("`fgets()` unimplemented");
-        let res = unsafe { libc::fgets(s, size, stream) };
-        crate::strace!("fgets(s={:?}, size={}, stream={:?}) -> {:?}", s, size, stream, res);
-        
-        res
+        let Some(stream_ptr) = FilePtr::from_raw(stream) else {
+            panic!("invalid FILE* pointer passed to fgets()")
+        };
+
+        if size < 1 {
+            panic!("invalid size passed to fgets()")
+        }
+
+        let buf = slice::from_raw_parts_mut(s.cast::<u8>(), size as usize);
+        let buf_len = buf.len() - 1;
+
+        match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[..buf_len], 1, false, true)) {
+            Ok(written) => {
+                if buf[written - 1] != b'\n' {
+                    buf[buf_len] = b'\0';
+                }
+
+                crate::strace!("fgets(s={:?}, size={}, stream={:?}) -> {:?}", s, size, stream, s);
+                s
+            }
+            Err(written) => {
+                let ret = if written == 0 || Errno::get_errno() != Errno::SUCCESS {
+                    ptr::null_mut()
+                } else {
+                    s
+                };
+
+                buf[written] = b'\0';
+
+                crate::strace!("fgets(s={:?}, size={}, stream={:?}) -> {:?}", s, size, stream, ret);
+                ret
+            }
+        }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn fgets_unlocked(
+        s: *mut libc::c_char,
+        size: libc::c_int,
+        stream: *mut libc::FILE
+    ) -> *mut libc::c_char => fizzle_fgets_unlocked(ctx) {
+        crate::strace!("fgets_unlocked(s={:?}, size={}, stream={:?}) -> ...", s, size, stream);
+
+        let Some(stream_ptr) = FilePtr::from_raw(stream) else {
+            panic!("invalid FILE* pointer passed to fgets_unlocked()")
+        };
+
+        if size < 1 {
+            panic!("invalid size passed to fgets_unlocked()")
+        }
+
+        let buf = slice::from_raw_parts_mut(s.cast::<u8>(), size as usize);
+        let buf_len = buf.len() - 1;
+
+        match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[..buf_len], 1, false, true)) {
+            Ok(written) => {
+                if buf[written - 1] != b'\n' {
+                    buf[buf_len] = b'\0';
+                }
+
+                crate::strace!("fgets_unlocked(s={:?}, size={}, stream={:?}) -> {:?}", s, size, stream, s);
+                s
+            }
+            Err(written) => {
+                let ret = if written == 0 || Errno::get_errno() != Errno::SUCCESS {
+                    ptr::null_mut()
+                } else {
+                    s
+                };
+
+                buf[written] = b'\0';
+
+                crate::strace!("fgets_unlocked(s={:?}, size={}, stream={:?}) -> {:?}", s, size, stream, ret);
+                ret
+            }
+        }
     }
 }
 
@@ -750,72 +833,97 @@ hook_macros::hook! {
     unsafe fn fputc(
         c: libc::c_int,
         stream: *mut libc::FILE
-    ) -> libc::c_int => fizzle_fputc(_ctx) {
+    ) -> libc::c_int => fizzle_fputc(ctx) {
         crate::strace!("fputc(c={}, stream={:?}) -> ...", c, stream);
 
-        log::warn!("`fputc()` unimplemented");
-        let res = unsafe { libc::fputc(c, stream) };
-        crate::strace!("fputc(c={:?}, stream={:?}) -> {}", c, stream, res);
-        
-        res
-
-        /*
-        let c = c as u8;
-
-        let Some(stream_ptr) = FilePtr::from_raw(stream) else {
-            crate::strace!("fputc(c={}, stream={:?}) -> ...", c, stream);
-            Errno::EINVAL.set_errno();
-            return libc::EOF
+        let Some(file_ptr) = FilePtr::from_raw(stream) else {
+            panic!("invalid FILE* pointer passed to fputc()")
         };
 
-        let io_slice = IoSlice::new(slice::from_ref(&c));
-
-        match Scheduler::handle_event(&mut ctx, FileStreamWriteEvent::new(stream_ptr, &io_slice, 1)) {
-            Ok(written) => {
-                crate::strace!("fputc(c={:?}, stream={:?}) -> {}", c, stream, written);
-                written.try_into().unwrap()
+        let buf = [c as u8];
+        
+        match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, &buf, 1, false)) {
+            Ok(()) => {
+                crate::strace!("fputc(c={:?}, stream={:?}) -> {}", c, stream, c);
+                c
             }
-            Err(e) => {
-                crate::strace!("fputc(c={:?}, stream={:?}) -> EOF ({})", c, stream, e);
-                e.set_errno(); // TODO: this doesn't need to be set
+            Err(_written) => {
+                crate::strace!("fputc(c={:?}, stream={:?}) -> EOF", c, stream);
                 libc::EOF
             }
         }
-        */
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn fputc_unlocked(
+        c: libc::c_int,
+        stream: *mut libc::FILE
+    ) -> libc::c_int => fizzle_fputc_unlocked(ctx) {
+        crate::strace!("fputc_unlocked(c={}, stream={:?}) -> ...", c, stream);
+
+        let Some(file_ptr) = FilePtr::from_raw(stream) else {
+            panic!("invalid FILE* pointer passed to fputc_unlocked()")
+        };
+
+        let buf = [c as u8];
+        
+        match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, &buf, 1, true)) {
+            Ok(()) => {
+                crate::strace!("fputc_unlocked(c={:?}, stream={:?}) -> {}", c, stream, c);
+                c
+            }
+            Err(_written) => {
+                crate::strace!("fputc_unlocked(c={:?}, stream={:?}) -> EOF", c, stream);
+                libc::EOF
+            }
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn putchar(
         c: libc::c_int
-    ) -> libc::c_int => fizzle_putchar(_ctx) {
+    ) -> libc::c_int => fizzle_putchar(ctx) {
+        let file_ptr = FilePtr::from_raw(crate::stdout).unwrap();
+
         crate::strace!("putchar(c={}) -> ...", c);
 
-        log::warn!("`putchar()` unimplemented");
-        let res = unsafe { libc::putchar(c) };
-        crate::strace!("putchar(c={:?}) -> {}", c, res);
+        let buf = [c as u8];
         
-        res
-
-        /*
-        let c = c as u8;
-
-        let stream_ptr = FilePtr::from_raw(unsafe { crate::stdout }).unwrap();
-
-        let io_slice = IoSlice::new(slice::from_ref(&c));
-
-        match Scheduler::handle_event(&mut ctx, FileStreamWriteEvent::new(stream_ptr, &io_slice, 1)) {
-            Ok(written) => {
-                crate::strace!("putchar(c={:?}) -> {}", c, written);
-                written.try_into().unwrap()
+        match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, &buf, 1, false)) {
+            Ok(()) => {
+                crate::strace!("putchar(c={:?}) -> {}", c, c);
+                c
             }
-            Err(e) => {
-                crate::strace!("putchar(c={:?}) -> EOF ({})", c, e);
-                e.set_errno(); // TODO: this doesn't need to be set
+            Err(_written) => {
+                crate::strace!("putchar(c={:?}) -> EOF", c);
                 libc::EOF
             }
         }
-        */
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn putchar_unlocked(
+        c: libc::c_int
+    ) -> libc::c_int => fizzle_putchar_unlocked(ctx) {
+        let file_ptr = FilePtr::from_raw(crate::stdout).unwrap();
+
+        crate::strace!("putchar_unlocked(c={}) -> ...", c);
+
+        let buf = [c as u8];
+        
+        match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, &buf, 1, true)) {
+            Ok(()) => {
+                crate::strace!("putchar_unlocked(c={:?}) -> {}", c, c);
+                c
+            }
+            Err(_written) => {
+                crate::strace!("putchar_unlocked(c={:?}) -> EOF", c);
+                libc::EOF
+            }
+        }
     }
 }
 
@@ -826,72 +934,92 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_fputs(ctx) {
         crate::strace!("fputs(s={:?}, stream={:?}) -> ...", s, stream);
 
-        log::warn!("`fputs()` unimplemented");
-        let res = unsafe { libc::fputs(s, stream) };
-        crate::strace!("fputs(s={:?}, stream={:?}) -> {}", s, stream, res);
-        
-        res
-
-        /*
-        let Some(stream_ptr) = FilePtr::from_raw(stream) else {
-            crate::strace!("fputs(s={:?}, stream={:?}) -> EOF (EINVAL)", s, stream);
-            Errno::EINVAL.set_errno();
-            return libc::EOF
+        let Some(file_ptr) = FilePtr::from_raw(stream) else {
+            panic!("invalid FILE* pointer passed to fputs()")
         };
 
-        let cstr = unsafe { CStr::from_ptr(s) };
-        let buf = cstr.to_bytes();
+        let buf = CStr::from_ptr(s).to_bytes();
 
-        let io_slice = IoSlice::new(buf);
-
-        match Scheduler::handle_event(&mut ctx, FileStreamWriteEvent::new(stream_ptr, &io_slice, 1)) {
-            Ok(written) => {
-                crate::strace!("fputs(s={:?}, stream={:?}) -> {}", s, stream, written);
-                written.try_into().unwrap()
+        match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, buf, 1, false)) {
+            Ok(()) => {
+                crate::strace!("fputs(s={:?}, stream={:?}) -> 0", s, stream);
+                0
             }
-            Err(e) => {
-                crate::strace!("fputs(s={:?}, stream={:?}) -> EOF ({})", s, stream, e);
-                e.set_errno(); // TODO: this doesn't need to be set
+            Err(_written) => {
+                crate::strace!("fputs(s={:?}, stream={:?}) -> EOF", s, stream);
                 libc::EOF
             }
         }
-        */
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn fputs_unlocked(
+        s: *const libc::c_char,
+        stream: *mut libc::FILE
+    ) -> libc::c_int => fizzle_fputs_unlocked(ctx) {
+        crate::strace!("fputs_unlocked(s={:?}, stream={:?}) -> ...", s, stream);
+
+        let Some(file_ptr) = FilePtr::from_raw(stream) else {
+            panic!("invalid FILE* pointer passed to fputs()")
+        };
+
+        let buf = CStr::from_ptr(s).to_bytes();
+
+        match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, buf, 1, true)) {
+            Ok(()) => {
+                crate::strace!("fputs_unlocked(s={:?}, stream={:?}) -> 0", s, stream);
+                0
+            }
+            Err(_written) => {
+                crate::strace!("fputs_unlocked(s={:?}, stream={:?}) -> EOF", s, stream);
+                libc::EOF
+            }
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn puts(
         s: *const libc::c_char
-    ) -> libc::c_int => fizzle_puts(_ctx) {
+    ) -> libc::c_int => fizzle_puts(ctx) {
         crate::strace!("puts(s={:?}) -> ...", s);
 
-        log::warn!("`puts()` unimplemented");
-        let res = unsafe { libc::puts(s) };
-        crate::strace!("puts(s={:?}) -> {}", s, res);
-        
-        res
+        let file_ptr = FilePtr::from_raw(crate::stdout).unwrap();
+        let buf = CStr::from_ptr(s).to_bytes();
 
-        /*
-        let stream_ptr = FilePtr::from_raw(unsafe { crate::stdout }).unwrap();
-
-        let cstr = unsafe { CStr::from_ptr(s) };
-        let mut buf = Vec::from(cstr.to_bytes());
-        buf.push(b'\n');
-
-        let io_slice = IoSlice::new(buf.as_slice());
-
-        match Scheduler::handle_event(&mut ctx, FileStreamWriteEvent::new(stream_ptr, &io_slice, 1)) {
-            Ok(written) => {
-                crate::strace!("puts(s={:?}) -> {}", s, written);
-                written.try_into().unwrap()
+        match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, buf, 1, false)) {
+            Ok(()) => {
+                crate::strace!("puts(s={:?}) -> 0", s);
+                0
             }
-            Err(e) => {
-                crate::strace!("puts(s={:?}) -> EOF ({})", s, e);
-                e.set_errno(); // TODO: this doesn't need to be set
+            Err(_written) => {
+                crate::strace!("puts(s={:?}) -> EOF", s);
                 libc::EOF
             }
         }
-        */
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn puts_unlocked(
+        s: *const libc::c_char
+    ) -> libc::c_int => fizzle_puts_unlocked(ctx) {
+        crate::strace!("puts_unlocked(s={:?}) -> ...", s);
+
+        let file_ptr = FilePtr::from_raw(crate::stdout).unwrap();
+        let buf = CStr::from_ptr(s).to_bytes();
+
+        match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, buf, 1, true)) {
+            Ok(()) => {
+                crate::strace!("puts_unlocked(s={:?}) -> 0", s);
+                0
+            }
+            Err(_written) => {
+                crate::strace!("puts_unlocked(s={:?}) -> EOF", s);
+                libc::EOF
+            }
+        }
     }
 }
 
