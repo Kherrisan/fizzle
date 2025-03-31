@@ -395,156 +395,205 @@ impl Event for StreamCloseEvent<'_> {
     }
 }
 
-pub enum StreamFlushState<'a> {
+// TODO: implement
+// "For input streams associated with seekable files (e.g., disk files, but
+// not pipes or terminals), fflush() discards any buffered data  that  has
+// been fetched from the underlying file, but has not been consumed by the
+// application."
+
+pub enum StreamFlushState {
     Start,
-    RunActions(Vec<FlushAction<'a>>),
+    FlushSingle(FlushAction, FileBufferMode),
+    FlushAll(Vec<FlushAction>, FileBufferMode, Option<Errno>),
     Invalid,
 }
 
-pub struct FlushAction<'a> {
-    ptr: FilePtr,
-    event: DescriptorWriteEvent<'a>,
+pub struct FlushAction {
+    stream: FilePtr,
+    event: StreamWriteEvent<'static>,
 }
 
-pub struct StreamFlushEvent<'a> {
+pub struct StreamFlushEvent {
     stream: Option<FilePtr>,
-    state: StreamFlushState<'a>,
+    unlocked: bool,
+    state: StreamFlushState,
 }
 
-impl StreamFlushEvent<'_> {
+impl StreamFlushEvent {
     #[inline]
-    pub fn new(stream: Option<FilePtr>) -> Self {
+    pub fn new(stream: Option<FilePtr>, unlocked: bool) -> Self {
         Self {
             stream,
+            unlocked,
             state: StreamFlushState::Start,
         }
     }
 }
 
-/*
-impl Event for StreamFlushEvent<'_> {
+impl Event for StreamFlushEvent {
     type Success = ();
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        // TODO: for now, this is a No-op as buffering isn't implemented
+        let flush_state = mem::replace(&mut self.state, StreamFlushState::Invalid);
 
-        let flush_state = mem::replace(&mut self.state, FileStreamFlushState::Invalid);
+        match (flush_state, self.stream) {
+            (StreamFlushState::Start, Some(stream)) => {
+                // First, lock the FILE*
+                let Some(file_obj) = state.local.file_objs.get_mut(&stream) else {
+                    panic!("unrecognized FILE* pointer")
+                };
 
-        match (flush_state, &self.stream) {
-            (FileStreamFlushState::Start, Some(file_ptr)) => match state.local.file_objs.get_mut(file_ptr) {
-                Some(obj) => {
-                    if let FileAccessMode::ReadOnly = obj.access_mode {
-                        log::error!("fflush() called on read-only FILE* stream (undefined behavior)");
+                let old_buffering = file_obj.buffering_mode;
+                file_obj.buffering_mode = FileBufferMode::Unbuffered;
+
+                self.state = StreamFlushState::FlushSingle(FlushAction {
+                    stream,
+                    event: StreamWriteEvent::new(stream, &[], 1, self.unlocked),
+                }, old_buffering);
+
+                if self.unlocked {
+                    return Outcome::Yield(YieldUntil::Immediate)
+                }
+
+                let outcome = if file_obj.queued_threads.is_empty() {
+                    Outcome::Yield(YieldUntil::Immediate)
+                } else {
+                    Outcome::Yield(YieldUntil::None)
+                };
+
+                file_obj.queued_threads.push_back(thread::current().id());
+                outcome
+            }
+            (StreamFlushState::FlushSingle(FlushAction { stream, mut event }, old_buffering), _) => {
+                match event.run(state) {
+                    Outcome::Success(()) => {
+                        let Some(file_obj) = state.local.file_objs.get_mut(&stream) else {
+                            panic!("unrecognized FILE* pointer")
+                        };
+
+                        file_obj.buffering_mode = old_buffering;
+                        Outcome::Yield(YieldUntil::Immediate)
                     }
+                    Outcome::Error(_) => {
+                        let e = Errno::get_errno();
 
-                    if obj.eof || obj.err {
-                        return Outcome::Error(Errno::SUCCESS)
+                        let Some(file_obj) = state.local.file_objs.get_mut(&stream) else {
+                            panic!("unrecognized FILE* pointer")
+                        };
+
+                        file_obj.buffering_mode = old_buffering;
+                        Outcome::Error(e)
                     }
+                    Outcome::Yield(y) => Outcome::Yield(y),
+                    Outcome::RunTask(t, y) => Outcome::RunTask(t, y),
+                }
+            }
+            (StreamFlushState::Start, None) => { // Flush all
+                let streams: Vec<FilePtr> = state.local.file_objs.keys().copied().collect();
 
-                    // Nothing to flush if buffer_index is at 0
-                    if obj.buffer_index == 0 {
-                        return Outcome::Success(())
+                let Some(last_stream) = streams.last() else {
+                    // No streams to be flushed
+                    return Outcome::Success(())
+                };
+
+                let Some(file_obj) = state.local.file_objs.get_mut(last_stream) else {
+                    panic!("unrecognized FILE* pointer")
+                };
+
+                let old_buffering = file_obj.buffering_mode;
+                file_obj.buffering_mode = FileBufferMode::Unbuffered;
+
+                let flush_actions: Vec<_> = streams.into_iter().map(|stream| {
+                    FlushAction {
+                        stream,
+                        event: StreamWriteEvent::new(stream, &[], 1, self.unlocked),
                     }
+                }).collect();
 
-                    let data = match &obj.buffer {
-                        FileStreamBuffer::Internal(buf) => &buf.as_ref()[..obj.buffer_index],
-                        FileStreamBuffer::Slice(buf) => unsafe { &buf.as_ref()[..obj.buffer_index] },
-                        FileStreamBuffer::None => unreachable!(),
-                    };
+                self.state = StreamFlushState::FlushAll(flush_actions, old_buffering, None);
 
-                    match &mut obj.source {
-                        FileStreamSource::Descriptor(fd) => {
-                            let desc = Descriptor::from_raw_fd(*fd);
+                if self.unlocked {
+                    return Outcome::Yield(YieldUntil::Immediate)
+                }
 
-                            let events = vec![
-                                FlushAction {
-                                    ptr: *file_ptr,
-                                    event: DescriptorWriteEvent::new(desc, WriteData::BasicSlice(data)),
-                                }
-                            ];
+                let outcome = if file_obj.queued_threads.is_empty() {
+                    Outcome::Yield(YieldUntil::Immediate)
+                } else {
+                    Outcome::Yield(YieldUntil::None)
+                };
 
-                            self.state = FileStreamFlushState::RunActions(events);
-                        }
-                        FileStreamSource::Slice(cell, dst_idx) => {
-                            let dst = unsafe { cell.get_mut().as_mut() };
-                            let flush_len = cmp::min(data.len(), dst.len() - *dst_idx);
+                file_obj.queued_threads.push_back(thread::current().id());
+                outcome
+            }
+            (StreamFlushState::FlushAll(mut actions, mut old_buffering, mut errno), _) => {
+                let action = actions.last_mut().unwrap();
 
-                            dst[*dst_idx..*dst_idx + flush_len].copy_from_slice(&data[..flush_len]);
-                            *dst_idx += flush_len;
+                match action.event.run(state) {
+                    Outcome::Success(()) => {
+                        let Some(file_obj) = state.local.file_objs.get_mut(&action.stream) else {
+                            panic!("unrecognized FILE* pointer")
+                        };
 
-                            obj.buffer_index = 0;
-                            obj.read_end = 0;
+                        file_obj.buffering_mode = old_buffering;
+                        // Move on to next buffer, if applicable
+                        actions.pop();
 
-                            if flush_len < data.len() {
-                                obj.eof = true;
-                                return Outcome::Error(Errno::SUCCESS)
+                        let Some(action) = actions.last() else {
+                            return if let Some(errno) = errno {
+                                Outcome::Error(errno)
+                            } else {
+                                Outcome::Success(())
                             }
-                        }
-                        FileStreamSource::Buffer(cell, dst_idx) => {
-                            let dst = cell.get_mut();
+                        };
 
-                            let overwrite_len = cmp::min(data.len(), dst.len() - *dst_idx);
+                        let Some(file_obj) = state.local.file_objs.get_mut(&action.stream) else {
+                            panic!("unrecognized FILE* pointer")
+                        };
 
-                            dst[*dst_idx..*dst_idx + overwrite_len].copy_from_slice(&data[..overwrite_len]);
-                            dst.extend(&data[overwrite_len..]);
-                            *dst_idx += data.len();
+                        old_buffering = file_obj.buffering_mode;
+                        file_obj.buffering_mode = FileBufferMode::Unbuffered;
 
-                            obj.buffer_index = 0;
-                            obj.read_end = 0;
-                        }
+                        self.state = StreamFlushState::FlushAll(actions, old_buffering, errno);
+                        Outcome::Yield(YieldUntil::Immediate)
                     }
+                    Outcome::Error(_) => {
+                        errno.get_or_insert(Errno::get_errno());
 
-                }
-                None => panic!("UB: invalid file stream pointer flushed"),
-            }
-            (FileStreamFlushState::Start, None) => {
-                // Flush all open file streams
-                for stream in state.local.file_objs.values_mut() {
-                    let read_slice = match &stream.buffer {
-                        FileStreamBuffer::Internal(vec) => &vec.as_ref()[..stream.buffer_index],
-                        FileStreamBuffer::Slice(non_null) => {
-                            unsafe { &non_null.as_ref()[..stream.buffer_index] }
-                        }
-                        FileStreamBuffer::None => continue,
-                    };
+                        let Some(file_obj) = state.local.file_objs.get_mut(&action.stream) else {
+                            panic!("unrecognized FILE* pointer")
+                        };
 
-                    let write_slice = match &mut stream.source {
-                        FileStreamSource::Descriptor(fd) => {
-                            let descriptor = Descriptor::from_raw_fd(*fd);
-                            let Some(fd_info) = state.local.fds.get_mut(&descriptor) else {
-                                return Outcome::Error(Errno::EBADF)
-                            };
+                        file_obj.buffering_mode = old_buffering;
+                        // Move on to next buffer, if applicable
+                        actions.pop();
 
-                            // TODO: implement
-                        }
-                        FileStreamSource::Slice(buf, write_idx) => {
-                            // TODO: implement
-                        },
-                        FileStreamSource::Buffer(cell, write_idx) => {
-                            // TODO: implement
-                        },
-                    };
+                        let Some(action) = actions.last() else {
+                            return if let Some(errno) = errno {
+                                Outcome::Error(errno)
+                            } else {
+                                Outcome::Success(())
+                            }
+                        };
 
-                    /*
-                    match &mut stream.buf {
-                        FileStreamBuffer::Internal(vec) => vec.clear(),
-                        FileStreamBuffer::Slice(_non_null, write_idx) => *write_idx = 0,
-                        FileStreamBuffer::None => unreachable!(),
+                        let Some(file_obj) = state.local.file_objs.get_mut(&action.stream) else {
+                            panic!("unrecognized FILE* pointer")
+                        };
+
+                        old_buffering = file_obj.buffering_mode;
+                        file_obj.buffering_mode = FileBufferMode::Unbuffered;
+
+                        self.state = StreamFlushState::FlushAll(actions, old_buffering, errno);
+                        Outcome::Yield(YieldUntil::Immediate)
                     }
-                    */
+                    Outcome::Yield(y) => Outcome::Yield(y),
+                    Outcome::RunTask(t, y) => Outcome::RunTask(t, y),
                 }
             }
-            (FileStreamFlushState::RunActions(v), _) => {
-
-            }
-            (FileStreamFlushState::Invalid, _) => unreachable!(),
+            (StreamFlushState::Invalid, _) => unreachable!(),
         }
-
-        Outcome::Success(())
     }
 }
-*/
 
 pub struct StreamDescriptorEvent {
     stream: FilePtr,
@@ -578,7 +627,7 @@ impl Event for StreamDescriptorEvent {
         };
 
         match &self.state {
-            StreamDescriptorState::Start if self.unlocked => {
+            StreamDescriptorState::Start if !self.unlocked => {
                 self.state = StreamDescriptorState::Finish;
                 let outcome = if file_obj.queued_threads.is_empty() {
                     Outcome::Yield(YieldUntil::Immediate)
@@ -643,6 +692,7 @@ impl<'a> StreamWriteEvent<'a> {
     }
 }
 
+// TODO: Read/Write permissions are not enforced in this implementation yet
 impl Event for StreamWriteEvent<'_> {
     type Success = ();
     type Error = usize;
@@ -693,13 +743,9 @@ impl Event for StreamWriteEvent<'_> {
                     FileBufferMode::Block => buffer.len() < self.in_buf.len(),
                 };
 
-                // Now write directly to the buffer and return if possible
                 file_obj.last_op = LastFileOperation::Writing;
-                if self.in_buf.is_empty() {
-                    self.state = StreamWriteState::Finish(None);
-                    return Outcome::Yield(YieldUntil::Immediate)
-                }
 
+                // Now write directly to the buffer and return if possible
                 if !should_flush {
                     let written = cmp::min(buffer.len(), self.in_buf.len());
                     buffer[..written].copy_from_slice(self.in_buf);

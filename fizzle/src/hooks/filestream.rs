@@ -527,24 +527,12 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
-    unsafe fn fflush(stream: *mut libc::FILE) -> libc::c_int => fizzle_fflush(_ctx) {
+    unsafe fn fflush(stream: *mut libc::FILE) -> libc::c_int => fizzle_fflush(ctx) {
         crate::strace!("fflush(stream={:?}) -> ...", stream);
 
-        log::warn!("`fflush()` unimplemented");
-        let res = unsafe { libc::fflush(stream) };
+        let stream_ptr_opt = FilePtr::from_raw(stream);
 
-        if res < 0 {
-            let e = Errno::get_errno();
-            crate::strace!("fflush(stream={:?}) -> -1 ({})", stream, e);
-            e.set_errno();
-        } else {
-            crate::strace!("fflush(stream={:?}) -> {:?}", stream, res);
-        }
-        
-        res
-
-        /*
-        match Scheduler::handle_event(&mut ctx, FileStreamFlushEvent::new(stream_ptr_opt)) {
+        match Scheduler::handle_event(&mut ctx, StreamFlushEvent::new(stream_ptr_opt, false)) {
             Ok(()) => {
                 crate::strace!("fflush(stream={:?}) -> 0", stream);
                 0
@@ -555,7 +543,26 @@ hook_macros::hook! {
                 -1
             }
         }
-        */
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn fflush_unlocked(stream: *mut libc::FILE) -> libc::c_int => fizzle_fflush_unlocked(ctx) {
+        crate::strace!("fflush_unlocked(stream={:?}) -> ...", stream);
+
+        let stream_ptr_opt = FilePtr::from_raw(stream);
+
+        match Scheduler::handle_event(&mut ctx, StreamFlushEvent::new(stream_ptr_opt, true)) {
+            Ok(()) => {
+                crate::strace!("fflush_unlocked(stream={:?}) -> 0", stream);
+                0
+            }
+            Err(e) => {
+                crate::strace!("fflush_unlocked(stream={:?}) -> -1 ({})", stream, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
