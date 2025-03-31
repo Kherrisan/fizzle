@@ -5,7 +5,7 @@ use std::os::fd::RawFd;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::{self, ThreadId};
-use std::{cmp, mem, slice};
+use std::{cmp, iter, mem, slice};
 
 use crate::constants::FIZZLE_FILE_BUFSIZ;
 use crate::errno::Errno;
@@ -13,8 +13,7 @@ use crate::scheduler::{Event, Outcome, YieldUntil};
 use crate::state::FizzleState;
 
 use super::descriptor::*;
-use super::file::{FileOpenFlags, OpenFileInfo};
-use super::poller::fd_to_pollin;
+use super::file::{file_length, FileOpenFlags, FileSeekEvent, SeekPosition};
 
 // This starts at 16 because NULL should indicates failure.
 // It increments by 16 to avoid any pointer alignment shenanigans.
@@ -362,7 +361,7 @@ impl Event for StreamCreateEvent<'_> {
                     panic!("[UB] unrecognized pointer passed to `freopen()`")
                 };
 
-                if let FileStreamSource::Descriptor(fd) = file_obj.source {
+                if let FileStreamSource::Descriptor(_fd) = file_obj.source {
                     todo!("implement fd cleanup on frepoen failure")
                 }
 
@@ -624,6 +623,301 @@ impl Event for StreamFlushEvent {
                 }
             }
             (StreamFlushState::Invalid, _) => unreachable!(),
+        }
+    }
+}
+
+
+pub struct StreamTellEvent {
+    stream: FilePtr,
+    state: StreamTellState,
+}
+
+enum StreamTellState {
+    Start,
+    Finish,
+}
+
+impl StreamTellEvent {
+    #[inline]
+    pub fn new(stream: FilePtr) -> Self {
+        Self {
+            stream,
+            state: StreamTellState::Start,
+        }
+    }
+}
+
+// NOTE: seek() must be preceded by flush().
+impl Event for StreamTellEvent {
+    type Success = usize;
+    type Error = ();
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
+            panic!("unrecognized FILE* pointer")
+        };
+
+        match &self.state {
+            StreamTellState::Start => {
+                self.state = StreamTellState::Finish;
+                let outcome = if file_obj.queued_threads.is_empty() {
+                    Outcome::Yield(YieldUntil::Immediate)
+                } else {
+                    Outcome::Yield(YieldUntil::None)
+                };
+                
+                file_obj.queued_threads.push_back(thread::current().id());
+                return outcome
+            }
+            StreamTellState::Finish => {
+                let offset = file_obj.offset;
+
+                assert_eq!(file_obj.queued_threads.pop_front(), Some(thread::current().id()));
+                if let Some(&next_thread) = file_obj.queued_threads.front() {
+                    state.mark_thread_ready(next_thread);
+                }
+
+                Outcome::Success(offset)
+            }
+        }
+    }
+}
+
+pub struct StreamSeekEvent {
+    stream: FilePtr,
+    position: SeekPosition,
+    offset: i64,
+    clear_err: bool,
+    state: StreamSeekState,
+}
+
+enum StreamSeekState {
+    Start,
+    Locked,
+    Seek(FileSeekEvent),
+    Unlock(Result<usize, Errno>),
+}
+
+impl StreamSeekEvent {
+    #[inline]
+    pub fn new(stream: FilePtr, position: SeekPosition, offset: i64, clear_err: bool) -> Self {
+        Self {
+            stream,
+            position, 
+            offset,
+            clear_err,
+            state: StreamSeekState::Start,
+        }
+    }
+}
+
+// NOTE: seek() must be preceded by flush().
+impl Event for StreamSeekEvent {
+    type Success = usize;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        match &mut self.state {
+            StreamSeekState::Start => {
+                // First, lock the FILE*
+                let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
+                    panic!("unrecognized FILE* pointer")
+                };
+
+                self.state = StreamSeekState::Locked;
+
+                let outcome = if file_obj.queued_threads.is_empty() {
+                    Outcome::Yield(YieldUntil::Immediate)
+                } else {
+                    Outcome::Yield(YieldUntil::None)
+                };
+
+                file_obj.queued_threads.push_back(thread::current().id());
+                outcome
+            },
+            StreamSeekState::Locked => {
+                let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
+                    panic!("unrecognized FILE* pointer")
+                };
+
+                let curr_offset = file_obj.offset;
+                // TODO: fflush() and fwrite() need to properly
+
+                match &mut file_obj.source {
+                    FileStreamSource::Buffer(b) => {
+                        let b_len = b.get_mut().len();
+
+                        let new_offset = match self.position {
+                            SeekPosition::Start => self.offset as usize,
+                            SeekPosition::Current => {
+                                if self.offset < 0 {
+                                    match (curr_offset as i64).checked_add(self.offset) {
+                                        None | Some(..0) => {
+                                            self.state = StreamSeekState::Unlock(Err(Errno::EINVAL));
+                                            return Outcome::Yield(YieldUntil::Immediate)
+                                        }
+                                        Some(new_offset @ 0..) => new_offset as usize,
+                                    }
+                                } else {
+                                    match (curr_offset as i64).checked_add(self.offset) {
+                                        None => {
+                                            self.state = StreamSeekState::Unlock(Err(Errno::EOVERFLOW));
+                                            return Outcome::Yield(YieldUntil::Immediate)
+                                        }
+                                        Some(new_offset) => new_offset as usize,
+                                    }
+                                }
+                            }
+                            SeekPosition::End => match (b_len as i64).checked_add(self.offset) {
+                                None => {
+                                    self.state = StreamSeekState::Unlock(Err(Errno::EOVERFLOW));
+                                    return Outcome::Yield(YieldUntil::Immediate)
+                                }
+                                Some(new_offset) => new_offset as usize,
+                            }
+                        };
+
+                        if new_offset > b_len {
+                            b.get_mut().extend(iter::repeat(0).take(b_len));
+                        }
+
+                        file_obj.offset = new_offset;
+                        self.state = StreamSeekState::Unlock(Ok(new_offset));
+                        Outcome::Yield(YieldUntil::Immediate)
+                    }
+                    FileStreamSource::Slice(s) => {
+                        let slice = unsafe { s.get_mut().as_mut() };
+                        let slice_len = slice.len() as i64;
+
+                        let new_offset = match self.position {
+                            SeekPosition::Start => self.offset as usize,
+                            SeekPosition::Current => {
+                                if self.offset < 0 {
+                                    match (curr_offset as i64).checked_add(self.offset) {
+                                        None | Some(..0) => {
+                                            self.state = StreamSeekState::Unlock(Err(Errno::EINVAL));
+                                            return Outcome::Yield(YieldUntil::Immediate)
+                                        }
+                                        Some(new_offset @ 0..) => new_offset as usize,
+                                    }
+                                } else {
+                                    match (curr_offset as i64).checked_add(self.offset) {
+                                        None => {
+                                            self.state = StreamSeekState::Unlock(Err(Errno::EOVERFLOW));
+                                            return Outcome::Yield(YieldUntil::Immediate)
+                                        }
+                                        Some(new_offset) => new_offset as usize,
+                                    }
+                                }
+                            }
+                            SeekPosition::End => match slice_len.checked_add(self.offset) {
+                                None => {
+                                    self.state = StreamSeekState::Unlock(Err(Errno::EOVERFLOW));
+                                    return Outcome::Yield(YieldUntil::Immediate)
+                                }
+                                Some(new_offset) if new_offset > slice_len => {
+                                    self.state = StreamSeekState::Unlock(Err(Errno::EINVAL));
+                                    return Outcome::Yield(YieldUntil::Immediate)
+                                }
+                                Some(new_offset) => new_offset as usize,
+                            }
+                        };
+
+                        file_obj.offset = new_offset;
+                        self.state = StreamSeekState::Unlock(Ok(new_offset));
+                        Outcome::Yield(YieldUntil::Immediate)
+                    }
+                    FileStreamSource::Descriptor(fd) => {
+                        let fd = *fd;
+                        match file_length(state, fd) {
+                            Ok(file_len) => {
+                                let new_offset = match self.position {
+                                    SeekPosition::Start => self.offset as usize,
+                                    SeekPosition::Current => {
+                                        if self.offset < 0 {
+                                            match (curr_offset as i64).checked_add(self.offset) {
+                                                None | Some(..0) => {
+                                                    self.state = StreamSeekState::Unlock(Err(Errno::EINVAL));
+                                                    return Outcome::Yield(YieldUntil::Immediate)
+                                                }
+                                                Some(new_offset @ 0..) => new_offset as usize,
+                                            }
+                                        } else {
+                                            match (curr_offset as i64).checked_add(self.offset) {
+                                                None => {
+                                                    self.state = StreamSeekState::Unlock(Err(Errno::EOVERFLOW));
+                                                    return Outcome::Yield(YieldUntil::Immediate)
+                                                }
+                                                Some(new_offset) => new_offset as usize,
+                                            }
+                                        }
+                                    }
+                                    SeekPosition::End => match (file_len as i64).checked_add(self.offset) {
+                                        None => {
+                                            self.state = StreamSeekState::Unlock(Err(Errno::EOVERFLOW));
+                                            return Outcome::Yield(YieldUntil::Immediate)
+                                        }
+                                        Some(new_offset) if (new_offset as usize) > file_len => {
+                                            self.state = StreamSeekState::Unlock(Err(Errno::EINVAL));
+                                            return Outcome::Yield(YieldUntil::Immediate)
+                                        }
+                                        Some(new_offset) => new_offset as usize,
+                                    }
+                                };
+
+                                let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
+                                    panic!("unrecognized FILE* pointer")
+                                };
+                                file_obj.offset = new_offset;
+
+                                self.state = StreamSeekState::Seek(FileSeekEvent::new(Descriptor::from_raw_fd(fd), SeekPosition::Start, new_offset.try_into().unwrap()));
+                                Outcome::Yield(YieldUntil::Immediate)
+                            }
+                            Err(e) => {
+                                self.state = StreamSeekState::Unlock(Err(e));
+                                return Outcome::Yield(YieldUntil::Immediate)
+                            }
+                        }
+                    }
+                }
+            }
+            StreamSeekState::Seek(ev) => {
+                match ev.run(state) {
+                    Outcome::Success(res) => {
+                        self.state = StreamSeekState::Unlock(Ok(res));
+                        Outcome::Yield(YieldUntil::Immediate)
+                    }
+                    Outcome::Error(e) => {
+                        self.state = StreamSeekState::Unlock(Err(e));
+                        Outcome::Yield(YieldUntil::Immediate)
+                    }
+                    Outcome::RunTask(t, y) => Outcome::RunTask(t, y),
+                    Outcome::Yield(y) => Outcome::Yield(y),
+                }
+            }
+            StreamSeekState::Unlock(res) => {
+                let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
+                    panic!("unrecognized FILE* pointer")
+                };
+
+                if res.is_ok() {
+                    file_obj.eof = false;
+                    if self.clear_err {
+                        file_obj.err = false;
+                    }
+                }
+
+                assert_eq!(file_obj.queued_threads.pop_front(), Some(thread::current().id()));
+                if let Some(&next_thread) = file_obj.queued_threads.front() {
+                    state.mark_thread_ready(next_thread);
+                }
+
+                match *res {
+                    Ok(offset) => Outcome::Success(offset),
+                    Err(e) => Outcome::Error(e),
+                }
+            }
         }
     }
 }
@@ -1045,7 +1339,7 @@ impl Event for StreamWriteEvent<'_> {
 }
 
 fn find_first(buf: &[u8], value: u8) -> Option<usize> {
-    for i in (0..buf.len()) {
+    for i in 0..buf.len() {
         if buf[i] == value {
             return Some(i)
         }

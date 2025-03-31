@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::fmt::Display;
 use std::io::IoSlice;
 use std::mem::MaybeUninit;
-use std::os::fd::RawFd;
+use std::os::fd::{self, RawFd};
 use std::rc::Rc;
 use std::time::Duration;
 use std::{cmp, ptr};
@@ -747,6 +747,87 @@ impl Event for FileWriteEvent<'_> {
             },
         }
     }
+}
+
+#[derive(PartialEq, Eq)]
+pub enum SeekPosition {
+    Start,
+    Current,
+    End,
+}
+
+pub struct FileSeekEvent {
+    fd: Descriptor,
+    position: SeekPosition,
+    offset: i64,
+}
+
+impl FileSeekEvent {
+    #[inline]
+    pub fn new(fd: Descriptor, position: SeekPosition, offset: i64) -> Self {
+        Self {
+            fd,
+            position,
+            offset,
+        }
+    }
+}
+
+impl Event for FileSeekEvent {
+    type Success = usize;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let Some(fd_info) = state.local.fds.get_mut(&self.fd) else {
+            log::warn!("lseek() called on unrecognized file descriptor");
+            return Outcome::Error(Errno::EBADFD)
+        };
+
+        if fd_info.is_passthrough {
+            let whence = match self.position {
+                SeekPosition::Start => libc::SEEK_SET,
+                SeekPosition::Current => libc::SEEK_CUR,
+                SeekPosition::End => libc::SEEK_END,
+            };
+
+            let res = unsafe { libc::lseek64(self.fd.as_raw_fd(), self.offset, whence) };
+            return if res < 0 {
+                Outcome::Error(Errno::get_errno())
+            } else {
+                Outcome::Success(res as usize)
+            }
+        }
+
+        match &mut fd_info.resource {
+            FdResource::Directory(_) | FdResource::Epoll(_) | FdResource::Inotify(_) => unimplemented!(),
+            FdResource::EventFd(_) | FdResource::MessageQueue(_) | FdResource::Pipe(_)
+            | FdResource::Stdin | FdResource::Stdout | FdResource::Stderr | FdResource::Socket(_) => {
+                return Outcome::Error(Errno::ESPIPE)
+            }
+            FdResource::File(_) => todo!(),
+            FdResource::Opaque => todo!(),
+        }
+    }
+}
+
+pub fn file_length(state: &mut FizzleState, fd: libc::c_int) -> Result<usize, Errno> {
+    let Some(fd_info) = state.local.fds.get(&Descriptor::from_raw_fd(fd)) else {
+        return Err(Errno::EBADFD)
+    };
+
+    if fd_info.is_passthrough {
+        let ret = unsafe {
+            libc::lseek64(fd, 0, libc::SEEK_END)
+        };
+
+        return if ret < 0 {
+            Err(Errno::get_errno())
+        } else {
+            Ok(ret as usize)
+        }
+    }
+
+    unimplemented!()
 }
 
 pub enum ChangeDirectorySource {

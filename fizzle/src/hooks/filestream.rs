@@ -3,7 +3,7 @@ use std::ffi::CStr;
 use std::ptr;
 
 use crate::errno::Errno;
-use crate::handlers::file::{AccessMode, FileOpenFlags};
+use crate::handlers::file::{AccessMode, FileOpenFlags, SeekPosition};
 use crate::handlers::filestream::*;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
@@ -887,96 +887,161 @@ hook_macros::hook! {
         stream: *mut libc::FILE,
         offset: libc::c_long,
         whence: libc::c_int
-    ) -> libc::c_int => fizzle_fseek(_ctx) {
+    ) -> libc::c_int => fizzle_fseek(ctx) {
         crate::strace!("fseek(stream={:?}, offset={}, whence={}) -> ...", stream, offset, whence);
 
-        log::warn!("`fseek()` unimplemented");
-        let res = unsafe { libc::fseek(stream, offset, whence) };
-        if res < 0 {
-            let e = Errno::get_errno();
-            crate::strace!("fseek(stream={:?}, offset={}, whence={}) -> -1 ({})", stream, offset, whence, e);
-            e.set_errno();
-        } else {
-            crate::strace!("fseek(stream={:?}, offset={}, whence={}) -> {}", stream, offset, whence, res);
+        let Some(file_ptr) = FilePtr::from_raw(stream) else {
+            panic!("invalid FILE* pointer passed to fseek()")
+        };
+
+        let position = match whence {
+            libc::SEEK_SET => SeekPosition::Start,
+            libc::SEEK_CUR => SeekPosition::Current,
+            libc::SEEK_END => SeekPosition::End,
+            _ => {
+                crate::strace!("fseek(stream={:?}, offset={}, whence={}) -> -1 (EINVAL)", stream, offset, whence);
+                Errno::EINVAL.set_errno();
+                return -1
+            }
+        };
+
+        match Scheduler::handle_event(&mut ctx, StreamFlushEvent::new(Some(file_ptr), false)) {
+            Ok(()) => (),
+            Err(_) => {
+                let e = Errno::get_errno();
+                log::warn!("flush during fseek() failed: {}", e);
+                crate::strace!("fseek(stream={:?}, offset={}, whence={}) -> -1 (EINVAL)", stream, offset, whence);
+                e.set_errno();
+                return -1
+            }
         }
 
-        res
+        match Scheduler::handle_event(&mut ctx, StreamSeekEvent::new(file_ptr, position, offset, false)) {
+            Ok(_) => {
+                crate::strace!("fseek(stream={:?}, offset={}, whence={}) -> 0", stream, offset, whence);
+                0 
+            }
+            Err(e) => {
+                crate::strace!("fseek(stream={:?}, offset={}, whence={}) -> -1 ({})", stream, offset, whence, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn ftell(
         stream: *mut libc::FILE
-    ) -> libc::c_long => fizzle_ftell(_ctx) {
+    ) -> libc::c_long => fizzle_ftell(ctx) {
         crate::strace!("ftell(stream={:?}) -> ...", stream);
 
-        log::warn!("`ftell()` unimplemented");
-        let res = unsafe { libc::ftell(stream) };
-        if res < 0 {
-            let e = Errno::get_errno();
-            crate::strace!("ftell(stream={:?}) -> -1 ({})", stream, e);
-            e.set_errno();
-        } else {
-            crate::strace!("ftell(stream={:?}) -> {}", stream, res);
-        }
+        let Some(file_ptr) = FilePtr::from_raw(stream) else {
+            panic!("invalid FILE* pointer passed to ftell()")
+        };
 
-        res
+        match Scheduler::handle_event(&mut ctx, StreamTellEvent::new(file_ptr)) {
+            Ok(offset) => {
+                crate::strace!("ftell(stream={:?}) -> {}", stream, offset);
+                offset as libc::c_long
+            }
+            Err(()) => unreachable!(),
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn rewind(
         stream: *mut libc::FILE
-    ) => fizzle_rewind(_ctx) {
+    ) => fizzle_rewind(ctx) {
         crate::strace!("rewind(stream={:?}) -> ...", stream);
 
-        log::warn!("`rewind()` unimplemented");
-        let res = unsafe { libc::rewind(stream) };
-        crate::strace!("rewind(stream={:?}) -> ()", stream);
+        let Some(file_ptr) = FilePtr::from_raw(stream) else {
+            panic!("invalid FILE* pointer passed to rewind()")
+        };
 
-        res
+        match Scheduler::handle_event(&mut ctx, StreamFlushEvent::new(Some(file_ptr), false)) {
+            Ok(()) => (),
+            Err(_) => {
+                let e = Errno::get_errno();
+                log::warn!("flush during rewind() failed: {}", e);
+                return
+            }
+        }
+
+        match Scheduler::handle_event(&mut ctx, StreamSeekEvent::new(file_ptr, SeekPosition::Start, 0, true)) {
+            Ok(_) => {
+                crate::strace!("rewind(stream={:?}) -> ()", stream);
+            }
+            Err(e) => {
+                // TODO: rewind is an infallible call; should we define a new flush function
+                // that unconditionally resets buffers to accomodate this?
+                log::warn!("fseek during rewind() failed: {}", e);
+                crate::strace!("rewind(stream={:?}) -> ()", stream);
+            }
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn fgetpos(
         stream: *mut libc::FILE,
-        pos: *mut libc::fpos_t
-    ) -> libc::c_int => fizzle_fgetpos(_ctx) {
+        pos: *mut i64 // was libc::fpos_t, but that isn't defined...
+    ) -> libc::c_int => fizzle_fgetpos(ctx) {
         crate::strace!("fgetpos(stream={:?}, pos={:?}) -> ...", stream, pos);
 
-        log::warn!("`fgetpos()` unimplemented");
-        let res = unsafe { libc::fgetpos(stream, pos) };
-        if res < 0 {
-            let e = Errno::get_errno();
-            crate::strace!("fgetpos(stream={:?}, pos={:?}) -> -1 ({})", stream, pos, e);
-            e.set_errno();
-        } else {
-            crate::strace!("fsetpos(stream={:?}, pos={:?}) -> {}", stream, pos, res);
-        }
+        let Some(file_ptr) = FilePtr::from_raw(stream) else {
+            panic!("invalid FILE* pointer passed to fgetpos()")
+        };
 
-        res
+        match Scheduler::handle_event(&mut ctx, StreamTellEvent::new(file_ptr)) {
+            Ok(offset) => {
+                unsafe {
+                    *pos = offset as i64;
+                }
+                crate::strace!("fgetpos(stream={:?}, pos={:?}) -> 0", stream, pos);
+                0
+            }
+            Err(()) => unreachable!(),
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn fsetpos(
         stream: *mut libc::FILE,
-        pos: *const libc::fpos_t
-    ) -> libc::c_int => fizzle_fsetpos(_ctx) {
+        pos: *const i64 // was libc::fpos_t
+    ) -> libc::c_int => fizzle_fsetpos(ctx) {
         crate::strace!("fsetpos(stream={:?}, pos={:?}) -> ...", stream, pos);
 
-        log::warn!("`fsetpos()` unimplemented");
-        let res = unsafe { libc::fsetpos(stream, pos) };
-        if res < 0 {
-            let e = Errno::get_errno();
-            crate::strace!("fsetpos(stream={:?}, pos={:?}) -> -1 ({})", stream, pos, e);
-            e.set_errno();
-        } else {
-            crate::strace!("fsetpos(stream={:?}, pos={:?}) -> {}", stream, pos, res);
+        let Some(file_ptr) = FilePtr::from_raw(stream) else {
+            panic!("invalid FILE* pointer passed to fsetpos()")
+        };
+
+        match Scheduler::handle_event(&mut ctx, StreamFlushEvent::new(Some(file_ptr), false)) {
+            Ok(()) => (),
+            Err(_) => {
+                let e = Errno::get_errno();
+                log::warn!("flush during fsetpos() failed: {}", e);
+                crate::strace!("fsetpos(stream={:?}, pos={:?}) -> -1 ({})", stream, pos, e);
+                e.set_errno();
+                return -1
+            }
         }
 
-        res
+        let offset = unsafe { *pos };
+
+        match Scheduler::handle_event(&mut ctx, StreamSeekEvent::new(file_ptr, SeekPosition::Start, offset, false)) {
+            Ok(_) => {
+                crate::strace!("fsetpos(stream={:?}, pos={:?}) -> 0", stream, pos);
+                0
+            }
+            Err(e) => {
+                crate::strace!("fsetpos(stream={:?}, pos={:?}) -> -1 ({})", stream, pos, e);
+                e.set_errno();
+                -1
+            }
+        }
     }
 }
 
