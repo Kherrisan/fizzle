@@ -13,7 +13,8 @@ use crate::scheduler::{Event, Outcome, YieldUntil};
 use crate::state::FizzleState;
 
 use super::descriptor::*;
-use super::file::FileOpenFlags;
+use super::file::{FileOpenFlags, OpenFileInfo};
+use super::poller::fd_to_pollin;
 
 // This starts at 16 because NULL should indicates failure.
 // It increments by 16 to avoid any pointer alignment shenanigans.
@@ -305,6 +306,22 @@ impl Event for StreamCreateEvent<'_> {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        if let FileStreamSource::Descriptor(fd) = self.source {
+            match state.local.fds.get_mut(&Descriptor::from_raw_fd(fd)) {
+                Some(fd_info) => {
+                    fd_info.close_on_exec = self.mode.cloexec;
+                }
+                None => {
+                    state.local.fds.insert(Descriptor::from_raw_fd(fd), DescriptorInfo {
+                        close_on_exec: self.mode.cloexec,
+                        nonblocking: false,
+                        is_passthrough: true,
+                        resource: FdResource::Opaque, // TODO: file support currently unimplemented
+                    });
+                }
+            }
+        }
+
         let source = mem::replace(&mut self.source, FileStreamSource::Descriptor(-1));
 
         // read_idx is set equal to rw_split to indicate there's no data left to be read.
@@ -346,7 +363,7 @@ impl Event for StreamCreateEvent<'_> {
                 };
 
                 if let FileStreamSource::Descriptor(fd) = file_obj.source {
-                    state.local.fds.remove(&Descriptor::from_raw_fd(fd));
+                    todo!("implement fd cleanup on frepoen failure")
                 }
 
                 *file_obj = new_file_obj;
@@ -369,12 +386,18 @@ impl Event for StreamCreateEvent<'_> {
 
 pub struct StreamCloseEvent<'a> {
     stream: &'a FilePtr,
+    state: StreamCloseState,
+}
+
+pub enum StreamCloseState {
+    Start,
+    CloseFd(DescriptorCloseEvent),
 }
 
 impl<'a> StreamCloseEvent<'a> {
     #[inline]
     pub fn new(stream: &'a FilePtr) -> Self {
-        Self { stream }
+        Self { stream, state: StreamCloseState::Start }
     }
 }
 
@@ -383,15 +406,25 @@ impl Event for StreamCloseEvent<'_> {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        match state.local.file_objs.remove(self.stream) {
-            Some(obj) => {
-                if let FileStreamSource::Descriptor(fd) = obj.source {
-                    state.local.fds.remove(&Descriptor::from_raw_fd(fd));
+        match &mut self.state {
+            StreamCloseState::Start => {
+                match state.local.file_objs.remove(self.stream) {
+                    Some(obj) => {
+                        if let FileStreamSource::Descriptor(fd) = obj.source {
+                            self.state = StreamCloseState::CloseFd(DescriptorCloseEvent::new(Descriptor::from_raw_fd(fd)));   
+                            Outcome::Yield(YieldUntil::Immediate)
+                        } else {
+                            Outcome::Success(())
+                        }
+                    }
+                    None => panic!("[UB] unrecognized pointer passed to `fclose()`"),
                 }
-                Outcome::Success(())
             }
-            None => panic!("[UB] unrecognized pointer passed to `fclose()`"),
+            StreamCloseState::CloseFd(ev) => {
+                ev.run(state)
+            }
         }
+        
     }
 }
 

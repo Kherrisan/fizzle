@@ -3,6 +3,7 @@ use std::ffi::CStr;
 use std::ptr;
 
 use crate::errno::Errno;
+use crate::handlers::file::{AccessMode, FileOpenFlags};
 use crate::handlers::filestream::*;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
@@ -39,21 +40,6 @@ hook_macros::hook! {
                 ptr::null_mut()
             }
         }
-
-        /*
-        log::warn!("`fdopen()` unimplemented");
-        let res = unsafe { libc::fdopen(fd, mode) };
-
-        if res.is_null() {
-            let e = Errno::get_errno();
-            crate::strace!("fdopen(fd={}, mode={:?}) -> NULL ({})", fd, mode_cstr, e);
-            e.set_errno();
-        } else {
-            crate::strace!("fdopen(fd={}, mode={:?}) -> {:?}", fd, mode_cstr, res);
-        }
-
-        res
-        */
     }
 }
 
@@ -61,31 +47,19 @@ hook_macros::hook! {
     unsafe fn fopen(
         pathname: *const libc::c_char,
         mode: *const libc::c_char
-    ) -> *mut libc::FILE => fizzle_fopen(_ctx) {
+    ) -> *mut libc::FILE => fizzle_fopen(ctx) {
         // SAFETY: caller guarantees `pathaname` and `mode` point to a null-terminated string
         let path_cstr = unsafe { CStr::from_ptr(pathname) };
         let mode_cstr = unsafe { CStr::from_ptr(mode) };
         crate::strace!("fopen(pathname={:?}, mode={:?}) -> ...", path_cstr, mode_cstr);
-
-        log::warn!("`fopen()` unimplemented");
-        let res = unsafe { libc::fopen(pathname, mode) };
-
-        if res.is_null() {
-            let e = Errno::get_errno();
-            crate::strace!("fopen(pathname={:?}, mode={:?}) -> NULL ({})", path_cstr, mode_cstr, e);
-            e.set_errno();
-        } else {
-            crate::strace!("fopen(pathname={:?}, mode={:?}) -> {:?}", path_cstr, mode_cstr, res);
-        }
-
-        res
-
+        
         /*
         let Ok(path) = FilePath::from_cstr(path_cstr) else {
             crate::strace!("fopen(pathname={:?}, mode={:?}) -> NULL (EINVAL)", path_cstr, mode_cstr);
             Errno::EINVAL.set_errno();
             return ptr::null_mut()
         };
+        */
 
         let Some(stream_mode) = FileStreamMode::from_cstr(mode_cstr) else {
             crate::strace!("fopen(pathname={:?}, mode={:?}) -> NULL (EINVAL)", path_cstr, mode_cstr);
@@ -96,14 +70,20 @@ hook_macros::hook! {
         let access_mode = AccessMode::USER_READ | AccessMode::USER_WRITE | AccessMode::GROUP_READ
                 | AccessMode::GROUP_WRITE | AccessMode::OTHER_READ | AccessMode::OTHER_WRITE;
 
-        let fd = match Scheduler::handle_event(&mut ctx, FileOpenEvent::new(FileOpenLocation::Path(path),stream_mode.flags, Some(access_mode))) {
-            Ok(fd) => fd,
-            Err(e) => {
-                crate::strace!("fopen(pathname={:?}, mode={:?}) -> NULL ({})", path_cstr, mode_cstr, e);
-                e.set_errno();
-                return ptr::null_mut()
-            }
+        log::warn!("`fopen()` partially unimplemented");
+
+        let fd = if stream_mode.flags.contains(FileOpenFlags::CREATE) {
+            unsafe { libc::open(pathname, stream_mode.flags.bits(), access_mode.bits()) }
+        } else {
+            unsafe { libc::open(pathname, stream_mode.flags.bits()) }
         };
+
+        if fd < 0 {
+            let e = Errno::get_errno();
+            crate::strace!("fopen(pathname={:?}, mode={:?}) -> NULL ({})", path_cstr, mode_cstr, e);
+            e.set_errno();
+            return ptr::null_mut()
+        }
 
         let source = FileStreamSource::Descriptor(fd);
         let Some(stream_mode) = FileStreamMode::from_cstr(mode_cstr) else {
@@ -111,7 +91,7 @@ hook_macros::hook! {
             return ptr::null_mut()
         };
 
-        match Scheduler::handle_event(&mut ctx, FileStreamCreateEvent::new(source, stream_mode, None)) {
+        match Scheduler::handle_event(&mut ctx, StreamCreateEvent::new(source, stream_mode, None)) {
             Ok(mut file_ptr) => {
                 crate::strace!("fopen(pathname={:?}, mode={:?}) -> {:?}", path_cstr, mode_cstr, file_ptr);
                 file_ptr.as_raw()
@@ -122,7 +102,6 @@ hook_macros::hook! {
                 ptr::null_mut()
             }
         }
-        */
     }
 }
 
@@ -130,31 +109,13 @@ hook_macros::hook! {
     unsafe fn fopen64(
         pathname: *const libc::c_char,
         mode: *const libc::c_char
-    ) -> *mut libc::FILE => fizzle_fopen64(_ctx) {
+    ) -> *mut libc::FILE => fizzle_fopen64(ctx) {
         // SAFETY: caller guarantees `pathaname` and `mode` point to a null-terminated string
         let path_cstr = unsafe { CStr::from_ptr(pathname) };
         let mode_cstr = unsafe { CStr::from_ptr(mode) };
         crate::strace!("fopen64(pathname={:?}, mode={:?}) -> ...", path_cstr, mode_cstr);
 
-        log::warn!("`fopen64()` unimplemented");
-        let res = unsafe { libc::fopen64(pathname, mode) };
-
-        if res.is_null() {
-            let e = Errno::get_errno();
-            crate::strace!("fopen64(pathname={:?}, mode={:?}) -> NULL ({})", path_cstr, mode_cstr, e);
-            e.set_errno();
-        } else {
-            crate::strace!("fopen64(pathname={:?}, mode={:?}) -> {:?}", path_cstr, mode_cstr, res);
-        }
-
-        res
-
-        /*
-        let Ok(path) = FilePath::from_cstr(path_cstr) else {
-            crate::strace!("fopen64(pathname={:?}, mode={:?}) -> NULL (EINVAL)", path_cstr, mode_cstr);
-            Errno::EINVAL.set_errno();
-            return ptr::null_mut()
-        };
+        let mode_cstr = unsafe { CStr::from_ptr(mode) };
 
         let Some(stream_mode) = FileStreamMode::from_cstr(mode_cstr) else {
             crate::strace!("fopen64(pathname={:?}, mode={:?}) -> NULL (EINVAL)", path_cstr, mode_cstr);
@@ -165,14 +126,20 @@ hook_macros::hook! {
         let access_mode = AccessMode::USER_READ | AccessMode::USER_WRITE | AccessMode::GROUP_READ
                 | AccessMode::GROUP_WRITE | AccessMode::OTHER_READ | AccessMode::OTHER_WRITE;
 
-        let fd = match Scheduler::handle_event(&mut ctx, FileOpenEvent::new(FileOpenLocation::Path(path),stream_mode.flags, Some(access_mode))) {
-            Ok(fd) => fd,
-            Err(e) => {
-                crate::strace!("fopen64(pathname={:?}, mode={:?}) -> NULL ({})", path_cstr, mode_cstr, e);
-                e.set_errno();
-                return ptr::null_mut()
-            }
+        log::warn!("`fopen64()` partially unimplemented");
+
+        let fd = if stream_mode.flags.contains(FileOpenFlags::CREATE) {
+            unsafe { libc::open(pathname, stream_mode.flags.bits(), access_mode.bits()) }
+        } else {
+            unsafe { libc::open(pathname, stream_mode.flags.bits()) }
         };
+
+        if fd < 0 {
+            let e = Errno::get_errno();
+            crate::strace!("fopen64(pathname={:?}, mode={:?}) -> NULL ({})", path_cstr, mode_cstr, e);
+            e.set_errno();
+            return ptr::null_mut()
+        }
 
         let source = FileStreamSource::Descriptor(fd);
         let Some(stream_mode) = FileStreamMode::from_cstr(mode_cstr) else {
@@ -180,7 +147,7 @@ hook_macros::hook! {
             return ptr::null_mut()
         };
 
-        match Scheduler::handle_event(&mut ctx, FileStreamCreateEvent::new(source, stream_mode, None)) {
+        match Scheduler::handle_event(&mut ctx, StreamCreateEvent::new(source, stream_mode, None)) {
             Ok(mut file_ptr) => {
                 crate::strace!("fopen64(pathname={:?}, mode={:?}) -> {:?}", path_cstr, mode_cstr, file_ptr);
                 file_ptr.as_raw()
@@ -191,19 +158,6 @@ hook_macros::hook! {
                 ptr::null_mut()
             }
         }
-        */
-    }
-}
-
-hook_macros::hook! {
-    unsafe fn _IO_fopen(
-        pathname: *const libc::c_char,
-        mode: *const libc::c_char
-    ) -> *mut libc::FILE => fizzle_io_fopen(_ctx) {
-        let path_cstr = unsafe { CStr::from_ptr(pathname) };
-        let mode_cstr = unsafe { CStr::from_ptr(mode) };
-        crate::strace!("_IO_fopen(pathname={:?}, mode={:?}) -> ...", path_cstr, mode_cstr);
-        unimplemented!("_IO_fopen")
     }
 }
 
@@ -212,86 +166,40 @@ hook_macros::hook! {
         pathname: *const libc::c_char,
         mode: *const libc::c_char,
         stream: *mut libc::FILE
-    ) -> *mut libc::FILE => fizzle_freopen(_ctx) {
+    ) -> *mut libc::FILE => fizzle_freopen(ctx) {
         // SAFETY: caller guarantees `pathaname` and `mode` point to a null-terminated string
         let path_cstr = unsafe { CStr::from_ptr(pathname) };
         let mode_cstr = unsafe { CStr::from_ptr(mode) };
         crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> ...", path_cstr, mode_cstr, stream);
 
-        log::warn!("`freopen()` unimplemented");
-        let res = unsafe { libc::freopen(pathname, mode, stream) };
-
-        if res.is_null() {
-            let e = Errno::get_errno();
-            crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> NULL ({})", path_cstr, mode_cstr, stream, e);
-            e.set_errno();
-        } else {
-            crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> {:?}", path_cstr, mode_cstr, stream, res);
-        }
-
-        res
-
-        /*
-        let Ok(path) = FilePath::from_cstr(path_cstr) else {
-            crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> NULL (EINVAL)", path_cstr, mode_cstr, stream);
-            Errno::EINVAL.set_errno();
-            return ptr::null_mut()
-        };
-
         let Some(stream_mode) = FileStreamMode::from_cstr(mode_cstr) else {
-            crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> NULL (EINVAL)", path_cstr, mode_cstr, stream);
+            crate::strace!("fopen64(pathname={:?}, mode={:?}) -> NULL (EINVAL)", path_cstr, mode_cstr);
             Errno::EINVAL.set_errno();
             return ptr::null_mut()
         };
 
-        let access_mode = AccessMode::USER_READ | AccessMode::USER_WRITE | AccessMode::GROUP_READ
-                | AccessMode::GROUP_WRITE | AccessMode::OTHER_READ | AccessMode::OTHER_WRITE;
-
-        let Some(stream_ptr) = FilePtr::from_raw(stream) else {
-            crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> NULL (EINVAL)", path_cstr, mode_cstr, stream);
-            Errno::EINVAL.set_errno();
-            return ptr::null_mut()
+        let Some(file_ptr) = FilePtr::from_raw(stream) else {
+            panic!("freopen() passed null `stream` parameter")
         };
 
-        if let Err(e) = Scheduler::handle_event(&mut ctx, FileStreamFlushEvent::new(Some(stream_ptr))) {
-            crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> NULL ({})", path_cstr, mode_cstr, stream, e);
-            e.set_errno();
+        let fd = libc::open(pathname, stream_mode.flags.bits());
+        if fd < 0 {
+            // TODO: need to finish implementing
+            crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> NULL", path_cstr, mode_cstr, stream);
             return ptr::null_mut()
         }
 
-        if let Err(e) = Scheduler::handle_event(&mut ctx, FileStreamCloseEvent::new(&stream_ptr)) {
-            crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> NULL ({})", path_cstr, mode_cstr, stream, e);
-            e.set_errno();
-            return ptr::null_mut()
-        }
-
-        let fd = match Scheduler::handle_event(&mut ctx, FileOpenEvent::new(FileOpenLocation::Path(path),stream_mode.flags, Some(access_mode))) {
-            Ok(fd) => fd,
-            Err(e) => {
-                crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> NULL ({})", path_cstr, mode_cstr, stream, e);
-                e.set_errno();
-                return ptr::null_mut()
-            }
-        };
-
-        let source = FileStreamSource::Descriptor(fd);
-        let Some(stream_mode) = FileStreamMode::from_cstr(mode_cstr) else {
-            Errno::EINVAL.set_errno();
-            return ptr::null_mut()
-        };
-
-        match Scheduler::handle_event(&mut ctx, FileStreamCreateEvent::new(source, stream_mode, Some(stream_ptr))) {
+        match Scheduler::handle_event(&mut ctx, StreamCreateEvent::new(FileStreamSource::Descriptor(fd), stream_mode, Some(file_ptr))) {
             Ok(mut file_ptr) => {
-                crate::strace!("freopen(fd={}, mode={:?}, stream={:?}) -> {:?}", fd, mode_cstr, stream_ptr, file_ptr);
+                crate::strace!("freopen(fd={}, mode={:?}) -> {:?}", fd, mode_cstr, file_ptr);
                 file_ptr.as_raw()
-            },
+            }
             Err(e) => {
-                crate::strace!("freopen(fd={}, mode={:?}, stream={:?}) -> NULL ({})", fd, mode_cstr, stream_ptr, e);
+                crate::strace!("fdopen(fd={}, mode={:?}) -> NULL ({})", fd, mode_cstr, e);
                 e.set_errno();
                 ptr::null_mut()
             }
         }
-        */
     }
 }
 
@@ -300,164 +208,40 @@ hook_macros::hook! {
         pathname: *const libc::c_char,
         mode: *const libc::c_char,
         stream: *mut libc::FILE
-    ) -> *mut libc::FILE => fizzle_freopen64(_ctx) {
+    ) -> *mut libc::FILE => fizzle_freopen64(ctx) {
         // SAFETY: caller guarantees `pathaname` and `mode` point to a null-terminated string
         let path_cstr = unsafe { CStr::from_ptr(pathname) };
         let mode_cstr = unsafe { CStr::from_ptr(mode) };
-        crate::strace!("freopen64(pathname={:?}, mode={:?}, stream={:?}) -> ...", path_cstr, mode_cstr, stream);
-
-        log::warn!("`freopen64()` unimplemented");
-        let res = unsafe { libc::freopen64(pathname, mode, stream) };
-
-        if res.is_null() {
-            let e = Errno::get_errno();
-            crate::strace!("freopen64(pathname={:?}, mode={:?}, stream={:?}) -> NULL ({})", path_cstr, mode_cstr, stream, e);
-            e.set_errno();
-        } else {
-            crate::strace!("freopen64(pathname={:?}, mode={:?}, stream={:?}) -> {:?}", path_cstr, mode_cstr, stream, res);
-        }
-
-        res
-
-        /*
-        let Ok(path) = FilePath::from_cstr(path_cstr) else {
-            crate::strace!("freopen64(pathname={:?}, mode={:?}, stream={:?}) -> NULL (EINVAL)", path_cstr, mode_cstr, stream);
-            Errno::EINVAL.set_errno();
-            return ptr::null_mut()
-        };
+        crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> ...", path_cstr, mode_cstr, stream);
 
         let Some(stream_mode) = FileStreamMode::from_cstr(mode_cstr) else {
-            crate::strace!("freopen64(pathname={:?}, mode={:?}, stream={:?}) -> NULL (EINVAL)", path_cstr, mode_cstr, stream);
+            crate::strace!("fopen64(pathname={:?}, mode={:?}) -> NULL (EINVAL)", path_cstr, mode_cstr);
             Errno::EINVAL.set_errno();
             return ptr::null_mut()
         };
 
-        let access_mode = AccessMode::USER_READ | AccessMode::USER_WRITE | AccessMode::GROUP_READ
-                | AccessMode::GROUP_WRITE | AccessMode::OTHER_READ | AccessMode::OTHER_WRITE;
-
-        let Some(stream_ptr) = FilePtr::from_raw(stream) else {
-            crate::strace!("freopen64(pathname={:?}, mode={:?}, stream={:?}) -> NULL (EINVAL)", path_cstr, mode_cstr, stream);
-            Errno::EINVAL.set_errno();
-            return ptr::null_mut()
+        let Some(file_ptr) = FilePtr::from_raw(stream) else {
+            panic!("freopen() passed null `stream` parameter")
         };
 
-        if let Err(e) = Scheduler::handle_event(&mut ctx, FileStreamFlushEvent::new(Some(stream_ptr))) {
-            crate::strace!("freopen64(pathname={:?}, mode={:?}, stream={:?}) -> NULL ({})", path_cstr, mode_cstr, stream, e);
-            e.set_errno();
+        let fd = libc::open(pathname, stream_mode.flags.bits());
+        if fd < 0 {
+            // TODO: need to finish implementing
+            crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> NULL", path_cstr, mode_cstr, stream);
             return ptr::null_mut()
         }
 
-        if let Err(e) = Scheduler::handle_event(&mut ctx, FileStreamCloseEvent::new(&stream_ptr)) {
-            crate::strace!("freopen64(pathname={:?}, mode={:?}, stream={:?}) -> NULL ({})", path_cstr, mode_cstr, stream, e);
-            e.set_errno();
-            return ptr::null_mut()
-        }
-
-        let fd = match Scheduler::handle_event(&mut ctx, FileOpenEvent::new(FileOpenLocation::Path(path),stream_mode.flags, Some(access_mode))) {
-            Ok(fd) => fd,
-            Err(e) => {
-                crate::strace!("freopen64(pathname={:?}, mode={:?}, stream={:?}) -> NULL ({})", path_cstr, mode_cstr, stream, e);
-                e.set_errno();
-                return ptr::null_mut()
-            }
-        };
-
-        let source = FileStreamSource::Descriptor(fd);
-        let Some(stream_mode) = FileStreamMode::from_cstr(mode_cstr) else {
-            Errno::EINVAL.set_errno();
-            return ptr::null_mut()
-        };
-
-        match Scheduler::handle_event(&mut ctx, FileStreamCreateEvent::new(source, stream_mode, Some(stream_ptr))) {
+        match Scheduler::handle_event(&mut ctx, StreamCreateEvent::new(FileStreamSource::Descriptor(fd), stream_mode, Some(file_ptr))) {
             Ok(mut file_ptr) => {
-                crate::strace!("freopen64(fd={}, mode={:?}, stream={:?}) -> {:?}", fd, mode_cstr, stream_ptr, file_ptr);
+                crate::strace!("freopen(fd={}, mode={:?}) -> {:?}", fd, mode_cstr, file_ptr);
                 file_ptr.as_raw()
-            },
+            }
             Err(e) => {
-                crate::strace!("freopen64(fd={}, mode={:?}, stream={:?}) -> NULL ({})", fd, mode_cstr, stream_ptr, e);
+                crate::strace!("fdopen(fd={}, mode={:?}) -> NULL ({})", fd, mode_cstr, e);
                 e.set_errno();
                 ptr::null_mut()
             }
         }
-        */
-    }
-}
-
-hook_macros::hook! {
-    unsafe fn _IO_file_fopen(
-        stream: *mut libc::FILE,
-        pathname: *const libc::c_char,
-        mode: *const libc::c_char,
-        is32: libc::c_int
-    ) -> *mut libc::FILE => fizzle_io_file_fopen(_ctx) {
-        // SAFETY: caller guarantees `pathaname` and `mode` point to a null-terminated string
-        let path_cstr = unsafe { CStr::from_ptr(pathname) };
-        let mode_cstr = unsafe { CStr::from_ptr(mode) };
-        crate::strace!("_IO_file_fopen(stream={:?}, pathname={:?}, mode={:?}, is32={}) -> ...", stream, path_cstr, mode_cstr, is32);
-
-        unimplemented!("_IO_file_fopen")
-
-        /*
-        let Ok(path) = FilePath::from_cstr(path_cstr) else {
-            crate::strace!("_IO_file_fopen(stream={:?}, pathname={:?}, mode={:?}, is32={}) -> NULL (EINVAL)", stream, path_cstr, mode_cstr, is32);
-            Errno::EINVAL.set_errno();
-            return ptr::null_mut()
-        };
-
-        let Some(stream_mode) = FileStreamMode::from_cstr(mode_cstr) else {
-            crate::strace!("_IO_file_fopen(stream={:?}, pathname={:?}, mode={:?}, is32={}) -> NULL (EINVAL)", stream, path_cstr, mode_cstr, is32);
-            Errno::EINVAL.set_errno();
-            return ptr::null_mut()
-        };
-
-        let access_mode = AccessMode::USER_READ | AccessMode::USER_WRITE | AccessMode::GROUP_READ
-                | AccessMode::GROUP_WRITE | AccessMode::OTHER_READ | AccessMode::OTHER_WRITE;
-
-        let Some(stream_ptr) = FilePtr::from_raw(stream) else {
-            crate::strace!("_IO_file_fopen(stream={:?}, pathname={:?}, mode={:?}, is32={}) -> NULL (EINVAL)", stream, path_cstr, mode_cstr, is32);
-            Errno::EINVAL.set_errno();
-            return ptr::null_mut()
-        };
-
-        if let Err(e) = Scheduler::handle_event(&mut ctx, FileStreamFlushEvent::new(Some(stream_ptr))) {
-            crate::strace!("_IO_file_fopen(stream={:?}, pathname={:?}, mode={:?}, is32={}) -> NULL ({})", stream, path_cstr, mode_cstr, is32, e);
-            e.set_errno();
-            return ptr::null_mut()
-        }
-
-        if let Err(e) = Scheduler::handle_event(&mut ctx, FileStreamCloseEvent::new(&stream_ptr)) {
-            crate::strace!("_IO_file_fopen(stream={:?}, pathname={:?}, mode={:?}, is32={}) -> NULL ({})", stream, path_cstr, mode_cstr, is32, e);
-            e.set_errno();
-            return ptr::null_mut()
-        }
-
-        let fd = match Scheduler::handle_event(&mut ctx, FileOpenEvent::new(FileOpenLocation::Path(path),stream_mode.flags, Some(access_mode))) {
-            Ok(fd) => fd,
-            Err(e) => {
-                crate::strace!("_IO_file_fopen(stream={:?}, pathname={:?}, mode={:?}, is32={}) -> NULL ({})", stream, path_cstr, mode_cstr, is32, e);
-                e.set_errno();
-                return ptr::null_mut()
-            }
-        };
-
-        let source = FileStreamSource::Descriptor(fd);
-        let Some(stream_mode) = FileStreamMode::from_cstr(mode_cstr) else {
-            Errno::EINVAL.set_errno();
-            return ptr::null_mut()
-        };
-
-        match Scheduler::handle_event(&mut ctx, FileStreamCreateEvent::new(source, stream_mode, Some(stream_ptr))) {
-            Ok(mut file_ptr) => {
-                crate::strace!("_IO_file_fopen(stream={:?}, pathname={:?}, mode={:?}, is32={}) -> {:?}", stream, path_cstr, mode_cstr, is32, file_ptr.as_raw());
-                file_ptr.as_raw()
-            },
-            Err(e) => {
-                crate::strace!("_IO_file_fopen(stream={:?}, pathname={:?}, mode={:?}, is32={}) -> NULL ({})", stream, path_cstr, mode_cstr, is32, e);
-                e.set_errno();
-                ptr::null_mut()
-            }
-        }
-        */
     }
 }
 
@@ -484,34 +268,20 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn fclose(
         stream: *mut libc::FILE
-    ) -> libc::c_int => fizzle_fclose(_ctx) {
-        let Some(_stream_ptr) = FilePtr::from_raw(stream) else {
+    ) -> libc::c_int => fizzle_fclose(ctx) {
+        let Some(stream_ptr) = FilePtr::from_raw(stream) else {
             crate::strace!("fclose(stream={:?}) -> -1 (EINVAL)", stream);
             Errno::EINVAL.set_errno();
             return -1
         };
 
-        log::warn!("`fclose()` unimplemented");
-        let res = unsafe { libc::fclose(stream) };
-
-        if res < 0 {
-            let e = Errno::get_errno();
-            crate::strace!("fclose(stream={:?}) -> -1 ({})", stream, e);
-            e.set_errno();
-        } else {
-            crate::strace!("fclose(stream={:?}) -> {:?}", stream, res);
-        }
-        
-        res
-
-        /*
-        if let Err(e) = Scheduler::handle_event(&mut ctx, FileStreamFlushEvent::new(Some(stream_ptr))) {
+        if let Err(e) = Scheduler::handle_event(&mut ctx, StreamFlushEvent::new(Some(stream_ptr), false)) {
             crate::strace!("fclose(stream={:?}) -> -1 ({})", stream, e);
             e.set_errno();
             return -1
         }
 
-        match Scheduler::handle_event(&mut ctx, FileStreamCloseEvent::new(&stream_ptr)) {
+        match Scheduler::handle_event(&mut ctx, StreamCloseEvent::new(&stream_ptr)) {
             Ok(()) => {
                 crate::strace!("fclose(stream={:?}) -> 0", stream);
                 0
@@ -522,7 +292,6 @@ hook_macros::hook! {
                 -1
             }
         }
-        */
     }
 }
 
@@ -645,6 +414,36 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
+    unsafe fn fwrite_unlocked(
+        ptr: *const libc::c_void,
+        size: libc::size_t,
+        nmemb: libc::size_t,
+        stream: *mut libc::FILE
+    ) -> libc::size_t => fizzle_fwrite_unlocked(ctx) {
+        crate::strace!("fwrite_unlocked(ptr={:?}, size={}, nmemb={}, stream={:?}) -> ...", ptr, size, nmemb, stream);
+
+        let Some(file_ptr) = FilePtr::from_raw(stream) else {
+            crate::strace!("fwrite_unlocked(ptr={:?}, size={}, nmemb={}, stream={:?}) -> -1 (EINVAL)", ptr, size, nmemb, stream);
+            Errno::EINVAL.set_errno();
+            return 0
+        };
+
+        let buf = slice::from_raw_parts(ptr.cast::<u8>(), size * nmemb);
+
+        match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, buf, size, true)) {
+            Ok(()) => {
+                crate::strace!("fwrite_unlocked(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, nmemb);
+                nmemb
+            }
+            Err(written) => {
+                crate::strace!("fwrite_unlocked(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, written);
+                written
+            }
+        }
+    }
+}
+
+hook_macros::hook! {
     unsafe fn fread(
         ptr: *mut libc::c_void,
         size: libc::size_t,
@@ -668,6 +467,36 @@ hook_macros::hook! {
             }
             Err(written) => {
                 crate::strace!("fread(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, written);
+                written
+            }
+        }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn fread_unlocked(
+        ptr: *mut libc::c_void,
+        size: libc::size_t,
+        nmemb: libc::size_t,
+        stream: *mut libc::FILE
+    ) -> libc::size_t => fizzle_fread_unlocked(ctx) {
+        crate::strace!("fread_unlocked(ptr={:?}, size={}, nmemb={}, stream={:?}) -> ...", ptr, size, nmemb, stream);
+
+        let Some(stream_ptr) = FilePtr::from_raw(stream) else {
+            crate::strace!("fread_unlocked(ptr={:?}, size={}, nmemb={}, stream={:?}) -> -1 (EINVAL)", ptr, size, nmemb, stream);
+            Errno::EINVAL.set_errno();
+            return 0
+        };
+
+        let buf = slice::from_raw_parts_mut(ptr.cast::<u8>(), size * nmemb);
+
+        match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, buf, size, false, false)) {
+            Ok(_) => {
+                crate::strace!("fread_unlocked(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, nmemb);
+                nmemb
+            }
+            Err(written) => {
+                crate::strace!("fread_unlocked(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, written);
                 written
             }
         }
