@@ -257,7 +257,7 @@ impl Display for Errno {
             Self::ENOTRECOVERABLE => f.write_str("ENOTRECOVERABLE"),
             Self::EHWPOISON => f.write_str("EHWPOISON"),
             Self::ERFKILL => f.write_str("ERFKILL"),
-            i => f.write_fmt(format_args!("errno {}", i)),
+            i => f.write_fmt(format_args!("errno {}", i.0)),
         }
     }
 }
