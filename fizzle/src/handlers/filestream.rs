@@ -1212,7 +1212,6 @@ impl Event for StreamWriteEvent<'_> {
                             dst[buffer_len..buffer_len + copy_len].copy_from_slice(buffer);
 
                             file_obj.write_idx -= copy_len;
-                            file_obj.offset += copy_len;
                             self.written += copy_len;
 
                             if copy_len == self.in_buf.len() {
@@ -1228,7 +1227,6 @@ impl Event for StreamWriteEvent<'_> {
                             let buffer_len = cmp::min(buffer.len(), dst.len());
                             dst[..buffer_len].copy_from_slice(buffer);
                             file_obj.write_idx -= buffer_len;
-                            file_obj.offset += buffer_len;
 
                             if buffer_len < buffer.len() {
                                 // Shift remainder of buffer back
@@ -1244,7 +1242,6 @@ impl Event for StreamWriteEvent<'_> {
                             dst[buffer_len..buffer_len + copy_len].copy_from_slice(buffer);
 
                             file_obj.write_idx += copy_len;
-                            file_obj.offset += copy_len;
                             self.written += copy_len;
 
                             if copy_len == self.in_buf.len() {
@@ -1298,7 +1295,7 @@ impl Event for StreamWriteEvent<'_> {
                                 buffer[i] = buffer[self.written + i];
                             }
 
-                            file_obj.write_idx = buffer_len - self.written;
+                            file_obj.write_idx = rw_split + (buffer_len - self.written);
                         }
 
                         WRITE_SCRATCHPAD.replace(Some(unsafe { Box::from_raw(scratch_ptr) }));
@@ -1386,7 +1383,7 @@ impl Event for StreamWriteEvent<'_> {
                                 buffer[i] = buffer[self.written + i];
                             }
 
-                            file_obj.write_idx = buffer_len - self.written;
+                            file_obj.write_idx = file_obj.rw_split + (buffer_len - self.written);
                         }
 
                         WRITE_SCRATCHPAD.replace(Some(unsafe { Box::from_raw(scratch_ptr) }));
@@ -1415,7 +1412,6 @@ impl Event for StreamWriteEvent<'_> {
                 let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
                     panic!("unrecognized FILE* pointer")
                 };
-
 
                 file_obj.offset += self.written;
 
@@ -1559,7 +1555,6 @@ impl Event for StreamReadEvent<'_> {
                         out[..read]
                             .copy_from_slice(&filebuf[file_obj.read_idx..file_obj.read_idx + read]);
                         file_obj.read_idx += read;
-                        file_obj.offset += read;
                         self.bytes_read += read;
                     }
                     FileStreamBuffer::Slice(filebuf_ptr) => {
@@ -1576,7 +1571,6 @@ impl Event for StreamReadEvent<'_> {
                         out[..read]
                             .copy_from_slice(&filebuf[file_obj.read_idx..file_obj.read_idx + read]);
                         file_obj.read_idx += read;
-                        file_obj.offset += read;
                         self.bytes_read += read;
                     }
                     FileStreamBuffer::None(pushback) => match pushback {
@@ -1587,7 +1581,6 @@ impl Event for StreamReadEvent<'_> {
 
                             out[0] = *c;
                             *pushback = PushbackChar::None;
-                            file_obj.offset += 1;
                             self.bytes_read += 1;
                         }
                         PushbackChar::Wide(_wc) => unimplemented!(),
@@ -1671,7 +1664,6 @@ impl Event for StreamReadEvent<'_> {
                 out[..out_len].copy_from_slice(&source[..out_len]);
                 let out = &mut out[out_len..];
 
-                file_obj.offset += out_len;
                 self.bytes_read += out_len;
                 let source = &source[out_len..];
 
@@ -1698,7 +1690,6 @@ impl Event for StreamReadEvent<'_> {
                 }
 
                 file_obj.read_idx -= readbuf_len;
-                file_obj.offset += readbuf_len;
 
                 if out.is_empty() {
                     self.state = StreamReadState::Finish(None);
@@ -1820,6 +1811,8 @@ impl Event for StreamReadEvent<'_> {
                     panic!("unrecognized FILE* pointer")
                 };
 
+                file_obj.offset += self.bytes_read;
+
                 if !unlocked {
                     assert_eq!(
                         file_obj.queued_threads.pop_front(),
@@ -1829,9 +1822,6 @@ impl Event for StreamReadEvent<'_> {
                         state.mark_thread_ready(next_thread);
                     }
                 }
-
-                // This is handled elsewhere
-                // file_obj.offset += self.bytes_read;
 
                 if let Some(errno) = errno {
                     errno.set_errno();
