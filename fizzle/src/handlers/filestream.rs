@@ -1448,6 +1448,7 @@ impl Event for StreamReadEvent<'_> {
                         let read = cmp::min(file_obj.rw_split - file_obj.read_idx, out.len());
                         out[..read].copy_from_slice(&filebuf[file_obj.read_idx..file_obj.read_idx + read]);
                         file_obj.read_idx += read;
+                        file_obj.offset += read;
                         self.bytes_read += read;
                     }
                     FileStreamBuffer::Slice(filebuf_ptr) => {
@@ -1461,6 +1462,7 @@ impl Event for StreamReadEvent<'_> {
                         let read = cmp::min(file_obj.rw_split - file_obj.read_idx, out.len());
                         out[..read].copy_from_slice(&filebuf[file_obj.read_idx..file_obj.read_idx + read]);
                         file_obj.read_idx += read;
+                        file_obj.offset += read;
                         self.bytes_read += read;
                     }
                     FileStreamBuffer::None(pushback) => {
@@ -1472,6 +1474,7 @@ impl Event for StreamReadEvent<'_> {
 
                                 out[0] = *c;
                                 *pushback = PushbackChar::None;
+                                file_obj.offset += 1;
                                 self.bytes_read += 1;
                             }
                             PushbackChar::Wide(_wc) => unimplemented!(),
@@ -1554,7 +1557,7 @@ impl Event for StreamReadEvent<'_> {
                     }
                 }
 
-                // First, copy as much data to the output buffer 
+                // First, copy as much data to the output buffer as we can
                 let out_len = cmp::min(out.len(), source.len());
                 out[..out_len].copy_from_slice(&source[..out_len]);
                 let out = &mut out[out_len..];
@@ -1630,7 +1633,7 @@ impl Event for StreamReadEvent<'_> {
                         out[..out_len].copy_from_slice(&readbuf[..out_len]);
                         let out = &mut out[out_len..];
                         let readbuf = &readbuf[out_len..];
-                        self.bytes_read += read;
+                        self.bytes_read += out_len;
 
                         let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
                             panic!("unrecognized FILE* pointer")
