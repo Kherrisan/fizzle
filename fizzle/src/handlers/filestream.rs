@@ -1547,6 +1547,7 @@ impl Event for StreamReadEvent<'_> {
 
                 match &mut file_obj.buffer {
                     FileStreamBuffer::Internal(filebuf) => {
+
                         if self.stop_at_newline {
                             if let Some(newline_idx) = find_first(filebuf, b'\n') {
                                 let end = cmp::min(out.len(), newline_idx + 1);
@@ -1563,6 +1564,7 @@ impl Event for StreamReadEvent<'_> {
                     }
                     FileStreamBuffer::Slice(filebuf_ptr) => {
                         let filebuf = unsafe { filebuf_ptr.as_ref() };
+
                         if self.stop_at_newline {
                             if let Some(newline_idx) = find_first(filebuf, b'\n') {
                                 let end = cmp::min(out.len(), newline_idx + 1);
@@ -1610,8 +1612,7 @@ impl Event for StreamReadEvent<'_> {
                         let desc = Descriptor::from_raw_fd(*fd);
                         // If the read is meant to stop at newlines, it needs to fit within the readbuf's capacity
                         // (plus 1 character for the newline that is written out).
-                        let scratch_len =
-                            cmp::min(FIZZLE_FILE_BUFSIZ, file_obj.readbuf_capacity() + 1);
+                        let scratch_len = cmp::min(FIZZLE_FILE_BUFSIZ   , file_obj.readbuf_capacity().checked_sub(1).unwrap_or(1));
 
                         // Using a thread-local buffer makes this code non-reentrant, so
                         // we need to take care not to call `StreamReadEvent` recursively.
@@ -1687,15 +1688,16 @@ impl Event for StreamReadEvent<'_> {
                 match &mut file_obj.buffer {
                     FileStreamBuffer::Internal(s) => {
                         let readbuf = &mut s.as_mut()[..rw_split];
-                        readbuf[rw_split - readbuf_len..].copy_from_slice(source);
+                        readbuf[rw_split - readbuf_len..rw_split].copy_from_slice(&source[..readbuf_len]);
                     }
                     FileStreamBuffer::Slice(s) => {
                         let readbuf = &mut (unsafe { s.as_mut() })[..rw_split];
-                        readbuf[rw_split - readbuf_len..].copy_from_slice(source);
+                        readbuf[rw_split - readbuf_len..rw_split].copy_from_slice(&source[..readbuf_len]);
                     }
                     FileStreamBuffer::None(_) => (),
                 }
 
+                file_obj.read_idx -= readbuf_len;
                 file_obj.offset += readbuf_len;
 
                 if out.is_empty() {
@@ -1780,10 +1782,7 @@ impl Event for StreamReadEvent<'_> {
                             READ_SCRATCHPAD.replace(unsafe { Some(Box::from_raw(scratch_ptr)) });
                             Outcome::Yield(YieldUntil::Immediate)
                         } else {
-                            let scratch_len = cmp::min(
-                                FIZZLE_FILE_BUFSIZ,
-                                out.len() + (file_obj.readbuf_capacity().saturating_sub(1)),
-                            );
+                            let scratch_len = cmp::min(FIZZLE_FILE_BUFSIZ   , file_obj.readbuf_capacity().checked_sub(1).unwrap_or(1));
                             let scratch_slice = unsafe {
                                 slice::from_raw_parts_mut(scratch_ptr.cast(), scratch_len)
                             };

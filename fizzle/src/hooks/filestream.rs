@@ -572,7 +572,7 @@ hook_macros::hook! {
         }
 
         let buf = slice::from_raw_parts_mut(s.cast::<u8>(), size as usize);
-        let buf_len = buf.len() - 1;
+        let buf_len = buf.len().saturating_sub(1);
 
         match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[..buf_len], 1, false, true)) {
             Ok(written) => {
