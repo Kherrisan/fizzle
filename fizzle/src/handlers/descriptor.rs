@@ -677,7 +677,7 @@ impl Event for StdinReadEvent<'_> {
 
         let ReadData::Iovec(iovec) = &mut self.data else {
             unreachable!(
-                "internal error--buffer other than ReadData::Basic passed to StdinReadEent"
+                "internal error--buffer other than ReadData::Basic passed to StdinReadEvent"
             );
         };
 
@@ -1120,7 +1120,7 @@ impl Event for StdoutWriteEvent<'_> {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let nonblocking = state.local.fds.get(&self.fd).unwrap().nonblocking;
 
-        let WriteData::Iovec(iovec) = self.data else {
+        let WriteData::BasicSlice(slice) = self.data else {
             unreachable!(
                 "internal error--buffer other than WriteData::Basic passed to StdoutWriteEvent"
             );
@@ -1131,7 +1131,7 @@ impl Event for StdoutWriteEvent<'_> {
                 log::info!("Data written to stdout"); // TODO: include actual data
 
                 let res = unsafe {
-                    libc::writev(2, iovec.as_ptr().cast::<libc::iovec>(), iovec.len() as i32)
+                    libc::write(2, slice.as_ptr().cast(), slice.len())
                 };
                 match res {
                     0.. => Outcome::Success(res as usize),
@@ -1206,25 +1206,23 @@ impl Event for StdoutWriteEvent<'_> {
                 let mut buf = Vec::new_in(fizzle_alloc());
 
                 let mut total_written = 0;
-                for slice in iovec {
-                    buf.extend_from_slice(slice);
-                    total_written += slice.len();
-                }
+                buf.extend_from_slice(slice);
+                total_written += slice.len();
 
                 plugin_info.borrow_mut().write_buf.push_back(buf);
 
                 Outcome::Success(total_written)
             }
             (_, StdioBackend::Sink) => {
-                let total_len = iovec.iter().map(|s| s.len()).sum();
+                let total_len = slice.len();
                 Outcome::Success(total_len)
             }
             (_, StdioBackend::NullSink) => {
-                let total_len = iovec.iter().map(|s| s.len()).sum();
+                let total_len = slice.len();
                 Outcome::Success(total_len)
             }
             (_, StdioBackend::Fuzz(_)) => {
-                let total_len = iovec.iter().map(|s| s.len()).sum();
+                let total_len = slice.len();
                 Outcome::Success(total_len)
             }
         }
@@ -1258,18 +1256,19 @@ impl Event for StderrWriteEvent<'_> {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let WriteData::Iovec(iovec) = self.data else {
+        let WriteData::BasicSlice(slice) = self.data else {
             unreachable!(
-                "internal error--buffer other than WriteData::Basic passed to StderrWriteEent"
+                "internal error--buffer other than WriteData::Basic passed to StderrWriteEvent"
             );
         };
 
         if state.global.mask_stderr {
-            let total = iovec.iter().map(|s| s.len()).sum();
+            let total = slice.len();
             Outcome::Success(total)
+
         } else {
             let res = unsafe {
-                libc::writev(2, iovec.as_ptr().cast::<libc::iovec>(), iovec.len() as i32)
+                libc::write(2, slice.as_ptr().cast(), slice.len())
             };
             match res {
                 0.. => Outcome::Success(res as usize),
