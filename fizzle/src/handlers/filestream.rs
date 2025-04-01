@@ -1543,33 +1543,35 @@ impl Event for StreamReadEvent<'_> {
 
                 match &mut file_obj.buffer {
                     FileStreamBuffer::Internal(filebuf) => {
+                        let buf = &filebuf[file_obj.read_idx..file_obj.rw_split];
 
                         if self.stop_at_newline {
-                            if let Some(newline_idx) = find_first(filebuf, b'\n') {
+                            if let Some(newline_idx) = find_first(buf, b'\n') {
                                 let end = cmp::min(out.len(), newline_idx + 1);
                                 out = &mut out[..end];
                             }
                         }
 
-                        let read = cmp::min(file_obj.rw_split - file_obj.read_idx, out.len());
+                        let read = cmp::min(buf.len(), out.len());
                         out[..read]
-                            .copy_from_slice(&filebuf[file_obj.read_idx..file_obj.read_idx + read]);
+                            .copy_from_slice(&filebuf[..read]);
                         file_obj.read_idx += read;
                         self.bytes_read += read;
                     }
                     FileStreamBuffer::Slice(filebuf_ptr) => {
-                        let filebuf = unsafe { filebuf_ptr.as_ref() };
+                        let buf = unsafe { &filebuf_ptr.as_ref()[file_obj.read_idx..file_obj.rw_split] };
+
 
                         if self.stop_at_newline {
-                            if let Some(newline_idx) = find_first(filebuf, b'\n') {
+                            if let Some(newline_idx) = find_first(buf, b'\n') {
                                 let end = cmp::min(out.len(), newline_idx + 1);
                                 out = &mut out[..end];
                             }
                         }
 
-                        let read = cmp::min(file_obj.rw_split - file_obj.read_idx, out.len());
+                        let read = cmp::min(buf.len(), out.len());
                         out[..read]
-                            .copy_from_slice(&filebuf[file_obj.read_idx..file_obj.read_idx + read]);
+                            .copy_from_slice(&buf[..read]);
                         file_obj.read_idx += read;
                         self.bytes_read += read;
                     }

@@ -580,11 +580,11 @@ hook_macros::hook! {
                     buf[buf_len] = b'\0';
                 }
 
-                crate::strace!("fgets(s={:?}, size={}, stream={:?}) -> {:?}", s, size, stream, s);
+                crate::strace!("fgets(s={:?}, size={}, stream={:?}) -> {:?} ({:?})", s, size, stream, s, CStr::from_bytes_with_nul_unchecked(buf));
                 s
             }
             Err(written) => {
-                let ret = if written == 0 || Errno::get_errno() != Errno::SUCCESS {
+                let ret = if written == 0 {
                     ptr::null_mut()
                 } else {
                     s
@@ -592,7 +592,7 @@ hook_macros::hook! {
 
                 buf[written] = b'\0';
 
-                crate::strace!("fgets(s={:?}, size={}, stream={:?}) -> {:?}", s, size, stream, ret);
+                crate::strace!("fgets(s={:?}, size={}, stream={:?}) -> {:?} ({:?})", s, size, stream, ret, CStr::from_bytes_with_nul_unchecked(buf));
                 ret
             }
         }
