@@ -1144,6 +1144,11 @@ impl Event for StreamWriteEvent<'_> {
                     // BUG: when a newline is encountered, *everything* is flushed. Should this
                     // be changed to only flush up to the last newline?
 
+                    if buf_write_idx == rw_split {
+                        self.state = StreamWriteState::Finish(None);
+                        return Outcome::Yield(YieldUntil::Immediate);                       
+                    }
+
                     let buffer = match &mut file_obj.buffer {
                         FileStreamBuffer::Internal(filebuf) => {
                             &mut filebuf[rw_split..buf_write_idx]
@@ -1151,7 +1156,9 @@ impl Event for StreamWriteEvent<'_> {
                         FileStreamBuffer::Slice(filebuf_ptr) => unsafe {
                             &mut filebuf_ptr.as_mut()[rw_split..buf_write_idx]
                         },
-                        FileStreamBuffer::None(_) => &mut [],
+                        FileStreamBuffer::None(pushback) => {
+                            unimplemented!()
+                        },
                     };
 
                     match &mut file_obj.source {
@@ -1184,8 +1191,6 @@ impl Event for StreamWriteEvent<'_> {
 
                             let buffer_len = cmp::min(buffer.len(), dst.len());
                             dst[..buffer_len].copy_from_slice(buffer);
-                            file_obj.write_idx -= buffer_len;
-                            file_obj.offset += buffer_len;
 
                             if buffer_len < buffer.len() {
                                 // Shift remainder of buffer back
@@ -1200,7 +1205,7 @@ impl Event for StreamWriteEvent<'_> {
                             let copy_len = cmp::min(self.in_buf.len(), dst.len() - buffer_len);
                             dst[buffer_len..buffer_len + copy_len].copy_from_slice(buffer);
 
-                            file_obj.write_idx += copy_len;
+                            file_obj.write_idx -= copy_len;
                             file_obj.offset += copy_len;
                             self.written += copy_len;
 
@@ -1291,7 +1296,7 @@ impl Event for StreamWriteEvent<'_> {
                         }
 
                         SCRATCHPAD.set(Some(unsafe { Box::from_raw(scratch_ptr) }));
-                        self.state = StreamWriteState::Finish(Some(Errno::SUCCESS));
+                        self.state = StreamWriteState::Finish(Some(Errno::EPIPE));
                         Outcome::Yield(YieldUntil::Immediate)
                     }
                     Outcome::Success(written) => {
@@ -1794,10 +1799,17 @@ impl Event for StreamReadEvent<'_> {
                         // TODO: set error somewhere?
                         file_obj.err = true;
                         self.state = StreamReadState::Finish(Some(e));
+                        SCRATCHPAD.set(unsafe { Some(Box::from_raw(scratch_ptr)) });
                         Outcome::Yield(YieldUntil::Immediate)
                     }
-                    Outcome::RunTask(task, yield_until) => Outcome::RunTask(task, yield_until),
-                    Outcome::Yield(yield_until) => Outcome::Yield(yield_until),
+                    Outcome::RunTask(task, yield_until) => {
+                        self.state = StreamReadState::ReadFromDescriptor(ev, out, scratch_ptr);
+                        Outcome::RunTask(task, yield_until)
+                    }
+                    Outcome::Yield(yield_until) => {
+                        self.state = StreamReadState::ReadFromDescriptor(ev, out, scratch_ptr);
+                        Outcome::Yield(yield_until)
+                    }
                 }
             }
             (StreamReadState::Finish(errno), unlocked) => {
@@ -1962,7 +1974,7 @@ impl Event for StreamErrorEvent {
         };
 
         match &self.state {
-            StreamErrorState::Start if self.unlocked => {
+            StreamErrorState::Start if !self.unlocked => {
                 self.state = StreamErrorState::Finish;
                 let outcome = if file_obj.queued_threads.is_empty() {
                     Outcome::Yield(YieldUntil::Immediate)
