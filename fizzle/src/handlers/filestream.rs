@@ -9,7 +9,7 @@ use std::{cmp, iter, mem, slice};
 
 use crate::constants::FIZZLE_FILE_BUFSIZ;
 use crate::errno::Errno;
-use crate::scheduler::{Event, Outcome, YieldUntil};
+use crate::scheduler::{fizzle_alloc, Event, Outcome, YieldUntil};
 use crate::state::FizzleState;
 
 use super::descriptor::*;
@@ -484,18 +484,7 @@ impl Event for StreamFlushEvent {
                     event: StreamWriteEvent::new(stream, &[], 1, self.unlocked),
                 }, old_buffering);
 
-                if self.unlocked {
-                    return Outcome::Yield(YieldUntil::Immediate)
-                }
-
-                let outcome = if file_obj.queued_threads.is_empty() {
-                    Outcome::Yield(YieldUntil::Immediate)
-                } else {
-                    Outcome::Yield(YieldUntil::None)
-                };
-
-                file_obj.queued_threads.push_back(thread::current().id());
-                outcome
+                return Outcome::Yield(YieldUntil::Immediate)
             }
             (StreamFlushState::FlushSingle(FlushAction { stream, mut event }, old_buffering), _) => {
                 match event.run(state) {
@@ -505,7 +494,7 @@ impl Event for StreamFlushEvent {
                         };
 
                         file_obj.buffering_mode = old_buffering;
-                        Outcome::Yield(YieldUntil::Immediate)
+                        Outcome::Success(())
                     }
                     Outcome::Error(_) => {
                         let e = Errno::get_errno();
@@ -517,8 +506,14 @@ impl Event for StreamFlushEvent {
                         file_obj.buffering_mode = old_buffering;
                         Outcome::Error(e)
                     }
-                    Outcome::Yield(y) => Outcome::Yield(y),
-                    Outcome::RunTask(t, y) => Outcome::RunTask(t, y),
+                    Outcome::Yield(y) => {
+                        self.state = StreamFlushState::FlushSingle(FlushAction { stream, event }, old_buffering);
+                        Outcome::Yield(y)
+                    }
+                    Outcome::RunTask(t, y) => {
+                        self.state = StreamFlushState::FlushSingle(FlushAction { stream, event }, old_buffering);
+                        Outcome::RunTask(t, y)
+                    }
                 }
             }
             (StreamFlushState::Start, None) => { // Flush all
@@ -544,19 +539,7 @@ impl Event for StreamFlushEvent {
                 }).collect();
 
                 self.state = StreamFlushState::FlushAll(flush_actions, old_buffering, None);
-
-                if self.unlocked {
-                    return Outcome::Yield(YieldUntil::Immediate)
-                }
-
-                let outcome = if file_obj.queued_threads.is_empty() {
-                    Outcome::Yield(YieldUntil::Immediate)
-                } else {
-                    Outcome::Yield(YieldUntil::None)
-                };
-
-                file_obj.queued_threads.push_back(thread::current().id());
-                outcome
+                Outcome::Yield(YieldUntil::Immediate)
             }
             (StreamFlushState::FlushAll(mut actions, mut old_buffering, mut errno), _) => {
                 let action = actions.last_mut().unwrap();
@@ -618,8 +601,14 @@ impl Event for StreamFlushEvent {
                         self.state = StreamFlushState::FlushAll(actions, old_buffering, errno);
                         Outcome::Yield(YieldUntil::Immediate)
                     }
-                    Outcome::Yield(y) => Outcome::Yield(y),
-                    Outcome::RunTask(t, y) => Outcome::RunTask(t, y),
+                    Outcome::Yield(y) => {
+                        self.state = StreamFlushState::FlushAll(actions, old_buffering, errno);                       
+                        Outcome::Yield(y)
+                    }
+                    Outcome::RunTask(t, y) => {
+                        self.state = StreamFlushState::FlushAll(actions, old_buffering, errno);
+                        Outcome::RunTask(t, y)
+                    }
                 }
             }
             (StreamFlushState::Invalid, _) => unreachable!(),
@@ -697,6 +686,7 @@ enum StreamSeekState {
     Locked,
     Seek(FileSeekEvent),
     Unlock(Result<usize, Errno>),
+    Invalid,
 }
 
 impl StreamSeekEvent {
@@ -718,7 +708,9 @@ impl Event for StreamSeekEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        match &mut self.state {
+        let seek_state = mem::replace(&mut self.state, StreamSeekState::Invalid);
+
+        match seek_state {
             StreamSeekState::Start => {
                 // First, lock the FILE*
                 let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
@@ -882,7 +874,7 @@ impl Event for StreamSeekEvent {
                     }
                 }
             }
-            StreamSeekState::Seek(ev) => {
+            StreamSeekState::Seek(mut ev) => {
                 match ev.run(state) {
                     Outcome::Success(res) => {
                         self.state = StreamSeekState::Unlock(Ok(res));
@@ -892,8 +884,14 @@ impl Event for StreamSeekEvent {
                         self.state = StreamSeekState::Unlock(Err(e));
                         Outcome::Yield(YieldUntil::Immediate)
                     }
-                    Outcome::RunTask(t, y) => Outcome::RunTask(t, y),
-                    Outcome::Yield(y) => Outcome::Yield(y),
+                    Outcome::RunTask(t, y) => {
+                        self.state = StreamSeekState::Seek(ev);
+                        Outcome::RunTask(t, y)
+                    }
+                    Outcome::Yield(y) => {
+                        self.state = StreamSeekState::Seek(ev);
+                        Outcome::Yield(y)
+                    }
                 }
             }
             StreamSeekState::Unlock(res) => {
@@ -913,11 +911,12 @@ impl Event for StreamSeekEvent {
                     state.mark_thread_ready(next_thread);
                 }
 
-                match *res {
+                match res {
                     Ok(offset) => Outcome::Success(offset),
                     Err(e) => Outcome::Error(e),
                 }
             }
+            StreamSeekState::Invalid => unreachable!(),
         }
     }
 }
@@ -1608,6 +1607,7 @@ impl Event for StreamReadEvent<'_> {
 
                         // TODO: set error somewhere?
                         file_obj.eof = true;
+                        SCRATCHPAD.set(unsafe { Some(Box::from_raw(scratch_ptr)) });
                         self.state = StreamReadState::Finish(Some(Errno::SUCCESS));
                         Outcome::Yield(YieldUntil::Immediate)
                     }
@@ -1786,6 +1786,7 @@ impl Event for StreamUngetEvent {
                     }
                     FileStreamBuffer::Internal(s) => {
                         s[read_idx] = self.character;
+                        file_obj.offset -= 1;
                         file_obj.read_idx -= 1;
                         file_obj.eof = false;
                         Outcome::Success(())
@@ -1794,16 +1795,20 @@ impl Event for StreamUngetEvent {
                         unsafe {
                             s.as_mut()[read_idx] = self.character;
                         }
+                        file_obj.offset -= 1;
                         file_obj.read_idx -= 1;
                         file_obj.eof = false;
                         Outcome::Success(())
                     }
                     FileStreamBuffer::None(pushback) => {
                         if matches!(pushback, PushbackChar::None) {
+                            file_obj.offset -= 1;
                             *pushback = PushbackChar::Regular(self.character);
                             file_obj.eof = false;
                             Outcome::Success(())
                         } else {
+                            log::warn!("ungetc() called more than once consecutively");
+                            file_obj.err = true;
                             Outcome::Error(())
                         }
                     }

@@ -212,7 +212,7 @@ hook_macros::hook! {
         // SAFETY: caller guarantees `pathaname` and `mode` point to a null-terminated string
         let path_cstr = unsafe { CStr::from_ptr(pathname) };
         let mode_cstr = unsafe { CStr::from_ptr(mode) };
-        crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> ...", path_cstr, mode_cstr, stream);
+        crate::strace!("freopen64(pathname={:?}, mode={:?}, stream={:?}) -> ...", path_cstr, mode_cstr, stream);
 
         let Some(stream_mode) = FileStreamMode::from_cstr(mode_cstr) else {
             crate::strace!("fopen64(pathname={:?}, mode={:?}) -> NULL (EINVAL)", path_cstr, mode_cstr);
@@ -221,23 +221,23 @@ hook_macros::hook! {
         };
 
         let Some(file_ptr) = FilePtr::from_raw(stream) else {
-            panic!("freopen() passed null `stream` parameter")
+            panic!("freopen64() passed null `stream` parameter")
         };
 
         let fd = libc::open(pathname, stream_mode.flags.bits());
         if fd < 0 {
             // TODO: need to finish implementing
-            crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> NULL", path_cstr, mode_cstr, stream);
+            crate::strace!("freopen64(pathname={:?}, mode={:?}, stream={:?}) -> NULL", path_cstr, mode_cstr, stream);
             return ptr::null_mut()
         }
 
         match Scheduler::handle_event(&mut ctx, StreamCreateEvent::new(FileStreamSource::Descriptor(fd), stream_mode, Some(file_ptr))) {
             Ok(mut file_ptr) => {
-                crate::strace!("freopen(fd={}, mode={:?}) -> {:?}", fd, mode_cstr, file_ptr);
+                crate::strace!("freopen64(fd={}, mode={:?}) -> {:?}", fd, mode_cstr, file_ptr);
                 file_ptr.as_raw()
             }
             Err(e) => {
-                crate::strace!("fdopen(fd={}, mode={:?}) -> NULL ({})", fd, mode_cstr, e);
+                crate::strace!("fdopen64(fd={}, mode={:?}) -> NULL ({})", fd, mode_cstr, e);
                 e.set_errno();
                 ptr::null_mut()
             }
@@ -269,6 +269,8 @@ hook_macros::hook! {
     unsafe fn fclose(
         stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_fclose(ctx) {
+        crate::strace!("fclose(stream={:?}) -> ...", stream);
+
         let Some(stream_ptr) = FilePtr::from_raw(stream) else {
             crate::strace!("fclose(stream={:?}) -> -1 (EINVAL)", stream);
             Errno::EINVAL.set_errno();
@@ -337,13 +339,13 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn fileno(stream: *mut libc::FILE) -> libc::c_int => fizzle_fileno(ctx) {
+        crate::strace!("fileno(stream={:?}) -> ...", stream);
+
         let Some(file_ptr) = FilePtr::from_raw(stream) else {
             crate::strace!("fileno(stream={:?}) -> -1 (EINVAL)", stream);
             Errno::EINVAL.set_errno();
             return -1
         };
-
-        crate::strace!("fileno(stream={:?}) -> ...", stream);
 
         match Scheduler::handle_event(&mut ctx, StreamDescriptorEvent::new(file_ptr, false)) {
             Ok(fd) => {
@@ -361,13 +363,13 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn fileno_unlocked(stream: *mut libc::FILE) -> libc::c_int => fizzle_fileno_unlocked(ctx) {
+        crate::strace!("fileno_unlocked(stream={:?}) -> ...", stream);
+
         let Some(file_ptr) = FilePtr::from_raw(stream) else {
             crate::strace!("fileno_unlocked(stream={:?}) -> -1 (EINVAL)", stream);
             Errno::EINVAL.set_errno();
             return -1
         };
-
-        crate::strace!("fileno_unlocked(stream={:?}) -> ...", stream);
 
         match Scheduler::handle_event(&mut ctx, StreamDescriptorEvent::new(file_ptr, true)) {
             Ok(fd) => {
@@ -721,10 +723,9 @@ hook_macros::hook! {
     unsafe fn putchar(
         c: libc::c_int
     ) -> libc::c_int => fizzle_putchar(ctx) {
-        let file_ptr = FilePtr::from_raw(crate::stdout).unwrap();
-
         crate::strace!("putchar(c={}) -> ...", c);
 
+        let file_ptr = FilePtr::from_raw(crate::stdout).unwrap();
         let buf = [c as u8];
         
         match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, &buf, 1, false)) {
@@ -744,10 +745,9 @@ hook_macros::hook! {
     unsafe fn putchar_unlocked(
         c: libc::c_int
     ) -> libc::c_int => fizzle_putchar_unlocked(ctx) {
-        let file_ptr = FilePtr::from_raw(crate::stdout).unwrap();
-
         crate::strace!("putchar_unlocked(c={}) -> ...", c);
 
+        let file_ptr = FilePtr::from_raw(crate::stdout).unwrap();
         let buf = [c as u8];
         
         match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, &buf, 1, true)) {
