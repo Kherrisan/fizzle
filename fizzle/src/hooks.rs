@@ -19,6 +19,7 @@ pub mod posix_mq;
 pub mod printf;
 pub mod process;
 pub mod pthread;
+pub mod resolv;
 pub mod semaphore;
 pub mod signal;
 pub mod sleep;

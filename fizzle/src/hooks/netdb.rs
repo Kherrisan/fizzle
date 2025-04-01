@@ -1,4 +1,11 @@
+use std::ffi::CStr;
+
+use crate::handlers::netdb::*;
 use crate::hook_macros;
+use crate::scheduler::Scheduler;
+
+// TODO: Upstream this.
+const EAI_ADDRFAMILY: libc::c_int = -9;
 
 hook_macros::hook! {
     unsafe fn getaddrinfo(
@@ -7,7 +14,129 @@ hook_macros::hook! {
         hints: *const libc::addrinfo,
         res: *mut *mut libc::addrinfo
     ) -> libc::c_int => fizzle_getaddrinfo(ctx) {
-        unimplemented!("getaddrinfo")
+        crate::strace!("getaddrinfo(node={:?}, service={:?}, hints={:?}, res={:?}) -> ...", node, service, hints, res);
+
+        let node_cstr = if node.is_null() {
+            None
+        } else {
+            Some(CStr::from_ptr(node))
+        };
+
+        let service_cstr = if service.is_null() {
+            None
+        } else {
+            Some(CStr::from_ptr(service))
+        };
+
+        if res.is_null() {
+            panic!("invalid null `res` passed to getaddrinfo")
+        }
+
+        let hint_family = if hints.is_null() {
+            libc::AF_UNSPEC
+        } else {
+            (*hints).ai_family
+        };
+
+        let hint_socktype = if hints.is_null() {
+            0   
+        } else {
+            (*hints).ai_socktype
+        };
+
+
+        let hint_protocol = if hints.is_null() {
+            0
+        } else {
+            (*hints).ai_protocol
+        };
+
+        let hint_flags = if hints.is_null() {
+            GetAddrInfoFlags::empty()
+        } else {
+            GetAddrInfoFlags::from_bits((*hints).ai_flags).unwrap()
+        };
+
+        match Scheduler::handle_event(&mut ctx, GetAddressInfoEvent::new(node_cstr, service_cstr, hint_family, hint_socktype, hint_protocol, hint_flags)) {
+            Ok(addr_info) => {
+                if hints.is_null() {
+                    crate::strace!("getaddrinfo(node={:?}, service={:?}, hints=None, res={:?}) -> 0", node_cstr, service_cstr, res);
+                } else {
+                    crate::strace!("getaddrinfo(node={:?}, service={:?}, hints={{family={}, socktype={}, protocol={}, flags={:?}}}, res={:?}) -> 0", node_cstr, service_cstr, hint_family, hint_socktype, hint_protocol, hint_flags, res);
+                }
+                *res = Box::into_raw(addr_info);
+                0
+            },
+            Err((errno, ret)) => {
+                if hints.is_null() {
+                    crate::strace!("getaddrinfo(node={:?}, service={:?}, hints=None, res={:?}) -> {} ({})", node_cstr, service_cstr, res, ret, errno);
+                } else {
+                    crate::strace!("getaddrinfo(node={:?}, service={:?}, hints={{family={}, socktype={}, protocol={}, flags={:?}}}, res={:?}) -> {} ({})", node_cstr, service_cstr, hint_family, hint_socktype, hint_protocol, hint_flags, res, ret, errno);
+                }
+                errno.set_errno();
+                ret
+            }
+        }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn freeaddrinfo(
+        res: *mut libc::addrinfo
+    ) => fizzle_freeaddrinfo(ctx) {
+        crate::strace!("freeaddrinfo(res={:?}) -> ...", res);
+
+        match Scheduler::handle_event(&mut ctx, FreeAddressInfoEvent::new(res)) {
+            Ok(()) => {
+                crate::strace!("freeaddrinfo(res={:?}) -> ()", res);
+            },
+            Err(_) => unreachable!(),
+        }
+    }
+}
+
+#[repr(C)]
+pub struct gaicb {
+    ar_name: *const libc::c_char,
+    ar_service: *const libc::c_char,
+    ar_request: *const libc::addrinfo,
+    ar_result: *mut libc::addrinfo,
+}
+
+hook_macros::hook! {
+    unsafe fn getaddrinfo_a(
+        mode: libc::c_int,
+        list: *mut gaicb,
+        nitems: libc::c_int,
+        sevp: *mut libc::sigevent
+    ) -> libc::c_int => fizzle_getaddrinfo_a(_ctx) {
+        unimplemented!("getaddrinfo_a()")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn gai_suspend(
+        list: *const gaicb,
+        nitems: libc::c_int,
+        timeout: *const libc::timespec
+    ) -> libc::c_int => fizzle_gai_suspend(_ctx) {
+        unimplemented!("gai_suspend()")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn gai_error(
+        req: *mut gaicb
+    ) -> libc::c_int => fizzle_gai_error(_ctx) {
+        unimplemented!("gai_error()")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn gai_cancel(
+        req: *mut gaicb
+    ) -> libc::c_int => fizzle_gai_cancel(_ctx) {
+        unimplemented!("gai_cancel()")
     }
 }
 
@@ -17,6 +146,7 @@ hook_macros::hook! {
         len: libc::socklen_t,
         ty: libc::c_int
     ) -> *mut libc::hostent => fizzle_gethostbyaddr(ctx) {
+        // deprecated--should we implement??
         unimplemented!("gethostbyaddr")
     }
 }
@@ -25,6 +155,7 @@ hook_macros::hook! {
     unsafe fn gethostbyname(
         name: *const char
     ) -> *mut libc::hostent => fizzle_gethostbyname(ctx) {
+        // deprecated--should we implement??
         unimplemented!("gethostbyname")
     }
 }
