@@ -1,7 +1,9 @@
-use std::collections::{hash_map::Entry, VecDeque};
+use std::collections::VecDeque;
 use std::fmt::Display;
 use std::thread::ThreadId;
 use std::{mem, ptr, thread};
+
+use hashbrown::hash_map::Entry;
 
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome, YieldUntil};

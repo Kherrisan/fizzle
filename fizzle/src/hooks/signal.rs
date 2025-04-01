@@ -2,6 +2,7 @@ use std::mem;
 use std::time::Duration;
 
 use crate::errno::Errno;
+use crate::handlers::descriptor::Descriptor;
 use crate::handlers::process::{Pgid, Pid};
 use crate::handlers::signal::*;
 use crate::handlers::thread::Tid;
@@ -122,11 +123,32 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn signalfd(
-        _fd: libc::c_int,
-        _mask: *const libc::sigset_t,
-        _flags: libc::c_int
-    ) -> libc::c_int => fizzle_signalfd(_ctx) {
-        unimplemented!("signalfd()")
+        fd: libc::c_int,
+        mask: *const libc::sigset_t,
+        flags: libc::c_int
+    ) -> libc::c_int => fizzle_signalfd(ctx) {
+        crate::strace!("signalfd(fd={}, mask={:?}, flags={:#x}) -> ...", fd, mask, flags);
+
+        let descriptor = if fd < 0 {
+            None
+        } else {
+            Some(Descriptor::from_raw_fd(fd))
+        };
+        let sigmask = SignalSet::from_sigset(unsafe { *mask });
+        let signalfd_flags = SignalfdFlags::from_bits_truncate(flags);
+
+        match Scheduler::handle_event(&mut ctx, SignalfdCreateEvent::new(descriptor, sigmask, signalfd_flags)) {
+            Ok(new_fd) => {
+                crate::strace!("signalfd(fd={}, mask={:?}, flags={:?}) -> {}", fd, sigmask, signalfd_flags, new_fd.as_raw_fd());
+                new_fd.as_raw_fd()
+            }
+            Err(e) => {
+                crate::strace!("signalfd(fd={}, mask={:?}, flags={:#x}) -> {}", fd, mask, flags, e);
+                e.set_errno();
+                -1
+            }
+        }
+
     }
 }
 

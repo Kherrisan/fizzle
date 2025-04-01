@@ -1,16 +1,21 @@
+use std::cell::RefCell;
 use std::fmt::Debug;
 use std::mem::MaybeUninit;
+use std::rc::Rc;
 use std::time::Duration;
-use std::{mem, ptr, thread};
+use std::{cmp, mem, ptr, slice, thread};
 
 use bitflags::bitflags;
 
 use crate::errno::Errno;
-use crate::scheduler::{Event, FizzleSingleton, HandleProcessSignalTask, HandleThreadSignalTask, Outcome, YieldUntil};
+use crate::scheduler::{fizzle_alloc, Event, FizzleSingleton, HandleProcessSignalTask, HandleThreadSignalTask, Outcome, YieldUntil};
 use crate::state::{FizzleState, SignalDestination};
 use crate::task::{Task, TaskResult};
+use crate::GlobalRc;
 
+use super::descriptor::{Descriptor, DescriptorInfo, FdResource, ReadData};
 use super::id::Worker;
+use super::polled::PolledInfo;
 use super::process::{Pgid, Pid};
 use super::thread::Tid;
 
@@ -279,6 +284,51 @@ impl RaisedSignalInfo {
             RaisedSignalInfo::TKill(i) => Some(i.uid),
         }
     }
+
+    pub fn as_signalfd_info(&self) -> libc::signalfd_siginfo {
+        let info = siginfo_t::from_raised(*self);
+
+        let (ssi_fd, ssi_band) = match self {
+            RaisedSignalInfo::Io(io) => (io.fd, io.band as u32),
+            _ => (-1, 0),
+        };
+
+        let (ssi_tid, ssi_overrun) = match self {
+            RaisedSignalInfo::Timer(t) => (t.timer_id as u32, t.overrun as u32),
+            _ => (0, 0),
+        };
+
+        let ssi_status = match self {
+            RaisedSignalInfo::Child(c) => c.status,
+            _ => 0,
+        };
+
+        let (ssi_int, ssi_ptr) = match self {
+            RaisedSignalInfo::SigQueue(s) => unsafe { 
+                (s.value.sigval_int, s.value.sigval_ptr.addr() as u64)
+            }
+            _ => (0, 0),
+        };
+
+        let mut si: libc::signalfd_siginfo = unsafe {
+            MaybeUninit::zeroed().assume_init()
+        };
+
+        si.ssi_signo = info.si_signo as u32;
+        si.ssi_errno = 0;
+        si.ssi_code = info.si_code;
+        si.ssi_pid = self.pid().unwrap_or(0) as u32;
+        si.ssi_uid = self.uid().unwrap_or(0) as u32;
+        si.ssi_fd = ssi_fd;
+        si.ssi_tid = ssi_tid; 
+        si.ssi_band = ssi_band;
+        si.ssi_overrun = ssi_overrun;
+        si.ssi_status = ssi_status;
+        si.ssi_int = ssi_int;
+        si.ssi_ptr = ssi_ptr;
+    
+        si
+    }
 }
 
 unsafe impl Send for RaisedSignalInfo {}
@@ -521,6 +571,270 @@ pub struct ThreadSigInfo {
     pub interrupted: bool,
 }
 
+pub struct SignalfdInfo {
+    pub mask: SignalSet,
+    pub polled: GlobalRc<PolledInfo>,
+    /// A counter that indicates the number of unique signals currently raised for the given mask.
+    /// Used to bookkeep the `polled` ready value.
+    pub num_raised: usize,
+}
+
+bitflags! {
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct SignalfdFlags: i32 {
+        const NONBLOCK = libc::SFD_NONBLOCK;
+        const CLOSE_ON_EXEC = libc::SFD_CLOEXEC;
+    }
+}
+
+pub struct SignalfdCreateEvent {
+    fd: Option<Descriptor>,
+    mask: SignalSet,
+    flags: SignalfdFlags,
+}
+
+impl SignalfdCreateEvent {
+    pub fn new(fd: Option<Descriptor>, mask: SignalSet, flags: SignalfdFlags) -> Self {
+        Self {
+            fd,
+            mask,
+            flags,
+        }
+    }
+}
+
+impl Event for SignalfdCreateEvent {
+    type Success = Descriptor;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        match self.fd {
+            Some(fd) => {
+                // Change the signal mask for the current descriptor
+                let Some(fd_info) = state.local.fds.get_mut(&fd) else {
+                    return Outcome::Error(Errno::EBADFD)
+                };
+
+                let FdResource::Signalfd(signalfd) = fd_info.resource.clone() else {
+                    return Outcome::Error(Errno::EINVAL)
+                };
+
+                let mut signalfd_mut = signalfd.borrow_mut();
+                signalfd_mut.mask = self.mask;
+
+                let mut num_raised = 0;
+                for signal in self.mask {
+                    if state.local.signals.get(&thread::current().id()).unwrap().pending[signal.lowest_signal_value() as usize - 1].is_some() {
+                        num_raised += 1;
+                    }
+
+                    if state.local.pending_signals[signal.lowest_signal_value() as usize - 1].is_some() {
+                        num_raised += 1;
+                    }
+                }
+
+                let old_num_raised = signalfd_mut.num_raised;
+                if old_num_raised == 0 && num_raised > 0 {
+                    state.raise_polled(&signalfd_mut.polled);
+                } else if num_raised == 0 && old_num_raised > 0 {
+                    state.raise_polled(&signalfd_mut.polled);
+                }
+
+                signalfd_mut.num_raised = num_raised;
+
+                Outcome::Success(fd)
+            }
+            None => {
+                // Create a new descriptor with the given signal mask
+                let fd = Descriptor::from_raw_fd(crate::create_descriptor());
+
+                let mut num_raised = 0;
+                for signal in self.mask {
+                    if state.local.signals.get(&thread::current().id()).unwrap().pending[signal.lowest_signal_value() as usize - 1].is_some() {
+                        num_raised += 1;
+                    }
+
+                    if state.local.pending_signals[signal.lowest_signal_value() as usize - 1].is_some() {
+                        num_raised += 1;
+                    }
+                }
+
+                let polled = Rc::new_in(
+                    RefCell::new(PolledInfo {
+                        pollers: Vec::new_in(fizzle_alloc()),
+                        event_raised: false,
+                    }), 
+                    fizzle_alloc(),
+                );
+
+                if num_raised > 0 {
+                    state.raise_polled(&polled);
+                }
+
+                let signalfd = Rc::new_in(RefCell::new(SignalfdInfo {
+                    mask: self.mask,
+                    num_raised,
+                    polled,
+                }), fizzle_alloc());
+
+                let prev = state.local.process_info.borrow_mut().signal_fds.insert(thread::current().id(), signalfd.clone());
+                if prev.is_some() {
+                    panic!("Fizzle internal error: only one signalfd per thread currently supported")
+                    // signlfds aren't implemented correctly in Fizzle for thread-specific signals.
+                    // I believe a signalfd is meant to capture thread-specific signals in the context it is currently polling or reading,
+                    // rather than the context in which it is created. The man pages are unclear on this though.
+                }
+
+                state.local.fds.insert(fd, DescriptorInfo {
+                    close_on_exec: self.flags.contains(SignalfdFlags::CLOSE_ON_EXEC),
+                    nonblocking: self.flags.contains(SignalfdFlags::NONBLOCK),
+                    is_passthrough: false,
+                    resource: FdResource::Signalfd(signalfd),
+                });
+
+                Outcome::Success(fd)
+            }
+        }
+    }
+}
+
+pub struct SignalfdReadEvent<'a> {
+    info: GlobalRc<SignalfdInfo>,
+    data: ReadData<'a>
+
+}
+
+impl<'a> SignalfdReadEvent<'a> {
+    pub fn new(info: GlobalRc<SignalfdInfo>, data: ReadData<'a>) -> Self {
+        Self {
+            info,
+            data,
+        }
+    }
+}
+
+impl<'a> Event for SignalfdReadEvent<'a> {
+    type Success = usize;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        if matches!(&self.data, ReadData::Socket(_, _)) {
+            return Outcome::Error(Errno::ENOTSOCK)
+        }
+
+        if matches!(&self.data, ReadData::File(_)) {
+            return Outcome::Error(Errno::ESPIPE)
+        }
+
+        let mut iov_idx = 0;
+        let mut iov_offset = 0;
+        let mut total_read = 0;
+
+        if self.data.len() == 0 {
+            return Outcome::Error(Errno::EINVAL)
+        }
+
+        // First, check thread_local pending signals
+        let signalfd_ref = self.info.borrow();
+        let proc_siginfo = state.local.process_info.clone();
+
+        for signal in signalfd_ref.mask {
+            if let Some(raised) = state.local.signals.get_mut(&thread::current().id()).unwrap().pending[signal.lowest_signal_value() as usize - 1].take() {
+                // First we need to handle the decrement of the signalfd for this thread
+                if let Some(signalfd) = proc_siginfo.borrow().signal_fds.get(&thread::current().id()) {
+                    let mut signalfd_mut = signalfd.borrow_mut();
+                    if signalfd_mut.mask.contains(SignalSet::from_signum(raised.signum())) {
+                        if signalfd_mut.num_raised == 1 {
+                            state.lower_polled(&signalfd_mut.polled);
+                        }
+                        signalfd_mut.num_raised -= 1;
+                    }
+                }
+
+                let signalfd_info = raised.as_signalfd_info();
+                let mut signalfd_info_bytes = unsafe {
+                    slice::from_raw_parts((&raw const signalfd_info).cast::<u8>(), mem::size_of_val(&signalfd_info))
+                };
+
+                loop {
+                    let ioslice = match &mut self.data {
+                        ReadData::BasicSlice(s) => &mut s[iov_offset..],
+                        ReadData::Iovec(iov) => &mut iov[iov_idx][iov_offset..],
+                        _ => unreachable!(),
+                    };
+                    let iov_rem = ioslice.len();
+                    let copy_len = cmp::min(iov_rem, signalfd_info_bytes.len());
+                    ioslice[..copy_len].copy_from_slice(&signalfd_info_bytes[..copy_len]);
+                    total_read += copy_len;
+
+                    if copy_len < iov_rem {
+                        iov_offset += copy_len;
+                        break
+
+                    } else {
+                        signalfd_info_bytes = &signalfd_info_bytes[copy_len..];
+                        iov_idx += 1;
+                        iov_offset = 0;
+                        match &self.data {
+                            ReadData::BasicSlice(_) => return Outcome::Success(total_read),
+                            ReadData::Iovec(iov) if iov_offset == iov.len() => return Outcome::Success(total_read),
+                            _ => (),
+                        }
+                    }
+                }
+            }
+
+            if let Some(raised) = state.local.pending_signals[signal.lowest_signal_value() as usize - 1].take() {
+                // The signal is removed, so we need to decrement applicable `signalfd`s.
+                let process_info = state.local.process_info.clone();
+                for signalfd_info in process_info.borrow().signal_fds.values() {
+                    let mut signalfd_mut = signalfd_info.borrow_mut();
+                    if signalfd_mut.mask.contains(SignalSet::from_signum(raised.signum())) {
+                        if signalfd_mut.num_raised == 1 {
+                            state.lower_polled(&signalfd_mut.polled);
+                        }
+                        signalfd_mut.num_raised -= 1;
+                    }
+                }
+
+                let signalfd_info = raised.as_signalfd_info();
+                let mut signalfd_info_bytes = unsafe {
+                    slice::from_raw_parts((&raw const signalfd_info).cast::<u8>(), mem::size_of_val(&signalfd_info))
+                };
+
+                loop {
+                    let ioslice = match &mut self.data {
+                        ReadData::BasicSlice(s) => &mut s[iov_offset..],
+                        ReadData::Iovec(iov) => &mut iov[iov_idx][iov_offset..],
+                        _ => unreachable!(),
+                    };
+                    let iov_rem = ioslice.len();
+                    let copy_len = cmp::min(iov_rem, signalfd_info_bytes.len());
+                    ioslice[..copy_len].copy_from_slice(&signalfd_info_bytes[..copy_len]);
+                    total_read += copy_len;
+
+                    if copy_len < iov_rem {
+                        iov_offset += copy_len;
+                        break
+
+                    } else {
+                        signalfd_info_bytes = &signalfd_info_bytes[copy_len..];
+                        iov_idx += 1;
+                        iov_offset = 0;
+                        match &self.data {
+                            ReadData::BasicSlice(_) => return Outcome::Success(total_read),
+                            ReadData::Iovec(iov) if iov_offset == iov.len() => return Outcome::Success(total_read),
+                            _ => (),
+                        }
+                    }
+                }
+            }
+        }
+
+        Outcome::Success(total_read)
+    }
+}
+
 pub struct SignalSetHandlerEvent {
     signum: libc::c_int,
     disposition: Option<SigDisposition>,
@@ -751,19 +1065,54 @@ impl Event for SignalWaitEvent {
                     .signals
                     .get_mut(&thread::current().id())
                     .unwrap();
-                let blocked_signals = thread_signals.masked;
-                let raised_signals = &mut thread_signals.pending;
-
-                let interest_signals = self.wait_set.intersection(blocked_signals);
+                let thread_raised_signals = &mut thread_signals.pending;
+                let interest_signals = self.wait_set;
 
                 let mut ready = None;
 
                 for signal in interest_signals.iter() {
                     if let Some(r) =
-                        raised_signals[signal.lowest_signal_value() as usize - 1].take()
+                        thread_raised_signals[signal.lowest_signal_value() as usize - 1].take()
                     {
                         ready = Some(r);
+
+                        // We need to update the signalfd for this process, if applicable
+                        let proc_info = state.local.process_info.clone();
+                        if let Some(signalfd) = proc_info.borrow().signal_fds.get(&thread::current().id()) {
+                            let mut signalfd_mut = signalfd.borrow_mut();
+                            if signalfd_mut.mask.contains(signal) {
+                                if signalfd_mut.num_raised == 1 {
+                                    state.lower_polled(&signalfd_mut.polled);
+                                }
+                                signalfd_mut.num_raised -= 1;
+                            }
+                        }
+
                         break;
+                    }
+                }
+
+                let proc_raised_signals = &mut state.local.pending_signals;
+                if ready.is_none() {
+                    for signal in interest_signals.iter() {
+                        if let Some(r) = proc_raised_signals[signal.lowest_signal_value() as usize - 1].take()
+                        {
+                            ready = Some(r);
+
+                            // We need to update the signalfd for this process, if applicable
+                            let proc_info = state.local.process_info.clone();
+                            for signalfd in proc_info.borrow().signal_fds.values() {
+                                let mut signalfd_mut = signalfd.borrow_mut();
+                                if signalfd_mut.mask.contains(signal) {
+                                    if signalfd_mut.num_raised == 1 {
+                                        state.lower_polled(&signalfd_mut.polled);
+                                    }
+                                    signalfd_mut.num_raised -= 1;
+                                }
+                            }
+
+                            break
+                        }
                     }
                 }
 
@@ -863,13 +1212,14 @@ impl Event for SignalSetSigmaskEvent {
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let old = *self.old.get_or_insert(
-            state
+        let siginfo = state
                 .local
                 .signals
-                .get(&thread::current().id())
-                .unwrap()
-                .masked,
+                .get_mut(&thread::current().id())
+                .unwrap();
+
+        let old = *self.old.get_or_insert(
+            siginfo.masked,
         );
         let Some(mask) = self.mask else {
             return Outcome::Success(old);
@@ -881,19 +1231,54 @@ impl Event for SignalSetSigmaskEvent {
             SigmaskOp::Unblock => (old & !mask, old & mask),
         };
 
-        let pid = state.local.process_info.borrow().pid;
-
-        let siginfo = state
-            .local
-            .signals
-            .get_mut(&thread::current().id())
-            .unwrap();
         siginfo.masked |= new; // Add newly blocked signals
+        let proc_info = state.local.process_info.clone();
+
         for signal in unblocked {
-            siginfo.masked -= signal; // Incrementally remove old signals, handling each if necessary
+            // Incrementally remove old signals, handling each if necessary
+
+            let local = &mut state.local;
+            let proc_pending = &mut local.pending_signals;
+            let siginfo = local
+                .signals
+                .get_mut(&thread::current().id())
+                .unwrap();
+
             if let Some(raised_info) =
                 siginfo.pending[signal.lowest_signal_value() as usize - 1].take()
             {
+                // We need to update the signalfd for this process, if applicable
+                if let Some(signalfd) = proc_info.borrow().signal_fds.get(&thread::current().id()) {
+                    let mut signalfd_mut = signalfd.borrow_mut();
+                    if signalfd_mut.mask.contains(signal) {
+                        if signalfd_mut.num_raised == 1 {
+                            state.lower_polled(&signalfd_mut.polled);
+                        }
+                        signalfd_mut.num_raised -= 1;
+                    }
+                }
+
+                // This entire function runs for as many times as is needed to handle all signals
+                return Outcome::RunTask(
+                    Task::HandleThreadSignal(HandleThreadSignalTask { raised: raised_info, dst: state.current_worker() }),
+                    YieldUntil::Reschedule(Duration::ZERO),
+                );
+            }
+
+            siginfo.masked -= signal;
+
+            if let Some(raised_info) = proc_pending[signal.lowest_signal_value() as usize - 1].take() {
+                // We need to update the signalfd for this process, if applicable
+                for signalfd in proc_info.borrow().signal_fds.values() {
+                    let mut signalfd_mut = signalfd.borrow_mut();
+                    if signalfd_mut.mask.contains(signal) {
+                        if signalfd_mut.num_raised == 1 {
+                            state.lower_polled(&signalfd_mut.polled);
+                        }
+                        signalfd_mut.num_raised -= 1;
+                    }
+                }
+
                 // This entire function runs for as many times as is needed to handle all signals
                 return Outcome::RunTask(
                     Task::HandleThreadSignal(HandleThreadSignalTask { raised: raised_info, dst: state.current_worker() }),

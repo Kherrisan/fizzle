@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::fmt::Display;
 use std::io::IoSlice;
 use std::mem::MaybeUninit;
-use std::os::fd::{self, RawFd};
+use std::os::fd::RawFd;
 use std::rc::Rc;
 use std::time::Duration;
 use std::{cmp, ptr};
@@ -322,9 +322,7 @@ impl Event for FileOpenEvent {
                             }),
                             fizzle_alloc(),
                         );
-                        if state.global.file_paths.insert(path, file_info).is_err() {
-                            panic!("failed to insert to file_paths")
-                        }
+                        state.global.file_paths.insert(path, file_info);
 
                         Outcome::Success(fd)
                     } else if self.flags.contains(FileOpenFlags::CREATE) {
@@ -799,7 +797,7 @@ impl Event for FileSeekEvent {
         }
 
         match &mut fd_info.resource {
-            FdResource::Directory(_) | FdResource::Epoll(_) | FdResource::Inotify(_) => unimplemented!(),
+            FdResource::Directory(_) | FdResource::Epoll(_) | FdResource::Inotify(_) | FdResource::Signalfd(_) => unimplemented!(),
             FdResource::EventFd(_) | FdResource::MessageQueue(_) | FdResource::Pipe(_)
             | FdResource::Stdin | FdResource::Stdout | FdResource::Stderr | FdResource::Socket(_) => {
                 return Outcome::Error(Errno::ESPIPE)
@@ -1363,9 +1361,7 @@ impl Event for StatEvent<'_> {
                     }),
                     fizzle_alloc(),
                 );
-                let Ok(_) = state.global.file_paths.insert(path.clone(), file_info) else {
-                    panic!()
-                };
+                state.global.file_paths.insert(path.clone(), file_info);
                 state.global.file_paths.get(&path).unwrap()
             }
         };
@@ -1580,26 +1576,20 @@ impl Event for RenameEvent {
             return Outcome::Error(Errno::ENOENT); // TODO: fix error code
         };
 
-        if state
+        state
             .global
             .file_paths
-            .insert(newpath.clone(), move_file_info.clone())
-            .is_err()
-        {
-            panic!("failed to insert to file_paths")
-        }
+            .insert(newpath.clone(), move_file_info.clone());
+        
         move_file_info.borrow_mut().path = newpath;
 
         if self.flags.contains(RenameFlags::RENAME_EXCHANGE) {
             if let Some(file_info) = replace_file_id {
-                if state
+                state
                     .global
                     .file_paths
-                    .insert(oldpath.clone(), file_info.clone())
-                    .is_err()
-                {
-                    panic!("failed to insert to file_paths")
-                }
+                    .insert(oldpath.clone(), file_info.clone());
+
                 file_info.borrow_mut().path = oldpath;
             }
         }

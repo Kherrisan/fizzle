@@ -17,12 +17,10 @@ use fizzle_common::io::{
 };
 use fizzle_common::path::{FilePath, SemaphorePath};
 use fizzle_plugin::{IoEndpointVariant, PluginModule, StreamId};
-use fxhash::FxBuildHasher;
-use heapless::FnvIndexMap;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
-use crate::comptime;
+use crate::{comptime, GlobalHashMap};
 use crate::errno::Errno;
 use crate::handlers::barrier::{BarrierInfo, BarrierPtr};
 use crate::handlers::condvar::{CondVarInfo, CondVarPtr};
@@ -261,17 +259,17 @@ impl FizzleState {
         let mut local = ProcessLocalState {
             atexit_handlers: Vec::new(),
             atfork_handlers: Vec::default(),
-            awaiting_thread_death: HashMap::default(),
-            barriers: HashMap::default(),
-            condvars: HashMap::default(),
+            awaiting_thread_death: hashbrown::HashMap::default(),
+            barriers: hashbrown::HashMap::default(),
+            condvars: hashbrown::HashMap::default(),
             fds: BTreeMap::new_in(fizzle_alloc()),
-            file_objs: HashMap::default(),
-            futex_waiters: HashMap::default(),
+            file_objs: hashbrown::HashMap::default(),
+            futex_waiters: hashbrown::HashMap::default(),
             itimer_prof: None,
             itimer_real: None,
             itimer_virtual: None,
             main_state: None,
-            mutexes: HashMap::default(),
+            mutexes: hashbrown::HashMap::default(),
             named_semaphores: HashMap::default(),
             on_exit_handlers: Vec::new(),
             pasture: Default::default(),
@@ -283,22 +281,23 @@ impl FizzleState {
                     pid: Pid::PRIMARY,
                     ppid: Pid::INIT,
                     pgid: Pgid::from_pid(Pid::PRIMARY),
+                    signal_fds: hashbrown::HashMap::new_in(fizzle_alloc()),
                     signal_handlers: array::from_fn(|_| SigDisposition::Default),
                     children: BTreeSet::new_in(fizzle_alloc()),
                 }),
                 fizzle_alloc(),
             ),
-            pthreads: HashMap::default(),
-            pthread_keys: HashMap::default(),
-            pthread_key_values: HashMap::default(),
-            pthread_cleanup: HashMap::default(),
-            rwlocks: HashMap::default(),
-            semaphores: HashMap::default(),
-            signals: HashMap::default(),
+            pthreads: hashbrown::HashMap::default(),
+            pthread_keys: hashbrown::HashMap::default(),
+            pthread_key_values: hashbrown::HashMap::default(),
+            pthread_cleanup: hashbrown::HashMap::default(),
+            rwlocks: hashbrown::HashMap::default(),
+            semaphores: hashbrown::HashMap::default(),
+            signals: hashbrown::HashMap::default(),
             spinlocks: HashMap::default(),
             terminated_threads: HashSet::default(),
             // thread_locks: Default::default(),
-            thread_tids: Default::default(),
+            thread_tids: hashbrown::HashMap::new_in(fizzle_alloc()),
             tid_threads: Default::default(),
             // Default umask is 0644
             umask: AccessMode::GROUP_READ | AccessMode::USER_WRITE | AccessMode::USER_EXEC,
@@ -764,9 +763,7 @@ impl FizzleState {
                             ),
                         };
 
-                        if self.global.file_paths.insert(path, file_info).is_err() {
-                            panic!("failed to insert into file_paths")
-                        }
+                        self.global.file_paths.insert(path, file_info);
                     }
                     IoEndpointVariant::TcpServer(addr) => {
                         let backend = match &endpoint.emulation_type {
@@ -1089,14 +1086,14 @@ pub struct ProcessLocalState {
     /// See `atfork()`
     pub atfork_handlers: Vec<AtForkInfo>,
     /// Indicates which thread(s) are awaiting the death of a specific thread (via pthread_join)
-    pub awaiting_thread_death: HashMap<ThreadId, Vec<ThreadId>, FxBuildHasher>,
-    pub barriers: HashMap<BarrierPtr, BarrierInfo, FxBuildHasher>,
+    pub awaiting_thread_death: hashbrown::HashMap<ThreadId, Vec<ThreadId>>,
+    pub barriers: hashbrown::HashMap<BarrierPtr, BarrierInfo>,
     /// A thread that has received a cancellation request.
-    pub condvars: HashMap<CondVarPtr, CondVarInfo, FxBuildHasher>,
+    pub condvars: hashbrown::HashMap<CondVarPtr, CondVarInfo>,
     pub fds: GlobalMap<Descriptor, DescriptorInfo>,
     /// Files specifically designated as being emulated.
-    pub file_objs: HashMap<FilePtr, FileObject, FxBuildHasher>,
-    pub futex_waiters: HashMap<FutexPtr, VecDeque<(u32, ThreadId)>, FxBuildHasher>,
+    pub file_objs: hashbrown::HashMap<FilePtr, FileObject>,
+    pub futex_waiters: hashbrown::HashMap<FutexPtr, VecDeque<(u32, ThreadId)>>,
     /// The interval between `ITIMER_REAL` events.
     pub itimer_real: Option<ItimerInfo>,
     /// The interval between `ITIMER_VIRTUAL` events.
@@ -1105,29 +1102,26 @@ pub struct ProcessLocalState {
     pub itimer_prof: Option<ItimerInfo>,
     /// State associated with the main process (e.g. the first process instantiated with the Fizzle harness).
     pub main_state: Option<MainProcessState>,
-    pub mutexes: HashMap<MutexPtr, MutexInfo, FxBuildHasher>,
+    pub mutexes: hashbrown::HashMap<MutexPtr, MutexInfo>,
     pub named_semaphores: HashMap<SemaphorePtr, GlobalRc<SemaphoreInfo>>,
     /// See `on_exit()`
     pub on_exit_handlers: Vec<(OnExitFunction, *mut libc::c_void)>,
     pub pasture: HashMap<CowId, CowInfo>,
     pub pending_signals: RaisedSignalSet,
     pub process_info: GlobalRc<ProcessInfo>,
-    pub pthreads: HashMap<libc::pthread_t, ThreadInfo, FxBuildHasher>,
-    pub pthread_cleanup: HashMap<ThreadId, VecDeque<PThreadRoutine>, FxBuildHasher>,
-    pub pthread_keys: HashMap<libc::pthread_key_t, PThreadRoutine, FxBuildHasher>,
-    pub pthread_key_values: HashMap<
+    pub pthreads: hashbrown::HashMap<libc::pthread_t, ThreadInfo>,
+    pub pthread_cleanup: hashbrown::HashMap<ThreadId, VecDeque<PThreadRoutine>>,
+    pub pthread_keys: hashbrown::HashMap<libc::pthread_key_t, PThreadRoutine>,
+    pub pthread_key_values: hashbrown::HashMap<
         libc::pthread_key_t,
-        HashMap<ThreadId, *mut libc::c_void, FxBuildHasher>,
-        FxBuildHasher,
+        hashbrown::HashMap<ThreadId, *mut libc::c_void>,
     >,
-    pub rwlocks: HashMap<RwLockPtr, RwLockInfo, FxBuildHasher>,
-    pub semaphores: HashMap<SemaphorePtr, SemaphoreInfo>,
-    pub signals: HashMap<ThreadId, ThreadSigInfo, FxBuildHasher>,
-    pub spinlocks: HashMap<SpinlockPtr, VecDeque<ThreadId>, FxBuildHasher>,
-    pub terminated_threads: HashSet<ThreadId, FxBuildHasher>,
-    /// Per-thread semaphores for synchronization.
-    // pub thread_locks: FxHashMap<ThreadId, Rc<Semaphore, GlobalHeap>>,
-    pub thread_tids: HashMap<ThreadId, Tid>,
+    pub rwlocks: hashbrown::HashMap<RwLockPtr, RwLockInfo>,
+    pub semaphores: hashbrown::HashMap<SemaphorePtr, SemaphoreInfo>,
+    pub signals: hashbrown::HashMap<ThreadId, ThreadSigInfo>,
+    pub spinlocks: HashMap<SpinlockPtr, VecDeque<ThreadId>>,
+    pub terminated_threads: HashSet<ThreadId>,
+    pub thread_tids: GlobalHashMap<ThreadId, Tid>,
     pub tid_threads: HashMap<Tid, ThreadId>,
     /// The current default permissions mask of the process.
     pub umask: AccessMode,
@@ -1191,11 +1185,11 @@ pub struct InterprocessState {
     pub plugins: GlobalVec<GlobalRc<PluginInfo>>,
 
     // TODO: BTreeMap would be unwise--FilePath has an expensive `eq` comparison
-    pub file_paths: FnvIndexMap<FilePath<MAX_PATH_LEN>, GlobalRc<FileInfo>, FIZZLE_MAX_FILE_PATHS>,
+    pub file_paths: GlobalHashMap<FilePath<MAX_PATH_LEN>, GlobalRc<FileInfo>>,
     // TODO: BTreeMap would be unwise--SemaphorePath has an expensive `eq` comparison
-    pub sem_paths: FnvIndexMap<SemaphorePath, GlobalRc<SemaphoreInfo>, FIZZLE_MAX_NAMED_SEMAPHORES>,
+    pub sem_paths: GlobalHashMap<SemaphorePath, GlobalRc<SemaphoreInfo>>,
     pub socket_locations:
-        FnvIndexMap<TransportAddress, TransportLocationInfo, FIZZLE_MAX_SOCKADDRS>,
+        GlobalHashMap<TransportAddress, TransportLocationInfo>,
     pub stdio: StdioBackend,
     /// Pollers/Workers that can be immediately scheduled.
     pub ready: BinaryHeap<ScheduledItem, GlobalHeap>,
@@ -1297,9 +1291,9 @@ impl InterprocessState {
 
             *ptr::addr_of_mut!((*state).next_inode) = 1_000_000;
 
-            *ptr::addr_of_mut!((*state).file_paths) = FnvIndexMap::new();
-            *ptr::addr_of_mut!((*state).sem_paths) = FnvIndexMap::new();
-            *ptr::addr_of_mut!((*state).socket_locations) = FnvIndexMap::new();
+            *ptr::addr_of_mut!((*state).file_paths) = hashbrown::HashMap::new_in(fizzle_alloc());
+            *ptr::addr_of_mut!((*state).sem_paths) = hashbrown::HashMap::new_in(fizzle_alloc());
+            *ptr::addr_of_mut!((*state).socket_locations) = hashbrown::HashMap::new_in(fizzle_alloc());
 
             *ptr::addr_of_mut!((*state).stdio) = StdioBackend::Passthrough;
             *ptr::addr_of_mut!((*state).per_round_clients) = Vec::new_in(fizzle_alloc());
@@ -1460,7 +1454,7 @@ impl InterprocessState {
                 let mut pending = LinkedList::new_in(fizzle_alloc());
                 pending.push_back(client_socket_info.clone());
 
-                if self
+                self
                     .socket_locations
                     .insert(
                         rem_addr,
@@ -1469,11 +1463,7 @@ impl InterprocessState {
                             bound_sockets: LinkedList::new_in(fizzle_alloc()),
                             pending,
                         },
-                    )
-                    .is_err()
-                {
-                    panic!("failed to insert client into socket_locations")
-                }
+                    );
 
                 client_socket_info
             }
@@ -1568,9 +1558,7 @@ impl InterprocessState {
                             bound_sockets,
                             pending: LinkedList::new_in(fizzle_alloc()),
                         },
-                    )
-                    .unwrap()
-                    .is_some()
+                    ).is_some()
                 {
                     panic!("socket location {:?} was already bound", transport_addr)
                 }

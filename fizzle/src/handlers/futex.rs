@@ -1,4 +1,3 @@
-use std::collections::hash_map::Entry;
 use std::collections::VecDeque;
 use std::{ptr, thread};
 
@@ -6,6 +5,8 @@ use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome, YieldUntil};
 use crate::state::FizzleState;
 use crate::WaitDuration;
+
+use hashbrown::hash_map::Entry;
 
 const FUTEX_OP_SHIFT_SET: i32 = libc::FUTEX_OP_OPARG_SHIFT | libc::FUTEX_OP_SET;
 const FUTEX_OP_SHIFT_ADD: i32 = libc::FUTEX_OP_OPARG_SHIFT | libc::FUTEX_OP_ADD;
@@ -401,7 +402,7 @@ impl Event for FutexWakeOpEvent<'_> {
             let awakened_2 = if let Some(queue) = state
                 .local
                 .futex_waiters
-                .get_mut(&&FutexPtr::from_mut(self.uaddr2))
+                .get_mut(&FutexPtr::from_mut(self.uaddr2))
             {
                 let mut awoken_threads = Vec::new();
                 for _ in 0..self.val2 {

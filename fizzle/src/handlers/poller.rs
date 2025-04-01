@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::RawFd;
 use std::rc::Rc;
 use std::time::Duration;
@@ -10,8 +10,6 @@ use crate::handlers::epoll::{EpollDirection, EpollInterest};
 use crate::scheduler::{fizzle_alloc, Event, Outcome, YieldUntil};
 use crate::state::FizzleState;
 use crate::{GlobalRc, GlobalSet, GlobalVec};
-
-use fxhash::FxBuildHasher;
 
 use super::descriptor::{Descriptor, DescriptorInfo, FdResource};
 use super::epoll::{EpollInfo, PolledStatus};
@@ -51,8 +49,8 @@ enum SelectState {
     CheckDescriptorsFail(Errno),
     EndPoll(
         GlobalRc<PollerInfo>,
-        HashMap<RawFd, GlobalRc<PolledInfo>, FxBuildHasher>,
-        HashMap<RawFd, GlobalRc<PolledInfo>, FxBuildHasher>,
+        hashbrown::HashMap<RawFd, GlobalRc<PolledInfo>>,
+        hashbrown::HashMap<RawFd, GlobalRc<PolledInfo>>,
     ),
     RevertSigmask(SignalSetSigmaskEvent, Result<usize, Errno>),
 }
@@ -131,8 +129,8 @@ impl Event for SelectEvent<'_> {
                     unsafe { libc::FD_ZERO(*exceptfds) };
                 }
 
-                let mut read_pollers = HashMap::with_hasher(FxBuildHasher::default());
-                let mut write_pollers = HashMap::with_hasher(FxBuildHasher::default());
+                let mut read_pollers = hashbrown::HashMap::default();
+                let mut write_pollers = hashbrown::HashMap::default();
 
                 for fd in 0..self.nfds as libc::c_int {
                     let mut fd_ready = false;
@@ -325,8 +323,8 @@ enum PollState {
     CheckDescriptorsFail(Errno),
     EndPoll(
         GlobalRc<PollerInfo>,
-        HashMap<RawFd, GlobalRc<PolledInfo>, FxBuildHasher>,
-        HashMap<RawFd, GlobalRc<PolledInfo>, FxBuildHasher>,
+        hashbrown::HashMap<RawFd, GlobalRc<PolledInfo>>,
+        hashbrown::HashMap<RawFd, GlobalRc<PolledInfo>>,
     ),
     RevertSigmask(SignalSetSigmaskEvent, Result<usize, Errno>),
 }
@@ -390,8 +388,8 @@ impl Event for PollEvent<'_> {
             PollState::CheckDescriptors => {
                 let mut total_ready = 0;
 
-                let mut read_pollers = HashMap::with_hasher(FxBuildHasher::default());
-                let mut write_pollers = HashMap::with_hasher(FxBuildHasher::default());
+                let mut read_pollers = hashbrown::HashMap::default();
+                let mut write_pollers = hashbrown::HashMap::default();
 
                 for pfd in self.fd_info.iter_mut() {
                     let mut fd_ready = false;
@@ -811,8 +809,8 @@ enum EpollWaitState {
     CheckDescriptorsFail(Errno),
     EndPoll(
         GlobalRc<PollerInfo>,
-        HashMap<RawFd, GlobalRc<PolledInfo>, FxBuildHasher>,
-        HashMap<RawFd, GlobalRc<PolledInfo>, FxBuildHasher>,
+        hashbrown::HashMap<RawFd, GlobalRc<PolledInfo>>,
+        hashbrown::HashMap<RawFd, GlobalRc<PolledInfo>>,
     ),
     RevertSigmask(SignalSetSigmaskEvent, Result<usize, Errno>),
 }
@@ -883,8 +881,8 @@ impl Event for EpollWaitEvent<'_> {
                 // TODO: BUG: ApplySigmask is called before this, but `return Outcome::Error` shortcuts
                 // don't revert that sigmask...
 
-                let mut read_pollers = HashMap::with_hasher(FxBuildHasher::default());
-                let mut write_pollers = HashMap::with_hasher(FxBuildHasher::default());
+                let mut read_pollers = hashbrown::HashMap::default();
+                let mut write_pollers = hashbrown::HashMap::default();
 
                 let Some(epfd_info) = state.local.fds.get(&self.epoll_descriptor) else {
                     return Outcome::Error(Errno::EBADF);
@@ -1170,6 +1168,9 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
         FdResource::Inotify(inotify) => {
             PolledStatus::Pollable(inotify.borrow().polled.clone())
         }
+        FdResource::Signalfd(signalfd) => {
+            PolledStatus::Pollable(signalfd.borrow().polled.clone())
+        }
         FdResource::Opaque => {
             log::error!("POLLIN for opaque socket unimplemented");
             PolledStatus::NotPollable
@@ -1262,6 +1263,7 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
             // SocketState::Error => PolledStatus::ImmediatelyPollable,
         },
         FdResource::Inotify(_) => PolledStatus::NotPollable,
+        FdResource::Signalfd(_) => PolledStatus::NotPollable,
         FdResource::Opaque => unimplemented!(),
     }
 }

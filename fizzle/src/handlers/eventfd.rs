@@ -300,7 +300,7 @@ impl Event for EventfdWriteEvent<'_> {
                 // then the write operation for that increment should block until it can succeed.
                 // This is the challenge: how do we know when to raise/lower a poll for a variably
                 // chosen increment value so that writes preceding or following a blocked write will
-                // still succeed if they are of a sufficiently small increment value?a
+                // still succeed if they are of a sufficiently small increment value?
                 //
                 // The solution is as follows: check initially to see if the write will succeed.
                 // Note that this DOES NOT use `polled_is_ready()`, but rather directly checks the

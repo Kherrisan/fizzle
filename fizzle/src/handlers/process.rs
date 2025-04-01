@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::rc::Rc;
+use std::thread::ThreadId;
 use std::{array, mem};
 use std::{ptr, thread};
 
@@ -18,7 +19,7 @@ use crate::scheduler::{
 use crate::semaphore::Semaphore;
 use crate::state::{set_entered_handler, FizzleState, InheritedState};
 use crate::task::{Task, TaskResult};
-use crate::{GlobalHeap, GlobalSet};
+use crate::{GlobalHashMap, GlobalHeap, GlobalRc, GlobalSet};
 
 use super::descriptor::{Descriptor, FdResource};
 use super::id::Worker;
@@ -108,6 +109,7 @@ pub struct ProcessInfo {
     pub ppid: Pid,
     /// The process group ID corresponding to the given process.
     pub pgid: Pgid,
+    pub signal_fds: GlobalHashMap<ThreadId, GlobalRc<SignalfdInfo>>,
     /// The handler to be run when the signal is received.
     ///
     /// According to `pthreads(7)`, POSIX.1 specifies that threads of a process should all share
@@ -299,6 +301,7 @@ impl ForkTask {
                         true,
                         fizzle_alloc(),
                     ),
+                    signal_fds: hashbrown::HashMap::new_in(fizzle_alloc()),
                     signal_handlers,
                     awaiting_death: None,
                     children: BTreeSet::new_in(fizzle_alloc()),

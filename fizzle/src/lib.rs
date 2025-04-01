@@ -41,6 +41,7 @@ pub type GlobalList<T> = LinkedList<T, GlobalHeap>;
 pub type GlobalVec<T> = Vec<T, GlobalHeap>;
 pub type GlobalMap<K, V> = BTreeMap<K, V, GlobalHeap>;
 pub type GlobalSet<K> = BTreeSet<K, GlobalHeap>;
+pub type GlobalHashMap<K, V> = hashbrown::HashMap<K, V, hashbrown::DefaultHashBuilder, GlobalHeap>;
 pub type GlobalBox<T> = Box<T, GlobalHeap>;
 pub type GlobalHeap = &'static TlsfHeap;
 
@@ -210,7 +211,7 @@ fn create_inotify_watch() -> libc::c_int {
     NEXT_WATCH_DESCRIPTOR.fetch_add(1, Ordering::Relaxed)
 }
 
-unsafe extern "C" fn fizzle_handle_sigchld(signal: libc::c_int) {
+unsafe extern "C" fn fizzle_handle_sigchld(_signal: libc::c_int) {
     loop {
         // Avoids zombie process buildup during persistent-mode fuzzing
         if libc::waitpid(-1, ptr::null_mut(), libc::WNOHANG) < 0 {

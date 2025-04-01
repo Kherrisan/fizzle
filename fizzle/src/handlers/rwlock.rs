@@ -1,10 +1,9 @@
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::fmt::Display;
 use std::thread::ThreadId;
 use std::{mem, ptr, thread};
 
-use fxhash::FxBuildHasher;
+use hashbrown::hash_map::Entry;
 
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome, YieldUntil};
@@ -46,7 +45,7 @@ pub struct RwLockInfo {
     /// thread holding the lock.
     ///
     /// Only one thread should be in this when the state is `RwLockState::Writing`.
-    pub holding_state: HashMap<ThreadId, usize, FxBuildHasher>,
+    pub holding_state: hashbrown::HashMap<ThreadId, usize>,
 }
 
 impl RwLockInfo {

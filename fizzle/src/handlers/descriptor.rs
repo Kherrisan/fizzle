@@ -13,6 +13,7 @@ use super::inotify::InotifyInfo;
 use super::mq::*;
 use super::pipe::*;
 use super::poller::PollerInfo;
+use super::signal::{SignalfdInfo, SignalfdReadEvent};
 use super::socket::*;
 use crate::backend::{ConnectedBackend, StdioBackend};
 use crate::errno::Errno;
@@ -64,14 +65,16 @@ pub enum FdResource {
     MessageQueue(GlobalRc<MqId>),
     /// Anonymous pipes, such as those created with `pipe()`.
     Pipe(GlobalRc<PipeInfo>),
+    /// Signal file descriptor (see `signalfd()`).
+    Signalfd(GlobalRc<SignalfdInfo>),
+    /// Network sockets.
+    Socket(GlobalRc<SocketInfo>),
     /// The standard input of the parent process (which may be inherited by children).
     Stdin,
     /// The standard output of the parent process. (which may be inherited by children).
     Stdout,
     /// The standard error of the parent process. (which may be inherited by children).
     Stderr,
-    /// Network sockets.
-    Socket(GlobalRc<SocketInfo>),
     /// An opaque fd meant only to be used in passthrough
     Opaque,
 }
@@ -393,6 +396,17 @@ pub enum ReadData<'a> {
     Socket(&'a mut [SocketReadData<'a>], SocketFlags),
 }
 
+impl<'a> ReadData<'a> {
+    pub fn len(&self) -> usize {
+        match self {
+            Self::BasicSlice(s) => s.len(),
+            Self::Iovec(iov) => iov.iter().map(|s| s.len()).sum::<usize>(),
+            Self::File(f) => f.buf.iter().map(|s| s.len()).sum::<usize>(),
+            Self::Socket(s, _) => s.iter().map(|d| d.buf.iter().map(|s| s.len()).sum::<usize>()).sum::<usize>(),
+        }
+    }
+}
+
 pub struct FileReadData<'a> {
     pub buf: &'a mut [IoSliceMut<'a>],
     /// Offset from `pread()` family of functions
@@ -451,6 +465,7 @@ enum DescriptorReadState<'a> {
     Directory(DirectoryReadEvent<'a>),
     Epoll(EpollReadEvent<'a>),
     Eventfd(EventfdReadEvent<'a>),
+    Signalfd(SignalfdReadEvent<'a>),
     Socket(SocketReadEvent<'a>),
     File(FileReadEvent<'a>),
     Mq(MqReadEvent<'a>),
@@ -569,6 +584,12 @@ impl Event for DescriptorReadEvent<'_> {
                             self.data.take().unwrap(),
                         ));
                     }
+                    FdResource::Signalfd(signalfd) => {
+                        self.state = DescriptorReadState::Signalfd(SignalfdReadEvent::new(
+                            signalfd.clone(),
+                            self.data.take().unwrap(),
+                        ))
+                    }
                     FdResource::File(_) => {
                         self.state = DescriptorReadState::File(FileReadEvent::new(
                             self.fd,
@@ -610,6 +631,7 @@ impl Event for DescriptorReadEvent<'_> {
             DescriptorReadState::Directory(e) => e.run(state),
             DescriptorReadState::Epoll(e) => e.run(state),
             DescriptorReadState::Eventfd(e) => e.run(state),
+            DescriptorReadState::Signalfd(e) => e.run(state),
             DescriptorReadState::Socket(e) => e.run(state),
             DescriptorReadState::File(e) => e.run(state),
             DescriptorReadState::Mq(e) => e.run(state),
@@ -867,6 +889,7 @@ enum DescriptorWriteState<'a> {
     Mq(MqWriteEvent<'a>),
     Pipe(PipeWriteEvent<'a>),
     Stdout(StdoutWriteEvent<'a>),
+    Stderr(StderrWriteEvent<'a>),
 }
 
 pub struct DescriptorWriteEvent<'a> {
@@ -983,6 +1006,9 @@ impl Event for DescriptorWriteEvent<'_> {
                             self.data.take().unwrap(),
                         ));
                     }
+                    FdResource::Signalfd(_signalfd) => {
+                        unimplemented!("write(signalfd)")
+                    }
                     FdResource::File(_) => {
                         self.state = DescriptorWriteState::File(FileWriteEvent::new(
                             self.fd,
@@ -1010,7 +1036,7 @@ impl Event for DescriptorWriteEvent<'_> {
                         ));
                     }
                     FdResource::Stderr => {
-                        self.state = DescriptorWriteState::Stdout(StdoutWriteEvent::new(
+                        self.state = DescriptorWriteState::Stderr(StderrWriteEvent::new(
                             self.fd,
                             self.data.take().unwrap(),
                         ));
@@ -1035,6 +1061,7 @@ impl Event for DescriptorWriteEvent<'_> {
             DescriptorWriteState::Mq(e) => e.run(state),
             DescriptorWriteState::Pipe(e) => e.run(state),
             DescriptorWriteState::Stdout(e) => e.run(state),
+            DescriptorWriteState::Stderr(e) => e.run(state),
         }
     }
 }

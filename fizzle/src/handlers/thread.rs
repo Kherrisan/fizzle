@@ -1,12 +1,9 @@
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use hashbrown::hash_map::Entry;
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::thread::ThreadId;
 use std::time::Duration;
 use std::{ptr, thread};
-
-use fxhash::FxBuildHasher;
 
 use crate::errno::Errno;
 use crate::scheduler::{
@@ -80,7 +77,7 @@ pub struct ThreadInfo {
     pub cancellable: bool,
     pub cancel_type: ThreadCancelType,
     pub cancel_requested: bool,
-    pub held_mutexes: HashSet<MutexPtr, FxBuildHasher>,
+    pub held_mutexes: hashbrown::HashSet<MutexPtr>,
 }
 
 impl ThreadInfo {
@@ -282,7 +279,7 @@ impl Event for ThreadCreateEvent {
     type Success = ();
     type Error = Errno;
 
-    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match self.state {
             ThreadCreateState::Start => {
                 self.state = ThreadCreateState::Finish;
@@ -311,7 +308,7 @@ impl Event for ThreadCreateEvent {
 pub struct CreateThreadTask(ThreadCreateContext);
 
 impl CreateThreadTask {
-    pub fn execute(self, ctx: &mut FizzleSingleton) -> TaskResult {
+    pub fn execute(self, _ctx: &mut FizzleSingleton) -> TaskResult {
         let thread_ctx = self.0;
 
         let res = unsafe {
@@ -325,10 +322,6 @@ impl CreateThreadTask {
         assert_eq!(res, 0);
         TaskResult::Suspend
     }
-}
-
-fn thread_create(thread_ctx: ThreadCreateContext) {
-
 }
 
 pub struct ThreadExitRetval {
@@ -637,7 +630,7 @@ impl Event for ThreadKeyCreateEvent {
             state
                 .local
                 .pthread_key_values
-                .insert(key, HashMap::with_hasher(Default::default()));
+                .insert(key, hashbrown::HashMap::with_hasher(Default::default()));
 
             Outcome::Success(())
         } else {

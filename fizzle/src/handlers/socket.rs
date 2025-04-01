@@ -1,5 +1,5 @@
 use fizzle_common::io::*;
-use heapless::Entry;
+use hashbrown::hash_map::Entry;
 
 use std::cell::RefCell;
 use std::collections::LinkedList;
@@ -70,7 +70,7 @@ fn get_or_assign_local(
                     let mut bound_sockets = LinkedList::new_in(fizzle_alloc());
                     bound_sockets.push_back(socket_info.clone());
 
-                    if state
+                    state
                         .global
                         .socket_locations
                         .insert(
@@ -80,11 +80,7 @@ fn get_or_assign_local(
                                 bound_sockets,
                                 pending: LinkedList::new_in(fizzle_alloc()),
                             },
-                        )
-                        .is_err()
-                    {
-                        panic!("failed to insert to socket_locations")
-                    }
+                        );
                     break addr;
                 };
 
@@ -585,7 +581,7 @@ impl Event for SocketCreatePairEvent {
         let mut bound_sockets = LinkedList::new_in(fizzle_alloc());
         bound_sockets.push_back(socket1);
 
-        if state
+        state
             .global
             .socket_locations
             .insert(
@@ -595,16 +591,12 @@ impl Event for SocketCreatePairEvent {
                     bound_sockets,
                     pending: LinkedList::new_in(fizzle_alloc()),
                 },
-            )
-            .is_err()
-        {
-            panic!("failed to insert to socket_locations")
-        }
+            );
 
         let mut bound_sockets = LinkedList::new_in(fizzle_alloc());
         bound_sockets.push_back(socket2);
 
-        if state
+        state
             .global
             .socket_locations
             .insert(
@@ -614,11 +606,7 @@ impl Event for SocketCreatePairEvent {
                     bound_sockets,
                     pending: LinkedList::new_in(fizzle_alloc()),
                 },
-            )
-            .is_err()
-        {
-            panic!("failed to insert to socket_locations")
-        }
+            );
 
         Outcome::Success((fd1, fd2))
     }
@@ -748,15 +736,11 @@ impl Event for SocketBindEvent<'_> {
                 let mut bound_sockets = LinkedList::new_in(fizzle_alloc());
                 bound_sockets.push_back(socket_info.clone());
 
-                if v.insert(TransportLocationInfo {
+                v.insert(TransportLocationInfo {
                     reuse_port,
                     bound_sockets,
                     pending: LinkedList::new_in(fizzle_alloc()),
-                })
-                .is_err()
-                {
-                    panic!("failed to insert to socket_locations")
-                }
+                });
             }
         }
 

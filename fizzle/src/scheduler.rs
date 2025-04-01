@@ -435,7 +435,6 @@ impl HandleProcessSignalTask {
         let Some(tid) = Scheduler::unblocked_thread(&mut state, raised.signum()) else {
             // TODO: make sure this gets checked whenever a thread unblocks itself
             log::debug!("Process-directed signal {} received but all threads were blocked--signal set to pending", raised.signum());
-            state.local.pending_signals[raised.signum() as usize - 1].replace(raised);
 
             // Notify any thread waiting with `sigwait()`
             let mut ready_worker = None;
@@ -456,6 +455,21 @@ impl HandleProcessSignalTask {
             // TODO: Should all of the ready workers in the process be signalled, or only one?
             if let Some(worker) = ready_worker {
                 state.mark_worker_ready(worker);
+            } else {
+                let prev = state.local.pending_signals[raised.signum() as usize - 1].replace(raised); // TODO: this is never read from...
+                if prev.is_none() {
+                    // The signal is fresh, so we need to increment applicable `signalfd`s.
+                    let process_info = state.local.process_info.clone();
+                    for signalfd_info in process_info.borrow().signal_fds.values() {
+                        let mut signalfd_mut = signalfd_info.borrow_mut();
+                        if signalfd_mut.mask.contains(SignalSet::from_signum(raised.signum())) {
+                            signalfd_mut.num_raised += 1;
+                            if signalfd_mut.num_raised == 1 {
+                                state.raise_polled(&signalfd_mut.polled);
+                            }
+                        }
+                    }
+                }
             }
 
             return TaskResult::Continue;
@@ -493,7 +507,7 @@ impl HandleLocalSignalTask {
         let current_worker = state.current_worker();
         let raised = self.raised;
 
-        let proc_siginfo = state.global.pids.get_mut(&current_worker.pid).unwrap();
+        let proc_siginfo = state.global.pids.get_mut(&current_worker.pid).unwrap().clone();
         let sig_handler =
             proc_siginfo.borrow().signal_handlers[raised.signum() as usize - 1].clone();
 
@@ -507,7 +521,7 @@ impl HandleLocalSignalTask {
             .masked
             .intersects(SignalSet::from_signum(raised.signum()))
         {
-            siginfo.pending[raised.signum() as usize - 1] = Some(raised);
+            let old_pending = siginfo.pending[raised.signum() as usize - 1].replace(raised);
             log::debug!(
                 "Thread-directed signal {} received but blocked--set to pending",
                 raised.signum()
@@ -518,6 +532,19 @@ impl HandleLocalSignalTask {
                     .intersects(SignalSet::from_signum(raised.signum()))
             {
                 state.mark_worker_ready(current_worker);
+            }
+
+            if old_pending.is_none() {
+                // We need to update the signalfd for this thread, if applicable
+                if let Some(signalfd) = proc_siginfo.borrow().signal_fds.get(&thread::current().id()) {
+                    let mut signalfd_mut = signalfd.borrow_mut();
+                    if signalfd_mut.mask.contains(SignalSet::from_signum(raised.signum())) {
+                        signalfd_mut.num_raised += 1;
+                        if signalfd_mut.num_raised == 1 {
+                            state.raise_polled(&signalfd_mut.polled);
+                        }
+                    }
+                }
             }
 
             return TaskResult::Continue;
@@ -1031,14 +1058,10 @@ impl CreatePrimaryCowTask {
                 fizzle_alloc(),
             );
 
-            if state
+            state
                 .global
                 .file_paths
-                .insert(path.clone(), file_info)
-                .is_err()
-            {
-                panic!("failed to insert to file_paths")
-            }
+                .insert(path.clone(), file_info);
         } else {
             let file_info = state.global.file_paths.get(&path).unwrap().clone();
             file_info.borrow_mut().cow = Some(cow_id);
