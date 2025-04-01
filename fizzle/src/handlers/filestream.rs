@@ -1548,7 +1548,8 @@ impl Event for StreamReadEvent<'_> {
                     FileStreamBuffer::Internal(filebuf) => {
                         if self.stop_at_newline {
                             if let Some(newline_idx) = find_first(filebuf, b'\n') {
-                                out = &mut out[..newline_idx + 1];
+                                let end = cmp::min(out.len(), newline_idx + 1);
+                                out = &mut out[..end];
                             }
                         }
 
