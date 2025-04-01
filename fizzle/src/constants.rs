@@ -20,7 +20,7 @@ pub const FIZZLE_DEFAULT_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub const FIZZLE_HEAP_SIZE: usize = 30 * 1024 * 1024; // 30 MB by default
 
-pub const FIZZLE_FILE_BUFSIZ: usize = libc::BUFSIZ as usize;
+pub const FIZZLE_STREAM_BUFSIZ: usize = libc::BUFSIZ as usize;
 
 /// Instructs the fizzle harness to keep running if the main process would exit normally
 // pub const FIZZLE_NOEXIT_ENV: &str = "FIZZLE_NOEXIT";

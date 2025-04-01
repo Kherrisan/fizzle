@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::{self, ThreadId};
 use std::{cmp, iter, mem, slice};
 
-use crate::constants::FIZZLE_FILE_BUFSIZ;
+use crate::constants::FIZZLE_STREAM_BUFSIZ;
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome, YieldUntil};
 use crate::state::FizzleState;
@@ -18,18 +18,6 @@ use super::file::{file_length, FileOpenFlags, FileSeekEvent, SeekPosition};
 // This starts at 16 because NULL should indicates failure.
 // It increments by 16 to avoid any pointer alignment shenanigans.
 static NEXT_FILE_PTR: AtomicUsize = AtomicUsize::new(16);
-
-std::thread_local! {
-    static WRITE_SCRATCHPAD: Cell<Option<Box<[u8; FIZZLE_FILE_BUFSIZ]>>> = {
-        Cell::new(Some(Box::new([0u8; FIZZLE_FILE_BUFSIZ])))
-    };
-}
-
-std::thread_local! {
-    static READ_SCRATCHPAD: Cell<Option<Box<[u8; FIZZLE_FILE_BUFSIZ]>>> = {
-        Cell::new(Some(Box::new([0u8; FIZZLE_FILE_BUFSIZ])))
-    };
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FilePtr(NonNull<libc::FILE>);
@@ -251,13 +239,13 @@ impl FileObject {
         // read_idx is set equal to rw_split to indicate there's no data left to be read.
         let (read_idx, rw_split, write_idx) = match access_mode {
             FileAccessMode::ReadWrite => (
-                FIZZLE_FILE_BUFSIZ / 2,
-                FIZZLE_FILE_BUFSIZ / 2,
-                FIZZLE_FILE_BUFSIZ / 2,
+                FIZZLE_STREAM_BUFSIZ / 2,
+                FIZZLE_STREAM_BUFSIZ / 2,
+                FIZZLE_STREAM_BUFSIZ / 2,
             ),
             FileAccessMode::WriteOnly => (0, 0, 0),
             FileAccessMode::ReadOnly => {
-                (FIZZLE_FILE_BUFSIZ, FIZZLE_FILE_BUFSIZ, FIZZLE_FILE_BUFSIZ)
+                (FIZZLE_STREAM_BUFSIZ, FIZZLE_STREAM_BUFSIZ, FIZZLE_STREAM_BUFSIZ)
             }
         };
 
@@ -357,18 +345,18 @@ impl Event for StreamCreateEvent<'_> {
         let (read_idx, rw_split, write_idx, access_mode) =
             if self.mode.flags.contains(FileOpenFlags::READWRITE) {
                 (
-                    FIZZLE_FILE_BUFSIZ / 2,
-                    FIZZLE_FILE_BUFSIZ / 2,
-                    FIZZLE_FILE_BUFSIZ / 2,
+                    FIZZLE_STREAM_BUFSIZ / 2,
+                    FIZZLE_STREAM_BUFSIZ / 2,
+                    FIZZLE_STREAM_BUFSIZ / 2,
                     FileAccessMode::ReadWrite,
                 )
             } else if self.mode.flags.contains(FileOpenFlags::WRITEONLY) {
                 (0, 0, 0, FileAccessMode::WriteOnly)
             } else {
                 (
-                    FIZZLE_FILE_BUFSIZ,
-                    FIZZLE_FILE_BUFSIZ,
-                    FIZZLE_FILE_BUFSIZ,
+                    FIZZLE_STREAM_BUFSIZ,
+                    FIZZLE_STREAM_BUFSIZ,
+                    FIZZLE_STREAM_BUFSIZ,
                     FileAccessMode::ReadOnly,
                 )
             };
@@ -1056,8 +1044,8 @@ pub enum StreamWriteState<'a> {
     WriteToBuffer,
     WriteToDescriptor {
         ev: DescriptorWriteEvent<'a>,
+        scratch_ptr: *mut [u8; FIZZLE_STREAM_BUFSIZ],
         scratch_len: usize,
-        scratch_ptr: *mut [u8; FIZZLE_FILE_BUFSIZ],
     },
     Finish(Option<Errno>),
     Invalid,
@@ -1113,6 +1101,8 @@ impl Event for StreamWriteEvent<'_> {
                 outcome
             }
             (StreamWriteState::Start, true) | (StreamWriteState::WriteToBuffer, _) => {
+                let scratch = state.local.get_scratch();
+
                 let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
                     panic!("unrecognized FILE* pointer")
                 };
@@ -1144,6 +1134,7 @@ impl Event for StreamWriteEvent<'_> {
                     file_obj.write_idx += written;
                     self.written += written;
 
+                    state.local.put_scratch(scratch);
                     self.state = StreamWriteState::Finish(None);
                     return Outcome::Yield(YieldUntil::Immediate);
                 } else {
@@ -1152,7 +1143,7 @@ impl Event for StreamWriteEvent<'_> {
 
                     if buf_write_idx == rw_split {
                         self.state = StreamWriteState::Finish(None);
-                        return Outcome::Yield(YieldUntil::Immediate);                       
+                        return Outcome::Yield(YieldUntil::Immediate);
                     }
 
                     let buffer = match &mut file_obj.buffer {
@@ -1169,26 +1160,26 @@ impl Event for StreamWriteEvent<'_> {
 
                     match &mut file_obj.source {
                         FileStreamSource::Descriptor(fd) => {
-                            let mut scratch = WRITE_SCRATCHPAD.take().unwrap();
-                            let scratch_len = cmp::min(scratch.len(), buffer.len());
-                            scratch.as_mut_slice()[..scratch_len]
-                                .copy_from_slice(&buffer[..scratch_len]);
-
                             let scratch_ptr = Box::into_raw(scratch);
+                            let scratch_len = cmp::min(FIZZLE_STREAM_BUFSIZ, buffer.len());
+
                             let scratch_buf = unsafe {
-                                slice::from_raw_parts(
-                                    scratch_ptr.cast_const().cast::<u8>(),
+                                slice::from_raw_parts_mut(
+                                    scratch_ptr.cast::<u8>(),
                                     scratch_len,
                                 )
                             };
+
+                            scratch_buf[..scratch_len]
+                                .copy_from_slice(&buffer[..scratch_len]);
 
                             self.state = StreamWriteState::WriteToDescriptor {
                                 ev: DescriptorWriteEvent::new(
                                     Descriptor::from_raw_fd(*fd),
                                     WriteData::BasicSlice(scratch_buf),
                                 ),
-                                scratch_len,
                                 scratch_ptr,
+                                scratch_len,
                             };
                         }
                         FileStreamSource::Slice(cell) => {
@@ -1204,6 +1195,8 @@ impl Event for StreamWriteEvent<'_> {
                                     buffer[i] = buffer[buffer_len + i];
                                 }
 
+                                state.local.put_scratch(scratch);
+
                                 self.state = StreamWriteState::Finish(Some(Errno::SUCCESS));
                                 return Outcome::Yield(YieldUntil::Immediate);
                             }
@@ -1213,6 +1206,8 @@ impl Event for StreamWriteEvent<'_> {
 
                             file_obj.write_idx -= copy_len;
                             self.written += copy_len;
+
+                            state.local.put_scratch(scratch);
 
                             if copy_len == self.in_buf.len() {
                                 self.state = StreamWriteState::Finish(None);
@@ -1234,6 +1229,8 @@ impl Event for StreamWriteEvent<'_> {
                                     buffer[i] = buffer[buffer_len + i];
                                 }
 
+                                state.local.put_scratch(scratch);
+
                                 self.state = StreamWriteState::Finish(Some(Errno::SUCCESS));
                                 return Outcome::Yield(YieldUntil::Immediate);
                             }
@@ -1243,6 +1240,8 @@ impl Event for StreamWriteEvent<'_> {
 
                             file_obj.write_idx += copy_len;
                             self.written += copy_len;
+
+                            state.local.put_scratch(scratch);
 
                             if copy_len == self.in_buf.len() {
                                 self.state = StreamWriteState::Finish(None);
@@ -1258,14 +1257,16 @@ impl Event for StreamWriteEvent<'_> {
             (
                 StreamWriteState::WriteToDescriptor {
                     mut ev,
-                    scratch_len,
                     scratch_ptr,
+                    scratch_len,
                 },
                 _,
             ) => {
                 let fd = ev.fd;
                 match ev.run(state) {
                     Outcome::Success(0) => {
+                        drop(ev);
+
                         let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
                             panic!("unrecognized FILE* pointer")
                         };
@@ -1298,11 +1299,13 @@ impl Event for StreamWriteEvent<'_> {
                             file_obj.write_idx = rw_split + (buffer_len - self.written);
                         }
 
-                        WRITE_SCRATCHPAD.replace(Some(unsafe { Box::from_raw(scratch_ptr) }));
+                        state.local.put_scratch(unsafe { Box::from_raw(scratch_ptr) });
                         self.state = StreamWriteState::Finish(Some(Errno::EPIPE));
                         Outcome::Yield(YieldUntil::Immediate)
                     }
                     Outcome::Success(written) => {
+                        drop(ev);
+
                         let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
                             panic!("unrecognized FILE* pointer")
                         };
@@ -1318,8 +1321,8 @@ impl Event for StreamWriteEvent<'_> {
 
                             self.state = StreamWriteState::WriteToDescriptor {
                                 ev: DescriptorWriteEvent::new(fd, WriteData::BasicSlice(new_buf)),
-                                scratch_len: new_buf.len(),
                                 scratch_ptr,
+                                scratch_len: new_buf.len(),
                             };
 
                             return Outcome::Yield(YieldUntil::Immediate);
@@ -1338,7 +1341,6 @@ impl Event for StreamWriteEvent<'_> {
                         }
 
                         if self.in_buf.is_empty() {
-                            WRITE_SCRATCHPAD.replace(Some(unsafe { Box::from_raw(scratch_ptr) }));
                             self.state = StreamWriteState::Finish(None);
 
                         } else {
@@ -1347,8 +1349,8 @@ impl Event for StreamWriteEvent<'_> {
                                     fd,
                                     WriteData::BasicSlice(self.in_buf),
                                 ),
-                                scratch_len: 0,
                                 scratch_ptr,
+                                scratch_len: 0,
                             };
                         }
                         Outcome::Yield(YieldUntil::Immediate)
@@ -1386,23 +1388,23 @@ impl Event for StreamWriteEvent<'_> {
                             file_obj.write_idx = file_obj.rw_split + (buffer_len - self.written);
                         }
 
-                        WRITE_SCRATCHPAD.replace(Some(unsafe { Box::from_raw(scratch_ptr) }));
+                        state.local.put_scratch(unsafe { Box::from_raw(scratch_ptr) });
                         self.state = StreamWriteState::Finish(Some(e));
                         Outcome::Yield(YieldUntil::Immediate)
                     }
                     Outcome::RunTask(t, y) => {
                         self.state = StreamWriteState::WriteToDescriptor {
                             ev,
-                            scratch_len,
                             scratch_ptr,
+                            scratch_len,
                         };
                         Outcome::RunTask(t, y)
                     }
                     Outcome::Yield(y) => {
                         self.state = StreamWriteState::WriteToDescriptor {
                             ev,
-                            scratch_len,
                             scratch_ptr,
+                            scratch_len,
                         };
                         Outcome::Yield(y)
                     }
@@ -1463,7 +1465,7 @@ pub enum StreamReadState<'a> {
     ReadFromDescriptor(
         DescriptorReadEvent<'a>,
         &'a mut [u8],
-        *mut [u8; FIZZLE_FILE_BUFSIZ],
+        *mut [u8; FIZZLE_STREAM_BUFSIZ],
     ),
     Finish(Option<Errno>),
     Invalid,
@@ -1505,7 +1507,7 @@ impl Event for StreamReadEvent<'_> {
     type Success = usize;
     type Error = usize;
 
-    // BUG: "The file position indicator for the stream is advanced by the number of bytes suc‐
+    // BUG: "The file position indicator for the stream is advanced by the number of bytes suc
     // cessfully read or written." Our implementation may not adhere to this on partial reads.
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
@@ -1554,7 +1556,7 @@ impl Event for StreamReadEvent<'_> {
 
                         let read = cmp::min(buf.len(), out.len());
                         out[..read]
-                            .copy_from_slice(&filebuf[..read]);
+                            .copy_from_slice(&buf[..read]);
                         file_obj.read_idx += read;
                         self.bytes_read += read;
                     }
@@ -1607,12 +1609,16 @@ impl Event for StreamReadEvent<'_> {
                         let desc = Descriptor::from_raw_fd(*fd);
                         // If the read is meant to stop at newlines, it needs to fit within the readbuf's capacity
                         // (plus 1 character for the newline that is written out).
-                        let scratch_len = cmp::min(FIZZLE_FILE_BUFSIZ   , file_obj.readbuf_capacity().checked_sub(1).unwrap_or(1));
+                        let mut scratch_len = cmp::min(FIZZLE_STREAM_BUFSIZ   , file_obj.readbuf_capacity());
+                        if scratch_len == 0 {
+                            scratch_len = if self.stop_at_newline {
+                                1
+                            } else {
+                                cmp::min(FIZZLE_STREAM_BUFSIZ, out.len())
+                            };
+                        }
 
-                        // Using a thread-local buffer makes this code non-reentrant, so
-                        // we need to take care not to call `StreamReadEvent` recursively.
-                        let scratch = READ_SCRATCHPAD.take().unwrap();
-                        let scratch_ptr = Box::into_raw(scratch);
+                        let scratch_ptr = Box::into_raw(state.local.get_scratch());
 
                         // We need a slice that:
                         // a) lives long enough to receive the results of the ReadFromDescriptor
@@ -1702,7 +1708,7 @@ impl Event for StreamReadEvent<'_> {
 
                 return Outcome::Yield(YieldUntil::Immediate);
             }
-            (StreamReadState::ReadFromDescriptor(mut ev, mut out, scratch_ptr), _) => {
+            (StreamReadState::ReadFromDescriptor(mut ev, mut out, mut scratch_ptr), _) => {
                 match ev.run(state) {
                     Outcome::Success(0) => {
                         let Some(file_obj) = state.local.file_objs.get_mut(&self.stream) else {
@@ -1711,7 +1717,7 @@ impl Event for StreamReadEvent<'_> {
 
                         // TODO: set error somewhere?
                         file_obj.eof = true;
-                        READ_SCRATCHPAD.replace(unsafe { Some(Box::from_raw(scratch_ptr)) });
+                        state.local.put_scratch(unsafe { Box::from_raw(scratch_ptr) });
                         self.state = StreamReadState::Finish(Some(Errno::SUCCESS));
                         Outcome::Yield(YieldUntil::Immediate)
                     }
@@ -1721,10 +1727,14 @@ impl Event for StreamReadEvent<'_> {
                         // dropped before we create a new exclusive reference to it.
                         drop(ev);
 
-                        assert!(read <= FIZZLE_FILE_BUFSIZ);
+                        let mut scratch = unsafe { Box::from_raw(scratch_ptr) };
+                        let slice_ptr = scratch.as_mut_ptr();
+                        scratch_ptr = Box::into_raw(scratch);
+
+                        assert!(read <= FIZZLE_STREAM_BUFSIZ);
                         // SAFETY: `read` does not extend past the end of the `scratch_ptr` buffer.
                         let readbuf: &[u8] =
-                            unsafe { slice::from_raw_parts(scratch_ptr.cast_const().cast(), read) };
+                            unsafe { slice::from_raw_parts(slice_ptr.cast_const().cast(), read) };
 
                         if self.stop_at_newline {
                             if let Some(newline_idx) = find_first(readbuf, b'\n') {
@@ -1749,7 +1759,7 @@ impl Event for StreamReadEvent<'_> {
                             match &mut file_obj.buffer {
                                 FileStreamBuffer::Internal(filebuf) => {
                                     let read = readbuf.len();
-                                    assert!(read <= file_obj.read_idx.saturating_sub(1));
+                                    assert!(read < file_obj.read_idx);
                                     let prev_read_idx = file_obj.read_idx;
 
                                     filebuf[prev_read_idx - read..prev_read_idx]
@@ -1759,7 +1769,7 @@ impl Event for StreamReadEvent<'_> {
                                 FileStreamBuffer::Slice(filebuf_ptr) => {
                                     let filebuf = unsafe { filebuf_ptr.as_mut() };
                                     let read = readbuf.len();
-                                    assert!(read <= file_obj.read_idx.saturating_sub(1));
+                                    assert!(read < file_obj.read_idx);
                                     let prev_read_idx = file_obj.read_idx;
 
                                     filebuf[prev_read_idx - read..prev_read_idx]
@@ -1771,13 +1781,21 @@ impl Event for StreamReadEvent<'_> {
                         }
 
                         if out.is_empty() {
+                            state.local.put_scratch(unsafe { Box::from_raw(scratch_ptr) });
                             self.state = StreamReadState::Finish(None);
-                            READ_SCRATCHPAD.replace(unsafe { Some(Box::from_raw(scratch_ptr)) });
                             Outcome::Yield(YieldUntil::Immediate)
                         } else {
-                            let scratch_len = cmp::min(FIZZLE_FILE_BUFSIZ   , file_obj.readbuf_capacity().checked_sub(1).unwrap_or(1));
+                            let mut scratch_len = cmp::min(FIZZLE_STREAM_BUFSIZ, file_obj.readbuf_capacity());
+                            if scratch_len == 0 {
+                                scratch_len = if self.stop_at_newline {
+                                    1
+                                } else {
+                                    cmp::min(FIZZLE_STREAM_BUFSIZ, out.len())
+                                };
+                            }
+
                             let scratch_slice = unsafe {
-                                slice::from_raw_parts_mut(scratch_ptr.cast(), scratch_len)
+                                slice::from_raw_parts_mut(slice_ptr, scratch_len)
                             };
                             self.state = StreamReadState::ReadFromDescriptor(
                                 DescriptorReadEvent::new(fd, ReadData::BasicSlice(scratch_slice)),
@@ -1794,8 +1812,8 @@ impl Event for StreamReadEvent<'_> {
 
                         // TODO: set error somewhere?
                         file_obj.err = true;
+                        state.local.put_scratch(unsafe { Box::from_raw(scratch_ptr) });
                         self.state = StreamReadState::Finish(Some(e));
-                        READ_SCRATCHPAD.replace(unsafe { Some(Box::from_raw(scratch_ptr)) });
                         Outcome::Yield(YieldUntil::Immediate)
                     }
                     Outcome::RunTask(task, yield_until) => {

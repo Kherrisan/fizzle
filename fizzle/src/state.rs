@@ -297,6 +297,7 @@ impl FizzleState {
             pthread_cleanup: hashbrown::HashMap::default(),
             rwlocks: hashbrown::HashMap::default(),
             semaphores: hashbrown::HashMap::default(),
+            scratch_pool: Default::default(),
             signals: hashbrown::HashMap::default(),
             spinlocks: HashMap::default(),
             terminated_threads: HashSet::default(),
@@ -1131,6 +1132,7 @@ pub struct ProcessLocalState {
     pub pthread_key_values:
         hashbrown::HashMap<libc::pthread_key_t, hashbrown::HashMap<ThreadId, *mut libc::c_void>>,
     pub rwlocks: hashbrown::HashMap<RwLockPtr, RwLockInfo>,
+    pub scratch_pool: Vec<Box<[u8; FIZZLE_STREAM_BUFSIZ]>>,
     pub semaphores: hashbrown::HashMap<SemaphorePtr, SemaphoreInfo>,
     pub signals: hashbrown::HashMap<ThreadId, ThreadSigInfo>,
     pub spinlocks: HashMap<SpinlockPtr, VecDeque<ThreadId>>,
@@ -1164,6 +1166,19 @@ impl ProcessLocalState {
 
         self.thread_tids.insert(thread::current().id(), tid);
         self.tid_threads.insert(tid, thread::current().id());
+    }
+
+    pub fn get_scratch(&mut self) -> Box<[u8; FIZZLE_STREAM_BUFSIZ]> {
+        match self.scratch_pool.pop() {
+            Some(b) => b,
+            None => Box::new([0u8; FIZZLE_STREAM_BUFSIZ]),
+        }
+    }
+
+    pub fn put_scratch(&mut self, scratch: Box<[u8; FIZZLE_STREAM_BUFSIZ]>) {
+        if self.scratch_pool.len() < 16 {
+            self.scratch_pool.push(scratch);
+        }
     }
 }
 

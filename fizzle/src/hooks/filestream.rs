@@ -576,11 +576,9 @@ hook_macros::hook! {
 
         match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[..buf_len], 1, false, true)) {
             Ok(written) => {
-                if buf[written - 1] != b'\n' {
-                    buf[buf_len] = b'\0';
-                }
+                buf[written] = b'\0';
 
-                crate::strace!("fgets(s={:?}, size={}, stream={:?}) -> {:?} ({:?})", s, size, stream, s, CStr::from_bytes_with_nul_unchecked(buf));
+                crate::strace!("fgets(s={:?}, size={}, stream={:?}) -> {:?} ({:?})", s, size, stream, s, CStr::from_bytes_until_nul(buf).unwrap());
                 s
             }
             Err(written) => {
@@ -592,7 +590,7 @@ hook_macros::hook! {
 
                 buf[written] = b'\0';
 
-                crate::strace!("fgets(s={:?}, size={}, stream={:?}) -> {:?} ({:?})", s, size, stream, ret, CStr::from_bytes_with_nul_unchecked(buf));
+                crate::strace!("fgets(s={:?}, size={}, stream={:?}) -> {:?} ({:?})", s, size, stream, ret, CStr::from_bytes_until_nul(buf).unwrap());
                 ret
             }
         }
