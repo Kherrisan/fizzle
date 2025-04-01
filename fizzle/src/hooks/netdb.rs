@@ -54,7 +54,7 @@ hook_macros::hook! {
         let hint_flags = if hints.is_null() {
             GetAddrInfoFlags::empty()
         } else {
-            GetAddrInfoFlags::from_bits((*hints).ai_flags).unwrap()
+            GetAddrInfoFlags::from_bits((*hints).ai_flags).unwrap() // TODO: more flags for FileZilla
         };
 
         match Scheduler::handle_event(&mut ctx, GetAddressInfoEvent::new(node_cstr, service_cstr, hint_family, hint_socktype, hint_protocol, hint_flags)) {

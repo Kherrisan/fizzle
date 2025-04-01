@@ -1,12 +1,10 @@
-use std::ffi::CStr;
+use std::ffi::{CStr, VaList};
 use std::io::IoSlice;
 use std::ptr;
 
 use crate::errno::Errno;
 use crate::handlers::filestream::*;
 use crate::scheduler::Scheduler;
-
-/*
 
 #[no_mangle]
 pub unsafe extern "C" fn printf(format: *const libc::c_char, mut va_args: ...) -> libc::c_int {
@@ -33,21 +31,18 @@ pub unsafe extern "C" fn printf(format: *const libc::c_char, mut va_args: ...) -
 
     let stream_ptr = FilePtr::from_raw(unsafe { crate::stdout }).unwrap();
 
-    match Scheduler::handle_event(&mut ctx, FileStreamWriteEvent::new(stream_ptr, &io_slice, 1)) {
-        Ok(written) => {
+    match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(stream_ptr, &io_slice, 1, false)) {
+        Ok(()) => {
+            libc::free(out_string.cast::<libc::c_void>());
+            crate::strace!("printf(format={:?}, ...) -> {}", format_cstr, out_bytes.len());
+            crate::hooks::post_hook();
+            out_bytes.len() as libc::c_int
+        }
+        Err(written) => {
             libc::free(out_string.cast::<libc::c_void>());
             crate::strace!("printf(format={:?}, ...) -> {}", format_cstr, written);
-            // TODO: need to handle (or fail on) non-blocking I/O case here?
-            assert!(written == out_bytes.len());
             crate::hooks::post_hook();
             written as libc::c_int
-        }
-        Err(e) => {
-            libc::free(out_string.cast::<libc::c_void>());
-            crate::strace!("printf(format={:?}, ...) -> -1 ({})", format_cstr, e);
-            e.set_errno();
-            crate::hooks::post_hook();
-            -1
         }
     }
 }
@@ -82,21 +77,18 @@ pub unsafe extern "C" fn fprintf(stream: *mut libc::FILE, format: *const libc::c
     let out_bytes = CStr::from_ptr(out_string).to_bytes();
     let io_slice = IoSlice::new(out_bytes);
 
-    match Scheduler::handle_event(&mut ctx, FileStreamWriteEvent::new(stream_ptr, &io_slice, 1)) {
-        Ok(written) => {
+    match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(stream_ptr, &io_slice, 1, false)) {
+        Ok(()) => {
             libc::free(out_string.cast::<libc::c_void>());
-            crate::strace!("fprintf(stream={:?}, format={:?}, ...) -> 0", stream, format_cstr);
-            // TODO: need to handle (or fail on) non-blocking I/O case here?
-            assert!(written == out_bytes.len());
+            crate::strace!("fprintf(stream={:?}, format={:?}, ...) -> {}", stream, format_cstr, out_bytes.len());
+            crate::hooks::post_hook();
+            out_bytes.len() as libc::c_int
+        }
+        Err(written) => {
+            libc::free(out_string.cast::<libc::c_void>());
+            crate::strace!("fprintf(stream={:?}, format={:?}, ...) -> {}", stream, format_cstr, written);
             crate::hooks::post_hook();
             written as libc::c_int
-        }
-        Err(e) => {
-            libc::free(out_string.cast::<libc::c_void>());
-            crate::strace!("fprintf(stream={:?}, format={:?}, ...) -> -1 ({})", stream, format_cstr, e);
-            e.set_errno();
-            crate::hooks::post_hook();
-            -1
         }
     }
 }
@@ -112,93 +104,132 @@ pub unsafe extern "C" fn dprintf(fd: libc::c_int, format: *const libc::c_char, m
 
 #[no_mangle]
 pub unsafe extern "C" fn vprintf(format: *const libc::c_char, mut va_args: VaList) -> libc::c_int {
-    if crate::state::has_entered_handler() {
-        panic!("vprintf() unimplemented for Fizzle internal use")
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("vprintf() unimplemented for Fizzle internal use");
+    };
+
+    crate::strace!("vprintf(format={:?}, ...) -> ...", format);
+
+    let format_cstr = CStr::from_ptr(format);
+    let mut out_string = ptr::null_mut();
+
+    let res = crate::vasprintf(&raw mut out_string, format, va_args.as_va_list());
+    if res < 0 {
+        let e = Errno::get_errno();
+        crate::strace!("vprintf(format={:?}, ...) -> -1 ({})", format_cstr, e);
+        crate::hooks::post_hook();
+        e.set_errno();
+        return res
     }
-    crate::state::set_entered_handler(true);
 
-    // SAFETY: only one FizzleSingleton is ever owned at a time
-    let mut ctx = fizzle_singleton(); // TODO: should fizzle_singleton() just be a thread-local variable? Would that improve safety?
+    let out_bytes = CStr::from_ptr(out_string).to_bytes();
+    let io_slice = IoSlice::new(out_bytes);
 
-    unimplemented!("vprintf()")
+    let stream_ptr = FilePtr::from_raw(unsafe { crate::stdout }).unwrap();
+
+    match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(stream_ptr, &io_slice, 1, false)) {
+        Ok(()) => {
+            libc::free(out_string.cast::<libc::c_void>());
+            crate::strace!("vprintf(format={:?}, ...) -> {}", format_cstr, out_bytes.len());
+            crate::hooks::post_hook();
+            out_bytes.len() as libc::c_int
+        }
+        Err(written) => {
+            libc::free(out_string.cast::<libc::c_void>());
+            crate::strace!("vprintf(format={:?}, ...) -> {}", format_cstr, written);
+            crate::hooks::post_hook();
+            written as libc::c_int
+        }
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn vfprintf(stream: *mut libc::FILE, format: *const libc::c_char, mut va_args: VaList) -> libc::c_int {
-    if crate::state::has_entered_handler() {
-        panic!("vfprintf() unimplemented for Fizzle internal use")
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("vfprintf() unimplemented for Fizzle internal use");
+    };
+
+    crate::strace!("vfprintf(stream={:?}, format={:?}, ...) -> ...", stream, format);
+
+    let format_cstr = CStr::from_ptr(format);
+    let mut out_string = ptr::null_mut();
+
+    let Some(stream_ptr) = FilePtr::from_raw(stream) else {
+        crate::strace!("vfprintf(stream={:?}, format={:?}) -> -1 (EINVAL)", stream, format_cstr);
+        Errno::EINVAL.set_errno();
+        crate::hooks::post_hook();
+        return libc::EOF
+    };
+
+    let res = crate::vasprintf(&raw mut out_string, format, va_args.as_va_list());
+    if res < 0 {
+        let e = Errno::get_errno();
+        crate::strace!("vfprintf(stream={:?}, format={:?}, ...) -> -1 ({})", stream, format_cstr, e);
+        e.set_errno();
+        crate::hooks::post_hook();
+        return res
     }
-    crate::state::set_entered_handler(true);
 
-    // SAFETY: only one FizzleSingleton is ever owned at a time
-    let mut ctx = fizzle_singleton(); // TODO: should fizzle_singleton() just be a thread-local variable? Would that improve safety?
+    let out_bytes = CStr::from_ptr(out_string).to_bytes();
+    let io_slice = IoSlice::new(out_bytes);
 
-    unimplemented!("vfprintf()")
+    match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(stream_ptr, &io_slice, 1, false)) {
+        Ok(()) => {
+            libc::free(out_string.cast::<libc::c_void>());
+            crate::strace!("vfprintf(stream={:?}, format={:?}, ...) -> {}", stream, format_cstr, out_bytes.len());
+            crate::hooks::post_hook();
+            out_bytes.len() as libc::c_int
+        }
+        Err(written) => {
+            libc::free(out_string.cast::<libc::c_void>());
+            crate::strace!("vfprintf(stream={:?}, format={:?}, ...) -> {}", stream, format_cstr, written);
+            crate::hooks::post_hook();
+            written as libc::c_int
+        }
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn vdprintf(fd: libc::c_int, format: *const libc::c_char, mut va_args: VaList) -> libc::c_int {
-    if crate::state::has_entered_handler() {
-        panic!("vdrintf() unimplemented for Fizzle internal use")
-    }
-    crate::state::set_entered_handler(true);
-
-    // SAFETY: only one FizzleSingleton is ever owned at a time
-    let mut ctx = fizzle_singleton(); // TODO: should fizzle_singleton() just be a thread-local variable? Would that improve safety?
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("vdprintf() unimplemented for Fizzle internal use");
+    };
 
     unimplemented!("vdprintf()")
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn wprintf(format: *const libc::wchar_t, mut va_args: VaList) -> libc::c_int {
-    if crate::state::has_entered_handler() {
-        panic!("wprintf() unimplemented for Fizzle internal use")
-    }
-    crate::state::set_entered_handler(true);
-
-    // SAFETY: only one FizzleSingleton is ever owned at a time
-    let mut ctx = fizzle_singleton(); // TODO: should fizzle_singleton() just be a thread-local variable? Would that improve safety?
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("wprintf() unimplemented for Fizzle internal use");
+    };
 
     unimplemented!("wprintf()")
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn fwprintf(stream: *mut libc::FILE, format: *const libc::wchar_t, mut va_args: VaList) -> libc::c_int {
-    if crate::state::has_entered_handler() {
-        panic!("fwprintf() unimplemented for Fizzle internal use")
-    }
-    crate::state::set_entered_handler(true);
-
-    // SAFETY: only one FizzleSingleton is ever owned at a time
-    let mut ctx = fizzle_singleton(); // TODO: should fizzle_singleton() just be a thread-local variable? Would that improve safety?
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("fwprintf() unimplemented for Fizzle internal use");
+    };
 
     unimplemented!("fwprintf()")
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn vwprintf(format: *const libc::wchar_t, mut va_args: VaList) -> libc::c_int {
-    if crate::state::has_entered_handler() {
-        panic!("vwprintf() unimplemented for Fizzle internal use")
-    }
-    crate::state::set_entered_handler(true);
-
-    // SAFETY: only one FizzleSingleton is ever owned at a time
-    let mut ctx = fizzle_singleton(); // TODO: should fizzle_singleton() just be a thread-local variable? Would that improve safety?
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("vwprintf() unimplemented for Fizzle internal use");
+    };
 
     unimplemented!("vwprintf()")
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn vfwprintf(stream: *mut libc::FILE, format: *const libc::wchar_t, mut va_args: VaList) -> libc::c_int {
-    if crate::state::has_entered_handler() {
-        panic!("vfwprintf() unimplemented for Fizzle internal use")
-    }
-    crate::state::set_entered_handler(true);
-
-    // SAFETY: only one FizzleSingleton is ever owned at a time
-    let mut ctx = fizzle_singleton(); // TODO: should fizzle_singleton() just be a thread-local variable? Would that improve safety?
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("vfwprintf() unimplemented for Fizzle internal use");
+    };
 
     unimplemented!("vfwprintf()")
 }
-
-*/
