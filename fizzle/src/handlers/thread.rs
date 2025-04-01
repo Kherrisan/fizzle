@@ -93,13 +93,6 @@ impl ThreadInfo {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ThreadTermination {
-    Cancellation,
-    Exit(*mut libc::c_void),
-    SigTerm,
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct PThreadRoutine {
     pub function: PTDestructor,

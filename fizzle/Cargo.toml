@@ -20,27 +20,21 @@ proc-macro2 = { version = "1.0" }
 quote = { version = "1.0" }
 serde = { version = "1.0", features = ["derive"] }
 syn = { version = "2.0" }
-toml = "0.8"
+toml = "0.8" # For reading Fizzle.toml
 
 [dependencies]
 bitflags = "2.6.0"
-env_logger = "0.11"
+critical-section = { version = "1.1", features = [] } # We implement our own lock-free crit section to improve perf
+embedded-alloc = { version = "0.6.0", features = ["tlsf", "allocator_api"] } # For interprocess allocation
+env_logger = "0.11" # For trace logs
+hashbrown = { version = "0.15", features = ["nightly"] } # For allocatior API
+libc = "0.2" # For various low-level operations
+log = "0.4" # For trace logs
+rand = { version = "0.8", features = ["small_rng"] } # For per-round RNG
+
 fizzle-common = { version = "0.1", path = "../fizzle-common" }
 fizzle-plugin = { version = "0.1", path = "../fizzle-plugin" }
-hashbrown = { version = "0.15", features = ["nightly"] }
-libc = "0.2"
-log = "0.4"
-rand = { version = "0.8", features = ["small_rng"] }
-toml = "0.8"
-
-embedded-alloc = { version = "0.6.0", features = ["tlsf", "allocator_api"] }
-# TODO: implement custom critical-section with no Mutex to speed up shim? (since no concurrency is guaranteed)
-critical-section = { version = "1.1", features = [] }
-
-# Start of Fizzle Plugin Dependencies
 fizzle-plugin-fuzz-s1ap = {version = "0.1", path = "../fizzle-plugin-fuzz-s1ap"}
-
-
 
 # Examples:
 # 

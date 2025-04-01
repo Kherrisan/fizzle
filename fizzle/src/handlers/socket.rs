@@ -756,14 +756,14 @@ impl Event for SocketBindEvent<'_> {
 
 pub struct SocketListenEvent {
     descriptor_id: Descriptor,
-    backlog: libc::c_int, // Not actually used
+    _backlog: libc::c_int, // Not actually used right now
 }
 
 impl SocketListenEvent {
     pub fn new(descriptor_id: Descriptor, backlog: libc::c_int) -> Self {
         Self {
             descriptor_id,
-            backlog,
+            _backlog: backlog,
         }
     }
 }
@@ -2695,6 +2695,7 @@ impl Event for SocketReadEvent<'_> {
                         let read = cmp::min(data.len(), buf.len() - read_idx);
                         data[..read].copy_from_slice(&buf[read_idx..read_idx + read]);
                         read_idx += read;
+                        total_read += read;
 
                         if read_idx == buf.len() {
                             regular.read_idx = 0;
@@ -3174,7 +3175,7 @@ impl Event for SocketWriteEvent<'_> {
         let mut borrowed_socket_info = socket_info.borrow_mut();
 
         match (&self.state, &mut borrowed_socket_info.state) {
-            (SocketWriteState::Start, SocketState::Connectionless(conn)) => {
+            (SocketWriteState::Start, SocketState::Connectionless(_conn)) => {
                 // Sending out on a Connectionless socket doesn't require polling--lossy packets are simply dropped
                 self.state = SocketWriteState::Finish(None);
                 Outcome::Yield(YieldUntil::Immediate)
@@ -3287,7 +3288,7 @@ impl Event for SocketWriteEvent<'_> {
 
                         Outcome::Success(full_len)
                     }
-                    WriteData::File(file_write_data) => return Outcome::Error(Errno::ESPIPE),
+                    WriteData::File(_) => return Outcome::Error(Errno::ESPIPE),
                     WriteData::Socket(s, _) => {
                         let conn_addr = match conn.dst_socket(state) {
                             Some(mut peer) => Some(get_or_assign_local(&mut peer, state)),
@@ -3299,7 +3300,7 @@ impl Event for SocketWriteEvent<'_> {
 
                         for write_data in s.iter_mut() {
                             let addr = match &conn_addr {
-                                Some(addr) if write_data.addr_bytes.is_some() => {
+                                Some(_) if write_data.addr_bytes.is_some() => {
                                     write_error = Errno::EISCONN;
                                     continue;
                                 }
@@ -3477,7 +3478,7 @@ impl Event for SocketWriteEvent<'_> {
 
                         Outcome::Success(total_len)
                     }
-                    WriteData::File(file_write_data) => return Outcome::Error(Errno::ESPIPE),
+                    WriteData::File(_) => return Outcome::Error(Errno::ESPIPE),
                     WriteData::Socket(s, _) => {
                         for write_data in s.iter_mut() {
                             let mut data = Vec::new_in(fizzle_alloc());
