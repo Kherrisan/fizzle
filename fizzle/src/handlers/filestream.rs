@@ -1625,7 +1625,8 @@ impl Event for StreamReadEvent<'_> {
 
                         if self.stop_at_newline {
                             if let Some(newline_idx) = find_first(readbuf, b'\n') {
-                                out = &mut out[..newline_idx + 1];
+                                let out_len = cmp::min(out.len(), newline_idx + 1);
+                                out = &mut out[..out_len];
                             }
                         }
 
