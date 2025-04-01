@@ -166,6 +166,9 @@ impl Event for SetItimerEvent {
             }
         };
 
-        Outcome::Success(ItimerValue { interval: old_interval, val: old_remaining })
+        Outcome::Success(ItimerValue {
+            interval: old_interval,
+            val: old_remaining,
+        })
     }
 }

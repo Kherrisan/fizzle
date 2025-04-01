@@ -7,7 +7,8 @@ use std::{ptr, thread};
 
 use crate::errno::Errno;
 use crate::scheduler::{
-    fizzle_alloc, fizzle_singleton, Event, FizzleSingleton, Outcome, Scheduler, TerminateThreadTask, TerminationMethod, YieldUntil
+    fizzle_alloc, fizzle_singleton, Event, FizzleSingleton, Outcome, Scheduler,
+    TerminateThreadTask, TerminationMethod, YieldUntil,
 };
 use crate::semaphore::Semaphore;
 use crate::state::{set_entered_handler, FizzleState};
@@ -347,7 +348,9 @@ impl Event for ThreadExitEvent {
         let retval = ThreadExitRetval::new(self.retval);
 
         Outcome::RunTask(
-            Task::TerminateThread(TerminateThreadTask(TerminationMethod::ThreadExit(retval.retval))),
+            Task::TerminateThread(TerminateThreadTask(TerminationMethod::ThreadExit(
+                retval.retval,
+            ))),
             YieldUntil::None,
         )
     }
@@ -520,9 +523,12 @@ impl CancelThreadTask {
                 .get(&target_worker)
                 .unwrap()
                 .clone();
-            state.global.tasks.push_front(Task::TerminateThread(
-                TerminateThreadTask(TerminationMethod::Cancellation)
-            ));
+            state
+                .global
+                .tasks
+                .push_front(Task::TerminateThread(TerminateThreadTask(
+                    TerminationMethod::Cancellation,
+                )));
             drop(state);
 
             log::trace!("[10] post() to {:?}", target_worker);
@@ -777,11 +783,8 @@ impl Event for ThreadSetSpecificEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let Some(key_val) = state
-                .local
-                .pthread_key_values
-                .get_mut(&self.key) else {
-            return Outcome::Error(Errno::EINVAL)
+        let Some(key_val) = state.local.pthread_key_values.get_mut(&self.key) else {
+            return Outcome::Error(Errno::EINVAL);
         };
 
         key_val.insert(thread::current().id(), self.pointer);

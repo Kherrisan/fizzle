@@ -13,14 +13,15 @@ use std::{array, env, mem, process, ptr, thread};
 
 use embedded_alloc::TlsfHeap;
 use fizzle_common::io::{
-    AddressFamily, SockAddr, SocketAddrUnix, SocketType, TransportAddress, TransportProtocol, MAX_PATH_LEN
+    AddressFamily, SockAddr, SocketAddrUnix, SocketType, TransportAddress, TransportProtocol,
+    MAX_PATH_LEN,
 };
 use fizzle_common::path::{FilePath, SemaphorePath};
 use fizzle_plugin::{IoEndpointVariant, PluginModule, StreamId};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
-use crate::{comptime, GlobalHashMap};
+use crate::constants::*;
 use crate::errno::Errno;
 use crate::handlers::barrier::{BarrierInfo, BarrierPtr};
 use crate::handlers::condvar::{CondVarInfo, CondVarPtr};
@@ -39,7 +40,8 @@ use crate::handlers::rwlock::*;
 use crate::handlers::semaphore::*;
 use crate::handlers::signal::*;
 use crate::handlers::socket::{
-    ConnectingSocket, ConnectionlessSocket, LocalAddress, PendingSocket, ServerSocket, SocketInfo, SocketState, TransportLocationInfo
+    ConnectingSocket, ConnectionlessSocket, LocalAddress, PendingSocket, ServerSocket, SocketInfo,
+    SocketState, TransportLocationInfo,
 };
 use crate::handlers::spinlock::SpinlockPtr;
 use crate::handlers::thread::{PThreadRoutine, ThreadInfo, Tid};
@@ -48,11 +50,12 @@ use crate::plugins::{IoEmulationType, PluginEndpoint};
 use crate::scheduler::fizzle_alloc;
 use crate::semaphore::Semaphore;
 use crate::task::Task;
-use crate::constants::*;
+use crate::{comptime, GlobalHashMap};
 use crate::{GlobalHeap, GlobalList, GlobalMap, GlobalRc, GlobalSet, GlobalVec};
 
 use crate::backend::{
-    ConnectingBackend, ConnectionlessBackend, FileBackend, FileFeedback, PendingBackend, ServerBackend, StandardFeedback, StdioBackend
+    ConnectingBackend, ConnectionlessBackend, FileBackend, FileFeedback, PendingBackend,
+    ServerBackend, StandardFeedback, StdioBackend,
 };
 
 // See `set_entered_handler` and `has_entered_handler`
@@ -197,7 +200,23 @@ impl FizzleState {
         );
 
         // Set termination handlers
-        for signum in [libc::SIGABRT, libc::SIGBUS, libc::SIGFPE, libc::SIGHUP, libc::SIGILL, libc::SIGINT, libc::SIGIO, libc::SIGPROF, libc::SIGPWR, libc::SIGQUIT, libc::SIGSEGV, libc::SIGSYS, libc::SIGTERM, libc::SIGTRAP, libc::SIGXFSZ] {
+        for signum in [
+            libc::SIGABRT,
+            libc::SIGBUS,
+            libc::SIGFPE,
+            libc::SIGHUP,
+            libc::SIGILL,
+            libc::SIGINT,
+            libc::SIGIO,
+            libc::SIGPROF,
+            libc::SIGPWR,
+            libc::SIGQUIT,
+            libc::SIGSEGV,
+            libc::SIGSYS,
+            libc::SIGTERM,
+            libc::SIGTRAP,
+            libc::SIGXFSZ,
+        ] {
             let sa = libc::sigaction {
                 sa_sigaction: crate::fizzle_handle_term_signal as usize,
                 sa_mask: SignalSet::empty().to_sigset(),
@@ -205,16 +224,7 @@ impl FizzleState {
                 sa_restorer: None,
             };
 
-            assert_eq!(
-                unsafe {
-                    libc::sigaction(
-                        signum,
-                        &sa,
-                        ptr::null_mut(),
-                    )
-                },
-                0
-            );
+            assert_eq!(unsafe { libc::sigaction(signum, &sa, ptr::null_mut(),) }, 0);
         }
 
         // Set SIGCHLD hanlder
@@ -226,13 +236,7 @@ impl FizzleState {
         };
 
         assert_eq!(
-            unsafe {
-                libc::sigaction(
-                    libc::SIGCHLD,
-                    &sa,
-                    ptr::null_mut(),
-                )
-            },
+            unsafe { libc::sigaction(libc::SIGCHLD, &sa, ptr::null_mut(),) },
             0
         );
 
@@ -405,27 +409,27 @@ impl FizzleState {
         local.file_objs.insert(
             stdin_ptr,
             FileObject::new(
-                FileStreamSource::Descriptor(0), 
-                FileAccessMode::ReadOnly, 
-                FileOrientation::Regular
+                FileStreamSource::Descriptor(0),
+                FileAccessMode::ReadOnly,
+                FileOrientation::Regular,
             ),
         );
 
         local.file_objs.insert(
             stdout_ptr,
             FileObject::new(
-                FileStreamSource::Descriptor(1), 
-                FileAccessMode::WriteOnly, 
-                FileOrientation::Regular
+                FileStreamSource::Descriptor(1),
+                FileAccessMode::WriteOnly,
+                FileOrientation::Regular,
             ),
         );
 
         local.file_objs.insert(
             stderr_ptr,
             FileObject::new(
-                FileStreamSource::Descriptor(2), 
-                FileAccessMode::WriteOnly, 
-                FileOrientation::Regular
+                FileStreamSource::Descriptor(2),
+                FileAccessMode::WriteOnly,
+                FileOrientation::Regular,
             ),
         );
 
@@ -820,8 +824,12 @@ impl FizzleState {
                                 },
                             });
                         } else {
-                            self.global
-                                .add_pending_client(source_address, target_address, SocketType::Stream, backend);
+                            self.global.add_pending_client(
+                                source_address,
+                                target_address,
+                                SocketType::Stream,
+                                backend,
+                            );
                         }
                     }
                     IoEndpointVariant::UdpServer(addr) => {
@@ -879,8 +887,12 @@ impl FizzleState {
                                 },
                             });
                         } else {
-                            self.global
-                                .add_pending_client(source_address, target_address, SocketType::Datagram, backend);
+                            self.global.add_pending_client(
+                                source_address,
+                                target_address,
+                                SocketType::Datagram,
+                                backend,
+                            );
                         }
                     }
                     IoEndpointVariant::SctpServer(addr) => {
@@ -938,8 +950,12 @@ impl FizzleState {
                                 },
                             });
                         } else {
-                            self.global
-                                .add_pending_client(source_address, target_address, SocketType::Stream, backend);
+                            self.global.add_pending_client(
+                                source_address,
+                                target_address,
+                                SocketType::Stream,
+                                backend,
+                            );
                         }
                     }
                     _ => panic!("unimplemented IoEndpoint type"),
@@ -1049,7 +1065,7 @@ impl Drop for FizzleState {
         unsafe {
             Self::deallocate_global_memory(self.global);
         }
-        
+
         // Drop ProcessLocalState normally
     }
 }
@@ -1112,10 +1128,8 @@ pub struct ProcessLocalState {
     pub pthreads: hashbrown::HashMap<libc::pthread_t, ThreadInfo>,
     pub pthread_cleanup: hashbrown::HashMap<ThreadId, VecDeque<PThreadRoutine>>,
     pub pthread_keys: hashbrown::HashMap<libc::pthread_key_t, PThreadRoutine>,
-    pub pthread_key_values: hashbrown::HashMap<
-        libc::pthread_key_t,
-        hashbrown::HashMap<ThreadId, *mut libc::c_void>,
-    >,
+    pub pthread_key_values:
+        hashbrown::HashMap<libc::pthread_key_t, hashbrown::HashMap<ThreadId, *mut libc::c_void>>,
     pub rwlocks: hashbrown::HashMap<RwLockPtr, RwLockInfo>,
     pub semaphores: hashbrown::HashMap<SemaphorePtr, SemaphoreInfo>,
     pub signals: hashbrown::HashMap<ThreadId, ThreadSigInfo>,
@@ -1188,8 +1202,7 @@ pub struct InterprocessState {
     pub file_paths: GlobalHashMap<FilePath<MAX_PATH_LEN>, GlobalRc<FileInfo>>,
     // TODO: BTreeMap would be unwise--SemaphorePath has an expensive `eq` comparison
     pub sem_paths: GlobalHashMap<SemaphorePath, GlobalRc<SemaphoreInfo>>,
-    pub socket_locations:
-        GlobalHashMap<TransportAddress, TransportLocationInfo>,
+    pub socket_locations: GlobalHashMap<TransportAddress, TransportLocationInfo>,
     pub stdio: StdioBackend,
     /// Pollers/Workers that can be immediately scheduled.
     pub ready: BinaryHeap<ScheduledItem, GlobalHeap>,
@@ -1293,7 +1306,8 @@ impl InterprocessState {
 
             *ptr::addr_of_mut!((*state).file_paths) = hashbrown::HashMap::new_in(fizzle_alloc());
             *ptr::addr_of_mut!((*state).sem_paths) = hashbrown::HashMap::new_in(fizzle_alloc());
-            *ptr::addr_of_mut!((*state).socket_locations) = hashbrown::HashMap::new_in(fizzle_alloc());
+            *ptr::addr_of_mut!((*state).socket_locations) =
+                hashbrown::HashMap::new_in(fizzle_alloc());
 
             *ptr::addr_of_mut!((*state).stdio) = StdioBackend::Passthrough;
             *ptr::addr_of_mut!((*state).per_round_clients) = Vec::new_in(fizzle_alloc());
@@ -1415,7 +1429,7 @@ impl InterprocessState {
                 }),
             }),
             fizzle_alloc(),
-        )
+        );
     }
 
     pub fn add_pending_client(
@@ -1454,24 +1468,25 @@ impl InterprocessState {
                 let mut pending = LinkedList::new_in(fizzle_alloc());
                 pending.push_back(client_socket_info.clone());
 
-                self
-                    .socket_locations
-                    .insert(
-                        rem_addr,
-                        TransportLocationInfo {
-                            reuse_port,
-                            bound_sockets: LinkedList::new_in(fizzle_alloc()),
-                            pending,
-                        },
-                    );
+                self.socket_locations.insert(
+                    rem_addr,
+                    TransportLocationInfo {
+                        reuse_port,
+                        bound_sockets: LinkedList::new_in(fizzle_alloc()),
+                        pending,
+                    },
+                );
 
                 client_socket_info
             }
             Some(location_info) => {
-                let useless_polled = Rc::new_in(RefCell::new(PolledInfo {
-                    pollers: Vec::new_in(fizzle_alloc()),
-                    event_raised: false,
-                }), fizzle_alloc());
+                let useless_polled = Rc::new_in(
+                    RefCell::new(PolledInfo {
+                        pollers: Vec::new_in(fizzle_alloc()),
+                        event_raised: false,
+                    }),
+                    fizzle_alloc(),
+                );
 
                 let client_socket_info = Rc::new_in(
                     RefCell::new(SocketInfo {
@@ -1500,7 +1515,7 @@ impl InterprocessState {
                     log::debug!("found bound socket at location for pending connection");
                     location_info.bound_sockets.push_back(socket_info.clone());
 
-                    match &mut socket_info.borrow_mut ().state {
+                    match &mut socket_info.borrow_mut().state {
                         SocketState::Server(server_info) => {
                             log::debug!("notifying server that pending connection exists...");
                             server_info.connecting.push_back(client_socket_info.clone());
@@ -1558,7 +1573,8 @@ impl InterprocessState {
                             bound_sockets,
                             pending: LinkedList::new_in(fizzle_alloc()),
                         },
-                    ).is_some()
+                    )
+                    .is_some()
                 {
                     panic!("socket location {:?} was already bound", transport_addr)
                 }

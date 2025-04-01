@@ -171,7 +171,8 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
                         if let Some(bound_socket) = transport_info.bound_sockets.pop_front() {
                             let mut bound_socket_mut = bound_socket.borrow_mut();
 
-                            let SocketState::Connectionless(conn) = &mut bound_socket_mut.state else {
+                            let SocketState::Connectionless(conn) = &mut bound_socket_mut.state
+                            else {
                                 unreachable!()
                             };
 
@@ -179,7 +180,9 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
                                 unreachable!()
                             };
 
-                            let LocalAddress::Assigned(local_addr) = endpoint_ref.local_addr.clone() else {
+                            let LocalAddress::Assigned(local_addr) =
+                                endpoint_ref.local_addr.clone()
+                            else {
                                 unreachable!();
                             };
 
@@ -207,7 +210,7 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
                     todo!()
                 }
                 _ => (),
-            }
+            },
             _ => (),
         }
     }

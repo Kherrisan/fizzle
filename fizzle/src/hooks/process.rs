@@ -219,10 +219,38 @@ pub unsafe extern "C" fn execle(
     }
 
     env.push(CString::new(format!("LD_PRELOAD={}", env::var("LD_PRELOAD").unwrap())).unwrap());
-    env.push(CString::new(format!("{}={}", FIZZLE_MEMORY_ENV, env::var(FIZZLE_MEMORY_ENV).unwrap())).unwrap());
-    env.push(CString::new(format!("{}={}", FIZZLE_MEMORY_OFFSET_ENV, env::var(FIZZLE_MEMORY_OFFSET_ENV).unwrap())).unwrap());
-    env.push(CString::new(format!("{}={}", FIZZLE_ALLOC_ENV, env::var(FIZZLE_ALLOC_ENV).unwrap())).unwrap());
-    env.push(CString::new(format!("{}={}", FIZZLE_ALLOC_OFFSET_ENV, env::var(FIZZLE_ALLOC_OFFSET_ENV).unwrap())).unwrap());
+    env.push(
+        CString::new(format!(
+            "{}={}",
+            FIZZLE_MEMORY_ENV,
+            env::var(FIZZLE_MEMORY_ENV).unwrap()
+        ))
+        .unwrap(),
+    );
+    env.push(
+        CString::new(format!(
+            "{}={}",
+            FIZZLE_MEMORY_OFFSET_ENV,
+            env::var(FIZZLE_MEMORY_OFFSET_ENV).unwrap()
+        ))
+        .unwrap(),
+    );
+    env.push(
+        CString::new(format!(
+            "{}={}",
+            FIZZLE_ALLOC_ENV,
+            env::var(FIZZLE_ALLOC_ENV).unwrap()
+        ))
+        .unwrap(),
+    );
+    env.push(
+        CString::new(format!(
+            "{}={}",
+            FIZZLE_ALLOC_OFFSET_ENV,
+            env::var(FIZZLE_ALLOC_OFFSET_ENV).unwrap()
+        ))
+        .unwrap(),
+    );
 
     let file_cstr = unsafe { CStr::from_ptr(pathname) };
 

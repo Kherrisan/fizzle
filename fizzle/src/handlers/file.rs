@@ -264,11 +264,12 @@ impl Event for FileOpenEvent {
                     {
                         // The file is immediately truncated, so it is as if it has been wiped
                         return Outcome::RunTask(
-                            Task::CreateCow(CreateCowTask(
-                                CreateCowSource::New(path, self.mode.unwrap_or(state.local.umask))
-                            )),
+                            Task::CreateCow(CreateCowTask(CreateCowSource::New(
+                                path,
+                                self.mode.unwrap_or(state.local.umask),
+                            ))),
                             YieldUntil::Reschedule(Duration::ZERO),
-                        )
+                        );
                     }
 
                     let flag_bits = self
@@ -327,11 +328,12 @@ impl Event for FileOpenEvent {
                         Outcome::Success(fd)
                     } else if self.flags.contains(FileOpenFlags::CREATE) {
                         return Outcome::RunTask(
-                            Task::CreateCow(CreateCowTask(
-                                CreateCowSource::New(path, self.mode.unwrap_or(state.local.umask))
-                            )),
+                            Task::CreateCow(CreateCowTask(CreateCowSource::New(
+                                path,
+                                self.mode.unwrap_or(state.local.umask),
+                            ))),
                             YieldUntil::Reschedule(Duration::ZERO),
-                        )
+                        );
                     } else {
                         Outcome::Error(Errno::ENOENT)
                     }
@@ -342,7 +344,7 @@ impl Event for FileOpenEvent {
                 return Outcome::RunTask(
                     Task::CreateCow(CreateCowTask(CreateCowSource::Existing(cow_id))),
                     YieldUntil::Reschedule(Duration::ZERO),
-                )
+                );
             }
             FileOpenState::Finish => {
                 let file = state.global.file_paths.get(&path).unwrap();
@@ -400,7 +402,7 @@ impl Event for FileReadEvent<'_> {
                         return Outcome::RunTask(
                             Task::CreateCow(CreateCowTask(CreateCowSource::Existing(cow_id))),
                             YieldUntil::Reschedule(Duration::ZERO),
-                        )
+                        );
                     };
 
                     cow_info.memfd
@@ -421,12 +423,7 @@ impl Event for FileReadEvent<'_> {
                 match &mut self.data {
                     ReadData::BasicSlice(data) => {
                         let read = unsafe {
-                            libc::pread(
-                                fd,
-                                data.as_mut_ptr().cast(),
-                                data.len(),
-                                offset as i64,
-                            )
+                            libc::pread(fd, data.as_mut_ptr().cast(), data.len(), offset as i64)
                         };
                         if read < 0 {
                             let e = Errno::get_errno();
@@ -530,7 +527,8 @@ impl Event for FileReadEvent<'_> {
                     );
                     data.copy_from_slice(
                         &state.global.fuzz_input[fuzz_endpoint.borrow().read_idx
-                            ..fuzz_endpoint.borrow().read_idx + read]);
+                            ..fuzz_endpoint.borrow().read_idx + read],
+                    );
                     fuzz_endpoint.borrow_mut().read_idx += read;
 
                     Outcome::Success(read)
@@ -628,16 +626,19 @@ impl Event for FileWriteEvent<'_> {
                         return Outcome::RunTask(
                             Task::CreateCow(CreateCowTask(CreateCowSource::Existing(cow_id))),
                             YieldUntil::Reschedule(Duration::ZERO),
-                        )
+                        );
                     };
 
                     cow_info.memfd
                 } else {
                     self.cow_created = true;
                     return Outcome::RunTask(
-                        Task::CreateCow(CreateCowTask(CreateCowSource::New(file_ref.path.clone(), file_ref.mode))),
+                        Task::CreateCow(CreateCowTask(CreateCowSource::New(
+                            file_ref.path.clone(),
+                            file_ref.mode,
+                        ))),
                         YieldUntil::Reschedule(Duration::ZERO),
-                    )
+                    );
                 };
 
                 if self.cow_created {
@@ -778,7 +779,7 @@ impl Event for FileSeekEvent {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let Some(fd_info) = state.local.fds.get_mut(&self.fd) else {
             log::warn!("lseek() called on unrecognized file descriptor");
-            return Outcome::Error(Errno::EBADFD)
+            return Outcome::Error(Errno::EBADFD);
         };
 
         if fd_info.is_passthrough {
@@ -793,15 +794,21 @@ impl Event for FileSeekEvent {
                 Outcome::Error(Errno::get_errno())
             } else {
                 Outcome::Success(res as usize)
-            }
+            };
         }
 
         match &mut fd_info.resource {
-            FdResource::Directory(_) | FdResource::Epoll(_) | FdResource::Inotify(_) | FdResource::Signalfd(_) => unimplemented!(),
-            FdResource::EventFd(_) | FdResource::MessageQueue(_) | FdResource::Pipe(_)
-            | FdResource::Stdin | FdResource::Stdout | FdResource::Stderr | FdResource::Socket(_) => {
-                return Outcome::Error(Errno::ESPIPE)
-            }
+            FdResource::Directory(_)
+            | FdResource::Epoll(_)
+            | FdResource::Inotify(_)
+            | FdResource::Signalfd(_) => unimplemented!(),
+            FdResource::EventFd(_)
+            | FdResource::MessageQueue(_)
+            | FdResource::Pipe(_)
+            | FdResource::Stdin
+            | FdResource::Stdout
+            | FdResource::Stderr
+            | FdResource::Socket(_) => return Outcome::Error(Errno::ESPIPE),
             FdResource::File(_) => todo!(),
             FdResource::Opaque => todo!(),
         }
@@ -810,19 +817,17 @@ impl Event for FileSeekEvent {
 
 pub fn file_length(state: &mut FizzleState, fd: libc::c_int) -> Result<usize, Errno> {
     let Some(fd_info) = state.local.fds.get(&Descriptor::from_raw_fd(fd)) else {
-        return Err(Errno::EBADFD)
+        return Err(Errno::EBADFD);
     };
 
     if fd_info.is_passthrough {
-        let ret = unsafe {
-            libc::lseek64(fd, 0, libc::SEEK_END)
-        };
+        let ret = unsafe { libc::lseek64(fd, 0, libc::SEEK_END) };
 
         return if ret < 0 {
             Err(Errno::get_errno())
         } else {
             Ok(ret as usize)
-        }
+        };
     }
 
     unimplemented!()
@@ -1377,7 +1382,7 @@ impl Event for StatEvent<'_> {
                     return Outcome::RunTask(
                         Task::CreateCow(CreateCowTask(CreateCowSource::Existing(cow_id))),
                         YieldUntil::Reschedule(Duration::ZERO),
-                    )
+                    );
                 };
 
                 unsafe {
@@ -1580,7 +1585,7 @@ impl Event for RenameEvent {
             .global
             .file_paths
             .insert(newpath.clone(), move_file_info.clone());
-        
+
         move_file_info.borrow_mut().path = newpath;
 
         if self.flags.contains(RenameFlags::RENAME_EXCHANGE) {

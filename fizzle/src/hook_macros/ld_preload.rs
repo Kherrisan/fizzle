@@ -48,7 +48,7 @@ macro_rules! hook {
             pub unsafe extern "C" fn $real_fn ( $($v : $t),* ) -> $r {
                 ::std::panic::catch_unwind(|| {
                     let Some($state) = crate::hooks::pre_hook() else {
-                        return $real_fn.get() ( $($v),* )                       
+                        return $real_fn.get() ( $($v),* )
                     };
 
                     let res = $hook_fn ( $state, $($v),*);

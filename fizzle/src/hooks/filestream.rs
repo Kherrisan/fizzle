@@ -20,7 +20,7 @@ hook_macros::hook! {
         // SAFETY: caller guarantees `mode` points to a null-terminated string
         let mode_cstr = CStr::from_ptr(mode);
         crate::strace!("fdopen(fd={}, mode={:?}) -> ...", fd, mode_cstr);
-        
+
         let source = FileStreamSource::Descriptor(fd);
         let Some(stream_mode) = FileStreamMode::from_cstr(mode_cstr) else {
             log::warn!("invalid or unrecognized `mode` encountered in fdopen() call");
@@ -52,7 +52,7 @@ hook_macros::hook! {
         let path_cstr = unsafe { CStr::from_ptr(pathname) };
         let mode_cstr = unsafe { CStr::from_ptr(mode) };
         crate::strace!("fopen(pathname={:?}, mode={:?}) -> ...", path_cstr, mode_cstr);
-        
+
         /*
         let Ok(path) = FilePath::from_cstr(path_cstr) else {
             crate::strace!("fopen(pathname={:?}, mode={:?}) -> NULL (EINVAL)", path_cstr, mode_cstr);
@@ -679,7 +679,7 @@ hook_macros::hook! {
         };
 
         let buf = [c as u8];
-        
+
         match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, &buf, 1, false)) {
             Ok(()) => {
                 crate::strace!("fputc(c={:?}, stream={:?}) -> {}", c, stream, c);
@@ -705,7 +705,7 @@ hook_macros::hook! {
         };
 
         let buf = [c as u8];
-        
+
         match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, &buf, 1, true)) {
             Ok(()) => {
                 crate::strace!("fputc_unlocked(c={:?}, stream={:?}) -> {}", c, stream, c);
@@ -727,7 +727,7 @@ hook_macros::hook! {
 
         let file_ptr = FilePtr::from_raw(crate::stdout).unwrap();
         let buf = [c as u8];
-        
+
         match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, &buf, 1, false)) {
             Ok(()) => {
                 crate::strace!("putchar(c={:?}) -> {}", c, c);
@@ -749,7 +749,7 @@ hook_macros::hook! {
 
         let file_ptr = FilePtr::from_raw(crate::stdout).unwrap();
         let buf = [c as u8];
-        
+
         match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, &buf, 1, true)) {
             Ok(()) => {
                 crate::strace!("putchar_unlocked(c={:?}) -> {}", c, c);
@@ -919,7 +919,7 @@ hook_macros::hook! {
         match Scheduler::handle_event(&mut ctx, StreamSeekEvent::new(file_ptr, position, offset, false)) {
             Ok(_) => {
                 crate::strace!("fseek(stream={:?}, offset={}, whence={}) -> 0", stream, offset, whence);
-                0 
+                0
             }
             Err(e) => {
                 crate::strace!("fseek(stream={:?}, offset={}, whence={}) -> -1 ({})", stream, offset, whence, e);
@@ -1198,8 +1198,6 @@ hook_macros::hook! {
     }
 }
 
-
-
 hook_macros::hook! {
     unsafe fn funlockfile(
         stream: *mut libc::FILE
@@ -1271,7 +1269,7 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) -> libc::size_t => fizzle_fbufsize(ctx) {
         crate::strace!("__fbufsize(stream={:?}) -> ...", stream);
-        
+
         let Some(file_ptr) = FilePtr::from_raw(stream) else {
             panic!("invalid FILE* pointer passed to __fbufsize()")
         };
@@ -1439,7 +1437,7 @@ hook_macros::hook! {
         };
 
         crate::strace!("__fsetlocking(stream={:?}, lock_type={:?}) -> ...", stream, locking);
-        
+
         let Some(file_ptr) = FilePtr::from_raw(stream) else {
             panic!("invalid FILE* pointer passed to __fsetlocking()")
         };

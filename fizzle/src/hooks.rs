@@ -4,8 +4,8 @@ pub mod aio;
 pub mod dir;
 pub mod entropy;
 pub mod eventfd;
-pub mod fd;
 pub mod fanotify;
+pub mod fd;
 pub mod filestream;
 pub mod filesystem;
 pub mod inotify;
@@ -36,7 +36,7 @@ pub static LOG_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 pub fn pre_hook() -> Option<FizzleSingleton> {
     if crate::state::has_entered_handler() {
-        return None
+        return None;
     }
 
     crate::state::set_entered_handler(true);
@@ -61,7 +61,6 @@ pub fn pre_hook() -> Option<FizzleSingleton> {
             crate::__afl_auto_second();
         }
 
-
         // Initialize the logger to print the current PID/TID with each message
         env_logger::Builder::from_default_env()
             .format(|buf, record| {
@@ -78,15 +77,9 @@ pub fn pre_hook() -> Option<FizzleSingleton> {
         log::info!("Logger initialized");
     }
 
-    unsafe {
-        Some(crate::scheduler::fizzle_singleton())
-    }
+    unsafe { Some(crate::scheduler::fizzle_singleton()) }
 }
-
 
 pub fn post_hook() {
     crate::state::set_entered_handler(false);
 }
-
-
-

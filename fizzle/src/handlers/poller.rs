@@ -406,7 +406,6 @@ impl Event for PollEvent<'_> {
                                         fd
                                     );
                                     read_pollers.insert(fd, polled_id);
-
                                 } else {
                                     log::trace!(
                                         "`poll`: fd {} was set for reading (Pollable | Ready)",
@@ -449,7 +448,6 @@ impl Event for PollEvent<'_> {
                                         fd
                                     );
                                     write_pollers.insert(fd, polled_id);
-
                                 } else {
                                     log::trace!(
                                         "`poll`: fd {} was set for writing (Pollable | Ready)",
@@ -683,8 +681,10 @@ impl Event for EpollCtlEvent {
                 let mut read_status = None;
                 let mut write_status = None;
 
-                if (ev.events & libc::EPOLLEXCLUSIVE as u32) != 0 && (ev.events & libc::EPOLLONESHOT as u32) != 0 {
-                    return Outcome::Error(Errno::EINVAL)
+                if (ev.events & libc::EPOLLEXCLUSIVE as u32) != 0
+                    && (ev.events & libc::EPOLLONESHOT as u32) != 0
+                {
+                    return Outcome::Error(Errno::EINVAL);
                 }
 
                 if (ev.events & libc::EPOLLIN as u32) != 0 {
@@ -708,7 +708,9 @@ impl Event for EpollCtlEvent {
                 }
 
                 if (ev.events & libc::EPOLLEXCLUSIVE as u32) != 0 {
-                    log::error!("unimplemented EPOLLEXCLUSIVE specified in epoll_ctl(EPOLL_CTL_ADD)");
+                    log::error!(
+                        "unimplemented EPOLLEXCLUSIVE specified in epoll_ctl(EPOLL_CTL_ADD)"
+                    );
                 }
 
                 let direction = match (read_status, write_status) {
@@ -755,7 +757,7 @@ impl Event for EpollCtlEvent {
 
                 if (ev.events & libc::EPOLLEXCLUSIVE as u32) != 0 {
                     log::warn!("EPOLLEXCLUSIVE not allowed in epoll_ctl(EPOLL_CTL_MOD)");
-                    return Outcome::Error(Errno::EINVAL)
+                    return Outcome::Error(Errno::EINVAL);
                 }
 
                 if (ev.events & libc::EPOLLIN as u32) != 0 {
@@ -777,7 +779,6 @@ impl Event for EpollCtlEvent {
                 if (ev.events & libc::EPOLLWAKEUP as u32) != 0 {
                     log::error!("unimplemented EPOLLWAKEUP specified in epoll_ctl(EPOLL_CTL_MOD)");
                 }
-
 
                 let direction = match (read_status, write_status) {
                     (None, None) => EpollDirection::None,
@@ -1165,16 +1166,12 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                 }
             },
         },
-        FdResource::Inotify(inotify) => {
-            PolledStatus::Pollable(inotify.borrow().polled.clone())
-        }
-        FdResource::Signalfd(signalfd) => {
-            PolledStatus::Pollable(signalfd.borrow().polled.clone())
-        }
+        FdResource::Inotify(inotify) => PolledStatus::Pollable(inotify.borrow().polled.clone()),
+        FdResource::Signalfd(signalfd) => PolledStatus::Pollable(signalfd.borrow().polled.clone()),
         FdResource::Opaque => {
             log::error!("POLLIN for opaque socket unimplemented");
             PolledStatus::NotPollable
-        },
+        }
     }
 }
 

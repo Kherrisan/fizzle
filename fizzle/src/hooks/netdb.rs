@@ -39,7 +39,7 @@ hook_macros::hook! {
         };
 
         let hint_socktype = if hints.is_null() {
-            0   
+            0
         } else {
             (*hints).ai_socktype
         };

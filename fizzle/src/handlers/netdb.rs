@@ -29,7 +29,6 @@ pub struct GetAddressInfoEvent<'a> {
     hint_socktype: libc::c_int,
     hint_protocol: libc::c_int,
     hint_flags: GetAddrInfoFlags,
-
 }
 
 impl<'a> GetAddressInfoEvent<'a> {
@@ -500,20 +499,13 @@ unsafe fn resolve_service(
 }
 */
 
-
-
-
-
-
 pub struct FreeAddressInfoEvent {
     ptr: *mut libc::addrinfo,
 }
 
 impl FreeAddressInfoEvent {
     pub fn new(ptr: *mut libc::addrinfo) -> Self {
-        Self {
-            ptr,
-        }
+        Self { ptr }
     }
 }
 
@@ -544,5 +536,3 @@ impl Event for FreeAddressInfoEvent {
         Outcome::Success(())
     }
 }
-
-

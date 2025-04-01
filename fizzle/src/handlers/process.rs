@@ -14,7 +14,8 @@ use fizzle_common::path::FilePath;
 use crate::errno::Errno;
 use crate::handlers::signal::SigDisposition;
 use crate::scheduler::{
-    fizzle_alloc, Event, FizzleSingleton, Outcome, Scheduler, TerminateProcessTask, TerminationMethod, YieldUntil
+    fizzle_alloc, Event, FizzleSingleton, Outcome, Scheduler, TerminateProcessTask,
+    TerminationMethod, YieldUntil,
 };
 use crate::semaphore::Semaphore;
 use crate::state::{set_entered_handler, FizzleState, InheritedState};
@@ -190,10 +191,7 @@ impl Event for ProcessForkEvent {
 
                 self.state = ProcessForkState::RunPostHandlers;
 
-                Outcome::RunTask(
-                    Task::Fork(ForkTask { }),
-                    YieldUntil::None,
-                )
+                Outcome::RunTask(Task::Fork(ForkTask {}), YieldUntil::None)
             }
             ProcessForkState::RunPostHandlers => {
                 let res = match CHILD_RES.take() {
@@ -247,15 +245,14 @@ impl ForkHandlerTask {
     }
 }
 
-pub struct ForkTask {
-
-}
+pub struct ForkTask {}
 
 impl ForkTask {
     pub fn execute(self, ctx: &mut FizzleSingleton) -> TaskResult {
         let pid = unsafe { libc::fork() };
 
-        if pid == 0 { // Child process
+        if pid == 0 {
+            // Child process
             // This *technically* shouldn't be needed since the child inherits a copy of
             // the parent's memory, but just to be safe...
             set_entered_handler(true);
@@ -267,10 +264,7 @@ impl ForkTask {
             // TODO: this will create unexpected behavior if multiprocess systems
             // call children that are meant to die without indicating process crash
             unsafe {
-                assert_eq!(
-                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM),
-                    0
-                );
+                assert_eq!(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM), 0);
             }
 
             let mut state = ctx.acquire();
@@ -288,19 +282,14 @@ impl ForkTask {
             let pid = state.global.next_pid();
             let ppid = state.local.process_info.borrow().pid;
             let pgid = state.local.process_info.borrow().pgid;
-            let signal_handlers =
-                state.local.process_info.borrow().signal_handlers.clone();
+            let signal_handlers = state.local.process_info.borrow().signal_handlers.clone();
 
             let mut proc_info = Rc::new_in(
                 RefCell::new(ProcessInfo {
                     pid,
                     ppid,
                     pgid,
-                    main_worker_lock: Semaphore::new_rc_in(
-                        0,
-                        true,
-                        fizzle_alloc(),
-                    ),
+                    main_worker_lock: Semaphore::new_rc_in(0, true, fizzle_alloc()),
                     signal_fds: hashbrown::HashMap::new_in(fizzle_alloc()),
                     signal_handlers,
                     awaiting_death: None,
@@ -319,8 +308,7 @@ impl ForkTask {
 
             // Add the new worker's lock to the global worker lock pool.
             let worker = state.current_worker();
-            let sem =
-                state.local.process_info.borrow().main_worker_lock.clone();
+            let sem = state.local.process_info.borrow().main_worker_lock.clone();
             state.global.worker_locks.insert(worker, sem);
 
             // Add the child process to the parent process's group
@@ -350,8 +338,7 @@ impl ForkTask {
                 .pending = array::from_fn(|_| None);
 
             // Remove all pthread cleanup routines except for the current thread's
-            let cleanup =
-                state.local.pthread_cleanup.remove(&thread::current().id());
+            let cleanup = state.local.pthread_cleanup.remove(&thread::current().id());
             state.local.pthread_cleanup.clear();
             if let Some(cleanup) = cleanup {
                 state
@@ -446,7 +433,6 @@ pub enum ExecLocation {
     AtDirectory(Descriptor, FilePath<MAX_PATH_LEN>),
 }
 
-
 pub struct ProcessExecEvent {
     cmd_location: ExecLocation,
     env: Option<Vec<CString>>,
@@ -498,14 +484,15 @@ impl Event for ProcessExecEvent {
                 // From `man signal(7)`:
                 // "During an execve(2), the dispositions of handled signals are reset to the default; the
                 // dispositions of ignored signals are left unchanged."
-                let signal_handlers = process_info
-                    .borrow()
-                    .signal_handlers
-                    .clone()
-                    .map(|handler| match handler {
-                        SigDisposition::Ignore => SigDisposition::Ignore,
-                        _ => SigDisposition::Default,
-                    });
+                let signal_handlers =
+                    process_info
+                        .borrow()
+                        .signal_handlers
+                        .clone()
+                        .map(|handler| match handler {
+                            SigDisposition::Ignore => SigDisposition::Ignore,
+                            _ => SigDisposition::Default,
+                        });
 
                 let sigmask = state
                     .local
@@ -543,7 +530,7 @@ impl Event for ProcessExecEvent {
                             }
                         });
 
-                        Some(ExecEnv { envp, })
+                        Some(ExecEnv { envp })
                     }
                     None => None,
                 };
@@ -553,7 +540,11 @@ impl Event for ProcessExecEvent {
                 self.state = ProcessExecState::Executed;
 
                 Outcome::RunTask(
-                    Task::Exec(ExecTask { location, args, envs }),
+                    Task::Exec(ExecTask {
+                        location,
+                        args,
+                        envs,
+                    }),
                     YieldUntil::None,
                 )
             }
@@ -578,7 +569,6 @@ impl ExecTask {
         let passed_args = self.args;
         let argp = passed_args.argp;
 
-
         log::info!("calling exec() to execute a new process...");
 
         match &loc {
@@ -592,7 +582,7 @@ impl ExecTask {
                         // Referencing anything from there once `ctx.dealloc()` is called will result in SIGSEGV.
                         ctx.dealloc();
                         libc::execve(cmd, argp.as_ptr(), env.as_ptr());
-                    }
+                    },
                     None => unsafe {
                         // SAFETY: data passed into this closure is specifically allocated on fizzle_alloc().
                         // Referencing anything from there once `ctx.dealloc()` is called will result in SIGSEGV.
@@ -685,11 +675,15 @@ impl Event for ProcessExitEvent {
         let status = self.status;
         match self.run_cleanup {
             true => Outcome::RunTask(
-                Task::TerminateProcess(TerminateProcessTask(TerminationMethod::ProcessExit(status))),
+                Task::TerminateProcess(TerminateProcessTask(TerminationMethod::ProcessExit(
+                    status,
+                ))),
                 YieldUntil::None,
             ),
             false => Outcome::RunTask(
-                Task::TerminateProcess(TerminateProcessTask(TerminationMethod::ProcessImmediateExit(status))),
+                Task::TerminateProcess(TerminateProcessTask(
+                    TerminationMethod::ProcessImmediateExit(status),
+                )),
                 YieldUntil::None,
             ),
         }

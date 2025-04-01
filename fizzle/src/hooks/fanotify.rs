@@ -1,7 +1,7 @@
 use std::ffi::CStr;
 
-use crate::hook_macros;
 use crate::errno::Errno;
+use crate::hook_macros;
 
 hook_macros::hook! {
     unsafe fn fanotify_init(

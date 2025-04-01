@@ -1,8 +1,8 @@
-use std::{cmp, ptr};
 use std::io::{IoSlice, IoSliceMut};
 use std::mem::MaybeUninit;
 use std::os::fd::RawFd;
 use std::rc::Weak;
+use std::{cmp, ptr};
 
 use super::directory::*;
 use super::epoll::*;
@@ -402,7 +402,10 @@ impl<'a> ReadData<'a> {
             Self::BasicSlice(s) => s.len(),
             Self::Iovec(iov) => iov.iter().map(|s| s.len()).sum::<usize>(),
             Self::File(f) => f.buf.iter().map(|s| s.len()).sum::<usize>(),
-            Self::Socket(s, _) => s.iter().map(|d| d.buf.iter().map(|s| s.len()).sum::<usize>()).sum::<usize>(),
+            Self::Socket(s, _) => s
+                .iter()
+                .map(|d| d.buf.iter().map(|s| s.len()).sum::<usize>())
+                .sum::<usize>(),
         }
     }
 }
@@ -497,17 +500,19 @@ impl Event for DescriptorReadEvent<'_> {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match &mut self.state {
             DescriptorReadState::Start => {
-                let Some(fd_info @ DescriptorInfo { is_passthrough: false, .. }) = state.local.fds.get(&self.fd) else {
+                let Some(
+                    fd_info @ DescriptorInfo {
+                        is_passthrough: false,
+                        ..
+                    },
+                ) = state.local.fds.get(&self.fd)
+                else {
                     #[cfg(not(feature = "passthroughfs"))]
                     return Outcome::Error(Errno::EBADF);
                     #[cfg(feature = "passthroughfs")]
                     return match self.data.take().unwrap() {
                         ReadData::BasicSlice(s) => match unsafe {
-                            libc::read(
-                                self.fd.as_raw_fd(),
-                                s.as_mut_ptr().cast(),
-                                s.len(),
-                            )
+                            libc::read(self.fd.as_raw_fd(), s.as_mut_ptr().cast(), s.len())
                         } {
                             ..=-1 => Outcome::Error(Errno::get_errno()),
                             len @ 0.. => Outcome::Success(len as usize),
@@ -916,7 +921,13 @@ impl Event for DescriptorWriteEvent<'_> {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match &mut self.state {
             DescriptorWriteState::Start => {
-                let Some(fd_info @ DescriptorInfo { is_passthrough: false, .. }) = state.local.fds.get(&self.fd) else {
+                let Some(
+                    fd_info @ DescriptorInfo {
+                        is_passthrough: false,
+                        ..
+                    },
+                ) = state.local.fds.get(&self.fd)
+                else {
                     #[cfg(not(feature = "passthroughfs"))]
                     return Outcome::Error(Errno::EBADF);
                     #[cfg(feature = "passthroughfs")]
@@ -954,17 +965,31 @@ impl Event for DescriptorWriteEvent<'_> {
                             let mut error = None;
                             for msg in msgs {
                                 let msghdr = libc::msghdr {
-                                    msg_name: msg.addr_bytes.map(|s| s.as_ptr()).unwrap_or(ptr::null()).cast::<libc::c_void>().cast_mut(), // TODO: UB?
-                                    msg_namelen: msg.addr_bytes.map(|s| s.len()).unwrap_or(0) as u32,
+                                    msg_name: msg
+                                        .addr_bytes
+                                        .map(|s| s.as_ptr())
+                                        .unwrap_or(ptr::null())
+                                        .cast::<libc::c_void>()
+                                        .cast_mut(), // TODO: UB?
+                                    msg_namelen: msg.addr_bytes.map(|s| s.len()).unwrap_or(0)
+                                        as u32,
                                     msg_iov: msg.buf.as_ptr().cast::<libc::iovec>().cast_mut(),
                                     msg_iovlen: msg.buf.len(),
-                                    msg_control: msg.control_info.as_ptr().cast::<libc::c_void>().cast_mut(),
+                                    msg_control: msg
+                                        .control_info
+                                        .as_ptr()
+                                        .cast::<libc::c_void>()
+                                        .cast_mut(),
                                     msg_controllen: msg.control_info.len(),
                                     msg_flags: msg.msg_flags.bits(),
                                 };
 
                                 let ret = unsafe {
-                                    libc::sendmsg(self.fd.as_raw_fd(), &raw const msghdr, msgflags.bits())
+                                    libc::sendmsg(
+                                        self.fd.as_raw_fd(),
+                                        &raw const msghdr,
+                                        msgflags.bits(),
+                                    )
                                 };
 
                                 if ret < 0 {
@@ -981,8 +1006,8 @@ impl Event for DescriptorWriteEvent<'_> {
                                 Outcome::Success(total_sent)
                             } else {
                                 Outcome::Error(error.unwrap())
-                            }
-                        },
+                            };
+                        }
                     };
                 };
 

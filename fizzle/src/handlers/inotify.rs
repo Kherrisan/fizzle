@@ -18,7 +18,6 @@ pub struct InotifyInfo {
     pub polled: GlobalRc<PolledInfo>,
 }
 
-
 bitflags! {
     #[derive(Clone, Copy, Debug)]
     pub struct InotifyEvents: u32 {
@@ -52,9 +51,7 @@ pub struct InotifyInitEvent {
 impl<'a> InotifyInitEvent {
     #[inline]
     pub fn new(flags: Option<InotifyFlags>) -> Self {
-        Self {
-            flags,
-        }
+        Self { flags }
     }
 }
 
@@ -66,15 +63,27 @@ impl Event for InotifyInitEvent {
         let fd = crate::create_descriptor();
         let descriptor_id = Descriptor::from_raw_fd(fd);
 
-        let nonblocking = self.flags.map(|f| f.contains(InotifyFlags::NONBLOCK)).unwrap_or(false);
-        let close_on_exec = self.flags.map(|f| f.contains(InotifyFlags::CLOEXEC)).unwrap_or(false);
+        let nonblocking = self
+            .flags
+            .map(|f| f.contains(InotifyFlags::NONBLOCK))
+            .unwrap_or(false);
+        let close_on_exec = self
+            .flags
+            .map(|f| f.contains(InotifyFlags::CLOEXEC))
+            .unwrap_or(false);
 
-        let inotify_info = Rc::new_in(RefCell::new(InotifyInfo {
-            polled: Rc::new_in(RefCell::new(PolledInfo {
-                pollers: Vec::new_in(fizzle_alloc()),
-                event_raised: false,
-            }), fizzle_alloc()),
-        }), fizzle_alloc());
+        let inotify_info = Rc::new_in(
+            RefCell::new(InotifyInfo {
+                polled: Rc::new_in(
+                    RefCell::new(PolledInfo {
+                        pollers: Vec::new_in(fizzle_alloc()),
+                        event_raised: false,
+                    }),
+                    fizzle_alloc(),
+                ),
+            }),
+            fizzle_alloc(),
+        );
 
         state.local.fds.insert(
             descriptor_id,
@@ -126,10 +135,7 @@ pub struct InotifyRemoveWatchEvent {
 impl InotifyRemoveWatchEvent {
     #[inline]
     pub fn new(desc: Descriptor, wd: libc::c_int) -> Self {
-        Self {
-            desc,
-            wd,
-        }
+        Self { desc, wd }
     }
 }
 

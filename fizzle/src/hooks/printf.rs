@@ -6,7 +6,6 @@ use crate::errno::Errno;
 use crate::handlers::filestream::*;
 use crate::scheduler::Scheduler;
 
-
 /*
 
 #[no_mangle]
@@ -14,7 +13,7 @@ pub unsafe extern "C" fn printf(format: *const libc::c_char, mut va_args: ...) -
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("printf() unimplemented for Fizzle internal use");
     };
-    
+
     crate::strace!("printf(format={:?}, ...) -> ...", format);
 
     let format_cstr = CStr::from_ptr(format);
@@ -107,7 +106,7 @@ pub unsafe extern "C" fn dprintf(fd: libc::c_int, format: *const libc::c_char, m
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("dprintf() unimplemented for Fizzle internal use");
     };
-    
+
     unimplemented!("dprintf()")
 }
 

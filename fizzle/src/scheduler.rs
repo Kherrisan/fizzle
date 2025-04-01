@@ -10,7 +10,9 @@ use std::{cmp, env, mem, ptr, slice, thread};
 use embedded_alloc::TlsfHeap;
 use fizzle_common::io::{SocketType, TransportProtocol};
 
-use crate::backend::{ConnectedBackend, ConnectionlessBackend, FileBackend, FileFeedback, PendingBackend};
+use crate::backend::{
+    ConnectedBackend, ConnectionlessBackend, FileBackend, FileFeedback, PendingBackend,
+};
 use crate::cell::{PanicOnceCell, SequentialRefCell};
 use crate::constants::*;
 use crate::errno::Errno;
@@ -92,11 +94,13 @@ unsafe fn fizzle_dealloc() {
     let alloc = FIZZLE_ALLOC.deinit();
 
     let len = mem::size_of_val(alloc);
-    let munmap_res = unsafe {
-        libc::munmap(ptr::from_ref(alloc).cast_mut().cast::<libc::c_void>(), len)
-    };
-    
-    assert_eq!(munmap_res, 0, "munmap() failed while fizzle_dealloc() was being called");
+    let munmap_res =
+        unsafe { libc::munmap(ptr::from_ref(alloc).cast_mut().cast::<libc::c_void>(), len) };
+
+    assert_eq!(
+        munmap_res, 0,
+        "munmap() failed while fizzle_dealloc() was being called"
+    );
 }
 
 pub fn fizzle_alloc() -> GlobalHeap {
@@ -228,9 +232,7 @@ pub fn fizzle_alloc() -> GlobalHeap {
                 }
             }
 
-            unsafe {
-                &*(location.cast_const())
-            }
+            unsafe { &*(location.cast_const()) }
         })
         .heap
 }
@@ -281,10 +283,7 @@ pub trait Event {
 pub enum Outcome<S, E> {
     Success(S),
     Error(E),
-    RunTask(
-        Task,
-        YieldUntil,
-    ),
+    RunTask(Task, YieldUntil),
     Yield(YieldUntil),
 }
 
@@ -332,7 +331,10 @@ impl HandleExpiredTimerTask {
         // Need to ensure this is executing within the destination process
         if pid != current_worker.pid {
             // Re-schedule current task in the correct process
-            state.global.tasks.push_front(Task::HandleExpiredTimer(self));
+            state
+                .global
+                .tasks
+                .push_front(Task::HandleExpiredTimer(self));
 
             // Awaken destination process
             let sem = state
@@ -412,7 +414,13 @@ impl HandleProcessSignalTask {
             // TODO: this indirection could be removed if we put signal information in global rather than local
 
             // Re-schedule the current task to run in the destination process
-            state.global.tasks.push_front(Task::HandleProcessSignal(HandleProcessSignalTask { pid: dst, raised }));
+            state
+                .global
+                .tasks
+                .push_front(Task::HandleProcessSignal(HandleProcessSignalTask {
+                    pid: dst,
+                    raised,
+                }));
 
             // Awaken destination process
             let dst_sem = state
@@ -440,8 +448,8 @@ impl HandleProcessSignalTask {
             let mut ready_worker = None;
             for (tid, siginfo) in state.local.signals.iter_mut() {
                 if siginfo
-                        .sigwait_set
-                        .intersects(SignalSet::from_signum(raised.signum()))
+                    .sigwait_set
+                    .intersects(SignalSet::from_signum(raised.signum()))
                 {
                     // If more than one, we don't know what the right behavior is
                     debug_assert!(ready_worker.is_none());
@@ -456,13 +464,17 @@ impl HandleProcessSignalTask {
             if let Some(worker) = ready_worker {
                 state.mark_worker_ready(worker);
             } else {
-                let prev = state.local.pending_signals[raised.signum() as usize - 1].replace(raised); // TODO: this is never read from...
+                let prev =
+                    state.local.pending_signals[raised.signum() as usize - 1].replace(raised); // TODO: this is never read from...
                 if prev.is_none() {
                     // The signal is fresh, so we need to increment applicable `signalfd`s.
                     let process_info = state.local.process_info.clone();
                     for signalfd_info in process_info.borrow().signal_fds.values() {
                         let mut signalfd_mut = signalfd_info.borrow_mut();
-                        if signalfd_mut.mask.contains(SignalSet::from_signum(raised.signum())) {
+                        if signalfd_mut
+                            .mask
+                            .contains(SignalSet::from_signum(raised.signum()))
+                        {
                             signalfd_mut.num_raised += 1;
                             if signalfd_mut.num_raised == 1 {
                                 state.raise_polled(&signalfd_mut.polled);
@@ -477,7 +489,10 @@ impl HandleProcessSignalTask {
 
         if tid != current_worker.thread_id {
             // Re-schedule the task
-            state.global.tasks.push_front(Task::HandleLocalSignal(HandleLocalSignalTask { raised }));
+            state
+                .global
+                .tasks
+                .push_front(Task::HandleLocalSignal(HandleLocalSignalTask { raised }));
 
             // Awaken destination thread
             let dst_worker = Worker {
@@ -507,7 +522,12 @@ impl HandleLocalSignalTask {
         let current_worker = state.current_worker();
         let raised = self.raised;
 
-        let proc_siginfo = state.global.pids.get_mut(&current_worker.pid).unwrap().clone();
+        let proc_siginfo = state
+            .global
+            .pids
+            .get_mut(&current_worker.pid)
+            .unwrap()
+            .clone();
         let sig_handler =
             proc_siginfo.borrow().signal_handlers[raised.signum() as usize - 1].clone();
 
@@ -528,17 +548,24 @@ impl HandleLocalSignalTask {
             );
 
             if siginfo
-                    .sigwait_set
-                    .intersects(SignalSet::from_signum(raised.signum()))
+                .sigwait_set
+                .intersects(SignalSet::from_signum(raised.signum()))
             {
                 state.mark_worker_ready(current_worker);
             }
 
             if old_pending.is_none() {
                 // We need to update the signalfd for this thread, if applicable
-                if let Some(signalfd) = proc_siginfo.borrow().signal_fds.get(&thread::current().id()) {
+                if let Some(signalfd) = proc_siginfo
+                    .borrow()
+                    .signal_fds
+                    .get(&thread::current().id())
+                {
                     let mut signalfd_mut = signalfd.borrow_mut();
-                    if signalfd_mut.mask.contains(SignalSet::from_signum(raised.signum())) {
+                    if signalfd_mut
+                        .mask
+                        .contains(SignalSet::from_signum(raised.signum()))
+                    {
                         signalfd_mut.num_raised += 1;
                         if signalfd_mut.num_raised == 1 {
                             state.raise_polled(&signalfd_mut.polled);
@@ -784,7 +811,10 @@ impl HandleThreadSignalTask {
         // Move to the appropriate thread
         if dst != current_worker {
             // Re-schedule current task
-            state.global.tasks.push_front(Task::HandleLocalSignal(HandleLocalSignalTask { raised }));
+            state
+                .global
+                .tasks
+                .push_front(Task::HandleLocalSignal(HandleLocalSignalTask { raised }));
 
             // Awaken destination worker
             let dst_sem = state.global.worker_locks.get(&dst).unwrap().clone();
@@ -945,32 +975,24 @@ impl CreateCowTask {
         };
 
         let cow_source = source.clone();
-        let create_cow_in_primary = Task::CreatePrimaryCow(
-            CreatePrimaryCowTask(cow_source)
-        );
+        let create_cow_in_primary = Task::CreatePrimaryCow(CreatePrimaryCowTask(cow_source));
 
         let cow_source = source.clone();
         let send_cow_to_origin = if origin_pid != Pid::PRIMARY {
-            Some(Task::TransportCow(
-                TransportCowTask(cow_source)
-            ))
+            Some(Task::TransportCow(TransportCowTask(cow_source)))
         } else {
             None
         };
 
         let move_to_origin = if origin_pid != Pid::PRIMARY {
-            Some(Task::MoveToCowOrigin(
-                MoveToCowOriginTask(origin_worker)
-            ))
+            Some(Task::MoveToCowOrigin(MoveToCowOriginTask(origin_worker)))
         } else {
             None
         };
 
         let cow_source = source.clone();
         let recv_cow_at_origin = if origin_pid != Pid::PRIMARY {
-            Some(Task::RecvCowAtOrigin(
-                RecvCowAtOriginTask(cow_source)
-            ))
+            Some(Task::RecvCowAtOrigin(RecvCowAtOriginTask(cow_source)))
         } else {
             None
         };
@@ -1058,10 +1080,7 @@ impl CreatePrimaryCowTask {
                 fizzle_alloc(),
             );
 
-            state
-                .global
-                .file_paths
-                .insert(path.clone(), file_info);
+            state.global.file_paths.insert(path.clone(), file_info);
         } else {
             let file_info = state.global.file_paths.get(&path).unwrap().clone();
             file_info.borrow_mut().cow = Some(cow_id);
@@ -1096,12 +1115,10 @@ impl TransportCowTask {
             cmsg_type: libc::SOL_SOCKET,
         };
 
-        let mut control =
-            [0u8; mem::size_of::<libc::cmsghdr>() + mem::size_of::<RawFd>()];
+        let mut control = [0u8; mem::size_of::<libc::cmsghdr>() + mem::size_of::<RawFd>()];
         control[..mem::size_of::<libc::cmsghdr>()]
             .copy_from_slice(unsafe { slice::from_ref(&cmsghdr).align_to::<u8>().1 });
-        control[mem::size_of::<libc::cmsghdr>()..]
-            .copy_from_slice(&memfd.to_ne_bytes());
+        control[mem::size_of::<libc::cmsghdr>()..].copy_from_slice(&memfd.to_ne_bytes());
 
         let msghdr = libc::msghdr {
             msg_name: ptr::null_mut(),
@@ -1113,9 +1130,7 @@ impl TransportCowTask {
             msg_flags: 0,
         };
 
-        let len = unsafe {
-            libc::sendmsg(state.global.unix_write_fd, ptr::addr_of!(msghdr), 0)
-        };
+        let len = unsafe { libc::sendmsg(state.global.unix_write_fd, ptr::addr_of!(msghdr), 0) };
 
         assert_eq!(len, 0);
 
@@ -1189,8 +1204,8 @@ impl RecvCowAtOriginTask {
             }
 
             if hdr.cmsg_type == libc::SOL_SOCKET && hdr.cmsg_level == libc::SCM_RIGHTS {
-                let msg_data = &msg
-                    [msg_idx + mem::size_of::<libc::cmsghdr>()..msg_idx + hdr.cmsg_len];
+                let msg_data =
+                    &msg[msg_idx + mem::size_of::<libc::cmsghdr>()..msg_idx + hdr.cmsg_len];
                 let (s1, fds, s2) = unsafe { msg_data.align_to::<RawFd>() };
                 assert!(s1.is_empty() && s2.is_empty() && fds.len() == 1);
 
@@ -1246,7 +1261,10 @@ impl Scheduler {
                     );
 
                     // Schedule the subprocess to be run
-                    state.global.tasks.push_front(Task::RunSubprocess(RunSubprocessTask { onstartup }));
+                    state
+                        .global
+                        .tasks
+                        .push_front(Task::RunSubprocess(RunSubprocessTask { onstartup }));
                     drop(state);
 
                     Scheduler::yield_worker(ctx);
@@ -1268,7 +1286,7 @@ impl Scheduler {
             let (task_opt, until) = match event.run(&mut state) {
                 Outcome::Success(s) => {
                     Errno::SUCCESS.set_errno();
-                    return Ok(s)
+                    return Ok(s);
                 }
                 Outcome::Error(e) => return Err(e),
                 Outcome::RunTask(task, until) => (Some(task), until),
@@ -1430,16 +1448,15 @@ impl Scheduler {
                 ReadyInfo::Worker(worker) => Some(worker),
                 ReadyInfo::Poller(poller) => Scheduler::poller_ready_worker(poller),
                 ReadyInfo::Timer(pid, timer_type) => {
-                    state.global.tasks.push_front(Task::HandleExpiredTimer(HandleExpiredTimerTask { pid, timer_type }));
+                    state.global.tasks.push_front(Task::HandleExpiredTimer(
+                        HandleExpiredTimerTask { pid, timer_type },
+                    ));
                     return Some(false);
                 }
             };
 
             if let Some(worker) = worker_opt {
-                state
-                    .global
-                    .tasks
-                    .push_front(Task::Return(ReturnTask));
+                state.global.tasks.push_front(Task::Return(ReturnTask));
                 if worker == current_worker {
                     return Some(false);
                 } else {
@@ -1465,7 +1482,14 @@ impl Scheduler {
                 Ok(())
             }
         } else {
-            let lock = state.global.pids.get(&Pid::PRIMARY).unwrap().borrow().main_worker_lock.clone();
+            let lock = state
+                .global
+                .pids
+                .get(&Pid::PRIMARY)
+                .unwrap()
+                .borrow()
+                .main_worker_lock
+                .clone();
             drop(state);
             safe_post(lock);
             Err(true)
@@ -1580,8 +1604,12 @@ impl Scheduler {
                     client_info.source_address,
                     client_info.target_address,
                     match client_info.backend {
-                        PerRoundClientBackend::Fuzz(fuzz_endpoint_id) => ConnectionlessBackend::Fuzz(fuzz_endpoint_id),
-                        PerRoundClientBackend::Plugin(plugin_id) => ConnectionlessBackend::Plugin(plugin_id),
+                        PerRoundClientBackend::Fuzz(fuzz_endpoint_id) => {
+                            ConnectionlessBackend::Fuzz(fuzz_endpoint_id)
+                        }
+                        PerRoundClientBackend::Plugin(plugin_id) => {
+                            ConnectionlessBackend::Plugin(plugin_id)
+                        }
                     },
                 )
             } else {
@@ -1593,7 +1621,9 @@ impl Scheduler {
                         PerRoundClientBackend::Fuzz(fuzz_endpoint_id) => {
                             PendingBackend::Fuzz(fuzz_endpoint_id)
                         }
-                        PerRoundClientBackend::Plugin(plugin_id) => PendingBackend::Plugin(plugin_id),
+                        PerRoundClientBackend::Plugin(plugin_id) => {
+                            PendingBackend::Plugin(plugin_id)
+                        }
                     },
                 )
             };
@@ -1631,7 +1661,7 @@ impl Scheduler {
                 }
                 SocketState::Connected(connected) => {
                     log::debug!("removing connected fuzz/plugin client socket");
-                    
+
                     if !connected.peer_closed {
                         connected.peer_closed = true;
 
@@ -1724,12 +1754,21 @@ impl Scheduler {
             let spare_mut = state.global.fuzz_input.spare_capacity_mut();
             assert!(!spare_mut.is_empty());
 
-            match unsafe { libc::read(0, spare_mut.as_mut_ptr().cast::<libc::c_void>(), spare_mut.len()) } {
+            match unsafe {
+                libc::read(
+                    0,
+                    spare_mut.as_mut_ptr().cast::<libc::c_void>(),
+                    spare_mut.len(),
+                )
+            } {
                 ..=-1 => panic!("read() failed for fuzzing: errno {}", Errno::get_errno()),
                 0 => break,
                 read_amount => unsafe {
-                    state.global.fuzz_input.set_len(prev_len + read_amount as usize);
-                }
+                    state
+                        .global
+                        .fuzz_input
+                        .set_len(prev_len + read_amount as usize);
+                },
             }
         }
 
@@ -1760,7 +1799,10 @@ impl Scheduler {
         // Assign a pid to this process--use parent ProcessId TEMPORARILY until child id assigned
         let new_pid = state.global.next_pid();
         let pgid = Pgid::from_pid(new_pid);
-        state.global.process_groups.insert(pgid, BTreeSet::new_in(fizzle_alloc()));
+        state
+            .global
+            .process_groups
+            .insert(pgid, BTreeSet::new_in(fizzle_alloc()));
 
         state.global.inherited_state = Some(InheritedState {
             fds: BTreeMap::new_in(fizzle_alloc()),

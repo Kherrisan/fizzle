@@ -69,7 +69,7 @@ unsafe extern "C" {
 
     #[cfg(feature = "afl")]
     pub fn __afl_auto_second();
-    
+
     #[cfg(feature = "pcr")]
     pub static __afl_already_initialized_second: u32;
 
@@ -215,7 +215,7 @@ unsafe extern "C" fn fizzle_handle_sigchld(_signal: libc::c_int) {
     loop {
         // Avoids zombie process buildup during persistent-mode fuzzing
         if libc::waitpid(-1, ptr::null_mut(), libc::WNOHANG) < 0 {
-            return
+            return;
         }
     }
 }
@@ -231,7 +231,7 @@ unsafe extern "C" fn fizzle_handle_term_signal(signum: libc::c_int) {
 macro_rules! strace {
     // log_strace!(target: "my_target", key1 = 42, key2 = true; "a {} event", "log")
     // log_strace!(target: "my_target", "a {} event", "log")
-    
+
     (target: $target:literal, $($arg:tt)+) => {
         let e = crate::errno::Errno::get_errno();
         log::log!(target: $target, log::Level::Trace, $($arg)+);

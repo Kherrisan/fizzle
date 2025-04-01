@@ -348,7 +348,7 @@ hook_macros::hook! {
 
         match Scheduler::handle_event(&mut ctx, SocketGetNameEvent::new(descriptor_id, addr_bytes)) {
             Ok(len) => {
-                *addrlen = len as libc::socklen_t;               
+                *addrlen = len as libc::socklen_t;
                 crate::strace!("getsockname(sockfd={}, addr={:?}, addrlen={:?}) -> 0", sockfd, addr, addrlen);
                 0
             },

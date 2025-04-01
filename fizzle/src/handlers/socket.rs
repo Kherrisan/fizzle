@@ -70,17 +70,14 @@ fn get_or_assign_local(
                     let mut bound_sockets = LinkedList::new_in(fizzle_alloc());
                     bound_sockets.push_back(socket_info.clone());
 
-                    state
-                        .global
-                        .socket_locations
-                        .insert(
-                            addr.clone(),
-                            TransportLocationInfo {
-                                reuse_port,
-                                bound_sockets,
-                                pending: LinkedList::new_in(fizzle_alloc()),
-                            },
-                        );
+                    state.global.socket_locations.insert(
+                        addr.clone(),
+                        TransportLocationInfo {
+                            reuse_port,
+                            bound_sockets,
+                            pending: LinkedList::new_in(fizzle_alloc()),
+                        },
+                    );
                     break addr;
                 };
 
@@ -581,32 +578,26 @@ impl Event for SocketCreatePairEvent {
         let mut bound_sockets = LinkedList::new_in(fizzle_alloc());
         bound_sockets.push_back(socket1);
 
-        state
-            .global
-            .socket_locations
-            .insert(
-                addr1,
-                TransportLocationInfo {
-                    reuse_port,
-                    bound_sockets,
-                    pending: LinkedList::new_in(fizzle_alloc()),
-                },
-            );
+        state.global.socket_locations.insert(
+            addr1,
+            TransportLocationInfo {
+                reuse_port,
+                bound_sockets,
+                pending: LinkedList::new_in(fizzle_alloc()),
+            },
+        );
 
         let mut bound_sockets = LinkedList::new_in(fizzle_alloc());
         bound_sockets.push_back(socket2);
 
-        state
-            .global
-            .socket_locations
-            .insert(
-                addr2,
-                TransportLocationInfo {
-                    reuse_port,
-                    bound_sockets,
-                    pending: LinkedList::new_in(fizzle_alloc()),
-                },
-            );
+        state.global.socket_locations.insert(
+            addr2,
+            TransportLocationInfo {
+                reuse_port,
+                bound_sockets,
+                pending: LinkedList::new_in(fizzle_alloc()),
+            },
+        );
 
         Outcome::Success((fd1, fd2))
     }
@@ -648,14 +639,18 @@ impl Event for SocketBindEvent<'_> {
 
         if fd_info.is_passthrough {
             let ret = unsafe {
-                libc::bind(self.descriptor_id.as_raw_fd(), self.addr_bytes.as_ptr().cast::<libc::sockaddr>(), self.addr_bytes.len() as u32)
+                libc::bind(
+                    self.descriptor_id.as_raw_fd(),
+                    self.addr_bytes.as_ptr().cast::<libc::sockaddr>(),
+                    self.addr_bytes.len() as u32,
+                )
             };
 
             return if ret < 0 {
                 Outcome::Error(Errno::get_errno())
             } else {
                 Outcome::Success(())
-            }
+            };
         }
 
         let FdResource::Socket(socket_info) = fd_info.resource.clone() else {
@@ -663,10 +658,14 @@ impl Event for SocketBindEvent<'_> {
         };
 
         let Ok(mut sockaddr) = SockAddr::decode(self.addr_bytes) else {
-            return Outcome::Error(Errno::EINVAL)
+            return Outcome::Error(Errno::EINVAL);
         };
 
-        log::debug!("binding socket {} to address {}...", self.descriptor_id.as_raw_fd(), sockaddr);
+        log::debug!(
+            "binding socket {} to address {}...",
+            self.descriptor_id.as_raw_fd(),
+            sockaddr
+        );
 
         // If port is 0, bind to an ephemerally-chosen port
         match &mut sockaddr {
@@ -800,7 +799,15 @@ impl Event for SocketListenEvent {
             fizzle_alloc(),
         );
 
-        let connecting = mem::replace(&mut state.global.socket_locations.get_mut(&addr).unwrap().pending, LinkedList::new_in(fizzle_alloc()));
+        let connecting = mem::replace(
+            &mut state
+                .global
+                .socket_locations
+                .get_mut(&addr)
+                .unwrap()
+                .pending,
+            LinkedList::new_in(fizzle_alloc()),
+        );
         if !connecting.is_empty() {
             log::debug!("listen() socket had pending connections--raising polled");
             state.raise_polled(&ready_to_connect);
@@ -1352,7 +1359,10 @@ pub struct SocketGetNameEvent<'a> {
 
 impl<'a> SocketGetNameEvent<'a> {
     pub fn new(descriptor_id: Descriptor, addr_bytes: &'a mut [MaybeUninit<u8>]) -> Self {
-        Self { descriptor_id, addr_bytes }
+        Self {
+            descriptor_id,
+            addr_bytes,
+        }
     }
 }
 
@@ -1368,14 +1378,18 @@ impl Event for SocketGetNameEvent<'_> {
         if fd_info.is_passthrough {
             let mut addrlen = self.addr_bytes.len() as u32;
             let ret = unsafe {
-                libc::getsockname(self.descriptor_id.as_raw_fd(), self.addr_bytes.as_mut_ptr().cast::<libc::sockaddr>(), &raw mut addrlen)
+                libc::getsockname(
+                    self.descriptor_id.as_raw_fd(),
+                    self.addr_bytes.as_mut_ptr().cast::<libc::sockaddr>(),
+                    &raw mut addrlen,
+                )
             };
 
             return if ret < 0 {
                 Outcome::Error(Errno::get_errno())
             } else {
                 Outcome::Success(addrlen as usize)
-            }
+            };
         }
 
         let FdResource::Socket(socket_info) = &fd_info.resource else {
@@ -1385,12 +1399,15 @@ impl Event for SocketGetNameEvent<'_> {
         match &socket_info.borrow().local_addr {
             LocalAddress::Ephemeral(address_family) => {
                 self.addr_bytes.fill(MaybeUninit::new(0));
-                let family_bytes = address_family.raw().to_be_bytes().map(|i| MaybeUninit::new(i));
+                let family_bytes = address_family
+                    .raw()
+                    .to_be_bytes()
+                    .map(|i| MaybeUninit::new(i));
 
                 let family_bytelen = cmp::min(family_bytes.len(), family_bytes.len());
                 self.addr_bytes[..family_bytelen].copy_from_slice(&family_bytes);
                 Outcome::Success(family_bytelen)
-            },
+            }
             LocalAddress::Assigned(sock_addr) => {
                 let addrlen = sock_addr.encode(self.addr_bytes);
                 Outcome::Success(addrlen)
@@ -1424,7 +1441,9 @@ impl Event for SocketGetPeerNameEvent {
 
         let socket_ref = socket_info.borrow();
         let addr_opt = match &socket_ref.state {
-            SocketState::Connectionless(connectionless) => connectionless.rem_addr.as_ref().map(|a| a.addr()),
+            SocketState::Connectionless(connectionless) => {
+                connectionless.rem_addr.as_ref().map(|a| a.addr())
+            }
             SocketState::Unassociated(_) => None,
             SocketState::Server(_) => None,
             SocketState::PendingConnection(_) => None,
@@ -2102,10 +2121,12 @@ impl Event for SocketGetOptionEvent {
                 let sock_ref = socket_info.borrow();
                 if sock_ref.protocol != TransportProtocol::Tcp {
                     log::warn!("getsockopt(SOL_TCP, TCP_USER_TIMEOUT) called on non-TCP socket");
-                    return Outcome::Error(Errno::ENOPROTOOPT)
+                    return Outcome::Error(Errno::ENOPROTOOPT);
                 }
 
-                Outcome::Success(SocketOption::TcpUserTimeout(sock_ref.options.tcp_user_timeout.unwrap_or(Duration::ZERO)))
+                Outcome::Success(SocketOption::TcpUserTimeout(
+                    sock_ref.options.tcp_user_timeout.unwrap_or(Duration::ZERO),
+                ))
             }
             (OptLevel::Tcp, libc::TCP_NODELAY) => {
                 // TODO: implement assigning nodelay on sockets
@@ -2232,7 +2253,7 @@ impl Event for SocketSetOptionEvent {
                 let mut sock_mut = socket_info.borrow_mut();
                 if sock_mut.protocol != TransportProtocol::Tcp {
                     log::warn!("setsockopt(SOL_TCP, TCP_USER_TIMEOUT) called on non-TCP socket");
-                    return Outcome::Error(Errno::ENOPROTOOPT)
+                    return Outcome::Error(Errno::ENOPROTOOPT);
                 }
 
                 sock_mut.options.tcp_user_timeout = if duration == &Duration::ZERO {
@@ -2242,7 +2263,7 @@ impl Event for SocketSetOptionEvent {
                 };
 
                 Outcome::Success(())
-            },
+            }
             // TODO: implement
             SocketOption::TcpNoDelay(_) => Outcome::Success(()),
             // TODO: implement
@@ -2608,7 +2629,7 @@ impl Event for SocketReadEvent<'_> {
                                 ..fuzz_endpoint.borrow().read_idx + read],
                         );
                         fuzz_endpoint.borrow_mut().read_idx += read;
-                        
+
                         Outcome::Success(read)
                     }
                     ReadData::Iovec(out_slices) => {
@@ -2683,10 +2704,12 @@ impl Event for SocketReadEvent<'_> {
                     ReadData::BasicSlice(data) => {
                         let Some(buf) = regular.recv_buf.pop_front() else {
                             if *peer_closed {
-                                return Outcome::Success(0)
+                                return Outcome::Success(0);
                             }
 
-                            unreachable!("socket read event awakened despite no data being available")
+                            unreachable!(
+                                "socket read event awakened despite no data being available"
+                            )
                         };
 
                         let mut read_idx = regular.read_idx;
@@ -2713,10 +2736,12 @@ impl Event for SocketReadEvent<'_> {
                     ReadData::Iovec(data) => {
                         let Some(buf) = regular.recv_buf.pop_front() else {
                             if *peer_closed {
-                                return Outcome::Success(0)
+                                return Outcome::Success(0);
                             }
 
-                            unreachable!("socket read event awakened despite no data being available")
+                            unreachable!(
+                                "socket read event awakened despite no data being available"
+                            )
                         };
 
                         let mut read_idx = regular.read_idx;
@@ -2753,15 +2778,17 @@ impl Event for SocketReadEvent<'_> {
                                     state.lower_polled(read_polled);
                                 }
 
-                                debug_assert!(msg_count > 0, "socket read event awakened despite no data being available");
-                                return Outcome::Success(msg_count)
+                                debug_assert!(
+                                    msg_count > 0,
+                                    "socket read event awakened despite no data being available"
+                                );
+                                return Outcome::Success(msg_count);
                             };
 
                             *out_msg.msg_flags = SocketMsgFlags::EOR;
-                            
+
                             *out_msg.addrlen = sockaddr.encode(out_msg.addr_bytes) as u32;
                             *out_msg.control_len = 0; // TODO: encode ancillary
-
 
                             let mut read_idx = regular.read_idx;
 
@@ -2869,10 +2896,12 @@ impl Event for SocketReadEvent<'_> {
                     ReadData::BasicSlice(data) => {
                         let Some(buf) = plugin.borrow_mut().read_buf.pop_front() else {
                             if *peer_closed {
-                                return Outcome::Success(0)
+                                return Outcome::Success(0);
                             }
 
-                            unreachable!("socket read event awakened despite no data being available")
+                            unreachable!(
+                                "socket read event awakened despite no data being available"
+                            )
                         };
 
                         let mut read_idx = plugin.borrow().read_idx;
@@ -2896,10 +2925,12 @@ impl Event for SocketReadEvent<'_> {
                     ReadData::Iovec(data) => {
                         let Some(buf) = plugin.borrow_mut().read_buf.pop_front() else {
                             if *peer_closed {
-                                return Outcome::Success(0)
+                                return Outcome::Success(0);
                             }
 
-                            unreachable!("socket read event awakened despite no data being available")
+                            unreachable!(
+                                "socket read event awakened despite no data being available"
+                            )
                         };
 
                         let mut read_idx = plugin.borrow().read_idx;
@@ -2937,7 +2968,10 @@ impl Event for SocketReadEvent<'_> {
                             };
 
                             let shutdown_data = unsafe {
-                                slice::from_raw_parts((ptr::from_ref(&shutdown_msg)).cast::<u8>(), mem::size_of_val(&shutdown_msg))
+                                slice::from_raw_parts(
+                                    (ptr::from_ref(&shutdown_msg)).cast::<u8>(),
+                                    mem::size_of_val(&shutdown_msg),
+                                )
                             };
 
                             *out_msgs[0].addrlen = sockaddr.encode(out_msgs[0].addr_bytes) as u32;
@@ -2947,11 +2981,12 @@ impl Event for SocketReadEvent<'_> {
                             let mut written = 0;
                             for slice in out_msgs[0].buf.iter_mut() {
                                 let to_write = cmp::min(shutdown_data.len() - written, slice.len());
-                                slice[..to_write].copy_from_slice(&shutdown_data[written..written + to_write]);
+                                slice[..to_write]
+                                    .copy_from_slice(&shutdown_data[written..written + to_write]);
                                 written += to_write;
                             }
                             *out_msgs[0].buflen = shutdown_data.len() as u32;
-                            return Outcome::Success(1)
+                            return Outcome::Success(1);
                         }
 
                         let mut msg_count = 0;
@@ -2961,8 +2996,11 @@ impl Event for SocketReadEvent<'_> {
                                     state.lower_polled(&read_polled);
                                 }
 
-                                debug_assert!(msg_count > 0, "socket read event awakened despite no data being available");
-                                return Outcome::Success(msg_count)
+                                debug_assert!(
+                                    msg_count > 0,
+                                    "socket read event awakened despite no data being available"
+                                );
+                                return Outcome::Success(msg_count);
                             };
 
                             *out_msg.msg_flags = SocketMsgFlags::EOR;
@@ -3327,14 +3365,16 @@ impl Event for SocketWriteEvent<'_> {
                             let Some(dst_info) = state.global.socket_locations.get_mut(&addr)
                             else {
                                 // write_error = Errno::EHOSTUNREACH;
-                                *write_data.buflen = write_data.buf.iter().map(|s| s.len()).sum::<usize>() as u32;
+                                *write_data.buflen =
+                                    write_data.buf.iter().map(|s| s.len()).sum::<usize>() as u32;
                                 num_written += 1;
                                 continue;
                             };
 
                             let Some(dst_socket) = dst_info.next_bound() else {
                                 // write_error = Errno::EHOSTUNREACH;
-                                *write_data.buflen = write_data.buf.iter().map(|s| s.len()).sum::<usize>() as u32;
+                                *write_data.buflen =
+                                    write_data.buf.iter().map(|s| s.len()).sum::<usize>() as u32;
                                 num_written += 1;
                                 continue;
                             };
