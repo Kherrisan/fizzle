@@ -1256,21 +1256,35 @@ impl Event for StderrWriteEvent<'_> {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        let WriteData::BasicSlice(slice) = self.data else {
-            unreachable!(
-                "internal error--buffer other than WriteData::Basic passed to StderrWriteEvent"
-            );
-        };
-
-        if state.global.mask_stderr {
-            let total = slice.len();
-            Outcome::Success(total)
-        } else {
-            let res = unsafe { libc::write(2, slice.as_ptr().cast(), slice.len()) };
-            match res {
-                0.. => Outcome::Success(res as usize),
-                _ => Outcome::Error(Errno::get_errno()),
+        match &self.data {
+            WriteData::BasicSlice(slice) => {
+                if state.global.mask_stderr {
+                    let total = slice.len();
+                    Outcome::Success(total)
+                } else {
+                    let res = unsafe { libc::write(2, slice.as_ptr().cast(), slice.len()) };
+                    match res {
+                        0.. => Outcome::Success(res as usize),
+                        _ => Outcome::Error(Errno::get_errno()),
+                    }
+                }
             }
+            WriteData::Iovec(iov) => {
+                if state.global.mask_stderr {
+                    let total = iov.iter().map(|s| s.len()).sum();
+                    Outcome::Success(total)
+                } else {
+                    let res = unsafe { libc::writev(2, iov.as_ptr().cast(), iov.len() as i32) };
+                    match res {
+                        0.. => Outcome::Success(res as usize),
+                        _ => Outcome::Error(Errno::get_errno()),
+                    }
+                }
+            }
+            _ => unreachable!(
+                "internal error--buffer other than WriteData::Basic passed to StderrWriteEvent"
+            ),
         }
+        
     }
 }
