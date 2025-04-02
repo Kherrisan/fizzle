@@ -2057,7 +2057,7 @@ impl Event for StreamEofEvent {
         };
 
         match &self.state {
-            StreamEofState::Start if self.unlocked => {
+            StreamEofState::Start if !self.unlocked => {
                 self.state = StreamEofState::Finish;
                 let outcome = if file_obj.queued_threads.is_empty() {
                     Outcome::Yield(YieldUntil::Immediate)
