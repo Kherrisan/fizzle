@@ -764,36 +764,31 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn sync() => fizzle_sync(_ctx) {
         log::warn!("`sync` unimplemented by Fizzle");
-
-        #[cfg(feature = "passthroughfs")]
-        return unsafe { libc::sync() };
-
-        hook_macros::real!(sync)()
     }
 }
 
 hook_macros::hook! {
-    unsafe fn syncfs(fd: libc::c_int) => fizzle_syncfd(_ctx) {
+    unsafe fn syncfs(_fd: libc::c_int) -> libc::c_int => fizzle_syncfd(_ctx) {
         log::warn!("`syncfs` unimplemented by Fizzle");
-        hook_macros::real!(syncfs)(fd)
+        0
     }
 }
 
 hook_macros::hook! {
     unsafe fn fsync(
-        fd: libc::c_int
-    ) => fizzle_fsync(_ctx) {
+        _fd: libc::c_int
+    ) -> libc::c_int => fizzle_fsync(_ctx) {
         log::warn!("`fsync` unimplemented by Fizzle");
-        hook_macros::real!(fsync)(fd)
+        0
     }
 }
 
 hook_macros::hook! {
     unsafe fn fdatasync(
-        fd: libc::c_int
-    ) => fizzle_fdatasync(_ctx) {
+        _fd: libc::c_int
+    ) -> libc::c_int => fizzle_fdatasync(_ctx) {
         log::warn!("`fdatasync` unimplemented by Fizzle");
-        hook_macros::real!(fdatasync)(fd)
+        0
     }
 }
 

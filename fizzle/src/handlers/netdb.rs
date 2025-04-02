@@ -1,24 +1,45 @@
 use std::ffi::{CStr, CString};
+use std::mem::{self, MaybeUninit};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
+use std::str::FromStr;
+use std::slice;
 
 use bitflags::bitflags;
+use fizzle_common::io::SockAddr;
 
 use crate::errno::Errno;
 use crate::scheduler::{Event, Outcome};
 use crate::state::FizzleState;
 
+// TODO: upstream
+const AI_IDN: libc::c_int = 0x0040;
+const AI_CANONIDN: libc::c_int = 0x0080;
+const AI_IDN_ALLOW_UNASSIGNED: libc::c_int = 0x0100;
+const AI_IDN_USE_STD3_ASCII_RULES: libc::c_int = 0x0200;
+
 bitflags! {
     #[derive(Clone, Copy, Debug)]
     pub struct GetAddrInfoFlags: libc::c_int {
-        const V4MAPPED = libc::AI_V4MAPPED;
-        const ADDRCONFIG = libc::AI_ADDRCONFIG;
-        const NUMERICHOST = libc::AI_NUMERICHOST;
+        /// Socket address is intended for `bind`.
         const PASSIVE = libc::AI_PASSIVE;
-        const CANONNAME = libc::AI_CANONNAME;
-        /*
-        const IDN = libc::AI_IDN;
-        const CANON_IDN = libc::AI_CANONIDN;
-        const IDN_ALLOW_UNASSIGNED = libc::AI_IDN_ALLOW_UNASSIGNED;
-        */
+        /// Request for canonical name.
+        const CANON_NAME = libc::AI_CANONNAME;
+        /// Don't use name resolution.
+        const NUMERICHOST = libc::AI_NUMERICHOST;
+        /// IPv4 mapped addresses are acceptable.
+        const V4MAPPED = libc::AI_V4MAPPED;
+        /// Return IPv4-mapped and IPv6 addresses.
+        const ALL = libc::AI_ALL;
+        /// Use configuration of this host to choose returned address type.
+        const ADDRCONFIG = libc::AI_ADDRCONFIG;
+        /// IDN-encode input (assuming it is encoded in the current locale's character set).
+        const IDN = AI_IDN;
+        /// Translate canonical name from IDN format.
+        const CANON_IDN = AI_CANONIDN;
+        const IDN_ALLOW_UNASSIGNED = AI_IDN_ALLOW_UNASSIGNED;
+        const IDN_USE_STD3_ASCII_RULES = AI_IDN_USE_STD3_ASCII_RULES;
+        /// Don't use your name resolution.
+        const NUMERICSERV = libc::AI_NUMERICSERV;
     }
 }
 
@@ -55,449 +76,291 @@ impl Event for GetAddressInfoEvent<'_> {
     type Success = Box<libc::addrinfo>;
     type Error = (Errno, libc::c_int);
 
-    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        log::error!("getaddrinfo() unimplemented");
-        Outcome::Error((Errno::EINVAL, libc::EAI_FAIL))
-    }
-}
-
-/*
-fn help(){
-    {
-        // At least one of `node` or `service` must be non-null.
-        if node.is_null() && service.is_null() {
-            set_errno(Errno(libc::EINVAL));
-            return libc::EAI_NONAME;
+    fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        if self.node.is_none() && self.service.is_none() {
+            return Outcome::Error((Errno::EINVAL, libc::EAI_NONAME))
         }
 
-        // If we have hints, check them for unsupported features, and then copy
-        // then into the prototype `addrinfo`.
-        let mut prototype: libc::addrinfo = zeroed();
-        if !hints.is_null() {
-            prototype = *hints;
+        let mut template: libc::addrinfo = unsafe { MaybeUninit::zeroed().assume_init() };
 
-            if prototype.ai_flags & libc::AI_CANONNAME == libc::AI_CANONNAME {
-                if node.is_null() {
-                    return libc::EAI_BADFLAGS;
+        if self.hint_flags.contains(GetAddrInfoFlags::CANON_NAME) {
+            template.ai_canonname = match self.node {
+                Some(cstr) => CString::into_raw(cstr.to_owned()),
+                None => {
+                    return Outcome::Error((Errno::EINVAL, libc::EAI_BADFLAGS))
                 }
-                prototype.ai_canonname = node.cast_mut();
-            }
-
-            assert_eq!(
-                prototype.ai_flags & !(libc::AI_NUMERICHOST | libc::AI_NUMERICSERV | libc::AI_CANONNAME | libc::AI_PASSIVE),
-                0,
-                "GAI flags hint other than AI_NUMERICHOST|AI_NUMERICSERV|AI_CANONNAME|AI_PASSIVE not supported yet"
-            );
-
-            assert_eq!(
-                prototype.ai_addrlen, 0,
-                "GAI addrlen hint not supported yet"
-            );
-            assert!(
-                prototype.ai_addr.is_null(),
-                "GAI addr hint not supported yet"
-            );
-            assert!(
-                prototype.ai_next.is_null(),
-                "GAI next hint not supported yet"
-            );
+            };
         }
 
-        // Set a few additional fields of the prototype `addrinfo`.
-        if prototype.ai_family == 0 {
-            prototype.ai_family = libc::AF_UNSPEC;
+        template.ai_family = self.hint_family;
+        template.ai_socktype = self.hint_socktype;
+        template.ai_protocol = self.hint_protocol;
+
+        if template.ai_family == 0 {
+            template.ai_family = libc::AF_UNSPEC;
         }
-        if prototype.ai_protocol == 0 {
-            prototype.ai_protocol = match prototype.ai_socktype {
+
+        if template.ai_protocol == 0 {
+            template.ai_protocol = match template.ai_socktype {
                 0 => 0,
                 libc::SOCK_STREAM => libc::IPPROTO_TCP,
                 libc::SOCK_DGRAM => libc::IPPROTO_UDP,
-                _ => todo!("unimplemented GAI protocol {}", prototype.ai_protocol),
+                _ => unimplemented!(),
             };
         }
 
-        // If we have a `service`, resolve it to a port number, otherwise use 0.
-        let port = if service.is_null() {
-            0
-        } else {
-            match resolve_service(service, &mut prototype) {
-                Ok(port) => port,
-                Err(err) => return err,
+        let port = match self.service {
+            None => 0,
+            Some(service) => {
+                let service = service.to_str().unwrap();
+                
+                match service.parse() {
+                    Ok(p) => p,
+                    _ => match service {
+                        "ftp-data" => 20,
+                        "ftp" => 21,
+                        "ssh" => 22,
+                        "smtp" => 25,
+                        "http" => 80,
+                        "pop3" => 110,
+                        "snmp" => 161,
+                        "ldap" => 389,
+                        "https" => 443,
+                        "syslog" => 514,
+                        "rtsp" => 554,
+                        "ftps" => 990,
+                        "mysql" => 3306,
+                        "daap" => 3689,
+                        "postgresql" => 5432,
+                        _ => panic!("unrecognized service `{:?}` in getaddrinfo()", service),
+                    }
+                }
             }
         };
 
-        // Prepare for `addrinfo` and `SocketAddrStorage` allocations.
-        let layout = alloc::alloc::Layout::new::<libc::addrinfo>();
-        let addr_layout = alloc::alloc::Layout::new::<SocketAddrStorage>();
-        let mut first: *mut libc::addrinfo = null_mut();
-        let mut prev: *mut libc::addrinfo = null_mut();
+        let mut first_record = None;
 
-        // If we don't have a `node`, return `addrinfo` records of either localhost
-        // or wildcard ("unspecified") addresses, following the `AI_PASSIVE` flag.
-        if node.is_null() {
-            // Decide which families to emit records for.
-            let v6_v4 = [libc::AF_INET6, libc::AF_INET];
-            let one_family = [prototype.ai_family];
-            let ai_families = match prototype.ai_family {
-                libc::AF_UNSPEC => &v6_v4[..],
-                libc::AF_INET | libc::AF_INET6 => &one_family[..],
-                _ => {
-                    set_errno(Errno(libc::EILSEQ));
-                    return libc::EAI_SERVICE;
-                }
-            };
+        match self.node {
+            None => {
+                // NOTE: code taken directly from `c-ward` crate (MIT+Apache2)
 
-            // Decide which socket types to emit records for.
-            let stream_dgram = [libc::SOCK_STREAM, libc::SOCK_DGRAM];
-            let one_socktype = [prototype.ai_socktype];
-            let ai_socktypes = match prototype.ai_socktype {
-                0 => &stream_dgram[..],
-                libc::SOCK_STREAM | libc::SOCK_DGRAM => &one_socktype[..],
-                _ => {
-                    set_errno(Errno(libc::EILSEQ));
-                    return libc::EAI_SERVICE;
-                }
-            };
+                // Decide which families to emit records for.
+                let v6_v4 = [libc::AF_INET6, libc::AF_INET];
+                let one_family = [template.ai_family];
+                let ai_families = match template.ai_family {
+                    libc::AF_UNSPEC => &v6_v4[..],
+                    libc::AF_INET | libc::AF_INET6 => &one_family[..],
+                    _ => {
+                        return Outcome::Error((Errno::EILSEQ, libc::EAI_SERVICE));
+                    }
+                };
 
-            // Emit the records.
-            for ai_family in ai_families {
-                for ai_socktype in ai_socktypes {
-                    let ptr = alloc::alloc::alloc(layout).cast::<libc::addrinfo>();
-                    ptr.write(prototype);
-                    let info = &mut *ptr;
+                // Decide which socket types to emit records for.
+                let stream_dgram = [libc::SOCK_STREAM, libc::SOCK_DGRAM];
+                let one_socktype = [template.ai_socktype];
+                let ai_socktypes = match template.ai_socktype {
+                    0 => &stream_dgram[..],
+                    libc::SOCK_STREAM | libc::SOCK_DGRAM => &one_socktype[..],
+                    _ => {
+                        return Outcome::Error((Errno::EILSEQ, libc::EAI_SERVICE))
+                    }
+                };
 
-                    info.ai_socktype = *ai_socktype;
-                    info.ai_family = *ai_family;
+                // Emit the records.
+                for ai_family in ai_families {
+                    for ai_socktype in ai_socktypes {
+                        let mut info = Box::new(template.clone());
 
-                    let storage = alloc::alloc::alloc(addr_layout).cast::<SocketAddrStorage>();
-                    let is_passive = prototype.ai_flags & libc::AI_PASSIVE == libc::AI_PASSIVE;
-                    let len = match *ai_family {
-                        libc::AF_INET => {
-                            let addr = if is_passive {
-                                Ipv4Addr::UNSPECIFIED
-                            } else {
-                                Ipv4Addr::LOCALHOST
-                            };
-                            SocketAddrV4::new(addr, port).write_sockaddr(storage)
+                        info.ai_socktype = *ai_socktype;
+                        info.ai_family = *ai_family;
+
+                        let mut storage: Box<libc::sockaddr_storage> = Box::new(unsafe { MaybeUninit::zeroed().assume_init() });
+                        let storage_ptr: *mut libc::sockaddr_storage = &mut *storage;
+                        let storage_slice = unsafe {
+                            slice::from_raw_parts_mut(storage_ptr.cast(), mem::size_of::<libc::sockaddr_storage>())
+                        };
+
+                        let is_passive = template.ai_flags & libc::AI_PASSIVE == libc::AI_PASSIVE;
+                        let len = match *ai_family {
+                            libc::AF_INET => {
+                                let addr = if is_passive {
+                                    Ipv4Addr::UNSPECIFIED
+                                } else {
+                                    Ipv4Addr::LOCALHOST
+                                };
+                                SockAddr::Ipv4(SocketAddrV4::new(addr, port)).encode(storage_slice)
+                            }
+                            libc::AF_INET6 => {
+                                let addr = if is_passive {
+                                    Ipv6Addr::UNSPECIFIED
+                                } else {
+                                    Ipv6Addr::LOCALHOST
+                                };
+                                SockAddr::Ipv6(SocketAddrV6::new(addr, port, 0, 0)).encode(storage_slice)
+                            }
+                            _ => unreachable!(),
+                        };
+                        info.ai_addr = Box::into_raw(storage).cast();
+                        info.ai_addrlen = len as u32;
+
+                        let Some(next_record) = first_record.as_mut() else {
+                            first_record = Some(info);
+                            continue
+                        };
+
+                        let mut next_ptr: *mut libc::addrinfo = &mut **next_record;
+
+                        unsafe {
+                            while !(*next_ptr).ai_next.is_null() {
+                                next_ptr = (*next_ptr).ai_next;
+                            }
+
+                            (*next_ptr).ai_next = Box::into_raw(info).cast();
                         }
-                        libc::AF_INET6 => {
-                            let addr = if is_passive {
-                                Ipv6Addr::UNSPECIFIED
-                            } else {
-                                Ipv6Addr::LOCALHOST
-                            };
-                            SocketAddrV6::new(addr, port, 0, 0).write_sockaddr(storage)
+                    }
+                }
+            }
+            Some(node) => {
+                // Otherwise, we have a `node`; prepare to work with it.
+                let host = match node.to_str() {
+                    Ok(host) => host,
+                    Err(_) => {
+                        return Outcome::Error((Errno::EILSEQ, libc::EAI_SYSTEM))
+                    }
+                };
+
+                if template.ai_flags & libc::AI_NUMERICHOST == libc::AI_NUMERICHOST {
+                    let mut info = Box::new(template.clone());
+
+                    let addr = match IpAddr::from_str(host) {
+                        Ok(addr) => addr,
+                        Err(_err) => {
+                            return Outcome::Error((Errno::EIO, libc::EAI_NONAME))
                         }
-                        _ => unreachable!(),
                     };
-                    info.ai_addr = storage.cast();
-                    info.ai_addrlen = len;
+                    let sockaddr = match addr {
+                        IpAddr::V4(v4_addr) => {
+                            if info.ai_family == libc::AF_UNSPEC {
+                                info.ai_family = libc::AF_INET;
+                            }
+                            if info.ai_family != libc::AF_INET {
+                                return Outcome::Error((Errno::EIO, libc::EAI_NONAME))
+                            }
 
-                    if !prev.is_null() {
-                        (*prev).ai_next = ptr;
-                    }
-                    prev = ptr;
-                    if first.is_null() {
-                        first = ptr;
+                            SockAddr::Ipv4(SocketAddrV4::new(v4_addr, port))
+                        }
+                        IpAddr::V6(v6_addr) => {
+                            if info.ai_family == libc::AF_UNSPEC {
+                                info.ai_family = libc::AF_INET6;
+                            }
+                            if info.ai_family != libc::AF_INET6 {
+                                return Outcome::Error((Errno::EIO, libc::EAI_NONAME))
+                            }
+
+                            SockAddr::Ipv6(SocketAddrV6::new(v6_addr, port, 0, 0))
+                        }
+                    };
+
+                    let mut storage: Box<libc::sockaddr_storage> = Box::new(unsafe { MaybeUninit::zeroed().assume_init() });
+                    let storage_ptr: *mut libc::sockaddr_storage = &mut *storage;
+                    let storage_slice = unsafe {
+                        slice::from_raw_parts_mut(storage_ptr.cast(), mem::size_of::<libc::sockaddr_storage>())
+                    };
+
+                    let len = sockaddr.encode(storage_slice);
+
+                    info.ai_addr = Box::into_raw(storage).cast();
+                    info.ai_addrlen = len as u32;
+
+                    return Outcome::Success(info)
+                }
+
+                // Otherwise, mock lookups for `node`
+
+                let Ok(node) = node.to_str() else {
+                    log::warn!("non-UTF8 input `node` to getaddrinfo()");
+                    return Outcome::Error((Errno::EINVAL, libc::EAI_NONAME))
+                };
+
+                let mut addrs = Vec::new();
+
+                if template.ai_family == libc::AF_UNSPEC || template.ai_family == libc::AF_INET {
+                    match node {
+                        "localhost" => addrs.push(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
+                        _ => {
+                            log::warn!("getaddrinfo() with node `{}` has no IPv4 addrs assigned--giving default 127.0.0.10", node);
+                            addrs.push(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+                        },
                     }
                 }
-            }
-            *res = first;
-            return 0;
-        }
 
-        // Otherwise, we have a `node`; prepare to work with it.
-        let host = match CStr::from_ptr(node.cast()).to_str() {
-            Ok(host) => host,
-            Err(_) => {
-                set_errno(Errno(libc::EILSEQ));
-                return libc::EAI_SYSTEM;
-            }
-        };
-
-        // With `AI_NUMERICHOST`, don't do any actual lookups. Just try to parse
-        // `node` as an address.
-        if prototype.ai_flags & libc::AI_NUMERICHOST == libc::AI_NUMERICHOST {
-            let addr = match IpAddr::from_str(host) {
-                Ok(addr) => addr,
-                Err(_err) => {
-                    set_errno(Errno(libc::EIO));
-                    return libc::EAI_NONAME;
-                }
-            };
-            match addr {
-                IpAddr::V4(_) => {
-                    if prototype.ai_family == libc::AF_UNSPEC {
-                        prototype.ai_family = libc::AF_INET;
-                    }
-                    if prototype.ai_family != libc::AF_INET {
-                        set_errno(Errno(libc::EIO));
-                        return libc::EAI_NONAME;
+                if template.ai_family == libc::AF_UNSPEC || template.ai_family == libc::AF_INET6 {
+                    match node {
+                        "localhost" => addrs.push(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))),
+                        _ => {
+                            log::warn!("getaddrinfo() with node `{}` has no IPv4 addrs assigned--giving default [::10]", node);
+                            addrs.push(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 10)));
+                        },
                     }
                 }
-                IpAddr::V6(_) => {
-                    if prototype.ai_family == libc::AF_UNSPEC {
-                        prototype.ai_family = libc::AF_INET6;
-                    }
-                    if prototype.ai_family != libc::AF_INET6 {
-                        set_errno(Errno(libc::EIO));
-                        return libc::EAI_NONAME;
-                    }
-                }
-            }
 
-            let ptr = alloc::alloc::alloc(layout).cast::<libc::addrinfo>();
-            ptr.write(prototype);
-            let info = &mut *ptr;
-
-            let storage = alloc::alloc::alloc(addr_layout).cast::<SocketAddrStorage>();
-            let len = SocketAddr::new(addr, port).write_sockaddr(storage);
-            info.ai_addr = storage.cast();
-            info.ai_addrlen = len;
-            *res = ptr;
-            return 0;
-        }
-
-        // Otherwise, do lookups for `node`.
-        match resolve_host(host, &prototype) {
-            Ok(addrs) => {
                 for addr in addrs {
-                    let ptr = alloc::alloc::alloc(layout).cast::<libc::addrinfo>();
-                    ptr.write(prototype);
-                    let info = &mut *ptr;
+                    let mut info = Box::new(template.clone());
+
+                    let mut storage: Box<libc::sockaddr_storage> = Box::new(unsafe { MaybeUninit::zeroed().assume_init() });
+                    let storage_ptr: *mut libc::sockaddr_storage = &mut *storage;
+                    let storage_slice = unsafe {
+                        slice::from_raw_parts_mut(storage_ptr.cast(), mem::size_of::<libc::sockaddr_storage>())
+                    };
 
                     match addr {
                         IpAddr::V4(v4) => {
-                            if prototype.ai_family == libc::AF_UNSPEC
-                                || prototype.ai_family == libc::AF_INET
+                            if template.ai_family == libc::AF_UNSPEC
+                                || template.ai_family == libc::AF_INET
                             {
-                                let storage =
-                                    alloc::alloc::alloc(addr_layout).cast::<SocketAddrStorage>();
-                                let len = SocketAddrV4::new(v4, port).write_sockaddr(storage);
-                                info.ai_addr = storage.cast();
-                                info.ai_addrlen = len;
+                                let len = SockAddr::Ipv4(SocketAddrV4::new(v4, port)).encode(storage_slice);
+                                info.ai_addr = Box::into_raw(storage).cast();
+                                info.ai_addrlen = len as u32;
                                 info.ai_family = libc::AF_INET;
                             }
                         }
                         IpAddr::V6(v6) => {
-                            if prototype.ai_family == libc::AF_UNSPEC
-                                || prototype.ai_family == libc::AF_INET6
+                            if template.ai_family == libc::AF_UNSPEC
+                                || template.ai_family == libc::AF_INET6
                             {
-                                let storage =
-                                    alloc::alloc::alloc(addr_layout).cast::<SocketAddrStorage>();
-                                let len = SocketAddrV6::new(v6, port, 0, 0).write_sockaddr(storage);
-                                info.ai_addr = storage.cast();
+                                let len = SockAddr::Ipv6(SocketAddrV6::new(v6, port, 0, 0)).encode(storage_slice);
+                                info.ai_addr = Box::into_raw(storage).cast();
                                 info.ai_addrlen = len.try_into().unwrap();
                                 info.ai_family = libc::AF_INET6;
                             }
                         }
                     }
-                    if !prev.is_null() {
-                        (*prev).ai_next = ptr;
-                    }
-                    prev = ptr;
-                    if first.is_null() {
-                        first = ptr;
-                    }
-                }
-                *res = first;
-                0
-            }
-            Err(err) => err,
-        }
-    }
-}
 
-fn resolve_host(host: &str, prototype: &libc::addrinfo) -> Result<IntoIter<IpAddr>, c_int> {
-    let mut command = Command::new("getent");
-    match prototype.ai_family {
-        libc::AF_UNSPEC => command.arg("ahosts"),
-        libc::AF_INET => command.arg("ahostsv4"),
-        libc::AF_INET6 => command.arg("ahostsv6"),
-        _ => {
-            set_errno(Errno(libc::EIO));
-            return Err(libc::EAI_SERVICE);
-        }
-    };
-    command.arg(host);
+                    let Some(next_record) = first_record.as_mut() else {
+                        first_record = Some(info);
+                        continue
+                    };
 
-    let output = match command.output() {
-        Ok(output) => output,
-        Err(_err) => {
-            set_errno(Errno(libc::EIO));
-            return Err(libc::EAI_SYSTEM);
-        }
-    };
+                    let mut next_ptr: *mut libc::addrinfo = &mut **next_record;
 
-    match output.status.code() {
-        Some(0) => {}
-        Some(2) => {
-            // The hostname was not found. If we used `ahostsv4` or `ahostsv6`
-            // then check with `ahosts`; if that succeeds, fail with
-            // `EAI_ADDRFAMILY`.
-            if matches!(prototype.ai_family, libc::AF_INET | libc::AF_INET6) {
-                let mut command = Command::new("getent");
-                command.arg("ahosts");
-                command.arg(host);
-                if let Ok(output) = command.output() {
-                    if output.status.code() == Some(0) {
-                        return Err(EAI_ADDRFAMILY);
+                    unsafe {
+                        while !(*next_ptr).ai_next.is_null() {
+                            next_ptr = (*next_ptr).ai_next;
+                        }
+
+                        (*next_ptr).ai_next = Box::into_raw(info).cast();
                     }
                 }
             }
-
-            return Err(libc::EAI_NONAME);
         }
-        Some(r) => panic!("unexpected exit status from `getent ahosts`: {}", r),
-        None => {
-            set_errno(Errno(libc::EIO));
-            return Err(libc::EAI_SYSTEM);
+
+        if let Some(record) = first_record {
+            Outcome::Success(record)
+        } else {
+            Outcome::Error((Errno::SUCCESS, libc::EAI_FAIL))
         }
     }
-
-    let stdout = match str::from_utf8(&output.stdout) {
-        Ok(stdout) => stdout,
-        Err(_err) => {
-            set_errno(Errno(libc::EIO));
-            return Err(libc::EAI_SYSTEM);
-        }
-    };
-
-    // Iterate over the lines printed by `getent`.
-    let mut hosts = Vec::new();
-    for line in stdout.lines() {
-        // Parse the line.
-        let mut parts = line.split_ascii_whitespace();
-        let addr = match parts.next() {
-            Some(addr) => addr,
-            None => {
-                set_errno(Errno(libc::EIO));
-                return Err(libc::EAI_SYSTEM);
-            }
-        };
-        let type_ = match parts.next() {
-            Some(type_) => type_,
-            None => {
-                set_errno(Errno(libc::EIO));
-                return Err(libc::EAI_SYSTEM);
-            }
-        };
-        // Ignore any futher parts, which would contain aliases for `host`
-        // that we're uninterested in here.
-
-        // Filter out results that don't match what's requested.
-        if prototype.ai_socktype != 0 {
-            let socktype_name = match prototype.ai_socktype {
-                libc::SOCK_STREAM => "STREAM",
-                libc::SOCK_DGRAM => "DGRAM",
-                libc::SOCK_RAW => "RAW",
-                _ => panic!("unsupported ai_socktype {:?}", prototype.ai_socktype),
-            };
-            if type_ != socktype_name {
-                continue;
-            }
-        }
-
-        // Parse the address.
-        let addr = match IpAddr::from_str(addr) {
-            Ok(addr) => addr,
-            Err(_err) => {
-                set_errno(Errno(libc::EIO));
-                return Err(libc::EAI_SYSTEM);
-            }
-        };
-
-        hosts.push(addr);
-    }
-
-    Ok(hosts.into_iter())
 }
-
-unsafe fn resolve_service(
-    service: *const c_char,
-    prototype: &mut libc::addrinfo,
-) -> Result<u16, c_int> {
-    extern "C" {
-        fn getservbyname_r(
-            name: *const c_char,
-            proto: *const c_char,
-            result_buf: *mut libc::servent,
-            buf: *mut c_char,
-            buflen: size_t,
-            result: *mut *mut libc::servent,
-        ) -> c_int;
-    }
-
-    // With `AI_NUMERICSERV`, don't do any actual lookups. Just try to parse
-    // `service` as a number.
-    if prototype.ai_flags & libc::AI_NUMERICSERV == libc::AI_NUMERICSERV {
-        set_errno(Errno(0));
-        let mut endptr: *mut c_char = null_mut();
-        let number = libc::strtol(service, &mut endptr, 10);
-        if endptr != service.cast_mut() && errno().0 != 0 {
-            if let Ok(number) = u16::try_from(number) {
-                return Ok(number);
-            }
-        }
-
-        return Err(libc::EAI_NONAME);
-    }
-
-    // Do a NSS lookup for `service`.
-    let proto = match prototype.ai_protocol {
-        libc::IPPROTO_TCP => c"tcp".as_ptr(),
-        libc::IPPROTO_UDP => c"udp".as_ptr(),
-        _ => null(),
-    };
-    let mut servent: libc::servent = zeroed();
-    let mut result = null_mut();
-    match getservbyname_r(service, proto, &mut servent, null_mut(), 0, &mut result) {
-        0 => {}
-        libc::ENOENT => {
-            let service_str = match CStr::from_ptr(service).to_str() {
-                Ok(service_str) => service_str,
-                Err(_) => return Err(libc::EAI_SERVICE),
-            };
-            let port = match u16::from_str(service_str) {
-                Ok(port) => port,
-                Err(_) => return Err(libc::EAI_SERVICE),
-            };
-            servent.s_proto = proto.cast_mut();
-            servent.s_port = port.to_be().into();
-        }
-        _ => return Err(libc::EAI_SERVICE),
-    };
-
-    // If we don't yet know the protocol, and the query returned a protocol,
-    // use that. And if we don't yet know the socktype, infer that from the
-    // protocol.
-    match prototype.ai_protocol {
-        // Assert that the `getent` command did what we asked.
-        libc::IPPROTO_TCP => assert_eq!(libc::strcmp(servent.s_proto, c"tcp".as_ptr()), 0),
-        libc::IPPROTO_UDP => assert_eq!(libc::strcmp(servent.s_proto, c"udp".as_ptr()), 0),
-        // Infer what we can.
-        _ => {
-            if !servent.s_proto.is_null() {
-                if libc::strcmp(servent.s_proto, c"tcp".as_ptr()) == 0 {
-                    prototype.ai_protocol = libc::IPPROTO_TCP;
-                    if prototype.ai_socktype == 0 {
-                        prototype.ai_socktype = libc::SOCK_STREAM;
-                    }
-                } else if libc::strcmp(servent.s_proto, c"udp".as_ptr()) == 0 {
-                    prototype.ai_protocol = libc::IPPROTO_UDP;
-                    if prototype.ai_socktype == 0 {
-                        prototype.ai_socktype = libc::SOCK_DGRAM;
-                    }
-                } else {
-                    unreachable!();
-                }
-            }
-        }
-    }
-
-    Ok(u16::from_be(servent.s_port as u16))
-}
-*/
 
 pub struct FreeAddressInfoEvent {
     ptr: *mut libc::addrinfo,
@@ -513,7 +376,7 @@ impl Event for FreeAddressInfoEvent {
     type Success = ();
     type Error = ();
 
-    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+    fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         // Once dropped, this will free the underlying allocated addrinfo struct.
         let mut ai = unsafe { Box::from_raw(self.ptr) };
 
@@ -530,6 +393,183 @@ impl Event for FreeAddressInfoEvent {
             if !ai.ai_canonname.is_null() {
                 let canonname = unsafe { CString::from_raw(ai.ai_canonname) };
                 drop(canonname);
+            }
+
+            if !ai.ai_addr.is_null() {
+                let addr = unsafe { Box::from_raw(ai.ai_addr.cast::<libc::sockaddr_storage>()) };
+                drop(addr);
+            }
+        }
+
+        Outcome::Success(())
+    }
+}
+
+
+bitflags! {
+    #[derive(Clone, Copy, Debug)]
+    pub struct GetNameInfoFlags: libc::c_int {
+        const NAMEREQD = libc::NI_NAMEREQD;
+        const DGRAM = libc::NI_DGRAM;
+        const NOFQDN = libc::NI_NOFQDN;
+        const NUMERICHOST = libc::NI_NUMERICHOST;
+        const NUMERICSERV = libc::NI_NUMERICSERV;
+    }
+}
+
+pub struct GetNameInfoEvent<'a> {
+    addr: SockAddr,
+    host: Option<&'a mut [MaybeUninit<u8>]>,
+    service: Option<&'a mut [MaybeUninit<u8>]>,
+    flags: GetNameInfoFlags,
+}
+
+impl<'a> GetNameInfoEvent<'a> {
+    pub fn new(
+        addr: SockAddr,
+        host: Option<&'a mut [MaybeUninit<u8>]>,
+        service: Option<&'a mut [MaybeUninit<u8>]>,
+        flags: GetNameInfoFlags,
+    ) -> Self {
+        Self {
+            addr,
+            host,
+            service,
+            flags,
+        }
+    }
+}
+
+impl Event for GetNameInfoEvent<'_> {
+    type Success = ();
+    type Error = libc::c_int;
+
+    fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        if let Some(service_slice) = self.service.as_mut() {
+            let port = match &self.addr {
+                SockAddr::Ipv4(v4) => v4.port(),
+                SockAddr::Ipv6(v6) => v6.port(),
+                _ => unreachable!(),
+            };
+
+            if self.flags.contains(GetNameInfoFlags::NUMERICSERV) {
+                let port_str = port.to_string();
+                let port_slice = port_str.as_bytes();
+
+                if service_slice.len() < port_slice.len() + 1 {
+                    return Outcome::Error(libc::EAI_OVERFLOW)
+                }
+
+                for i in 0..port_slice.len() {
+                    service_slice[i].write(port_slice[i]);
+                }
+
+                service_slice[port_slice.len()].write(b'\0');
+            } else {
+                let port_str = port.to_string();
+
+                let service_str = match port {
+                    20 => "ftp-data",
+                    21 => "ftp",
+                    22 => "ssh",
+                    25 => "smtp",
+                    80 => "http",
+                    110 => "pop3",
+                    161 => "snmp",
+                    389 => "ldap",
+                    443 => "https",
+                    514 => "syslog",
+                    554 => "rtsp",
+                    990 => "ftps",
+                    3306 => "mysql",
+                    3689 => "daap",
+                    5432 => "postgresql",
+                    _ => {
+                        log::warn!("getnameinfo() unknown service for port {}", port);
+                        port_str.as_str()
+                    }
+                };
+
+                let out_slice = service_str.as_bytes();
+
+                if service_slice.len() < out_slice.len() + 1 {
+                    return Outcome::Error(libc::EAI_OVERFLOW)
+                }
+
+                for i in 0..out_slice.len() {
+                    service_slice[i].write(out_slice[i]);
+                }
+
+                service_slice[out_slice.len()].write(b'\0');
+            }
+        }
+
+        if let Some(host_slice) = self.host.as_mut() {
+            let ip = match self.addr {
+                SockAddr::Ipv4(v4) => IpAddr::V4(*v4.ip()),
+                SockAddr::Ipv6(v6) => IpAddr::V6(*v6.ip()),
+                _ => unreachable!(),
+            };
+
+            if self.flags.contains(GetNameInfoFlags::NUMERICHOST) {
+                let ip_str = ip.to_string();
+                let ip_slice = ip_str.as_bytes();
+                if host_slice.len() < ip_slice.len() + 1 {
+                    return Outcome::Error(libc::EAI_OVERFLOW)
+                }
+
+                for i in 0..ip_slice.len() {
+                    host_slice[i].write(ip_slice[i]);
+                }
+                host_slice[ip_slice.len()].write(b'\0');
+            }
+
+            let host_str = match ip {
+                IpAddr::V4(v4) => {
+                    if v4 == Ipv4Addr::new(127, 0, 0, 1) {
+                        Some("localhost")
+                    } else {
+                        log::warn!("IP address {} had no associated hostname in getnameinfo()", v4);
+                        None
+                    }
+                }
+                IpAddr::V6(v6) => {
+                    if v6 == Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1) {
+                        Some("localhost")
+                    } else {
+                        log::warn!("IP address {} had no associated hostname in getnameinfo()", v6);
+                        None
+                    }
+                }
+            };
+
+            if let Some(host_str) = host_str {
+                let s = host_str.as_bytes();
+
+                if host_slice.len() < s.len() + 1 {
+                    return Outcome::Error(libc::EAI_OVERFLOW)
+                }
+
+                for i in 0..s.len() {
+                    host_slice[i].write(s[i]);
+                }
+                host_slice[s.len()].write(b'\0');
+
+            } else {
+                if self.flags.contains(GetNameInfoFlags::NAMEREQD) {
+                    return Outcome::Error(libc::EAI_NONAME)
+                }
+
+                let ip_str = ip.to_string();
+                let ip_slice = ip_str.as_bytes();
+                if host_slice.len() < ip_slice.len() + 1 {
+                    return Outcome::Error(libc::EAI_OVERFLOW)
+                }
+
+                for i in 0..ip_slice.len() {
+                    host_slice[i].write(ip_slice[i]);
+                }
+                host_slice[ip_slice.len()].write(b'\0');
             }
         }
 

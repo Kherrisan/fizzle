@@ -27,6 +27,7 @@ pub mod socket;
 pub mod syscall;
 pub mod sysv_mq;
 pub mod time;
+pub mod uid;
 pub mod xattr;
 
 use std::io::Write;

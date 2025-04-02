@@ -1,4 +1,8 @@
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
+use std::mem::MaybeUninit;
+use std::{ptr, slice};
+
+use fizzle_common::io::SockAddr;
 
 use crate::handlers::netdb::*;
 use crate::hook_macros;
@@ -153,23 +157,110 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn gethostbyname(
-        name: *const char
+        name: *const libc::c_char
     ) -> *mut libc::hostent => fizzle_gethostbyname(ctx) {
-        // deprecated--should we implement??
-        unimplemented!("gethostbyname")
+        crate::strace!("gethostbyname(name={:?}) -> ...", name);
+
+        let name_cstr = CStr::from_ptr(name);
+
+        let addr_info = match Scheduler::handle_event(&mut ctx, GetAddressInfoEvent::new(Some(name_cstr), None, libc::AF_INET, 0, 0, GetAddrInfoFlags::empty())) {
+            Ok(addr_info) => addr_info,
+            Err((errno, ret)) => {
+                errno.set_errno();
+                crate::strace!("gethostbyname(name={:?}) -> NULL", name);
+                return ptr::null_mut()
+            }
+        };
+
+        let mut hostent: Box<libc::hostent> = Box::new(unsafe { MaybeUninit::zeroed().assume_init() });
+
+        let aliases = Box::new([ptr::null_mut::<libc::c_char>()]);
+        let addr_list = Box::new([addr_info.ai_addr, ptr::null_mut()]);
+
+        hostent.h_name = CString::into_raw(name_cstr.to_owned());
+        hostent.h_addrtype = addr_info.ai_family;
+        hostent.h_addr_list = Box::into_raw(addr_list).cast();
+        hostent.h_aliases = Box::into_raw(aliases).cast();
+        hostent.h_length = addr_info.ai_addrlen as i32;
+
+        // TODO: we just leak everything here...
+        let ptr = Box::into_raw(hostent);
+
+        crate::strace!("gethostbyname(name={:?}) -> {:?}", name, ptr);
+        ptr
     }
 }
 
 hook_macros::hook! {
     unsafe fn getnameinfo(
-        addr: *mut libc::sockaddr,
+        addr: *const libc::sockaddr,
         addrlen: libc::socklen_t,
         host: *mut libc::c_char,
         hostlen: libc::socklen_t,
         serv: *mut libc::c_char,
-        servlen: *mut libc::socklen_t,
+        servlen: libc::socklen_t,
         flags: libc::c_int
     ) -> libc::c_int => fizzle_getnameinfo(ctx) {
-        unimplemented!("getnameinfo")
+        crate::strace!("getnameinfo(addr={:?}, addrlen={}, host={:?}, hostlen={}, serv={:?}, servlen={}, flags={}) -> ...", addr, addrlen, host, hostlen, serv, servlen, flags);
+
+        let Ok(sockaddr) = SockAddr::decode(unsafe {
+            slice::from_raw_parts(addr.cast(), addrlen as usize)
+        }) else {
+            log::warn!("getnameinfo() received invalid address");
+            crate::strace!("getnameinfo(addr={:?}, addrlen={}, host={:?}, hostlen={}, serv={:?}, servlen={}, flags={}) -> EAI_FAMILY", addr, addrlen, host, hostlen, serv, servlen, flags);
+            return libc::EAI_FAMILY
+        };
+
+        let host_bytes = if host.is_null() {
+            None
+        } else {
+            Some(unsafe {
+                slice::from_raw_parts_mut(host.cast(), hostlen as usize)
+            })
+        };
+
+        let serv_bytes = if serv.is_null() {
+            None
+        } else {
+            Some(unsafe {
+                slice::from_raw_parts_mut(serv.cast(), servlen as usize)
+            })
+        };
+
+        let Some(flags) = GetNameInfoFlags::from_bits(flags) else {
+            log::warn!("unrecognized flags in getnameinfo()");
+            crate::strace!("getnameinfo(addr={:?}, host={:?}, serv={:?}, flags={}) -> EAI_BADFLAGS", sockaddr, host_bytes, serv_bytes, flags);
+            return libc::EAI_BADFLAGS
+        };
+
+        let ev_res = Scheduler::handle_event(&mut ctx, GetNameInfoEvent::new(sockaddr.clone(), host_bytes, serv_bytes, flags));
+
+        let host_bytes = if host.is_null() {
+            None
+        } else {
+            Some(unsafe {
+                // BUG: this is technically UB when printed later, since it's uninitialized memory
+                slice::from_raw_parts_mut(host.cast::<u8>(), hostlen as usize)
+            })
+        };
+
+        let serv_bytes = if serv.is_null() {
+            None
+        } else {
+            Some(unsafe {
+                slice::from_raw_parts_mut(serv.cast::<u8>(), servlen as usize)
+            })
+        };
+
+        match ev_res {
+            Ok(()) => {
+                crate::strace!("getnameinfo(addr={:?}, host={:?}, serv={:?}, flags={:?}) -> 0", sockaddr, host_bytes, serv_bytes, flags);
+                0
+            },
+            Err(ret) => {
+                crate::strace!("getnameinfo(addr={:?}, host={:?}, serv={:?}, flags={:?}) -> 0", sockaddr, host_bytes, serv_bytes, flags);
+                ret
+            }
+        }
     }
 }
