@@ -1285,6 +1285,5 @@ impl Event for StderrWriteEvent<'_> {
                 "internal error--buffer other than WriteData::Basic passed to StderrWriteEvent"
             ),
         }
-        
     }
 }
