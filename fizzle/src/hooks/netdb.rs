@@ -235,30 +235,33 @@ hook_macros::hook! {
 
         let ev_res = Scheduler::handle_event(&mut ctx, GetNameInfoEvent::new(sockaddr.clone(), host_bytes, serv_bytes, flags));
 
-        let host_bytes = if host.is_null() {
+        let host_out = if host.is_null() {
             None
+        } else if ev_res.is_err() {
+            Some(c"")
         } else {
             Some(unsafe {
-                // BUG: this is technically UB when printed later, since it's uninitialized memory
-                slice::from_raw_parts_mut(host.cast::<u8>(), hostlen as usize)
+                CStr::from_bytes_until_nul(slice::from_raw_parts_mut(host.cast::<u8>(), hostlen as usize)).unwrap()
             })
         };
 
-        let serv_bytes = if serv.is_null() {
+        let serv_out = if serv.is_null() {
             None
+        } else if ev_res.is_err() {
+            Some(c"")
         } else {
             Some(unsafe {
-                slice::from_raw_parts_mut(serv.cast::<u8>(), servlen as usize)
+                CStr::from_bytes_until_nul(slice::from_raw_parts_mut(serv.cast::<u8>(), servlen as usize)).unwrap()
             })
         };
 
         match ev_res {
             Ok(()) => {
-                crate::strace!("getnameinfo(addr={:?}, host={:?}, serv={:?}, flags={:?}) -> 0", sockaddr, host_bytes, serv_bytes, flags);
+                crate::strace!("getnameinfo(addr={:?}, host={:?}, serv={:?}, flags={:?}) -> 0", sockaddr, host_out, serv_out, flags);
                 0
             },
             Err(ret) => {
-                crate::strace!("getnameinfo(addr={:?}, host={:?}, serv={:?}, flags={:?}) -> 0", sockaddr, host_bytes, serv_bytes, flags);
+                crate::strace!("getnameinfo(addr={:?}, host={:?}, serv={:?}, flags={:?}) -> 0", sockaddr, host_out, serv_out, flags);
                 ret
             }
         }
