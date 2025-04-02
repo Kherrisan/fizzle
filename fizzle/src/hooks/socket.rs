@@ -627,7 +627,7 @@ hook_macros::hook! {
                 log::error!("unrecognized SOL_SCTP option {}", optname);
                 panic!("Unrecognized socket option: SOL_SCTP, optname {}", optname)
             }
-            (OptLevel::Ipv6, libc::IPV6_V6ONLY | libc::IPV6_MTU) => {
+            (OptLevel::Ipv6, libc::IPV6_V6ONLY | libc::IPV6_MTU | libc::IPV6_MTU_DISCOVER) => {
                 crate::strace!("setsockopt(sockfd={}, level={:?}, optname={}, optval={:?}, optlen={:?}) -> 0", sockfd, opt_level, optname, optval, optlen);
                 return 0 // Ignore received value
             }
