@@ -1,9 +1,5 @@
 use crate::hook_macros;
 
-
-
-
-
 hook_macros::hook! {
     unsafe fn getuid() -> libc::uid_t => fizzle_getuid(ctx) {
         crate::strace!("getuid() -> ...");

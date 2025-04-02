@@ -1,8 +1,8 @@
 use std::ffi::{CStr, CString};
 use std::mem::{self, MaybeUninit};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
-use std::str::FromStr;
 use std::slice;
+use std::str::FromStr;
 
 use bitflags::bitflags;
 use fizzle_common::io::SockAddr;
@@ -78,7 +78,7 @@ impl Event for GetAddressInfoEvent<'_> {
 
     fn run(&mut self, _state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         if self.node.is_none() && self.service.is_none() {
-            return Outcome::Error((Errno::EINVAL, libc::EAI_NONAME))
+            return Outcome::Error((Errno::EINVAL, libc::EAI_NONAME));
         }
 
         let mut template: libc::addrinfo = unsafe { MaybeUninit::zeroed().assume_init() };
@@ -86,9 +86,7 @@ impl Event for GetAddressInfoEvent<'_> {
         if self.hint_flags.contains(GetAddrInfoFlags::CANON_NAME) {
             template.ai_canonname = match self.node {
                 Some(cstr) => CString::into_raw(cstr.to_owned()),
-                None => {
-                    return Outcome::Error((Errno::EINVAL, libc::EAI_BADFLAGS))
-                }
+                None => return Outcome::Error((Errno::EINVAL, libc::EAI_BADFLAGS)),
             };
         }
 
@@ -113,7 +111,7 @@ impl Event for GetAddressInfoEvent<'_> {
             None => 0,
             Some(service) => {
                 let service = service.to_str().unwrap();
-                
+
                 match service.parse() {
                     Ok(p) => p,
                     _ => match service {
@@ -133,7 +131,7 @@ impl Event for GetAddressInfoEvent<'_> {
                         "daap" => 3689,
                         "postgresql" => 5432,
                         _ => panic!("unrecognized service `{:?}` in getaddrinfo()", service),
-                    }
+                    },
                 }
             }
         };
@@ -161,9 +159,7 @@ impl Event for GetAddressInfoEvent<'_> {
                 let ai_socktypes = match template.ai_socktype {
                     0 => &stream_dgram[..],
                     libc::SOCK_STREAM | libc::SOCK_DGRAM => &one_socktype[..],
-                    _ => {
-                        return Outcome::Error((Errno::EILSEQ, libc::EAI_SERVICE))
-                    }
+                    _ => return Outcome::Error((Errno::EILSEQ, libc::EAI_SERVICE)),
                 };
 
                 // Emit the records.
@@ -174,10 +170,14 @@ impl Event for GetAddressInfoEvent<'_> {
                         info.ai_socktype = *ai_socktype;
                         info.ai_family = *ai_family;
 
-                        let mut storage: Box<libc::sockaddr_storage> = Box::new(unsafe { MaybeUninit::zeroed().assume_init() });
+                        let mut storage: Box<libc::sockaddr_storage> =
+                            Box::new(unsafe { MaybeUninit::zeroed().assume_init() });
                         let storage_ptr: *mut libc::sockaddr_storage = &mut *storage;
                         let storage_slice = unsafe {
-                            slice::from_raw_parts_mut(storage_ptr.cast(), mem::size_of::<libc::sockaddr_storage>())
+                            slice::from_raw_parts_mut(
+                                storage_ptr.cast(),
+                                mem::size_of::<libc::sockaddr_storage>(),
+                            )
                         };
 
                         let is_passive = template.ai_flags & libc::AI_PASSIVE == libc::AI_PASSIVE;
@@ -196,7 +196,8 @@ impl Event for GetAddressInfoEvent<'_> {
                                 } else {
                                     Ipv6Addr::LOCALHOST
                                 };
-                                SockAddr::Ipv6(SocketAddrV6::new(addr, port, 0, 0)).encode(storage_slice)
+                                SockAddr::Ipv6(SocketAddrV6::new(addr, port, 0, 0))
+                                    .encode(storage_slice)
                             }
                             _ => unreachable!(),
                         };
@@ -205,7 +206,7 @@ impl Event for GetAddressInfoEvent<'_> {
 
                         let Some(next_record) = first_record.as_mut() else {
                             first_record = Some(info);
-                            continue
+                            continue;
                         };
 
                         let mut next_ptr: *mut libc::addrinfo = &mut **next_record;
@@ -224,9 +225,7 @@ impl Event for GetAddressInfoEvent<'_> {
                 // Otherwise, we have a `node`; prepare to work with it.
                 let host = match node.to_str() {
                     Ok(host) => host,
-                    Err(_) => {
-                        return Outcome::Error((Errno::EILSEQ, libc::EAI_SYSTEM))
-                    }
+                    Err(_) => return Outcome::Error((Errno::EILSEQ, libc::EAI_SYSTEM)),
                 };
 
                 if template.ai_flags & libc::AI_NUMERICHOST == libc::AI_NUMERICHOST {
@@ -234,9 +233,7 @@ impl Event for GetAddressInfoEvent<'_> {
 
                     let addr = match IpAddr::from_str(host) {
                         Ok(addr) => addr,
-                        Err(_err) => {
-                            return Outcome::Error((Errno::EIO, libc::EAI_NONAME))
-                        }
+                        Err(_err) => return Outcome::Error((Errno::EIO, libc::EAI_NONAME)),
                     };
                     let sockaddr = match addr {
                         IpAddr::V4(v4_addr) => {
@@ -244,7 +241,7 @@ impl Event for GetAddressInfoEvent<'_> {
                                 info.ai_family = libc::AF_INET;
                             }
                             if info.ai_family != libc::AF_INET {
-                                return Outcome::Error((Errno::EIO, libc::EAI_NONAME))
+                                return Outcome::Error((Errno::EIO, libc::EAI_NONAME));
                             }
 
                             SockAddr::Ipv4(SocketAddrV4::new(v4_addr, port))
@@ -254,17 +251,21 @@ impl Event for GetAddressInfoEvent<'_> {
                                 info.ai_family = libc::AF_INET6;
                             }
                             if info.ai_family != libc::AF_INET6 {
-                                return Outcome::Error((Errno::EIO, libc::EAI_NONAME))
+                                return Outcome::Error((Errno::EIO, libc::EAI_NONAME));
                             }
 
                             SockAddr::Ipv6(SocketAddrV6::new(v6_addr, port, 0, 0))
                         }
                     };
 
-                    let mut storage: Box<libc::sockaddr_storage> = Box::new(unsafe { MaybeUninit::zeroed().assume_init() });
+                    let mut storage: Box<libc::sockaddr_storage> =
+                        Box::new(unsafe { MaybeUninit::zeroed().assume_init() });
                     let storage_ptr: *mut libc::sockaddr_storage = &mut *storage;
                     let storage_slice = unsafe {
-                        slice::from_raw_parts_mut(storage_ptr.cast(), mem::size_of::<libc::sockaddr_storage>())
+                        slice::from_raw_parts_mut(
+                            storage_ptr.cast(),
+                            mem::size_of::<libc::sockaddr_storage>(),
+                        )
                     };
 
                     let len = sockaddr.encode(storage_slice);
@@ -272,14 +273,14 @@ impl Event for GetAddressInfoEvent<'_> {
                     info.ai_addr = Box::into_raw(storage).cast();
                     info.ai_addrlen = len as u32;
 
-                    return Outcome::Success(info)
+                    return Outcome::Success(info);
                 }
 
                 // Otherwise, mock lookups for `node`
 
                 let Ok(node) = node.to_str() else {
                     log::warn!("non-UTF8 input `node` to getaddrinfo()");
-                    return Outcome::Error((Errno::EINVAL, libc::EAI_NONAME))
+                    return Outcome::Error((Errno::EINVAL, libc::EAI_NONAME));
                 };
 
                 let mut addrs = Vec::new();
@@ -290,27 +291,33 @@ impl Event for GetAddressInfoEvent<'_> {
                         _ => {
                             log::warn!("getaddrinfo() with node `{}` has no IPv4 addrs assigned--giving default 127.0.0.10", node);
                             addrs.push(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
-                        },
+                        }
                     }
                 }
 
                 if template.ai_family == libc::AF_UNSPEC || template.ai_family == libc::AF_INET6 {
                     match node {
-                        "localhost" => addrs.push(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))),
+                        "localhost" => {
+                            addrs.push(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)))
+                        }
                         _ => {
                             log::warn!("getaddrinfo() with node `{}` has no IPv4 addrs assigned--giving default [::10]", node);
                             addrs.push(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 10)));
-                        },
+                        }
                     }
                 }
 
                 for addr in addrs {
                     let mut info = Box::new(template.clone());
 
-                    let mut storage: Box<libc::sockaddr_storage> = Box::new(unsafe { MaybeUninit::zeroed().assume_init() });
+                    let mut storage: Box<libc::sockaddr_storage> =
+                        Box::new(unsafe { MaybeUninit::zeroed().assume_init() });
                     let storage_ptr: *mut libc::sockaddr_storage = &mut *storage;
                     let storage_slice = unsafe {
-                        slice::from_raw_parts_mut(storage_ptr.cast(), mem::size_of::<libc::sockaddr_storage>())
+                        slice::from_raw_parts_mut(
+                            storage_ptr.cast(),
+                            mem::size_of::<libc::sockaddr_storage>(),
+                        )
                     };
 
                     match addr {
@@ -318,7 +325,8 @@ impl Event for GetAddressInfoEvent<'_> {
                             if template.ai_family == libc::AF_UNSPEC
                                 || template.ai_family == libc::AF_INET
                             {
-                                let len = SockAddr::Ipv4(SocketAddrV4::new(v4, port)).encode(storage_slice);
+                                let len = SockAddr::Ipv4(SocketAddrV4::new(v4, port))
+                                    .encode(storage_slice);
                                 info.ai_addr = Box::into_raw(storage).cast();
                                 info.ai_addrlen = len as u32;
                                 info.ai_family = libc::AF_INET;
@@ -328,7 +336,8 @@ impl Event for GetAddressInfoEvent<'_> {
                             if template.ai_family == libc::AF_UNSPEC
                                 || template.ai_family == libc::AF_INET6
                             {
-                                let len = SockAddr::Ipv6(SocketAddrV6::new(v6, port, 0, 0)).encode(storage_slice);
+                                let len = SockAddr::Ipv6(SocketAddrV6::new(v6, port, 0, 0))
+                                    .encode(storage_slice);
                                 info.ai_addr = Box::into_raw(storage).cast();
                                 info.ai_addrlen = len.try_into().unwrap();
                                 info.ai_family = libc::AF_INET6;
@@ -338,7 +347,7 @@ impl Event for GetAddressInfoEvent<'_> {
 
                     let Some(next_record) = first_record.as_mut() else {
                         first_record = Some(info);
-                        continue
+                        continue;
                     };
 
                     let mut next_ptr: *mut libc::addrinfo = &mut **next_record;
@@ -405,7 +414,6 @@ impl Event for FreeAddressInfoEvent {
     }
 }
 
-
 bitflags! {
     #[derive(Clone, Copy, Debug)]
     pub struct GetNameInfoFlags: libc::c_int {
@@ -457,7 +465,7 @@ impl Event for GetNameInfoEvent<'_> {
                 let port_slice = port_str.as_bytes();
 
                 if service_slice.len() < port_slice.len() + 1 {
-                    return Outcome::Error(libc::EAI_OVERFLOW)
+                    return Outcome::Error(libc::EAI_OVERFLOW);
                 }
 
                 for i in 0..port_slice.len() {
@@ -493,7 +501,7 @@ impl Event for GetNameInfoEvent<'_> {
                 let out_slice = service_str.as_bytes();
 
                 if service_slice.len() < out_slice.len() + 1 {
-                    return Outcome::Error(libc::EAI_OVERFLOW)
+                    return Outcome::Error(libc::EAI_OVERFLOW);
                 }
 
                 for i in 0..out_slice.len() {
@@ -515,7 +523,7 @@ impl Event for GetNameInfoEvent<'_> {
                 let ip_str = ip.to_string();
                 let ip_slice = ip_str.as_bytes();
                 if host_slice.len() < ip_slice.len() + 1 {
-                    return Outcome::Error(libc::EAI_OVERFLOW)
+                    return Outcome::Error(libc::EAI_OVERFLOW);
                 }
 
                 for i in 0..ip_slice.len() {
@@ -529,7 +537,10 @@ impl Event for GetNameInfoEvent<'_> {
                     if v4 == Ipv4Addr::new(127, 0, 0, 1) {
                         Some("localhost")
                     } else {
-                        log::warn!("IP address {} had no associated hostname in getnameinfo()", v4);
+                        log::warn!(
+                            "IP address {} had no associated hostname in getnameinfo()",
+                            v4
+                        );
                         None
                     }
                 }
@@ -537,7 +548,10 @@ impl Event for GetNameInfoEvent<'_> {
                     if v6 == Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1) {
                         Some("localhost")
                     } else {
-                        log::warn!("IP address {} had no associated hostname in getnameinfo()", v6);
+                        log::warn!(
+                            "IP address {} had no associated hostname in getnameinfo()",
+                            v6
+                        );
                         None
                     }
                 }
@@ -547,23 +561,22 @@ impl Event for GetNameInfoEvent<'_> {
                 let s = host_str.as_bytes();
 
                 if host_slice.len() < s.len() + 1 {
-                    return Outcome::Error(libc::EAI_OVERFLOW)
+                    return Outcome::Error(libc::EAI_OVERFLOW);
                 }
 
                 for i in 0..s.len() {
                     host_slice[i].write(s[i]);
                 }
                 host_slice[s.len()].write(b'\0');
-
             } else {
                 if self.flags.contains(GetNameInfoFlags::NAMEREQD) {
-                    return Outcome::Error(libc::EAI_NONAME)
+                    return Outcome::Error(libc::EAI_NONAME);
                 }
 
                 let ip_str = ip.to_string();
                 let ip_slice = ip_str.as_bytes();
                 if host_slice.len() < ip_slice.len() + 1 {
-                    return Outcome::Error(libc::EAI_OVERFLOW)
+                    return Outcome::Error(libc::EAI_OVERFLOW);
                 }
 
                 for i in 0..ip_slice.len() {

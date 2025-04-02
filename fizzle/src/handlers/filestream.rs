@@ -244,9 +244,11 @@ impl FileObject {
                 FIZZLE_STREAM_BUFSIZ / 2,
             ),
             FileAccessMode::WriteOnly => (0, 0, 0),
-            FileAccessMode::ReadOnly => {
-                (FIZZLE_STREAM_BUFSIZ, FIZZLE_STREAM_BUFSIZ, FIZZLE_STREAM_BUFSIZ)
-            }
+            FileAccessMode::ReadOnly => (
+                FIZZLE_STREAM_BUFSIZ,
+                FIZZLE_STREAM_BUFSIZ,
+                FIZZLE_STREAM_BUFSIZ,
+            ),
         };
 
         Self {
@@ -1155,7 +1157,7 @@ impl Event for StreamWriteEvent<'_> {
                         },
                         FileStreamBuffer::None(pushback) => {
                             unimplemented!()
-                        },
+                        }
                     };
 
                     match &mut file_obj.source {
@@ -1164,14 +1166,10 @@ impl Event for StreamWriteEvent<'_> {
                             let scratch_len = cmp::min(FIZZLE_STREAM_BUFSIZ, buffer.len());
 
                             let scratch_buf = unsafe {
-                                slice::from_raw_parts_mut(
-                                    scratch_ptr.cast::<u8>(),
-                                    scratch_len,
-                                )
+                                slice::from_raw_parts_mut(scratch_ptr.cast::<u8>(), scratch_len)
                             };
 
-                            scratch_buf[..scratch_len]
-                                .copy_from_slice(&buffer[..scratch_len]);
+                            scratch_buf[..scratch_len].copy_from_slice(&buffer[..scratch_len]);
 
                             self.state = StreamWriteState::WriteToDescriptor {
                                 ev: DescriptorWriteEvent::new(
@@ -1299,7 +1297,9 @@ impl Event for StreamWriteEvent<'_> {
                             file_obj.write_idx = rw_split + (buffer_len - self.written);
                         }
 
-                        state.local.put_scratch(unsafe { Box::from_raw(scratch_ptr) });
+                        state
+                            .local
+                            .put_scratch(unsafe { Box::from_raw(scratch_ptr) });
                         self.state = StreamWriteState::Finish(Some(Errno::EPIPE));
                         Outcome::Yield(YieldUntil::Immediate)
                     }
@@ -1342,7 +1342,6 @@ impl Event for StreamWriteEvent<'_> {
 
                         if self.in_buf.is_empty() {
                             self.state = StreamWriteState::Finish(None);
-
                         } else {
                             self.state = StreamWriteState::WriteToDescriptor {
                                 ev: DescriptorWriteEvent::new(
@@ -1388,7 +1387,9 @@ impl Event for StreamWriteEvent<'_> {
                             file_obj.write_idx = file_obj.rw_split + (buffer_len - self.written);
                         }
 
-                        state.local.put_scratch(unsafe { Box::from_raw(scratch_ptr) });
+                        state
+                            .local
+                            .put_scratch(unsafe { Box::from_raw(scratch_ptr) });
                         self.state = StreamWriteState::Finish(Some(e));
                         Outcome::Yield(YieldUntil::Immediate)
                     }
@@ -1555,14 +1556,13 @@ impl Event for StreamReadEvent<'_> {
                         }
 
                         let read = cmp::min(buf.len(), out.len());
-                        out[..read]
-                            .copy_from_slice(&buf[..read]);
+                        out[..read].copy_from_slice(&buf[..read]);
                         file_obj.read_idx += read;
                         self.bytes_read += read;
                     }
                     FileStreamBuffer::Slice(filebuf_ptr) => {
-                        let buf = unsafe { &filebuf_ptr.as_ref()[file_obj.read_idx..file_obj.rw_split] };
-
+                        let buf =
+                            unsafe { &filebuf_ptr.as_ref()[file_obj.read_idx..file_obj.rw_split] };
 
                         if self.stop_at_newline {
                             if let Some(newline_idx) = find_first(buf, b'\n') {
@@ -1572,8 +1572,7 @@ impl Event for StreamReadEvent<'_> {
                         }
 
                         let read = cmp::min(buf.len(), out.len());
-                        out[..read]
-                            .copy_from_slice(&buf[..read]);
+                        out[..read].copy_from_slice(&buf[..read]);
                         file_obj.read_idx += read;
                         self.bytes_read += read;
                     }
@@ -1609,7 +1608,8 @@ impl Event for StreamReadEvent<'_> {
                         let desc = Descriptor::from_raw_fd(*fd);
                         // If the read is meant to stop at newlines, it needs to fit within the readbuf's capacity
                         // (plus 1 character for the newline that is written out).
-                        let mut scratch_len = cmp::min(FIZZLE_STREAM_BUFSIZ   , file_obj.readbuf_capacity());
+                        let mut scratch_len =
+                            cmp::min(FIZZLE_STREAM_BUFSIZ, file_obj.readbuf_capacity());
                         if scratch_len == 0 {
                             scratch_len = if self.stop_at_newline {
                                 1
@@ -1688,11 +1688,13 @@ impl Event for StreamReadEvent<'_> {
                 match &mut file_obj.buffer {
                     FileStreamBuffer::Internal(s) => {
                         let readbuf = &mut s.as_mut()[..rw_split];
-                        readbuf[rw_split - readbuf_len..rw_split].copy_from_slice(&source[..readbuf_len]);
+                        readbuf[rw_split - readbuf_len..rw_split]
+                            .copy_from_slice(&source[..readbuf_len]);
                     }
                     FileStreamBuffer::Slice(s) => {
                         let readbuf = &mut (unsafe { s.as_mut() })[..rw_split];
-                        readbuf[rw_split - readbuf_len..rw_split].copy_from_slice(&source[..readbuf_len]);
+                        readbuf[rw_split - readbuf_len..rw_split]
+                            .copy_from_slice(&source[..readbuf_len]);
                     }
                     FileStreamBuffer::None(_) => (),
                 }
@@ -1717,7 +1719,9 @@ impl Event for StreamReadEvent<'_> {
 
                         // TODO: set error somewhere?
                         file_obj.eof = true;
-                        state.local.put_scratch(unsafe { Box::from_raw(scratch_ptr) });
+                        state
+                            .local
+                            .put_scratch(unsafe { Box::from_raw(scratch_ptr) });
                         self.state = StreamReadState::Finish(Some(Errno::SUCCESS));
                         Outcome::Yield(YieldUntil::Immediate)
                     }
@@ -1781,11 +1785,14 @@ impl Event for StreamReadEvent<'_> {
                         }
 
                         if out.is_empty() {
-                            state.local.put_scratch(unsafe { Box::from_raw(scratch_ptr) });
+                            state
+                                .local
+                                .put_scratch(unsafe { Box::from_raw(scratch_ptr) });
                             self.state = StreamReadState::Finish(None);
                             Outcome::Yield(YieldUntil::Immediate)
                         } else {
-                            let mut scratch_len = cmp::min(FIZZLE_STREAM_BUFSIZ, file_obj.readbuf_capacity());
+                            let mut scratch_len =
+                                cmp::min(FIZZLE_STREAM_BUFSIZ, file_obj.readbuf_capacity());
                             if scratch_len == 0 {
                                 scratch_len = if self.stop_at_newline {
                                     1
@@ -1794,9 +1801,8 @@ impl Event for StreamReadEvent<'_> {
                                 };
                             }
 
-                            let scratch_slice = unsafe {
-                                slice::from_raw_parts_mut(slice_ptr, scratch_len)
-                            };
+                            let scratch_slice =
+                                unsafe { slice::from_raw_parts_mut(slice_ptr, scratch_len) };
                             self.state = StreamReadState::ReadFromDescriptor(
                                 DescriptorReadEvent::new(fd, ReadData::BasicSlice(scratch_slice)),
                                 out,
@@ -1812,7 +1818,9 @@ impl Event for StreamReadEvent<'_> {
 
                         // TODO: set error somewhere?
                         file_obj.err = true;
-                        state.local.put_scratch(unsafe { Box::from_raw(scratch_ptr) });
+                        state
+                            .local
+                            .put_scratch(unsafe { Box::from_raw(scratch_ptr) });
                         self.state = StreamReadState::Finish(Some(e));
                         Outcome::Yield(YieldUntil::Immediate)
                     }

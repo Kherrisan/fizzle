@@ -1127,9 +1127,7 @@ impl Event for StdoutWriteEvent<'_> {
         };
 
         // Write stdout to stderr by default
-        let res = unsafe {
-            libc::write(2, slice.as_ptr().cast(), slice.len())
-        };
+        let res = unsafe { libc::write(2, slice.as_ptr().cast(), slice.len()) };
 
         match (&self.state, state.global.stdio.clone()) {
             (_, StdioBackend::Passthrough) => {
@@ -1267,11 +1265,8 @@ impl Event for StderrWriteEvent<'_> {
         if state.global.mask_stderr {
             let total = slice.len();
             Outcome::Success(total)
-
         } else {
-            let res = unsafe {
-                libc::write(2, slice.as_ptr().cast(), slice.len())
-            };
+            let res = unsafe { libc::write(2, slice.as_ptr().cast(), slice.len()) };
             match res {
                 0.. => Outcome::Success(res as usize),
                 _ => Outcome::Error(Errno::get_errno()),

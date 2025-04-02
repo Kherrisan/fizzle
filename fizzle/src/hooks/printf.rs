@@ -23,7 +23,7 @@ pub unsafe extern "C" fn printf(format: *const libc::c_char, mut va_args: ...) -
         crate::strace!("printf(format={:?}, ...) -> -1 ({})", format_cstr, e);
         crate::hooks::post_hook();
         e.set_errno();
-        return res
+        return res;
     }
 
     let out_bytes = CStr::from_ptr(out_string).to_bytes();
@@ -31,10 +31,17 @@ pub unsafe extern "C" fn printf(format: *const libc::c_char, mut va_args: ...) -
 
     let stream_ptr = FilePtr::from_raw(unsafe { crate::stdout }).unwrap();
 
-    match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(stream_ptr, &io_slice, 1, false)) {
+    match Scheduler::handle_event(
+        &mut ctx,
+        StreamWriteEvent::new(stream_ptr, &io_slice, 1, false),
+    ) {
         Ok(()) => {
             libc::free(out_string.cast::<libc::c_void>());
-            crate::strace!("printf(format={:?}, ...) -> {}", format_cstr, out_bytes.len());
+            crate::strace!(
+                "printf(format={:?}, ...) -> {}",
+                format_cstr,
+                out_bytes.len()
+            );
             crate::hooks::post_hook();
             out_bytes.len() as libc::c_int
         }
@@ -48,45 +55,75 @@ pub unsafe extern "C" fn printf(format: *const libc::c_char, mut va_args: ...) -
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn fprintf(stream: *mut libc::FILE, format: *const libc::c_char, mut va_args: ...) -> libc::c_int {
+pub unsafe extern "C" fn fprintf(
+    stream: *mut libc::FILE,
+    format: *const libc::c_char,
+    mut va_args: ...
+) -> libc::c_int {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("fprintf() unimplemented for Fizzle internal use");
     };
 
-    crate::strace!("fprintf(stream={:?}, format={:?}, ...) -> ...", stream, format);
+    crate::strace!(
+        "fprintf(stream={:?}, format={:?}, ...) -> ...",
+        stream,
+        format
+    );
 
     let format_cstr = CStr::from_ptr(format);
     let mut out_string = ptr::null_mut();
 
     let Some(stream_ptr) = FilePtr::from_raw(stream) else {
-        crate::strace!("fprintf(stream={:?}, format={:?}) -> -1 (EINVAL)", stream, format_cstr);
+        crate::strace!(
+            "fprintf(stream={:?}, format={:?}) -> -1 (EINVAL)",
+            stream,
+            format_cstr
+        );
         Errno::EINVAL.set_errno();
         crate::hooks::post_hook();
-        return libc::EOF
+        return libc::EOF;
     };
 
     let res = crate::vasprintf(&raw mut out_string, format, va_args.as_va_list());
     if res < 0 {
         let e = Errno::get_errno();
-        crate::strace!("fprintf(stream={:?}, format={:?}, ...) -> -1 ({})", stream, format_cstr, e);
+        crate::strace!(
+            "fprintf(stream={:?}, format={:?}, ...) -> -1 ({})",
+            stream,
+            format_cstr,
+            e
+        );
         e.set_errno();
         crate::hooks::post_hook();
-        return res
+        return res;
     }
 
     let out_bytes = CStr::from_ptr(out_string).to_bytes();
     let io_slice = IoSlice::new(out_bytes);
 
-    match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(stream_ptr, &io_slice, 1, false)) {
+    match Scheduler::handle_event(
+        &mut ctx,
+        StreamWriteEvent::new(stream_ptr, &io_slice, 1, false),
+    ) {
         Ok(()) => {
             libc::free(out_string.cast::<libc::c_void>());
-            crate::strace!("fprintf(stream={:?}, format={:?}, ...) -> {}", stream, format_cstr, out_bytes.len());
+            crate::strace!(
+                "fprintf(stream={:?}, format={:?}, ...) -> {}",
+                stream,
+                format_cstr,
+                out_bytes.len()
+            );
             crate::hooks::post_hook();
             out_bytes.len() as libc::c_int
         }
         Err(written) => {
             libc::free(out_string.cast::<libc::c_void>());
-            crate::strace!("fprintf(stream={:?}, format={:?}, ...) -> {}", stream, format_cstr, written);
+            crate::strace!(
+                "fprintf(stream={:?}, format={:?}, ...) -> {}",
+                stream,
+                format_cstr,
+                written
+            );
             crate::hooks::post_hook();
             written as libc::c_int
         }
@@ -94,7 +131,11 @@ pub unsafe extern "C" fn fprintf(stream: *mut libc::FILE, format: *const libc::c
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn dprintf(fd: libc::c_int, format: *const libc::c_char, mut va_args: ...) -> libc::c_int {
+pub unsafe extern "C" fn dprintf(
+    fd: libc::c_int,
+    format: *const libc::c_char,
+    mut va_args: ...
+) -> libc::c_int {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("dprintf() unimplemented for Fizzle internal use");
     };
@@ -119,7 +160,7 @@ pub unsafe extern "C" fn vprintf(format: *const libc::c_char, mut va_args: VaLis
         crate::strace!("vprintf(format={:?}, ...) -> -1 ({})", format_cstr, e);
         crate::hooks::post_hook();
         e.set_errno();
-        return res
+        return res;
     }
 
     let out_bytes = CStr::from_ptr(out_string).to_bytes();
@@ -127,10 +168,17 @@ pub unsafe extern "C" fn vprintf(format: *const libc::c_char, mut va_args: VaLis
 
     let stream_ptr = FilePtr::from_raw(unsafe { crate::stdout }).unwrap();
 
-    match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(stream_ptr, &io_slice, 1, false)) {
+    match Scheduler::handle_event(
+        &mut ctx,
+        StreamWriteEvent::new(stream_ptr, &io_slice, 1, false),
+    ) {
         Ok(()) => {
             libc::free(out_string.cast::<libc::c_void>());
-            crate::strace!("vprintf(format={:?}, ...) -> {}", format_cstr, out_bytes.len());
+            crate::strace!(
+                "vprintf(format={:?}, ...) -> {}",
+                format_cstr,
+                out_bytes.len()
+            );
             crate::hooks::post_hook();
             out_bytes.len() as libc::c_int
         }
@@ -144,45 +192,75 @@ pub unsafe extern "C" fn vprintf(format: *const libc::c_char, mut va_args: VaLis
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn vfprintf(stream: *mut libc::FILE, format: *const libc::c_char, mut va_args: VaList) -> libc::c_int {
+pub unsafe extern "C" fn vfprintf(
+    stream: *mut libc::FILE,
+    format: *const libc::c_char,
+    mut va_args: VaList,
+) -> libc::c_int {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("vfprintf() unimplemented for Fizzle internal use");
     };
 
-    crate::strace!("vfprintf(stream={:?}, format={:?}, ...) -> ...", stream, format);
+    crate::strace!(
+        "vfprintf(stream={:?}, format={:?}, ...) -> ...",
+        stream,
+        format
+    );
 
     let format_cstr = CStr::from_ptr(format);
     let mut out_string = ptr::null_mut();
 
     let Some(stream_ptr) = FilePtr::from_raw(stream) else {
-        crate::strace!("vfprintf(stream={:?}, format={:?}) -> -1 (EINVAL)", stream, format_cstr);
+        crate::strace!(
+            "vfprintf(stream={:?}, format={:?}) -> -1 (EINVAL)",
+            stream,
+            format_cstr
+        );
         Errno::EINVAL.set_errno();
         crate::hooks::post_hook();
-        return libc::EOF
+        return libc::EOF;
     };
 
     let res = crate::vasprintf(&raw mut out_string, format, va_args.as_va_list());
     if res < 0 {
         let e = Errno::get_errno();
-        crate::strace!("vfprintf(stream={:?}, format={:?}, ...) -> -1 ({})", stream, format_cstr, e);
+        crate::strace!(
+            "vfprintf(stream={:?}, format={:?}, ...) -> -1 ({})",
+            stream,
+            format_cstr,
+            e
+        );
         e.set_errno();
         crate::hooks::post_hook();
-        return res
+        return res;
     }
 
     let out_bytes = CStr::from_ptr(out_string).to_bytes();
     let io_slice = IoSlice::new(out_bytes);
 
-    match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(stream_ptr, &io_slice, 1, false)) {
+    match Scheduler::handle_event(
+        &mut ctx,
+        StreamWriteEvent::new(stream_ptr, &io_slice, 1, false),
+    ) {
         Ok(()) => {
             libc::free(out_string.cast::<libc::c_void>());
-            crate::strace!("vfprintf(stream={:?}, format={:?}, ...) -> {}", stream, format_cstr, out_bytes.len());
+            crate::strace!(
+                "vfprintf(stream={:?}, format={:?}, ...) -> {}",
+                stream,
+                format_cstr,
+                out_bytes.len()
+            );
             crate::hooks::post_hook();
             out_bytes.len() as libc::c_int
         }
         Err(written) => {
             libc::free(out_string.cast::<libc::c_void>());
-            crate::strace!("vfprintf(stream={:?}, format={:?}, ...) -> {}", stream, format_cstr, written);
+            crate::strace!(
+                "vfprintf(stream={:?}, format={:?}, ...) -> {}",
+                stream,
+                format_cstr,
+                written
+            );
             crate::hooks::post_hook();
             written as libc::c_int
         }
@@ -190,7 +268,11 @@ pub unsafe extern "C" fn vfprintf(stream: *mut libc::FILE, format: *const libc::
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn vdprintf(fd: libc::c_int, format: *const libc::c_char, mut va_args: VaList) -> libc::c_int {
+pub unsafe extern "C" fn vdprintf(
+    fd: libc::c_int,
+    format: *const libc::c_char,
+    mut va_args: VaList,
+) -> libc::c_int {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("vdprintf() unimplemented for Fizzle internal use");
     };
@@ -208,7 +290,11 @@ pub unsafe extern "C" fn wprintf(format: *const libc::wchar_t, mut va_args: VaLi
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn fwprintf(stream: *mut libc::FILE, format: *const libc::wchar_t, mut va_args: VaList) -> libc::c_int {
+pub unsafe extern "C" fn fwprintf(
+    stream: *mut libc::FILE,
+    format: *const libc::wchar_t,
+    mut va_args: VaList,
+) -> libc::c_int {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("fwprintf() unimplemented for Fizzle internal use");
     };
@@ -217,7 +303,10 @@ pub unsafe extern "C" fn fwprintf(stream: *mut libc::FILE, format: *const libc::
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn vwprintf(format: *const libc::wchar_t, mut va_args: VaList) -> libc::c_int {
+pub unsafe extern "C" fn vwprintf(
+    format: *const libc::wchar_t,
+    mut va_args: VaList,
+) -> libc::c_int {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("vwprintf() unimplemented for Fizzle internal use");
     };
@@ -226,7 +315,11 @@ pub unsafe extern "C" fn vwprintf(format: *const libc::wchar_t, mut va_args: VaL
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn vfwprintf(stream: *mut libc::FILE, format: *const libc::wchar_t, mut va_args: VaList) -> libc::c_int {
+pub unsafe extern "C" fn vfwprintf(
+    stream: *mut libc::FILE,
+    format: *const libc::wchar_t,
+    mut va_args: VaList,
+) -> libc::c_int {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("vfwprintf() unimplemented for Fizzle internal use");
     };
