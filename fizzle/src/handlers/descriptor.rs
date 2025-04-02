@@ -1118,14 +1118,18 @@ impl Event for StdoutWriteEvent<'_> {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let nonblocking = state.local.fds.get(&self.fd).unwrap().nonblocking;
 
-        let WriteData::BasicSlice(slice) = self.data else {
-            unreachable!(
-                "internal error--buffer other than WriteData::Basic passed to StdoutWriteEvent"
-            );
+        let mut iov = IoSlice::new(&[]);
+        let iov_slice = match self.data {
+            WriteData::BasicSlice(s) => {
+                iov = IoSlice::new(s);
+                &[iov]
+            }
+            WriteData::Iovec(v) => v,
+            _ => unreachable!("unusual buffer passed to StdoutWriteEvent"),
         };
 
         // Write stdout to stderr by default
-        let res = unsafe { libc::write(2, slice.as_ptr().cast(), slice.len()) };
+        let res = unsafe { libc::writev(2, iov_slice.as_ptr().cast(), iov_slice.len() as i32) };
 
         match (&self.state, state.global.stdio.clone()) {
             (_, StdioBackend::Passthrough) => {
@@ -1204,23 +1208,25 @@ impl Event for StdoutWriteEvent<'_> {
                 let mut buf = Vec::new_in(fizzle_alloc());
 
                 let mut total_written = 0;
-                buf.extend_from_slice(slice);
-                total_written += slice.len();
+                for slice in iov_slice {
+                    buf.extend_from_slice(slice);
+                    total_written += slice.len();
+                }
 
                 plugin_info.borrow_mut().write_buf.push_back(buf);
 
                 Outcome::Success(total_written)
             }
             (_, StdioBackend::Sink) => {
-                let total_len = slice.len();
+                let total_len = iov_slice.iter().map(|s| s.len()).sum();
                 Outcome::Success(total_len)
             }
             (_, StdioBackend::NullSink) => {
-                let total_len = slice.len();
+                let total_len = iov_slice.iter().map(|s| s.len()).sum();
                 Outcome::Success(total_len)
             }
             (_, StdioBackend::Fuzz(_)) => {
-                let total_len = slice.len();
+                let total_len = iov_slice.iter().map(|s| s.len()).sum();
                 Outcome::Success(total_len)
             }
         }
