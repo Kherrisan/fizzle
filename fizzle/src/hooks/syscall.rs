@@ -1,6 +1,7 @@
 use std::time::Duration;
 use std::{mem, slice};
 
+use crate::errno::Errno;
 use crate::handlers::entropy::*;
 use crate::handlers::futex::*;
 use crate::scheduler::Scheduler;
@@ -82,14 +83,20 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
     };
 
     let res = match number {
+        libc::SYS_io_setup => {
+            crate::strace!("syscall(SYS_io_setup, ...) -> ...");
+
+            Errno::ENOSYS.set_errno();
+            -1
+        }
         libc::SYS_sched_getaffinity => {
-            crate::strace!("syscall(SYS_sched_getaffinity) -> ...");
+            crate::strace!("syscall(SYS_sched_getaffinity, ...) -> ...");
             let pid: libc::pid_t = va_args.arg();
             let cpusetsize: libc::size_t = va_args.arg();
             let mask: *mut libc::cpu_set_t = va_args.arg();
 
             let res = hook_macros::real_syscall()(number, pid, cpusetsize, mask);
-            crate::strace!("syscall(SYS_sched_getaffinity) -> {}", res);
+            crate::strace!("syscall(SYS_sched_getaffinity, pid={}, cupusetsize={}, mask={:?}) -> {}", pid, cpusetsize, mask, res);
             res
         }
         libc::SYS_gettid => {
