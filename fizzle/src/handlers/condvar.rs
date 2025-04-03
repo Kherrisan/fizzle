@@ -283,8 +283,8 @@ impl Event for CondWaitEvent {
                 if state
                     .local
                     .condvars
-                    .get(&self.cond)
-                    .map(|c| c.ready.contains(&thread::current().id()))
+                    .get_mut(&self.cond)
+                    .map(|c| c.ready.remove(&thread::current().id()))
                     != Some(true)
                 {
                     return Outcome::Error(Errno::ETIMEDOUT);
