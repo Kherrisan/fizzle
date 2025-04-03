@@ -334,10 +334,40 @@ pub unsafe extern "C" fn scanf(
     mut va_args: VaList,
 ) -> libc::c_int {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
-        panic!("vfprintf() unimplemented for Fizzle internal use");
+        panic!("scanf() unimplemented for Fizzle internal use");
     };
 
     crate::strace!("scanf(format={:?}) -> ...", format);
+
+    unimplemented!()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn __isoc99_scanf(
+    stream: *mut libc::FILE,
+    format: *const libc::c_char,
+    mut va_args: VaList,
+) -> libc::c_int {
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("__isoc99_scanf() unimplemented for Fizzle internal use");
+    };
+
+    crate::strace!("__isoc99_scanf(format={:?}) -> ...", format);
+
+    unimplemented!()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn __isoc23_scanf(
+    stream: *mut libc::FILE,
+    format: *const libc::c_char,
+    mut va_args: VaList,
+) -> libc::c_int {
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("__isoc23_scanf() unimplemented for Fizzle internal use");
+    };
+
+    crate::strace!("__isoc23_scanf(format={:?}) -> ...", format);
 
     unimplemented!()
 }
@@ -357,6 +387,34 @@ pub unsafe extern "C" fn fscanf(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn __isoc99_fscanf(
+    stream: *mut libc::FILE,
+    format: *const libc::c_char,
+) -> libc::c_int {
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("__isoc99_fscanf() unimplemented for Fizzle internal use");
+    };
+
+    crate::strace!("__isoc99_fscanf(stream={:?}, format={:?}) -> ...", stream, format);
+
+    unimplemented!()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn __isoc23_fscanf(
+    stream: *mut libc::FILE,
+    format: *const libc::c_char,
+) -> libc::c_int {
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("__isoc23_fscanf() unimplemented for Fizzle internal use");
+    };
+
+    crate::strace!("__isoc23_fscanf(stream={:?}, format={:?}) -> ...", stream, format);
+
+    unimplemented!()
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn vscanf(
     format: *const libc::c_char,
     mut va_args: VaList,
@@ -366,6 +424,34 @@ pub unsafe extern "C" fn vscanf(
     };
 
     crate::strace!("vscanf(format={:?}, va_args=...) -> ...", format);
+
+    unimplemented!()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn __isoc99_vscanf(
+    format: *const libc::c_char,
+    mut va_args: VaList,
+) -> libc::c_int {
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("__isoc99_vscanf() unimplemented for Fizzle internal use");
+    };
+
+    crate::strace!("__isoc99_vscanf(format={:?}, va_args=...) -> ...", format);
+
+    unimplemented!()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn __isoc23_vscanf(
+    format: *const libc::c_char,
+    mut va_args: VaList,
+) -> libc::c_int {
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("__isoc99_vscanf() unimplemented for Fizzle internal use");
+    };
+
+    crate::strace!("__isoc99_vscanf(format={:?}, va_args=...) -> ...", format);
 
     unimplemented!()
 }
@@ -381,6 +467,36 @@ pub unsafe extern "C" fn vfscanf(
     };
 
     crate::strace!("vfscanf(stream={:?}, format={:?}, va_args=...) -> ...", stream, format);
+
+    unimplemented!()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn __isoc99_vfscanf(
+    stream: *mut libc::FILE,
+    format: *const libc::c_char,
+    mut va_args: VaList,
+) -> libc::c_int {
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("__isoc99_vfscanf() unimplemented for Fizzle internal use");
+    };
+
+    crate::strace!("__isoc99_vfscanf(stream={:?}, format={:?}, va_args=...) -> ...", stream, format);
+
+    unimplemented!()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn __isoc23_vfscanf(
+    stream: *mut libc::FILE,
+    format: *const libc::c_char,
+    mut va_args: VaList,
+) -> libc::c_int {
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("__isoc23_vfscanf() unimplemented for Fizzle internal use");
+    };
+
+    crate::strace!("__isoc23_vfscanf(stream={:?}, format={:?}, va_args=...) -> ...", stream, format);
 
     unimplemented!()
 }
