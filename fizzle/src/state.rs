@@ -353,7 +353,7 @@ impl FizzleState {
             local.initialize_thread(Tid::from_raw(pid.as_raw()), Some(sigmask));
         } else {
             if let Ok(tick_str) = env::var(FIZZLE_TICK_ENV) {
-                global.tick = Duration::from_micros(tick_str.parse().unwrap());
+                global.tick = Duration::from_nanos(tick_str.parse().unwrap());
             }
 
             if let Ok(timeout_str) = env::var(FIZZLE_TIMEOUT_ENV) {
