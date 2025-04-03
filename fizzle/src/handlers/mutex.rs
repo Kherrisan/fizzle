@@ -140,7 +140,15 @@ impl Event for MutexDestroyEvent {
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let Some(mutex_info) = state.local.mutexes.get(&self.lock) else {
-            panic!("[UB] `pthread_mutex_destroy()` called on uninitialized mutex");
+
+            if let Some(kind) = static_mutex_kind(self.lock) {
+                log::debug!("pthread_mutex_destroy() called on statically-initialized mutex");
+            } else {
+                // TODO: upgrade this to panic!() in the future
+                log::warn!("pthread_mutex_destroy() called on uninitialized mutex");
+            }
+
+            return Outcome::Success(())
         };
 
         if !mutex_info.queued_threads.is_empty() {
