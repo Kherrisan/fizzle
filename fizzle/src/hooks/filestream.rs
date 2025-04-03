@@ -266,6 +266,23 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
+    unsafe fn popen(
+        command: *const libc::c_char,
+        ty: *const libc::c_char
+    ) -> *mut libc::FILE => fizzle_popen(ctx) {
+        unimplemented!("popen")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn pclose(
+        stream: *mut libc::FILE
+    ) -> libc::c_int => fizzle_pclose(ctx) {
+        unimplemented!("pclose")
+    }
+}
+
+hook_macros::hook! {
     unsafe fn fclose(
         stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_fclose(ctx) {
