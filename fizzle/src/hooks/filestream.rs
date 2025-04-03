@@ -432,35 +432,6 @@ hook_macros::hook! {
     }
 }
 
-hook_macros::hook! {
-    unsafe fn __fwrite_chk(
-        ptr: *const libc::c_void,
-        size: libc::size_t,
-        nmemb: libc::size_t,
-        stream: *mut libc::FILE
-    ) -> libc::size_t => fizzle_fwrite_chk(ctx) {
-        crate::strace!("__fwrite_chk(ptr={:?}, size={}, nmemb={}, stream={:?}) -> ...", ptr, size, nmemb, stream);
-
-        let Some(file_ptr) = FilePtr::from_raw(stream) else {
-            crate::strace!("__fwrite_chk(ptr={:?}, size={}, nmemb={}, stream={:?}) -> -1 (EINVAL)", ptr, size, nmemb, stream);
-            Errno::EINVAL.set_errno();
-            return 0
-        };
-
-        let buf = slice::from_raw_parts(ptr.cast::<u8>(), size * nmemb);
-
-        match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, buf, size, false)) {
-            Ok(()) => {
-                crate::strace!("__fwrite_chk(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, nmemb);
-                nmemb
-            }
-            Err(written) => {
-                crate::strace!("__fwrite_chk(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, written);
-                written
-            }
-        }
-    }
-}
 
 hook_macros::hook! {
     unsafe fn fwrite_unlocked(
@@ -486,36 +457,6 @@ hook_macros::hook! {
             }
             Err(written) => {
                 crate::strace!("fwrite_unlocked(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, written);
-                written
-            }
-        }
-    }
-}
-
-hook_macros::hook! {
-    unsafe fn __fwrite_unlocked_chk(
-        ptr: *const libc::c_void,
-        size: libc::size_t,
-        nmemb: libc::size_t,
-        stream: *mut libc::FILE
-    ) -> libc::size_t => fizzle_fwrite_unlocked_chk(ctx) {
-        crate::strace!("__fwrite_unlocked_chk(ptr={:?}, size={}, nmemb={}, stream={:?}) -> ...", ptr, size, nmemb, stream);
-
-        let Some(file_ptr) = FilePtr::from_raw(stream) else {
-            crate::strace!("__fwrite_unlocked_chk(ptr={:?}, size={}, nmemb={}, stream={:?}) -> -1 (EINVAL)", ptr, size, nmemb, stream);
-            Errno::EINVAL.set_errno();
-            return 0
-        };
-
-        let buf = slice::from_raw_parts(ptr.cast::<u8>(), size * nmemb);
-
-        match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, buf, size, true)) {
-            Ok(()) => {
-                crate::strace!("__fwrite_unlocked_chk(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, nmemb);
-                nmemb
-            }
-            Err(written) => {
-                crate::strace!("__fwrite_unlocked_chk(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, written);
                 written
             }
         }
@@ -555,14 +496,15 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn __fread_chk(
         ptr: *mut libc::c_void,
+        ptrlen: libc::size_t,
         size: libc::size_t,
         nmemb: libc::size_t,
         stream: *mut libc::FILE
     ) -> libc::size_t => fizzle_fread_chk(ctx) {
-        crate::strace!("__fread_chk(ptr={:?}, size={}, nmemb={}, stream={:?}) -> ...", ptr, size, nmemb, stream);
+        crate::strace!("__fread_chk(ptr={:?}, ptrlen={}, size={}, nmemb={}, stream={:?}) -> ...", ptr, ptrlen, size, nmemb, stream);
 
         let Some(stream_ptr) = FilePtr::from_raw(stream) else {
-            crate::strace!("__fread_chk(ptr={:?}, size={}, nmemb={}, stream={:?}) -> -1 (EINVAL)", ptr, size, nmemb, stream);
+            crate::strace!("__fread_chk(ptr={:?}, ptrlen={}, size={}, nmemb={}, stream={:?}) -> -1 (EINVAL)", ptr, ptrlen, size, nmemb, stream);
             Errno::EINVAL.set_errno();
             return 0
         };
@@ -571,11 +513,11 @@ hook_macros::hook! {
 
         match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, buf, size, false, false)) {
             Ok(_) => {
-                crate::strace!("__fread_chk(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, nmemb);
+                crate::strace!("__fread_chk(ptr={:?}, ptrlen={}, size={}, nmemb={}, stream={:?}) -> {}", ptr, ptrlen, size, nmemb, stream, nmemb);
                 nmemb
             }
             Err(written) => {
-                crate::strace!("__fread_chk(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, written);
+                crate::strace!("__fread_chk(ptr={:?}, ptrlen={}, size={}, nmemb={}, stream={:?}) -> {}", ptr, ptrlen, size, nmemb, stream, written);
                 written
             }
         }
@@ -615,14 +557,15 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn __fread_unlocked_chk(
         ptr: *mut libc::c_void,
+        ptrlen: libc::size_t,
         size: libc::size_t,
         nmemb: libc::size_t,
         stream: *mut libc::FILE
     ) -> libc::size_t => fizzle_fread_unlocked_chk(ctx) {
-        crate::strace!("__fread_unlocked_chk(ptr={:?}, size={}, nmemb={}, stream={:?}) -> ...", ptr, size, nmemb, stream);
+        crate::strace!("__fread_unlocked_chk(ptr={:?}, ptrlen={}, size={}, nmemb={}, stream={:?}) -> ...", ptr, ptrlen, size, nmemb, stream);
 
         let Some(stream_ptr) = FilePtr::from_raw(stream) else {
-            crate::strace!("__fread_unlocked_chk(ptr={:?}, size={}, nmemb={}, stream={:?}) -> -1 (EINVAL)", ptr, size, nmemb, stream);
+            crate::strace!("__fread_unlocked_chk(ptr={:?}, ptrlen={}, size={}, nmemb={}, stream={:?}) -> -1 (EINVAL)", ptr, ptrlen, size, nmemb, stream);
             Errno::EINVAL.set_errno();
             return 0
         };
@@ -631,11 +574,11 @@ hook_macros::hook! {
 
         match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, buf, size, false, false)) {
             Ok(_) => {
-                crate::strace!("__fread_unlocked_chk(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, nmemb);
+                crate::strace!("__fread_unlocked_chk(ptr={:?}, ptrlen={}, size={}, nmemb={}, stream={:?}) -> {}", ptr, ptrlen, size, nmemb, stream, nmemb);
                 nmemb
             }
             Err(written) => {
-                crate::strace!("__fread_unlocked_chk(ptr={:?}, size={}, nmemb={}, stream={:?}) -> {}", ptr, size, nmemb, stream, written);
+                crate::strace!("__fread_unlocked_chk(ptr={:?}, ptrlen={}, size={}, nmemb={}, stream={:?}) -> {}", ptr, ptrlen, size, nmemb, stream, written);
                 written
             }
         }
@@ -1440,6 +1383,61 @@ hook_macros::hook! {
                 return -1
             }
         }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn setvbuf(
+        stream: *mut libc::FILE,
+        buf: *mut libc::c_char,
+        mode: libc::c_int,
+        size: libc::c_int
+    ) -> libc::c_int => fizzle_setvbuf(ctx) {
+        crate::strace!("setvbuf(stream={:?}, buf={:?}, mode={}, size={}) -> ...", stream, buf, mode, size);
+
+        log::warn!("setvbuf unimplemented");
+
+        crate::strace!("setvbuf(stream={:?}, buf={:?}, mode={}, size={}) -> 0", stream, buf, mode, size);
+        0
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn setbuf(
+        stream: *mut libc::FILE,
+        buf: *mut libc::c_char
+    ) => fizzle_setbuf(ctx) {
+        crate::strace!("setbuf(stream={:?}, buf={:?}) -> ...", stream, buf);
+
+        log::warn!("setbuf unimplemented");
+
+        crate::strace!("setbuf(stream={:?}, buf={:?}) -> 0", stream, buf);
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn setbuffer(
+        stream: *mut libc::FILE,
+        buf: *mut libc::c_char,
+        size: libc::c_int
+    ) => fizzle_setbuffer(ctx) {
+        crate::strace!("setbuffer(stream={:?}, buf={:?}, size={}) -> ...", stream, buf, size);
+
+        log::warn!("setbuffer unimplemented");
+
+        crate::strace!("setbuffer(stream={:?}, buf={:?}, size={}) -> 0", stream, buf, size);
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn setlinebuf(
+        stream: *mut libc::FILE
+    ) => fizzle_setlinebuf(ctx) {
+        crate::strace!("setlinebuf(stream={:?}) -> ...", stream);
+
+        log::warn!("setlinebuf unimplemented");
+
+        crate::strace!("setlinebuf(stream={:?}) -> 0", stream);
     }
 }
 
