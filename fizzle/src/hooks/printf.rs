@@ -326,3 +326,61 @@ pub unsafe extern "C" fn vfwprintf(
 
     unimplemented!("vfwprintf()")
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn scanf(
+    stream: *mut libc::FILE,
+    format: *const libc::c_char,
+    mut va_args: VaList,
+) -> libc::c_int {
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("vfprintf() unimplemented for Fizzle internal use");
+    };
+
+    crate::strace!("scanf(format={:?}) -> ...", format);
+
+    unimplemented!()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn fscanf(
+    stream: *mut libc::FILE,
+    format: *const libc::c_char,
+) -> libc::c_int {
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("fscanf() unimplemented for Fizzle internal use");
+    };
+
+    crate::strace!("fscanf(stream={:?}, format={:?}) -> ...", stream, format);
+
+    unimplemented!()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn vscanf(
+    format: *const libc::c_char,
+    mut va_args: VaList,
+) -> libc::c_int {
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("vscanf() unimplemented for Fizzle internal use");
+    };
+
+    crate::strace!("vscanf(format={:?}, va_args=...) -> ...", format);
+
+    unimplemented!()
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn vfscanf(
+    stream: *mut libc::FILE,
+    format: *const libc::c_char,
+    mut va_args: VaList,
+) -> libc::c_int {
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        panic!("vfscanf() unimplemented for Fizzle internal use");
+    };
+
+    crate::strace!("vfscanf(stream={:?}, format={:?}, va_args=...) -> ...", stream, format);
+
+    unimplemented!()
+}
