@@ -1,8 +1,14 @@
-use crate::hook_macros;
+use crate::{constants::FIZZLE_UID_ENV, hook_macros};
 
 hook_macros::hook! {
     unsafe fn getuid() -> libc::uid_t => fizzle_getuid(ctx) {
         crate::strace!("getuid() -> ...");
+
+        if let Ok(uid) = std::env::var(FIZZLE_UID_ENV) {
+            let uid: libc::uid_t = uid.parse().unwrap();
+            crate::strace!("getuid() -> {}", uid);
+            return uid
+        }
 
         crate::strace!("getuid() -> 1001");
         1001
@@ -24,6 +30,12 @@ hook_macros::hook! {
     unsafe fn geteuid() -> libc::uid_t => fizzle_geteuid(ctx) {
         crate::strace!("geteuid() -> ...");
 
+        if let Ok(uid) = std::env::var(FIZZLE_UID_ENV) {
+            let uid: libc::uid_t = uid.parse().unwrap();
+            crate::strace!("geteuid() -> {}", uid);
+            return uid
+        }
+
         crate::strace!("geteuid() -> 1001");
         1001
     }
@@ -44,6 +56,12 @@ hook_macros::hook! {
     unsafe fn getgid() -> libc::uid_t => fizzle_getgid(ctx) {
         crate::strace!("getgid() -> ...");
 
+        if let Ok(uid) = std::env::var(FIZZLE_UID_ENV) {
+            let uid: libc::uid_t = uid.parse().unwrap();
+            crate::strace!("getgid() -> {}", uid);
+            return uid
+        }
+
         crate::strace!("getgid() -> 1001");
         1001
     }
@@ -63,6 +81,12 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn getegid() -> libc::uid_t => fizzle_getegid(ctx) {
         crate::strace!("getegid() -> ...");
+
+        if let Ok(uid) = std::env::var(FIZZLE_UID_ENV) {
+            let uid: libc::uid_t = uid.parse().unwrap();
+            crate::strace!("getegid() -> {}", uid);
+            return uid
+        }
 
         crate::strace!("getegid() -> 1001");
         1001

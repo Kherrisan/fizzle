@@ -12,6 +12,8 @@ pub const FIZZLE_MEMORY_OFFSET_ENV: &str = "FIZZLE_MEMORY_OFFSET";
 /// Setting this may slightly speed up the execution rate of a program due to deferred forkserver initialization.
 pub const FIZZLE_SINGLEPROCESS_ENV: &str = "FIZZLE_SINGLEPROCESS";
 
+pub const FIZZLE_UID_ENV: &str = "FIZZLE_UID";
+
 pub const FIZZLE_TICK_ENV: &str = "FIZZLE_TICK";
 pub const FIZZLE_TIMEOUT_ENV: &str = "FIZZLE_TIMEOUT";
 
