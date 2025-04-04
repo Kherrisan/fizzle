@@ -400,6 +400,28 @@ impl FizzleState {
                 },
             );
 
+            #[cfg(feature = "afl")]
+            local.fds.insert(
+                Descriptor::from_raw_fd(198),
+                DescriptorInfo {
+                    close_on_exec: false,
+                    nonblocking: false,
+                    is_passthrough: false,
+                    resource: FdResource::Opaque,
+                },
+            );
+
+            #[cfg(feature = "afl")]
+            local.fds.insert(
+                Descriptor::from_raw_fd(199),
+                DescriptorInfo {
+                    close_on_exec: false,
+                    nonblocking: false,
+                    is_passthrough: false,
+                    resource: FdResource::Opaque,
+                },
+            );
+
             local.initialize_thread(tid, None);
         }
 
