@@ -586,6 +586,56 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
+    unsafe fn _IO_getc(
+        stream: *mut libc::FILE
+    ) -> libc::c_int => fizzle_io_getc(ctx) {
+        crate::strace!("_IO_getc(stream={:?}) -> ...", stream);
+
+        let Some(stream_ptr) = FilePtr::from_raw(stream) else {
+            panic!("invalid FILE* pointer passed to _IO_getc()")
+        };
+
+        let mut buf = [0u8; 1];
+
+        match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf, 1, false, false)) {
+            Ok(_) => {
+                crate::strace!("_IO_getc(stream={:?}) -> {}", stream, buf[0]);
+                buf[0] as libc::c_int
+            }
+            Err(_written) => {
+                crate::strace!("_IO_getc(stream={:?}) -> EOF", stream);
+                libc::EOF
+            }
+        }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn getc(
+        stream: *mut libc::FILE
+    ) -> libc::c_int => fizzle_getc(ctx) {
+        crate::strace!("getc(stream={:?}) -> ...", stream);
+
+        let Some(stream_ptr) = FilePtr::from_raw(stream) else {
+            panic!("invalid FILE* pointer passed to getc()")
+        };
+
+        let mut buf = [0u8; 1];
+
+        match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf, 1, false, false)) {
+            Ok(_) => {
+                crate::strace!("getc(stream={:?}) -> {}", stream, buf[0]);
+                buf[0] as libc::c_int
+            }
+            Err(_written) => {
+                crate::strace!("getc(stream={:?}) -> EOF", stream);
+                libc::EOF
+            }
+        }
+    }
+}
+
+hook_macros::hook! {
     unsafe fn fgetc(
         stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_fgetc(ctx) {
