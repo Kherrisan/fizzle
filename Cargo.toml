@@ -1,5 +1,5 @@
 [workspace]
-members = ["fizzle", "fizzle-common", "fizzle-plugin", "fizzle-plugin-fuzz-s1ap"]
+members = ["fizzle", "fizzle-common", "fizzle-plugin", "fizzle-plugin-fuzz-s1ap", "fizzle-plugin-libafl-generic"]
 resolver = "2"
 
 [profile.dev]
