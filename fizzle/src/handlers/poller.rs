@@ -444,7 +444,7 @@ impl Event for PollEvent<'_> {
                             PolledStatus::Pollable(polled_id) => {
                                 if !state.polled_is_ready(&polled_id) {
                                     log::trace!(
-                                        "`poll`: fd {} was set for reading (Pollable | NotReady)",
+                                        "`poll`: fd {} was set for writing (Pollable | NotReady)",
                                         fd
                                     );
                                     write_pollers.insert(fd, polled_id);

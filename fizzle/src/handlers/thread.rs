@@ -3,8 +3,9 @@ use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::thread::ThreadId;
 use std::time::Duration;
-use std::{ptr, thread};
+use std::{env, ptr, thread};
 
+use crate::constants::FIZZLE_SINGLEPROCESS_ENV;
 use crate::errno::Errno;
 use crate::scheduler::{
     fizzle_alloc, fizzle_singleton, Event, FizzleSingleton, Outcome, Scheduler,
@@ -187,10 +188,14 @@ extern "C" fn pt_wrapper_fn(arg: *mut libc::c_void) -> *mut libc::c_void {
     let tid = state.global.next_tid();
     let worker_id = state.current_worker();
 
+    // TODO: put this in FizzleState
+    let shared =
+        !matches!(env::var(FIZZLE_SINGLEPROCESS_ENV), Ok(s) if s.as_str() == "1");
+
     state
         .global
         .worker_locks
-        .insert(worker_id, Semaphore::new_rc_in(0, true, fizzle_alloc()));
+        .insert(worker_id, Semaphore::new_rc_in(0, shared, fizzle_alloc()));
     state.local.initialize_thread(tid, wrapped_arg.sigmask);
     drop(state);
 

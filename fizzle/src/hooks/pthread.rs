@@ -694,7 +694,7 @@ hook_macros::hook! {
         let mutex = MutexPtr::from(lock);
 
         if abstime.is_null() || unsafe { (*abstime).tv_sec < 0 || (*abstime).tv_nsec < 0 } {
-            crate::strace!("pthread_mutex_timedlock(mutex={:?}, abstime={:?}) -> -1 (EINVAL)", lock, abstime);
+            crate::strace!("pthread_mutex_clocklock(mutex={:?}, abstime={:?}) -> -1 (EINVAL)", lock, abstime);
             Errno::EINVAL.set_errno();
             return -1
         }
@@ -705,11 +705,11 @@ hook_macros::hook! {
 
         match Scheduler::handle_event(&mut ctx, MutexLockEvent::new(mutex, WaitDuration::Timed(duration))) {
             Ok(()) => {
-                crate::strace!("pthread_mutex_timedlock(mutex={:?}, clock_id={}, abstime={:?}) -> 0", lock, clock_id, duration);
+                crate::strace!("pthread_mutex_clocklock(mutex={:?}, clock_id={}, abstime={:?}) -> 0", lock, clock_id, duration);
                 0
             },
             Err(e) => {
-                crate::strace!("pthread_mutex_timedlock(mutex={:?}, clock_id={}, abstime={:?}) -> -1 ({})", lock, clock_id, duration, e);
+                crate::strace!("pthread_mutex_clocklock(mutex={:?}, clock_id={}, abstime={:?}) -> -1 ({})", lock, clock_id, duration, e);
                 e.set_errno();
                 -1
             }
@@ -731,7 +731,7 @@ hook_macros::hook! {
                 0
             },
             Err(e) => {
-                crate::strace!("pthread_mutex_timedlock(mutex={:?}) -> -1 ({})", mutex, e);
+            crate::strace!("pthread_mutex_unlock(mutex={:?}) -> -1 ({})", mutex, e);
                 e.set_errno();
                 -1
             }

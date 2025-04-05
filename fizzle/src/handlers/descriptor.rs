@@ -139,8 +139,12 @@ impl Event for DescriptorCloseEvent {
         // Destroy the underlying file descriptor in use.
         match &fd_info.resource {
             FdResource::Stdin | FdResource::Stdout | FdResource::Stderr => (),
-            _ => crate::destroy_descriptor(self.fd.as_raw_fd()),
+            _ => unsafe { libc::close(self.fd.as_raw_fd()); },
         };
+
+        if fd_info.is_passthrough {
+            unsafe { libc::close(self.fd.as_raw_fd()); }
+        }
 
         state.local.fds.remove(&self.fd);
         Outcome::Success(())
@@ -1118,7 +1122,7 @@ impl Event for StdoutWriteEvent<'_> {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let nonblocking = state.local.fds.get(&self.fd).unwrap().nonblocking;
 
-        let mut iov = IoSlice::new(&[]);
+        let iov;
         let iov_slice = match self.data {
             WriteData::BasicSlice(s) => {
                 iov = IoSlice::new(s);

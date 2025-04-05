@@ -1073,7 +1073,10 @@ impl Event for SocketAcceptEvent {
                     return Outcome::Error(Errno::EBADF);
                 };
 
-                let nonblocking = fd_info.nonblocking | self.nonblock;
+                self.nonblock |= fd_info.nonblocking;
+                // TODO: does socket inherit CLOEXEC mode too?
+
+                let nonblocking = fd_info.nonblocking;
 
                 let FdResource::Socket(server_socket_info) = fd_info.resource.clone() else {
                     return Outcome::Error(Errno::ENOTSOCK);
@@ -1210,7 +1213,6 @@ impl Event for SocketAcceptEvent {
                 };
 
                 let close_on_exec = self.cloexec;
-                let nonblocking = fd_info.nonblocking;
 
                 let socktype = connecting_info.borrow().socktype;
                 let protocol = connecting_info.borrow().protocol;
@@ -1334,6 +1336,7 @@ impl Event for SocketAcceptEvent {
                     connecting_info.clone()
                 };
 
+                log::debug!("accepted new socket with nonblocking: {}", self.nonblock);
                 let new_fd = Descriptor::from_raw_fd(crate::create_descriptor());
                 // The two sockets are now joined--add a file descriptor to the accepted socket
                 state.local.fds.insert(
@@ -1341,7 +1344,7 @@ impl Event for SocketAcceptEvent {
                     DescriptorInfo {
                         close_on_exec,
                         is_passthrough: false,
-                        nonblocking,
+                        nonblocking: self.nonblock,
                         resource: FdResource::Socket(accepting_info),
                     },
                 );
@@ -2993,14 +2996,13 @@ impl Event for SocketReadEvent<'_> {
                         for out_msg in out_msgs.iter_mut() {
                             let Some(buf) = plugin.borrow_mut().read_buf.pop_front() else {
                                 if !*peer_closed {
-                                    state.lower_polled(&read_polled);
+                                    debug_assert!(
+                                        msg_count > 0,
+                                        "socket read event awakened despite no data being available"
+                                    );
                                 }
 
-                                debug_assert!(
-                                    msg_count > 0,
-                                    "socket read event awakened despite no data being available"
-                                );
-                                return Outcome::Success(msg_count);
+                                break
                             };
 
                             *out_msg.msg_flags = SocketMsgFlags::EOR;

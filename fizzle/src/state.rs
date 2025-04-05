@@ -176,6 +176,7 @@ impl FizzleState {
             // Set the process group ID of the main Fizzle process to itself.
             // This enables us to kill all processes in Fizzle when we detect a crash without
             // accidentally killing whatever process called Fizzle.
+            #[cfg(not(feature = "afl"))]
             assert_eq! {
                 unsafe {
                     libc::setpgid(libc::getpid(), libc::getpid())
@@ -254,7 +255,9 @@ impl FizzleState {
             unsafe { global_uninit.assume_init_mut() }
         };
 
-        let worker_sem = Semaphore::new_rc_in(0, true, fizzle_alloc());
+        let shared =
+            !matches!(env::var(FIZZLE_SINGLEPROCESS_ENV), Ok(s) if s.as_str() == "1");
+        let worker_sem = Semaphore::new_rc_in(0, shared, fizzle_alloc());
 
         // Perform bare-bones initialization of process-local state
         let working_directory =
@@ -406,7 +409,7 @@ impl FizzleState {
                 DescriptorInfo {
                     close_on_exec: false,
                     nonblocking: false,
-                    is_passthrough: false,
+                    is_passthrough: true,
                     resource: FdResource::Opaque,
                 },
             );
@@ -417,7 +420,7 @@ impl FizzleState {
                 DescriptorInfo {
                     close_on_exec: false,
                     nonblocking: false,
-                    is_passthrough: false,
+                    is_passthrough: true,
                     resource: FdResource::Opaque,
                 },
             );
@@ -429,31 +432,40 @@ impl FizzleState {
         let stdout_ptr = FilePtr::from_raw(unsafe { crate::stdout }).unwrap();
         let stderr_ptr = FilePtr::from_raw(unsafe { crate::stderr }).unwrap();
 
+        let mut stdin_file = FileObject::new(
+            FileStreamSource::Descriptor(0),
+            FileAccessMode::ReadOnly,
+            FileOrientation::Regular,
+        );
+        stdin_file.buffering_mode = FileBufferMode::Line;
+
+        let mut stdout_file = FileObject::new(
+            FileStreamSource::Descriptor(1),
+            FileAccessMode::WriteOnly,
+            FileOrientation::Regular,
+        );
+        stdout_file.buffering_mode = FileBufferMode::Line;
+
+        let mut stderr_file = FileObject::new(
+            FileStreamSource::Descriptor(2),
+            FileAccessMode::WriteOnly,
+            FileOrientation::Regular,
+        );
+        stderr_file.buffering_mode = FileBufferMode::Line;
+
         local.file_objs.insert(
             stdin_ptr,
-            FileObject::new(
-                FileStreamSource::Descriptor(0),
-                FileAccessMode::ReadOnly,
-                FileOrientation::Regular,
-            ),
+            stdin_file,
         );
 
         local.file_objs.insert(
             stdout_ptr,
-            FileObject::new(
-                FileStreamSource::Descriptor(1),
-                FileAccessMode::WriteOnly,
-                FileOrientation::Regular,
-            ),
+            stdout_file,
         );
 
         local.file_objs.insert(
             stderr_ptr,
-            FileObject::new(
-                FileStreamSource::Descriptor(2),
-                FileAccessMode::WriteOnly,
-                FileOrientation::Regular,
-            ),
+            stderr_file,
         );
 
         let mut state = Self { local, global };
@@ -511,7 +523,7 @@ impl FizzleState {
                     ptr::null_mut(),
                     size,
                     libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, // NOTE: cannot be shared
                     -1,
                     0,
                 );
@@ -1043,9 +1055,13 @@ impl FizzleState {
         // Remove the poller from each polled instance it was registered to
         for polled in poller.borrow().polled_events.iter() {
             let mut polled_mut = polled.borrow_mut();
-            for i in 0..polled_mut.pollers.len() {
+
+            let mut i = 0;
+            while i < polled_mut.pollers.len() {
                 if polled_mut.pollers.get(i).unwrap().borrow().worker == poller.borrow().worker {
                     polled_mut.pollers.remove(i);
+                } else {
+                    i += 1;
                 }
             }
         }

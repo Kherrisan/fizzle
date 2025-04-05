@@ -55,10 +55,12 @@ hook_macros::hook! {
         let s = slice::from_raw_parts(buf as *const u8, len);
         let iov = IoSlice::new(s);
 
-        let Some(write_flags) = SocketFlags::from_bits(flags) else {
-            log::error!("unrecognized flags in `send()`: {}", flags);
-            Errno::EINVAL.set_errno();
-            return -1
+        let write_flags = match SocketFlags::from_bits(flags) {
+            Some(write_flags) => write_flags,
+            None => {
+                log::error!("unrecognized flags in `send()`: {}", flags);
+                SocketFlags::from_bits_truncate(flags)
+            }
         };
 
         let mut buflen = 0;

@@ -374,14 +374,21 @@ impl Event for MutexUnlockEvent {
         };
 
         let Some(popped_thread) = mutex_info.queued_threads.front().cloned() else {
-            return Outcome::Error(Errno::EINVAL);
+            if mutex_info.kind == MutexKind::ErrorChecking {
+                return Outcome::Error(Errno::EPERM);
+            } else {
+                return Outcome::Success(())
+                // TODO: replace with?
+                // panic!("[UB] `pthread_mutex_unlock()` called by a thread not currently holding the mutex")
+            }
         };
 
         if popped_thread != thread::current().id() {
             if mutex_info.kind == MutexKind::ErrorChecking {
-                return Outcome::Error(Errno::EINVAL);
+                return Outcome::Error(Errno::EPERM);
             } else {
-                panic!("[UB] `pthread_mutex_unlock()` called by a thread not currently holding the mutex")
+                return Outcome::Success(())
+                // TODO: replace with? panic!("[UB] `pthread_mutex_unlock()` called by a thread not currently holding the mutex")
             }
         }
 

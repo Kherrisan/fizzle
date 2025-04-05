@@ -122,6 +122,7 @@ const F_SET_RW_HINT: libc::c_int = 1036;
 const F_GET_FILE_RW_HINT: libc::c_int = 1037;
 const F_SET_FILE_RW_HINT: libc::c_int = 1038;
 
+#[no_mangle]
 pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: ...) -> libc::c_int {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         return match cmd {
@@ -135,14 +136,14 @@ pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: .
             | libc::F_SETPIPE_SZ
             | libc::F_ADD_SEALS => {
                 let arg: libc::c_int = va_args.arg();
-                libc::fcntl(fd, cmd, arg)
+                hook_macros::real_fcntl()(fd, cmd, arg)
             }
             libc::F_GETFD
             | libc::F_GETFL
             | libc::F_GETOWN
             | F_GETSIG
             | libc::F_GETLEASE
-            | libc::F_GET_SEALS => libc::fcntl(fd, cmd),
+            | libc::F_GET_SEALS => hook_macros::real_fcntl()(fd, cmd),
             libc::F_SETLK
             | libc::F_SETLKW
             | libc::F_GETLK
@@ -156,17 +157,16 @@ pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: .
             | F_GET_FILE_RW_HINT
             | F_SET_FILE_RW_HINT => {
                 let arg: *mut libc::c_void = va_args.arg();
-                libc::fcntl(fd, cmd, arg)
+                hook_macros::real_fcntl()(fd, cmd, arg)
             }
             _ => {
-                log::error!("fcntl(fd={}, cmd={}, ...) -> -1 (EINVAL)", fd, cmd);
                 Errno::EINVAL.set_errno();
                 return -1;
             }
         };
     };
 
-    strace!("fcntl(fd={}, cmd={}, ...) -> ...", fd, cmd);
+    crate::strace!("fcntl(fd={}, cmd={}, ...) -> ...", fd, cmd);
 
     let command = match cmd {
         libc::F_DUPFD => FcntlCommand::DupFd(va_args.arg()),

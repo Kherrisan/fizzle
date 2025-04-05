@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::rc::Rc;
 use std::thread::ThreadId;
-use std::{array, mem};
+use std::{array, env, mem};
 use std::{ptr, thread};
 
 use bitflags::bitflags;
@@ -11,6 +11,7 @@ use bitflags::bitflags;
 use fizzle_common::io::MAX_PATH_LEN;
 use fizzle_common::path::FilePath;
 
+use crate::constants::FIZZLE_SINGLEPROCESS_ENV;
 use crate::errno::Errno;
 use crate::handlers::signal::SigDisposition;
 use crate::scheduler::{
@@ -284,12 +285,16 @@ impl ForkTask {
             let pgid = state.local.process_info.borrow().pgid;
             let signal_handlers = state.local.process_info.borrow().signal_handlers.clone();
 
+            // TODO: put this in FizzleState
+            let shared =
+                !matches!(env::var(FIZZLE_SINGLEPROCESS_ENV), Ok(s) if s.as_str() == "1");
+
             let mut proc_info = Rc::new_in(
                 RefCell::new(ProcessInfo {
                     pid,
                     ppid,
                     pgid,
-                    main_worker_lock: Semaphore::new_rc_in(0, true, fizzle_alloc()),
+                    main_worker_lock: Semaphore::new_rc_in(0, shared, fizzle_alloc()),
                     signal_fds: hashbrown::HashMap::new_in(fizzle_alloc()),
                     signal_handlers,
                     awaiting_death: None,

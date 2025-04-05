@@ -61,7 +61,15 @@ pub unsafe extern "C" fn fprintf(
     mut va_args: ...
 ) -> libc::c_int {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
-        panic!("fprintf() unimplemented for Fizzle internal use");
+        let mut out_string = ptr::null_mut();
+        let res = crate::vasprintf(&raw mut out_string, format, va_args.as_va_list());
+        if res < 0 {
+            Errno::ENOMEM.set_errno();
+            return libc::EOF
+        }
+
+        let ret = libc::fputs(out_string.cast_const(), stream);
+        return ret
     };
 
     crate::strace!(

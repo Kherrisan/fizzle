@@ -418,6 +418,7 @@ hook_macros::hook! {
         };
 
         let buf = slice::from_raw_parts(ptr.cast::<u8>(), size * nmemb);
+        log::debug!("fwrite: {:?}", str::from_utf8(buf));
 
         match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, buf, size, false)) {
             Ok(()) => {

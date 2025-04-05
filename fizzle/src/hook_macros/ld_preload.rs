@@ -89,3 +89,11 @@ pub fn real_syscall() -> extern "C" fn(libc::c_long, ...) -> libc::c_long {
 
     unsafe { std::mem::transmute(REAL.with(|cell| *cell.get_or_init(|| dlsym_next("syscall\0")))) }
 }
+
+pub fn real_fcntl() -> extern "C" fn(libc::c_int, libc::c_int, ...) -> libc::c_int {
+    std::thread_local! {
+        static REAL: OnceCell<*const u8> = OnceCell::new();
+    }
+
+    unsafe { std::mem::transmute(REAL.with(|cell| *cell.get_or_init(|| dlsym_next("fcntl\0")))) }
+}

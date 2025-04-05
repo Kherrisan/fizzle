@@ -120,7 +120,7 @@ pub fn fizzle_alloc() -> GlobalHeap {
                         ptr::null_mut(),
                         size,
                         libc::PROT_READ | libc::PROT_WRITE,
-                        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, // NOTE: cannot be shared
                         -1,
                         0,
                     )
@@ -1641,8 +1641,10 @@ impl Scheduler {
     fn remove_perround_endpoints(ctx: &mut FizzleSingleton) -> bool {
         let mut state = ctx.acquire();
 
+        log::debug!("removing per-round endpoints...");
         let endpoints: Vec<_> = state.global.per_round_endpoints.drain(..).collect();
         if endpoints.is_empty() {
+            log::debug!("no per-round endpoints to be removed.");
             return false;
         }
 
@@ -1700,13 +1702,13 @@ impl Scheduler {
             }
         }
 
+        // Deallocate the last buffer
+        state.global.fuzz_input.clear();
+
         #[cfg(feature = "afl")]
         unsafe {
             crate::__afl_coverage_on();
         }
-
-        // Deallocate the last buffer
-        state.global.fuzz_input.clear();
 
         // Wait for input from the fuzzing engine...
         // For AFL++, fuzzing input comes from stdin
