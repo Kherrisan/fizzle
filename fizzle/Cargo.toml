@@ -29,7 +29,7 @@ embedded-alloc = { version = "0.6.0", features = ["tlsf", "allocator_api"] } # F
 env_logger = "0.11" # For trace logs
 hashbrown = { version = "0.15", features = ["nightly"] } # For allocatior API
 libc = "0.2" # For various low-level operations
-log = "0.4" # For trace logs
+log = { version = "0.4" } # For trace logs
 rand = { version = "0.8", features = ["small_rng"] } # For per-round RNG
 
 fizzle-common = { version = "0.1", path = "../fizzle-common" }

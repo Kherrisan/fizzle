@@ -1,5 +1,5 @@
 [package]
-name = "fizzle-plugin-libafl-generic"
+name = "fizzle-plugin-aflnet-sip"
 version = "0.1.0"
 edition = "2021"
 

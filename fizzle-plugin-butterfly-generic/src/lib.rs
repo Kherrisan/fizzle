@@ -2,15 +2,16 @@ use std::{cmp, collections::VecDeque};
 
 use fizzle_plugin::{Plugin, PluginError, PluginModule};
 
-pub struct LibaflFuzzClient {
+pub struct ButterflyFuzzClient {
     packets: VecDeque<Vec<u8>>,
     packet_idx: usize,
 }
 
 #[allow(non_camel_case_types)]
-impl PluginModule for LibaflFuzzClient {
+impl PluginModule for ButterflyFuzzClient {
     fn fuzz_round_start(&mut self, entropy: &[u8]) {
         self.packets.clear();
+        self.packet_idx = 0;
         let count = u32::from_be_bytes(entropy[..4].try_into().unwrap()) as usize;
 
         let mut idx = 4;
@@ -67,7 +68,7 @@ impl PluginModule for LibaflFuzzClient {
     }
 }
 
-impl Plugin for LibaflFuzzClient {
+impl Plugin for ButterflyFuzzClient {
     fn new(
         _config: std::collections::HashMap<fizzle_plugin::IoEndpointVariant, toml::Table>,
     ) -> Self {

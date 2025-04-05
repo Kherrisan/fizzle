@@ -98,13 +98,11 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
                         } else {
                             plugin_info_mut.write_idx = 0;
                         }
-
-                        if plugin_info_mut.write_buf.is_empty() {
-                            lower_write = true;
-                        }
                     }
                 }
             }
+        } else {
+            lower_write = true;
         }
 
         // Check write end

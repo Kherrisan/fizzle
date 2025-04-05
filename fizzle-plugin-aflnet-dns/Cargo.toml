@@ -1,0 +1,9 @@
+[package]
+name = "fizzle-plugin-aflnet-dns"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+toml = "0.8"
+
+fizzle-plugin = { version = "0.1", path = "../fizzle-plugin" }

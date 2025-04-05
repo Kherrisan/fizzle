@@ -1,5 +1,15 @@
 [workspace]
-members = ["fizzle", "fizzle-common", "fizzle-plugin", "fizzle-plugin-fuzz-s1ap", "fizzle-plugin-libafl-generic"]
+members = [
+    "fizzle",
+    "fizzle-common",
+    "fizzle-plugin",
+    "fizzle-plugin-fuzz-s1ap",
+    "fizzle-plugin-butterfly-generic",
+    "fizzle-plugin-aflnet-generic",
+    "fizzle-plugin-aflnet-dns",
+    "fizzle-plugin-aflnet-sip",
+    "fizzle-plugin-aflnet-dtls",
+]
 resolver = "2"
 
 [profile.dev]
