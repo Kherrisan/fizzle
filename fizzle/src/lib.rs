@@ -213,9 +213,15 @@ fn create_inotify_watch() -> libc::c_int {
 }
 
 unsafe extern "C" fn fizzle_handle_sigchld(_signal: libc::c_int) {
+    let pre = crate::hooks::pre_hook();
+
     loop {
         // Avoids zombie process buildup during persistent-mode fuzzing
         if libc::waitpid(-1, ptr::null_mut(), libc::WNOHANG) < 0 {
+            if pre.is_some() {
+                crate::hooks::post_hook();
+            }
+
             return;
         }
     }
@@ -223,7 +229,9 @@ unsafe extern "C" fn fizzle_handle_sigchld(_signal: libc::c_int) {
 
 unsafe extern "C" fn fizzle_handle_term_signal(signum: libc::c_int) {
     // Kill all processes in the Fizzle harness (process group is always kept the same; changes by subprocesses are emulated)
-    libc::kill(0, libc::SIGTERM);
+    let _pre = crate::hooks::pre_hook();
+
+    libc::kill(0, signum);
     libc::_exit(-signum);
 }
 
