@@ -96,6 +96,11 @@ impl Event for DescriptorCloseEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        #[cfg(feature = "afl")]
+        if self.fd.as_raw_fd() == 198 || self.fd.as_raw_fd() == 199 {
+            return Outcome::Error(Errno::EBADF) // Mask AFL pipe
+        }
+
         let Some(fd_info) = state.local.fds.get(&self.fd) else {
             #[cfg(not(feature = "passthroughfs"))]
             return Outcome::Error(Errno::EBADF);

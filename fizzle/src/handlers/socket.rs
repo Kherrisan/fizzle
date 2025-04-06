@@ -1991,6 +1991,7 @@ impl Event for SocketGetOptionEvent {
                 log::error!("unrecognized socket option for SOL_IP: {}", self.optname);
                 panic!("unrecognized SOL_IP sockopt {}", self.optname)
             }
+            // TODO: handle mapped V4-V6 addresses
             (OptLevel::Ipv6, libc::IPV6_V6ONLY) => {
                 // TODO: implement
                 Outcome::Success(SocketOption::Ipv6Only(true))

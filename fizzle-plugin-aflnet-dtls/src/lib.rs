@@ -13,19 +13,22 @@ impl PluginModule for DtlsFuzzClient {
         self.packet_idx = 0;
         self.packets.clear();
 
-        while entropy.len() >= 3 {
-            for i in 0..entropy.len() - 2 {
+        'outer: while entropy.len() >= 3 {
+            for i in 1..entropy.len() - 2 {
                 if let 0x14..=0x18 = entropy[i] {
                     if entropy[i+1] == 0xFE && entropy[i+2] == 0xFD {
                         self.packets.push_back(Vec::from(&entropy[..i]));
                         entropy = &entropy[i..];
+                        continue 'outer
                     }
                 }
             }
 
-            if !entropy.is_empty() {
-                self.packets.push_back(Vec::from(entropy));
-            }
+            break
+        }
+
+        if !entropy.is_empty() {
+            self.packets.push_back(Vec::from(entropy));
         }
     }
 
