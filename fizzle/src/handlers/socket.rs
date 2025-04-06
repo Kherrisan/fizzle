@@ -2,7 +2,7 @@ use fizzle_common::io::*;
 use hashbrown::hash_map::Entry;
 
 use std::cell::RefCell;
-use std::collections::LinkedList;
+use std::collections::{LinkedList, VecDeque};
 use std::fmt::Debug;
 use std::mem::MaybeUninit;
 use std::rc::{Rc, Weak};
@@ -17,7 +17,7 @@ use crate::constants::{FIZZLE_BUFFER_LENGTH, FIZZLE_EPHEMERAL_PORT_END, FIZZLE_S
 use crate::errno::Errno;
 use crate::scheduler::{fizzle_alloc, Event, Outcome, YieldUntil};
 use crate::state::FizzleState;
-use crate::{GlobalHeap, GlobalList, GlobalRc};
+use crate::{GlobalDeque, GlobalHeap, GlobalList, GlobalRc};
 
 use super::descriptor::*;
 use super::polled::PolledInfo;
@@ -67,7 +67,7 @@ fn get_or_assign_local(
                 };
 
                 let Some(location_info) = state.global.socket_locations.get_mut(&addr) else {
-                    let mut bound_sockets = LinkedList::new_in(fizzle_alloc());
+                    let mut bound_sockets = VecDeque::new_in(fizzle_alloc());
                     bound_sockets.push_back(socket_info.clone());
 
                     state.global.socket_locations.insert(
@@ -97,7 +97,7 @@ fn get_or_assign_local(
 
 pub struct TransportLocationInfo {
     pub reuse_port: bool,
-    pub bound_sockets: GlobalList<GlobalRc<SocketInfo>>,
+    pub bound_sockets: GlobalDeque<GlobalRc<SocketInfo>>,
     pub pending: GlobalList<GlobalRc<SocketInfo>>,
 }
 
@@ -575,7 +575,7 @@ impl Event for SocketCreatePairEvent {
             },
         );
 
-        let mut bound_sockets = LinkedList::new_in(fizzle_alloc());
+        let mut bound_sockets = VecDeque::new_in(fizzle_alloc());
         bound_sockets.push_back(socket1);
 
         state.global.socket_locations.insert(
@@ -587,7 +587,7 @@ impl Event for SocketCreatePairEvent {
             },
         );
 
-        let mut bound_sockets = LinkedList::new_in(fizzle_alloc());
+        let mut bound_sockets = VecDeque::new_in(fizzle_alloc());
         bound_sockets.push_back(socket2);
 
         state.global.socket_locations.insert(
@@ -711,7 +711,7 @@ impl Event for SocketBindEvent<'_> {
                 .socket_locations
                 .get(&wildcard)
                 .map_or(false, |a| {
-                    (!a.reuse_port || !reuse_port) || !a.bound_sockets.is_empty()
+                    !(a.reuse_port && reuse_port) && !a.bound_sockets.is_empty()
                 })
         } else {
             false
@@ -725,14 +725,14 @@ impl Event for SocketBindEvent<'_> {
                     || (!wildcard_bound && location_info.bound_sockets.is_empty())
                 {
                     location_info.bound_sockets.push_back(socket_info.clone());
-                    location_info.reuse_port |= reuse_port;
+                    location_info.reuse_port = reuse_port;
                 } else {
                     log::warn!("socket attempted to bind to bound address {}", o.key());
                     return Outcome::Error(Errno::EADDRINUSE);
                 }
             }
             Entry::Vacant(v) => {
-                let mut bound_sockets = LinkedList::new_in(fizzle_alloc());
+                let mut bound_sockets = VecDeque::new_in(fizzle_alloc());
                 bound_sockets.push_back(socket_info.clone());
 
                 v.insert(TransportLocationInfo {
@@ -1207,10 +1207,13 @@ impl Event for SocketAcceptEvent {
 
                 let connecting_address = get_or_assign_local(&mut connecting_info, state);
 
+                // TODO: not needed, I guess?
+                /*
                 let Some(fd_info) = state.local.fds.get(&self.descriptor_id) else {
                     log::error!("socket unexpectedly closed during `accept()`");
                     return Outcome::Error(Errno::EBADF);
                 };
+                */
 
                 let close_on_exec = self.cloexec;
 
@@ -3346,15 +3349,22 @@ impl Event for SocketWriteEvent<'_> {
                                 }
                                 Some(addr) => addr.clone(),
                                 None => {
-                                    let Some(addr_bytes) = &write_data.addr_bytes else {
-                                        write_error = Errno::ENOTCONN;
-                                        continue;
-                                    };
-
-                                    let Ok(sockaddr) = SockAddr::decode(addr_bytes) else {
-                                        log::warn!("bad address passed to socket");
-                                        write_error = Errno::EINVAL;
-                                        continue;
+                                    let sockaddr = match &write_data.addr_bytes {
+                                        Some(addr_bytes) => {
+                                            let Ok(sockaddr) = SockAddr::decode(addr_bytes) else {
+                                                log::warn!("bad address passed to socket");
+                                                write_error = Errno::EINVAL;
+                                                continue;
+                                            };
+                                            sockaddr
+                                        }
+                                        None => match &conn.rem_addr {
+                                            Some(transp_addr) => transp_addr.addr().clone(),
+                                            None => {
+                                                write_error = Errno::ENOTCONN;
+                                                continue;
+                                            }
+                                        }
                                     };
 
                                     TransportAddress {

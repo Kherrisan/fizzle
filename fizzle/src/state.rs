@@ -1525,7 +1525,7 @@ impl InterprocessState {
                     rem_addr,
                     TransportLocationInfo {
                         reuse_port,
-                        bound_sockets: LinkedList::new_in(fizzle_alloc()),
+                        bound_sockets: VecDeque::new_in(fizzle_alloc()),
                         pending,
                     },
                 );
@@ -1614,7 +1614,7 @@ impl InterprocessState {
 
         match self.socket_locations.get_mut(&transport_addr) {
             None => {
-                let mut bound_sockets = LinkedList::new_in(fizzle_alloc());
+                let mut bound_sockets = VecDeque::new_in(fizzle_alloc());
                 bound_sockets.push_back(socket_info);
 
                 if self

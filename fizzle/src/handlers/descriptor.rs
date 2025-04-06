@@ -1,7 +1,7 @@
 use std::io::{IoSlice, IoSliceMut};
 use std::mem::MaybeUninit;
 use std::os::fd::RawFd;
-use std::rc::Weak;
+use std::rc::{Rc, Weak};
 use std::{cmp, ptr};
 
 use super::directory::*;
@@ -23,6 +23,7 @@ use crate::GlobalRc;
 
 use bitflags::bitflags;
 use fizzle_common::io::TransportAddress;
+use hashbrown::hash_map::Entry;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Descriptor(usize);
@@ -130,6 +131,21 @@ impl Event for DescriptorCloseEvent {
                             // TODO: do we take the peer's socket ID here so that we can set peer_closed = true on it?
                             // TODO: do we raise the poll of the peer here?
                             peer_info.peer = Weak::new_in(fizzle_alloc());
+                        }
+                    }
+                }
+            }
+
+            if let Some(addr) = socket_info.borrow().local_transport() {
+                // Remove bound address
+                match state.global.socket_locations.entry(addr) {
+                    Entry::Vacant(_) => unreachable!(),
+                    Entry::Occupied(mut o) => {
+                        let transport_info_mut = o.get_mut();
+                        for i in 0..transport_info_mut.bound_sockets.len() {
+                            if Rc::ptr_eq(&transport_info_mut.bound_sockets[i], &socket_info) {
+                                transport_info_mut.bound_sockets.remove(i).unwrap();
+                            }
                         }
                     }
                 }

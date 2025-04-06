@@ -13,26 +13,18 @@ impl PluginModule for DnsFuzzClient {
         self.packet_idx = 0;
         self.packets.clear();
 
+        // DNS-over-TCP style--2 bytes in network order indicate packet length.
+        // Note that this means `fizzle-plugin-aflnet-generic` effectively does the exact same for TCP-based DNS fuzzing
         loop {
-            if entropy.len() < 12 {
+            if entropy.len() < 2 {
                 self.packets.push_back(Vec::from(entropy));
-                break
+                return
             }
 
-            let resp = &entropy[12..];
-            let mut resp_len = resp.len();
-            for i in 0..resp_len {
-                if resp[i] == b'\0' {
-                    resp_len = cmp::min(i + 4, resp.len());
-                    break
-                }
-            }
-
-            self.packets.push_back(Vec::from(&entropy[..12 + resp_len]));
-            entropy = &resp[resp_len..];
-            if entropy.is_empty() {
-                break
-            }
+            let data_len = u16::from_be_bytes(entropy[..2].try_into().unwrap()) as usize;
+            let effective_len = cmp::min(data_len, entropy.len() - 2);
+            self.packets.push_back(Vec::from(&entropy[2..2 + effective_len]));
+            entropy = &entropy[2 + effective_len..];
         }
     }
 

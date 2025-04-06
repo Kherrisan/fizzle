@@ -26,7 +26,7 @@ use critical_section::RawRestoreState;
 use embedded_alloc::TlsfHeap;
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, LinkedList};
+use std::collections::{BTreeMap, BTreeSet, LinkedList, VecDeque};
 use std::ffi::VaList;
 use std::os::fd::RawFd;
 use std::ptr;
@@ -38,6 +38,7 @@ pub type GlobalRc<T> = Rc<RefCell<T>, GlobalHeap>;
 pub type GlobalWeak<T> = std::rc::Weak<RefCell<T>, GlobalHeap>;
 
 pub type GlobalList<T> = LinkedList<T, GlobalHeap>;
+pub type GlobalDeque<T> = VecDeque<T, GlobalHeap>;
 pub type GlobalVec<T> = Vec<T, GlobalHeap>;
 pub type GlobalMap<K, V> = BTreeMap<K, V, GlobalHeap>;
 pub type GlobalSet<K> = BTreeSet<K, GlobalHeap>;
