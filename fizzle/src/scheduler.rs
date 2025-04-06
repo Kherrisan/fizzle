@@ -676,7 +676,6 @@ impl TerminateProcessTask {
         if pid == Pid::PRIMARY {
             log::error!("main process forcibly terminated");
             unsafe {
-                libc::kill(0, libc::SIGTERM);
                 libc::_exit(-libc::SIGTERM); // Same value as SIGTERM sighandler; nullifies race condition
             }
         }
