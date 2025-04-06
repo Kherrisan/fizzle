@@ -2,13 +2,13 @@ use std::cmp;
 
 use fizzle_plugin::{Plugin, PluginError, PluginModule};
 
-pub struct SipFuzzClient {
+pub struct AflnetFuzzClient {
     input: Vec<u8>,
     len: usize,
 }
 
 #[allow(non_camel_case_types)]
-impl PluginModule for SipFuzzClient {
+impl PluginModule for AflnetFuzzClient {
     fn fuzz_round_start(&mut self, entropy: &[u8]) {
         self.input.clear();
         self.len = 0;
@@ -56,7 +56,7 @@ impl PluginModule for SipFuzzClient {
     }
 }
 
-impl Plugin for SipFuzzClient {
+impl Plugin for AflnetFuzzClient {
     fn new(
         _config: std::collections::HashMap<fizzle_plugin::IoEndpointVariant, toml::Table>,
     ) -> Self {
