@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [features]
-default = ["passthroughfs"]
+default = ["passthroughfs", "afl"]
 # Adds code needed to run AFL++ with deferred forkserver mode
 afl = []
 # Adds code needed to run AFL++ Persistent mode with Channel Reset (PCR)
@@ -34,6 +34,11 @@ rand = { version = "0.8", features = ["small_rng"] } # For per-round RNG
 
 fizzle-common = { version = "0.1", path = "../fizzle-common" }
 fizzle-plugin = { version = "0.1", path = "../fizzle-plugin" }
+fizzle-plugin-aflnet-dns = {version = "0.1", path = "../fizzle-plugin-aflnet-dns"}
+fizzle-plugin-aflnet-dns-better = {version = "0.1", path = "../fizzle-plugin-aflnet-dns-better"}
+fizzle-plugin-aflnet-dtls = {version = "0.1", path = "../fizzle-plugin-aflnet-dtls"}
+fizzle-plugin-aflnet-generic = {version = "0.1", path = "../fizzle-plugin-aflnet-generic"}
+fizzle-plugin-aflnet-sip = {version = "0.1", path = "../fizzle-plugin-aflnet-sip"}
 fizzle-plugin-fuzz-s1ap = {version = "0.1", path = "../fizzle-plugin-fuzz-s1ap"}
 
 # Examples:
