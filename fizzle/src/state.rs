@@ -200,6 +200,7 @@ impl FizzleState {
             0
         );
 
+        /*
         // Set termination handlers
         for signum in [
             libc::SIGABRT,
@@ -227,6 +228,7 @@ impl FizzleState {
 
             assert_eq!(unsafe { libc::sigaction(signum, &sa, ptr::null_mut(),) }, 0);
         }
+        */
 
         // Set SIGCHLD hanlder
         let sa = libc::sigaction {

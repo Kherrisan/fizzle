@@ -213,14 +213,13 @@ fn create_inotify_watch() -> libc::c_int {
 }
 
 unsafe extern "C" fn fizzle_handle_sigchld(_signal: libc::c_int) {
-    let pre = crate::hooks::pre_hook();
+    let was_in_handler = crate::state::has_entered_handler();
+    crate::state::set_entered_handler(true);
 
     loop {
         // Avoids zombie process buildup during persistent-mode fuzzing
         if libc::waitpid(-1, ptr::null_mut(), libc::WNOHANG) < 0 {
-            if pre.is_some() {
-                crate::hooks::post_hook();
-            }
+            crate::state::set_entered_handler(was_in_handler);
 
             return;
         }
@@ -228,8 +227,8 @@ unsafe extern "C" fn fizzle_handle_sigchld(_signal: libc::c_int) {
 }
 
 unsafe extern "C" fn fizzle_handle_term_signal(signum: libc::c_int) {
-    // Kill all processes in the Fizzle harness (process group is always kept the same; changes by subprocesses are emulated)
-    let _pre = crate::hooks::pre_hook();
+    // Kill all processes in the Fizzle harness (process group is always kept the same; changes by subprocesses are emulated.
+    crate::state::set_entered_handler(true);
 
     // TODO: this is important for multi-processed programs, but it doesn't play well with AFL++...
     #[cfg(not(feature = "afl"))]
