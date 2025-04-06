@@ -101,6 +101,12 @@ impl Event for DescriptorCloseEvent {
             return Outcome::Error(Errno::EBADF) // Mask AFL pipe
         }
 
+        // TODO: temporary patch--fix
+        #[cfg(feature = "afl")]
+        if self.fd.as_raw_fd() == 1 || self.fd.as_raw_fd() == 2 {
+            return Outcome::Success(()) // Mask stdout, stderr
+        }
+
         let Some(fd_info) = state.local.fds.get(&self.fd) else {
             #[cfg(not(feature = "passthroughfs"))]
             return Outcome::Error(Errno::EBADF);
