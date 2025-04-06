@@ -916,8 +916,9 @@ impl TerminateThreadTask {
         }
 
         // Delegate execution to...
-        if let Some(thread_id) = state.local.pthreads.values().next().map(|t| t.id) {
-            // ...another running thread in this process
+        if let Some(&thread_id) = state.local.signals.keys().next() {
+            // ...another running thread in this process.
+            // Any thread that still has its signal context intact has to be alive.
             let worker = Worker {
                 pid: current_worker.pid,
                 thread_id,
