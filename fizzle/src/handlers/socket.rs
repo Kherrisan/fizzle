@@ -3260,6 +3260,7 @@ impl Event for SocketWriteEvent<'_> {
                             return Outcome::Success(s.len());
                         };
 
+                        drop(borrowed_socket_info); // In case the peer is the same as this socket
                         let mut peer_ref = peer.borrow_mut();
                         let SocketState::Connectionless(peer_conn) = &mut peer_ref.state else {
                             unreachable!()
@@ -3342,6 +3343,9 @@ impl Event for SocketWriteEvent<'_> {
                         let mut num_written = 0;
                         let mut write_error: Errno = Errno::SUCCESS;
 
+                        let rem_addr = conn.rem_addr.clone();
+                        drop(borrowed_socket_info); // In case the peer is the same as this socket
+
                         for write_data in s.iter_mut() {
                             let addr = match &conn_addr {
                                 Some(_) if write_data.addr_bytes.is_some() => {
@@ -3359,7 +3363,7 @@ impl Event for SocketWriteEvent<'_> {
                                             };
                                             sockaddr
                                         }
-                                        None => match &conn.rem_addr {
+                                        None => match &rem_addr {
                                             Some(transp_addr) => transp_addr.addr().clone(),
                                             None => {
                                                 write_error = Errno::ENOTCONN;
