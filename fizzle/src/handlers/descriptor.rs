@@ -17,6 +17,7 @@ use super::signal::{SignalfdInfo, SignalfdReadEvent};
 use super::socket::*;
 use crate::backend::{ConnectedBackend, StdioBackend};
 use crate::errno::Errno;
+use crate::hooks::fd::{F_GETOWN_EX, F_GET_FILE_RW_HINT, F_GET_RW_HINT, F_SETOWN_EX, F_SETSIG, F_SET_FILE_RW_HINT, F_SET_RW_HINT};
 use crate::scheduler::{fizzle_alloc, Event, Outcome, YieldUntil};
 use crate::state::FizzleState;
 use crate::GlobalRc;
@@ -206,7 +207,6 @@ pub enum FcntlCommand<'a> {
     GetFd,
     GetFl,
     GetOwn,
-    GetSig,
     GetLease,
     GetSeals,
     SetLock(&'a mut libc::flock),
@@ -221,6 +221,72 @@ pub enum FcntlCommand<'a> {
     SetRwHint(&'a mut u64),
     GetFileRwHint(&'a mut u64),
     SetFileRwHint(&'a mut u64),
+}
+
+impl FcntlCommand<'_> {
+    pub fn cmd_value(&self) -> libc::c_int {
+        match self {
+            FcntlCommand::DupFd(_) => libc::F_DUPFD,
+            FcntlCommand::DupFdCloexec(_) => libc::F_DUPFD_CLOEXEC,
+            FcntlCommand::SetFd(_) => libc::F_SETFD,
+            FcntlCommand::SetFl(_) => libc::F_SETFL,
+            FcntlCommand::SetOwn(_) => libc::F_SETOWN,
+            FcntlCommand::SetSig(_) => F_SETSIG,
+            FcntlCommand::Notify(_) => libc::F_NOTIFY,
+            FcntlCommand::SetPipeSize(_) => libc::F_SETPIPE_SZ,
+            FcntlCommand::AddSeals(_) => libc::F_ADD_SEALS,
+            FcntlCommand::GetFd => libc::F_GETFD,
+            FcntlCommand::GetFl => libc::F_GETFL,
+            FcntlCommand::GetOwn => libc::F_GETOWN,
+            FcntlCommand::GetLease => libc::F_GETLEASE,
+            FcntlCommand::GetSeals => libc::F_GET_SEALS,
+            FcntlCommand::SetLock(_) => libc::F_SETLK,
+            FcntlCommand::SetLockWait(_) => libc::F_SETLKW,
+            FcntlCommand::GetLock(_) => libc::F_GETLK,
+            FcntlCommand::OfdSetLock(_) => libc::F_OFD_SETLK,
+            FcntlCommand::OfdSetLockWait(_) => libc::F_OFD_SETLKW,
+            FcntlCommand::OfdGetLock(_) => libc::F_OFD_GETLK,
+            FcntlCommand::GetOwnEx(_) => F_GETOWN_EX,
+            FcntlCommand::SetOwnEx(_) => F_SETOWN_EX,
+            FcntlCommand::GetRwHint(_) => F_GET_RW_HINT,
+            FcntlCommand::SetRwHint(_) => F_SET_RW_HINT,
+            FcntlCommand::GetFileRwHint(_) => F_GET_FILE_RW_HINT,
+            FcntlCommand::SetFileRwHint(_) => F_SET_FILE_RW_HINT,
+        }
+    }
+
+    pub fn call_passthrough(&self, fd: RawFd) -> libc::c_int {
+        unsafe {
+            match self {
+                FcntlCommand::DupFd(arg)
+                | FcntlCommand::DupFdCloexec(arg)
+                | FcntlCommand::SetFd(arg)
+                | FcntlCommand::SetFl(arg)
+                | FcntlCommand::SetOwn(arg)
+                | FcntlCommand::SetSig(arg)
+                | FcntlCommand::Notify(arg)
+                | FcntlCommand::SetPipeSize(arg)
+                | FcntlCommand::AddSeals(arg) => libc::fcntl(fd, self.cmd_value(), *arg),
+                FcntlCommand::GetFd
+                | FcntlCommand::GetFl
+                | FcntlCommand::GetOwn
+                | FcntlCommand::GetLease
+                | FcntlCommand::GetSeals => libc::fcntl(fd, self.cmd_value()),
+                FcntlCommand::SetLock(flock)
+                | FcntlCommand::SetLockWait(flock)
+                | FcntlCommand::GetLock(flock)
+                | FcntlCommand::OfdSetLock(flock)
+                | FcntlCommand::OfdSetLockWait(flock)
+                | FcntlCommand::OfdGetLock(flock) => libc::fcntl(fd, self.cmd_value(), ptr::from_ref(*flock).cast::<libc::c_void>()),
+                FcntlCommand::GetOwnEx(f_owner_ex)
+                | FcntlCommand::SetOwnEx(f_owner_ex) => libc::fcntl(fd, self.cmd_value(), ptr::from_ref(*f_owner_ex).cast::<libc::c_void>()),
+                FcntlCommand::GetRwHint(arg)
+                | FcntlCommand::SetRwHint(arg)
+                | FcntlCommand::GetFileRwHint(arg)
+                | FcntlCommand::SetFileRwHint(arg) => libc::fcntl(fd, self.cmd_value(), ptr::from_ref(*arg).cast::<libc::c_void>()),
+            }
+        }
+    }
 }
 
 pub struct FcntlEvent<'a> {
@@ -242,23 +308,10 @@ impl Event for FcntlEvent<'_> {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match state.local.fds.get_mut(&self.fd) {
             Some(fd_info) if fd_info.is_passthrough => {
-                unimplemented!("fd passthrough")
-                /*
-                let dupfd = libc::fcntl(fd, cmd, arg);
-                if dupfd >= 0 && (cmd == libc::F_DUPFD || cmd == libc::F_DUPFD_CLOEXEC) {
-                    let nonblocking = fd_info.nonblocking;
-                    let close_on_exec = cmd == libc::F_DUPFD_CLOEXEC;
-                    let resource = fd_info.resource.clone();
-                    state.local.fds.allocate_with_key(DescriptorId::from_raw_fd(dupfd), DescriptorInfo {
-                        close_on_exec,
-                        nonblocking,
-                        is_passthrough: true,
-                        resource,
-                    }).unwrap();
+                return match self.command.call_passthrough(self.fd.as_raw_fd()) {
+                    ..=-1 => Outcome::Error(Errno::get_errno()),
+                    val @ 0.. => Outcome::Success(val),
                 }
-
-                dupfd
-                */
             }
             Some(fd_info) => {
                 match &self.command {
@@ -337,7 +390,10 @@ impl Event for FcntlEvent<'_> {
                 #[cfg(not(feature = "passthroughfs"))]
                 return Outcome::Error(Errno::EBADF);
                 #[cfg(feature = "passthroughfs")]
-                unimplemented!("fcntl() passthrough");
+                match self.command.call_passthrough(self.fd.as_raw_fd()) {
+                    ..=-1 => Outcome::Error(Errno::get_errno()),
+                    val @ 0.. => Outcome::Success(val),
+                }
             }
         }
     }

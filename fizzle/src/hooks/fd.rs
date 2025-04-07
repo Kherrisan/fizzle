@@ -111,16 +111,16 @@ hook_macros::hook! {
 
 // TODO: refactor below functions to run within Scheduler
 
-const F_SETSIG: libc::c_int = 10;
-const F_GETSIG: libc::c_int = 11;
+pub const F_SETSIG: libc::c_int = 10;
+pub const F_GETSIG: libc::c_int = 11;
 
-const F_SETOWN_EX: libc::c_int = 15;
-const F_GETOWN_EX: libc::c_int = 16;
+pub const F_SETOWN_EX: libc::c_int = 15;
+pub const F_GETOWN_EX: libc::c_int = 16;
 
-const F_GET_RW_HINT: libc::c_int = 1035;
-const F_SET_RW_HINT: libc::c_int = 1036;
-const F_GET_FILE_RW_HINT: libc::c_int = 1037;
-const F_SET_FILE_RW_HINT: libc::c_int = 1038;
+pub const F_GET_RW_HINT: libc::c_int = 1035;
+pub const F_SET_RW_HINT: libc::c_int = 1036;
+pub const F_GET_FILE_RW_HINT: libc::c_int = 1037;
+pub const F_SET_FILE_RW_HINT: libc::c_int = 1038;
 
 #[no_mangle]
 pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: ...) -> libc::c_int {
