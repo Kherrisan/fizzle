@@ -536,6 +536,8 @@ impl Event for GetNameInfoEvent<'_> {
                 IpAddr::V4(v4) => {
                     if v4 == Ipv4Addr::new(127, 0, 0, 1) {
                         Some("localhost")
+                    } else if v4 == Ipv4Addr::new(192, 168, 0, 1) {
+                        Some("ubuntu") // Default host
                     } else {
                         log::warn!(
                             "IP address {} had no associated hostname in getnameinfo()",
@@ -547,6 +549,8 @@ impl Event for GetNameInfoEvent<'_> {
                 IpAddr::V6(v6) => {
                     if v6 == Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1) {
                         Some("localhost")
+                    } else if v6 == Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 10) {
+                        Some("ubuntu")
                     } else {
                         log::warn!(
                             "IP address {} had no associated hostname in getnameinfo()",
