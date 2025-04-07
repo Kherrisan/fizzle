@@ -27,7 +27,9 @@ impl PluginModule for DnsFuzzClient {
 
             let data_len = u16::from_be_bytes(entropy[..2].try_into().unwrap()) as usize;
             let effective_len = cmp::min(data_len, entropy.len() - 2);
-            self.packets.push_back(Vec::from(&entropy[2..2 + effective_len]));
+            if effective_len > 0 {
+                self.packets.push_back(Vec::from(&entropy[2..2 + effective_len]));
+            }
             entropy = &entropy[2 + effective_len..];
         }
     }
