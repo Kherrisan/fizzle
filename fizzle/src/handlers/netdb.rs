@@ -289,8 +289,8 @@ impl Event for GetAddressInfoEvent<'_> {
                     match node {
                         "localhost" => addrs.push(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
                         _ => {
-                            log::warn!("getaddrinfo() with node `{}` has no IPv4 addrs assigned--giving default 127.0.0.10", node);
-                            addrs.push(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+                            log::warn!("getaddrinfo() with node `{}` has no IPv4 addrs assigned--giving default 192.168.0.1", node);
+                            addrs.push(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)));
                         }
                     }
                 }
