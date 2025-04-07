@@ -54,8 +54,7 @@ use crate::{comptime, GlobalHashMap};
 use crate::{GlobalHeap, GlobalList, GlobalMap, GlobalRc, GlobalSet, GlobalVec};
 
 use crate::backend::{
-    ConnectingBackend, ConnectionlessBackend, FileBackend, FileFeedback, PendingBackend,
-    ServerBackend, StandardFeedback, StdioBackend,
+    ConnectingBackend, ConnectionlessBackend, FeedbackConnectionless, FileBackend, FileFeedback, PendingBackend, ServerBackend, StandardFeedback, StdioBackend
 };
 
 // See `set_entered_handler` and `has_entered_handler`
@@ -871,20 +870,22 @@ impl FizzleState {
                     }
                     IoEndpointVariant::UdpServer(addr) => {
                         let backend = match &endpoint.emulation_type {
-                            IoEmulationType::Feedback => ServerBackend::Feedback(()),
-                            IoEmulationType::Plugin(module_id) => ServerBackend::Plugin(
+                            IoEmulationType::Feedback => ConnectionlessBackend::Feedback(FeedbackConnectionless {
+                                feedback_buf: VecDeque::new_in(fizzle_alloc()),
+                            }),
+                            IoEmulationType::Plugin(module_id) => ConnectionlessBackend::Plugin(
                                 self.global
                                     .add_plugin(endpoint_variant.clone(), module_id.clone()),
                             ),
-                            IoEmulationType::Sink => ServerBackend::Sink,
-                            IoEmulationType::NullSink => ServerBackend::NullSink,
+                            IoEmulationType::Sink => ConnectionlessBackend::Sink,
+                            IoEmulationType::NullSink => ConnectionlessBackend::NullSink,
                             IoEmulationType::Fuzz => {
-                                ServerBackend::Fuzz(self.global.add_fuzz_endpoint())
+                                ConnectionlessBackend::Fuzz(self.global.add_fuzz_endpoint())
                             }
-                            IoEmulationType::Passthrough => ServerBackend::Passthrough,
+                            IoEmulationType::Passthrough => ConnectionlessBackend::Passthrough,
                         };
 
-                        self.global.add_server(
+                        self.global.add_connectionless_server(
                             TransportAddress::new_inet(addr, TransportProtocol::Udp),
                             backend,
                         )
@@ -1268,6 +1269,8 @@ pub struct InterprocessState {
     /// Plugin/fuzzing clients that are designated to be created and destroyed at each fuzzing
     /// round.
     pub per_round_clients: GlobalVec<PerRoundClientInfo>,
+    /// UDP sockets that are active.
+    pub connectionless_endpoints: GlobalVec<GlobalRc<SocketInfo>>,
     /// Per-round plugin/fuzzing endpoints that are currently active.
     pub per_round_endpoints: GlobalVec<GlobalRc<SocketInfo>>,
     pub prefuzz_rng: rand::rngs::SmallRng,
@@ -1373,6 +1376,7 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).gid) = 1000; // TODO: make this configurable
 
             // SAFETY: must happen *after* interprocess allocator has been initialized
+            *ptr::addr_of_mut!((*state).connectionless_endpoints) = Vec::new_in(fizzle_alloc());
             *ptr::addr_of_mut!((*state).per_round_endpoints) = Vec::new_in(fizzle_alloc());
             *ptr::addr_of_mut!((*state).dead_pids) = BTreeMap::new_in(fizzle_alloc());
             *ptr::addr_of_mut!((*state).pids) = BTreeMap::new_in(fizzle_alloc());
@@ -1606,6 +1610,54 @@ impl InterprocessState {
                     backend,
                     connecting: LinkedList::new_in(fizzle_alloc()),
                     ready_to_connect: connect_polled,
+                }),
+                socktype: SocketType::Datagram, // TODO: this (and above) aren't necessarily true
+                protocol: transport_addr.protocol(),
+                local_addr: LocalAddress::Assigned(transport_addr.addr().clone()),
+            }),
+            fizzle_alloc(),
+        );
+
+        match self.socket_locations.get_mut(&transport_addr) {
+            None => {
+                let mut bound_sockets = VecDeque::new_in(fizzle_alloc());
+                bound_sockets.push_back(socket_info);
+
+                if self
+                    .socket_locations
+                    .insert(
+                        transport_addr.clone(),
+                        TransportLocationInfo {
+                            reuse_port: false,
+                            bound_sockets,
+                            pending: LinkedList::new_in(fizzle_alloc()),
+                        },
+                    )
+                    .is_some()
+                {
+                    panic!("socket location {:?} was already bound", transport_addr)
+                }
+            }
+            Some(location_info) => {
+                debug_assert!(location_info.bound_sockets.is_empty());
+                location_info.bound_sockets.push_back(socket_info);
+            }
+        };
+    }
+
+    pub fn add_connectionless_server(
+        &mut self,
+        transport_addr: TransportAddress,
+        backend: ConnectionlessBackend,
+    ) {
+        let socket_info = Rc::new_in(
+            RefCell::new(SocketInfo {
+                fd_count: 1,
+                options: Default::default(),
+                state: SocketState::Connectionless(ConnectionlessSocket {
+                    backend,
+                    rem_addr: None,
+                    reuse_port: false
                 }),
                 socktype: SocketType::Datagram, // TODO: this (and above) aren't necessarily true
                 protocol: transport_addr.protocol(),

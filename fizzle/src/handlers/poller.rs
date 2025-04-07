@@ -1132,17 +1132,7 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                 ConnectionlessBackend::Peered(regular) => {
                     PolledStatus::Pollable(regular.read_polled.clone())
                 }
-                ConnectionlessBackend::Feedback(feedback) => {
-                    PolledStatus::Pollable(feedback.read_polled.clone())
-                }
-                ConnectionlessBackend::Plugin(plugin_info) => {
-                    PolledStatus::Pollable(plugin_info.borrow().read_polled.clone())
-                }
-                ConnectionlessBackend::Sink => PolledStatus::NotPollable,
-                ConnectionlessBackend::NullSink => PolledStatus::ImmediatelyPollable,
-                ConnectionlessBackend::Fuzz(fuzz_endpoint) => {
-                    PolledStatus::Pollable(fuzz_endpoint.borrow().read_polled.clone())
-                }
+                ConnectionlessBackend::Feedback(_) | ConnectionlessBackend::Plugin(_) | ConnectionlessBackend::Sink | ConnectionlessBackend::NullSink | ConnectionlessBackend::Fuzz(_) => unreachable!(),
             },
             SocketState::Unassociated(_) => PolledStatus::NotPollable,
             SocketState::Server(server) => PolledStatus::Pollable(server.ready_to_connect.clone()),
@@ -1213,15 +1203,7 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
             SocketState::Connectionless(connectionless) => match &connectionless.backend {
                 ConnectionlessBackend::Passthrough => unreachable!(),
                 ConnectionlessBackend::Peered(_) => PolledStatus::ImmediatelyPollable, // A connectionless socket can always `send()` TODO: ??
-                ConnectionlessBackend::Feedback(feedback) => {
-                    PolledStatus::Pollable(feedback.write_polled.clone())
-                }
-                ConnectionlessBackend::Plugin(plugin_info) => {
-                    PolledStatus::Pollable(plugin_info.borrow().write_polled.clone())
-                }
-                ConnectionlessBackend::Sink => PolledStatus::ImmediatelyPollable,
-                ConnectionlessBackend::NullSink => PolledStatus::ImmediatelyPollable,
-                ConnectionlessBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
+                ConnectionlessBackend::Feedback(_) | ConnectionlessBackend::Plugin(_) | ConnectionlessBackend::Sink | ConnectionlessBackend::NullSink | ConnectionlessBackend::Fuzz(_) => unreachable!(),
             },
             SocketState::Unassociated(_) => PolledStatus::NotPollable,
             SocketState::Server(_) => PolledStatus::NotPollable, // Need to select for reading, not writing

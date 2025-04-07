@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use fizzle_plugin::{Context, IoEndpointVariant, PluginModule};
 
-use crate::backend::IoBackend;
+use crate::backend::{ConnectionlessBackend, IoBackend};
 use crate::handlers::socket::{ConnectionlessMessage, LocalAddress, SocketState};
 use crate::scheduler::fizzle_alloc;
 use crate::state::FizzleState;
@@ -154,11 +154,18 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
         state.lower_polled(&write_polled);
     }
 
+    let mut connectionless_endpoints = state.global.connectionless_endpoints.clone();
+    connectionless_endpoints.extend(state.global.per_round_endpoints.iter().filter(|e| {
+        matches!(&e.borrow().state, SocketState::Connectionless(_))
+    }).cloned());
+
     // Handle connectionless client/server plugins
-    for endpoint in state.global.per_round_endpoints.clone() {
-        let endpoint_ref = endpoint.borrow();
-        match &endpoint_ref.state {
-            SocketState::Connectionless(conn) => match &conn.backend {
+    for endpoint in connectionless_endpoints {
+        let mut endpoint_mut = endpoint.borrow_mut();
+        let local_addr = endpoint_mut.local_addr.clone();
+
+        match &mut endpoint_mut.state {
+            SocketState::Connectionless(conn) => match &mut conn.backend {
                 IoBackend::Plugin(plugin) => {
                     let rem_addr = conn.rem_addr.clone().unwrap();
                     let mut plugin_mut = plugin.borrow_mut();
@@ -178,9 +185,7 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
                                 unreachable!()
                             };
 
-                            let LocalAddress::Assigned(local_addr) =
-                                endpoint_ref.local_addr.clone()
-                            else {
+                            let LocalAddress::Assigned(local_addr) = local_addr else {
                                 unreachable!();
                             };
 
@@ -206,6 +211,21 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
                 }
                 IoBackend::Fuzz(fuzz_endpoint) => {
                     todo!()
+                }
+                IoBackend::Feedback(feedback) => {
+                    for (pkt, socket) in feedback.feedback_buf.drain(..) {
+                        let mut socket_mut = socket.borrow_mut();
+                        let SocketState::Connectionless(conn) = &mut socket_mut.state else {
+                            unreachable!()
+                        };
+
+                        let ConnectionlessBackend::Peered(peered) = &mut conn.backend else {
+                            unreachable!()
+                        };
+
+                        peered.recv_buf.push_back(pkt);
+                        state.raise_polled(&peered.read_polled);
+                    }
                 }
                 _ => (),
             },

@@ -4,7 +4,7 @@ use crate::handlers::fuzz_endpoint::FuzzEndpointInfo;
 use crate::handlers::plugin::PluginInfo;
 use crate::handlers::polled::PolledInfo;
 use crate::handlers::socket::{ConnectionlessMessage, SocketInfo};
-use crate::{GlobalHeap, GlobalRc, GlobalVec, GlobalWeak};
+use crate::{GlobalDeque, GlobalHeap, GlobalRc, GlobalVec, GlobalWeak};
 
 use self::private::Sealed;
 
@@ -60,9 +60,7 @@ pub struct RegularConnectionless {
 
 #[derive(Clone)]
 pub struct FeedbackConnectionless {
-    pub recv_buf: LinkedList<ConnectionlessMessage, GlobalHeap>,
-    pub read_polled: GlobalRc<PolledInfo>,
-    pub write_polled: GlobalRc<PolledInfo>,
+    pub feedback_buf: GlobalDeque<(ConnectionlessMessage, GlobalRc<SocketInfo>)>,
 }
 
 /// A backend for a Pending socket connection.

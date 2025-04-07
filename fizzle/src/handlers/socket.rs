@@ -210,11 +210,7 @@ impl ConnectionlessSocket {
         match &self.backend {
             ConnectionlessBackend::Passthrough => unimplemented!(),
             ConnectionlessBackend::Peered(p) => Some(p.read_polled.clone()),
-            ConnectionlessBackend::Feedback(f) => Some(f.read_polled.clone()),
-            ConnectionlessBackend::Plugin(p) => Some(p.borrow().read_polled.clone()),
-            ConnectionlessBackend::Sink => None,
-            ConnectionlessBackend::NullSink => None,
-            ConnectionlessBackend::Fuzz(f) => Some(f.borrow().read_polled.clone()),
+            ConnectionlessBackend::Feedback(_) | ConnectionlessBackend::Plugin(_) | ConnectionlessBackend::Sink | ConnectionlessBackend::NullSink | ConnectionlessBackend::Fuzz(_) => unreachable!(),
         }
     }
 
@@ -2459,91 +2455,7 @@ impl Event for SocketReadEvent<'_> {
                     ..
                 }),
             ) => {
-                let read_polled = &feedback.read_polled;
-
-                if let Some(poller) = poller_id.as_ref() {
-                    state.delete_poller(poller.clone());
-                }
-
-                match &mut self.data {
-                    ReadData::BasicSlice(s) => {
-                        let message = feedback.recv_buf.pop_front().unwrap();
-
-                        let read = cmp::min(s.len(), message.data.len());
-                        s.copy_from_slice(&message.data[..read]);
-
-                        if feedback.recv_buf.is_empty() {
-                            state.lower_polled(read_polled);
-                        }
-
-                        Outcome::Success(read)
-                    }
-                    ReadData::Iovec(data) => {
-                        let message = feedback.recv_buf.pop_front().unwrap();
-
-                        let mut idx = 0;
-                        for s in data.iter_mut() {
-                            let read = cmp::min(s.len(), message.data.len() - idx);
-                            s.copy_from_slice(&message.data[idx..idx + read]);
-                            idx += read;
-                        }
-
-                        if feedback.recv_buf.is_empty() {
-                            state.lower_polled(read_polled);
-                        }
-
-                        Outcome::Success(idx)
-                    }
-                    ReadData::File(_data) => Outcome::Error(Errno::ESPIPE),
-                    ReadData::Socket(out_msgs, _socket_flags) => {
-                        // TODO: blocking incorrectly handled here (see the MSG_WAITFORONE flag in `man 2 recvmmsg`)
-
-                        let mut msg_count = 0;
-                        for out_msg in out_msgs.iter_mut() {
-                            let Some(msg) = feedback.recv_buf.pop_front() else {
-                                assert!(msg_count > 0);
-                                state.lower_polled(read_polled);
-                                return Outcome::Success(msg_count);
-                            };
-
-                            *out_msg.msg_flags = SocketMsgFlags::EOR;
-
-                            *out_msg.addrlen = msg.source.encode(&mut out_msg.addr_bytes) as u32;
-                            for (out_byte, byte) in
-                                out_msg.control_info.iter_mut().zip(msg.ancillary.iter())
-                            {
-                                out_byte.write(*byte);
-                            }
-
-                            *out_msg.control_len =
-                                cmp::min(*out_msg.control_len, msg.ancillary.len());
-                            if *out_msg.control_len < msg.ancillary.len() {
-                                *out_msg.msg_flags |= SocketMsgFlags::CTRUNC;
-                            }
-
-                            let mut total_read = 0;
-                            for s in out_msg.buf.iter_mut() {
-                                let read = cmp::min(msg.data.len() - total_read, s.len());
-                                s.copy_from_slice(&msg.data[total_read..total_read + read]);
-                                total_read += read;
-                            }
-
-                            if total_read < msg.data.len() {
-                                *out_msg.msg_flags |= SocketMsgFlags::TRUNC;
-                            }
-
-                            *out_msg.buflen = total_read as u32;
-
-                            msg_count += 1;
-                        }
-
-                        if feedback.recv_buf.is_empty() {
-                            state.lower_polled(&read_polled);
-                        }
-
-                        Outcome::Success(msg_count)
-                    }
-                }
+                unreachable!()
             }
             (
                 SocketReadState::Finish(poller_id),
@@ -3275,11 +3187,14 @@ impl Event for SocketWriteEvent<'_> {
                                 });
                             }
                             ConnectionlessBackend::Feedback(f) => {
-                                f.recv_buf.push_back(ConnectionlessMessage {
-                                    source: local_addr.addr().clone(),
-                                    ancillary: Vec::new_in(fizzle_alloc()), // TODO: add ancillary here,
-                                    data,
-                                });
+                                f.feedback_buf.push_back((
+                                    ConnectionlessMessage {
+                                        source: local_addr.addr().clone(),
+                                        ancillary: Vec::new_in(fizzle_alloc()), // TODO: add ancillary here,
+                                        data,
+                                    },
+                                    self.socket.clone(),
+                                ));
                             }
                             ConnectionlessBackend::Plugin(p) => {
                                 let mut plugin_ref = p.borrow_mut();
@@ -3317,11 +3232,14 @@ impl Event for SocketWriteEvent<'_> {
                                 });
                             }
                             ConnectionlessBackend::Feedback(f) => {
-                                f.recv_buf.push_back(ConnectionlessMessage {
-                                    source: local_addr.addr().clone(),
-                                    ancillary: Vec::new_in(fizzle_alloc()), // TODO: add ancillary here,
-                                    data,
-                                });
+                                f.feedback_buf.push_back((
+                                    ConnectionlessMessage {
+                                        source: local_addr.addr().clone(),
+                                        ancillary: Vec::new_in(fizzle_alloc()), // TODO: add ancillary here,
+                                        data,
+                                    },
+                                    self.socket.clone(),
+                                ));
                             }
                             ConnectionlessBackend::Plugin(p) => {
                                 let mut plugin_ref = p.borrow_mut();
@@ -3361,6 +3279,7 @@ impl Event for SocketWriteEvent<'_> {
                                                 write_error = Errno::EINVAL;
                                                 continue;
                                             };
+                                            log::debug!("Sending data to {:?}", sockaddr);
                                             sockaddr
                                         }
                                         None => match &rem_addr {
@@ -3419,11 +3338,14 @@ impl Event for SocketWriteEvent<'_> {
                                     });
                                 }
                                 ConnectionlessBackend::Feedback(f) => {
-                                    f.recv_buf.push_back(ConnectionlessMessage {
-                                        source: local_addr.addr().clone(),
-                                        ancillary,
-                                        data,
-                                    });
+                                    f.feedback_buf.push_back((
+                                        ConnectionlessMessage {
+                                            source: local_addr.addr().clone(),
+                                            ancillary,
+                                            data,
+                                        },
+                                        self.socket.clone(),
+                                    ));
                                 }
                                 ConnectionlessBackend::Plugin(p) => {
                                     let mut plugin_ref = p.borrow_mut();
