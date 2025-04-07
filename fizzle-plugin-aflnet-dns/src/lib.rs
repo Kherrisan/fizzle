@@ -14,6 +14,10 @@ impl PluginModule for DnsFuzzClient {
         self.packets.clear();
 
         loop {
+            if entropy.is_empty() {
+                break
+            }
+
             if entropy.len() < 12 {
                 self.packets.push_back(Vec::from(entropy));
                 break
@@ -30,9 +34,6 @@ impl PluginModule for DnsFuzzClient {
 
             self.packets.push_back(Vec::from(&entropy[..12 + resp_len]));
             entropy = &resp[resp_len..];
-            if entropy.is_empty() {
-                break
-            }
         }
     }
 
