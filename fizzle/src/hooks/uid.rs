@@ -17,11 +17,11 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn setuid(uid: libc::uid_t) -> libc::c_int => fizzle_setuid(ctx) {
-        crate::strace!("setuid() -> ...");
+        crate::strace!("setuid({}) -> ...", uid);
 
-        log::warn!("unimplemented: setuid()");
+        log::warn!("unimplemented: setuid({})", uid);
 
-        crate::strace!("setuid() -> 0");
+        crate::strace!("setuid({}) -> 0", uid);
         0
     }
 }
@@ -43,11 +43,11 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn seteuid(uid: libc::uid_t) -> libc::c_int => fizzle_seteuid(ctx) {
-        crate::strace!("seteuid() -> ...");
+        crate::strace!("seteuid({}) -> ...", uid);
 
-        log::warn!("unimplemented: seteuid()");
+        log::warn!("unimplemented: seteuid({})", uid);
 
-        crate::strace!("seteuid() -> 0");
+        crate::strace!("seteuid({}) -> 0", uid);
         0
     }
 }
@@ -69,11 +69,11 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn setgid(uid: libc::uid_t) -> libc::c_int => fizzle_setgid(ctx) {
-        crate::strace!("setgid() -> ...");
+        crate::strace!("setgid({}) -> ...", uid);
 
-        log::warn!("unimplemented: setgid()");
+        log::warn!("unimplemented: setgid({})", uid);
 
-        crate::strace!("setgid() -> 0");
+        crate::strace!("setgid({}) -> 0", uid);
         0
     }
 }
@@ -95,11 +95,11 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn setegid(uid: libc::uid_t) -> libc::c_int => fizzle_setegid(ctx) {
-        crate::strace!("setegid() -> ...");
+        crate::strace!("setegid({}) -> ...", uid);
 
-        log::warn!("unimplemented: setegid()");
+        log::warn!("unimplemented: setegid({})", uid);
 
-        crate::strace!("setegid() -> 0");
+        crate::strace!("setegid({}) -> 0", uid);
         0
     }
 }

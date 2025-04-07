@@ -26,8 +26,14 @@ pub unsafe extern "C" fn printf(format: *const libc::c_char, mut va_args: ...) -
         return res;
     }
 
-    let out_bytes = CStr::from_ptr(out_string).to_bytes();
+    let out_cstr = CStr::from_ptr(out_string);
+    let out_bytes = out_cstr.to_bytes();
     let io_slice = IoSlice::new(out_bytes);
+
+    crate::strace!(
+        "fprintf wrote \"{:?}\"",
+        out_cstr
+    );
 
     let stream_ptr = FilePtr::from_raw(unsafe { crate::stdout }).unwrap();
 
@@ -106,8 +112,14 @@ pub unsafe extern "C" fn fprintf(
         return res;
     }
 
-    let out_bytes = CStr::from_ptr(out_string).to_bytes();
+    let out_cstr = CStr::from_ptr(out_string);
+    let out_bytes = out_cstr.to_bytes();
     let io_slice = IoSlice::new(out_bytes);
+
+    crate::strace!(
+        "fprintf wrote \"{:?}\"",
+        out_cstr
+    );
 
     match Scheduler::handle_event(
         &mut ctx,
