@@ -2120,7 +2120,7 @@ impl Event for StreamClearErrorEvent {
         };
 
         match &self.state {
-            StreamClearErrorState::Start !if self.unlocked => {
+            StreamClearErrorState::Start if !self.unlocked => {
                 self.state = StreamClearErrorState::Finish;
                 let outcome = if file_obj.queued_threads.is_empty() {
                     Outcome::Yield(YieldUntil::Immediate)
