@@ -1900,7 +1900,7 @@ impl Event for StreamUngetEvent {
         assert!(file_obj.orientation == FileOrientation::Regular);
 
         match &self.state {
-            StreamUngetState::Start if self.unlocked => {
+            StreamUngetState::Start if !self.unlocked => {
                 self.state = StreamUngetState::Finish;
                 let outcome = if file_obj.queued_threads.is_empty() {
                     Outcome::Yield(YieldUntil::Immediate)
@@ -1919,18 +1919,18 @@ impl Event for StreamUngetEvent {
                         Outcome::Error(())
                     }
                     FileStreamBuffer::Internal(s) => {
-                        s[read_idx] = self.character;
-                        file_obj.offset -= 1;
                         file_obj.read_idx -= 1;
+                        s[read_idx - 1] = self.character;
+                        file_obj.offset -= 1;
                         file_obj.eof = false;
                         Outcome::Success(())
                     }
                     FileStreamBuffer::Slice(s) => {
+                        file_obj.read_idx -= 1;
                         unsafe {
-                            s.as_mut()[read_idx] = self.character;
+                            s.as_mut()[read_idx - 1] = self.character;
                         }
                         file_obj.offset -= 1;
-                        file_obj.read_idx -= 1;
                         file_obj.eof = false;
                         Outcome::Success(())
                     }
@@ -2120,7 +2120,7 @@ impl Event for StreamClearErrorEvent {
         };
 
         match &self.state {
-            StreamClearErrorState::Start if self.unlocked => {
+            StreamClearErrorState::Start !if self.unlocked => {
                 self.state = StreamClearErrorState::Finish;
                 let outcome = if file_obj.queued_threads.is_empty() {
                     Outcome::Yield(YieldUntil::Immediate)
