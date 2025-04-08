@@ -32,6 +32,7 @@ fn scan_incremental(format: &[u8], input: &[u8], params: &[*mut libc::c_void]) -
     let mut input_idx = 0;
     let mut params_idx = 0;
     let mut needed = 1;
+    let mut truncated = false;
 
     while input_idx < input.len() && format_idx < format.len() {
         if unsafe { libc::isspace(format[format_idx] as i32) != 0 } {
@@ -39,24 +40,29 @@ fn scan_incremental(format: &[u8], input: &[u8], params: &[*mut libc::c_void]) -
                 input_idx += consumed;
                 format_idx += 1;
             } else {
-                input_idx = input.len();
+                truncated = true;
+                break;
                 // This will break out of while loop and result in a `Truncated` error
             }
         } else if format[format_idx] == b'%' {
             match match_param(&format[format_idx + 1..], &input[input_idx..], params, params_idx) {
                 Ok(ParamSuccess { input_consumed, format_consumed, assigned }) => {
+                    log::debug!("match_param() -> Success {{ input_consumed={}, format_consumed={}, assigned={} }}", input_consumed, format_consumed, assigned);
                     input_idx += input_consumed;
-                    format_idx += format_consumed;
+                    format_idx += 1 + format_consumed;
 
                     if assigned {
                         params_idx += 1;
                     }
                 }
-                Err(true) => {
-                    needed = (input.len() - input_idx) + 1;
-                    input_idx = input.len();
+                Err(Some(needed_for_param)) => {
+                    log::debug!("match_param() -> Err(Some(needed_for_param={}))", needed_for_param);
+                    needed = needed_for_param;
+                    truncated = true;
+                    break
                 }
-                Err(false) => {
+                Err(None) => {
+                    log::debug!("match_param() -> Err(None)");
                     return Err(MatchFailure::BadInput(params_idx))
                 }
             }
@@ -70,8 +76,13 @@ fn scan_incremental(format: &[u8], input: &[u8], params: &[*mut libc::c_void]) -
         }
     }
 
-    if input_idx < input.len() {
+    if format_idx < format.len() {
+        truncated = true;
+    }
+
+    if !truncated {
         // assert_eq!(params_idx, params.len());
+        log::debug!("scan_incremental() -> Ok({})", input_idx);
         Ok(input_idx)
 
     } else {
@@ -81,6 +92,11 @@ fn scan_incremental(format: &[u8], input: &[u8], params: &[*mut libc::c_void]) -
         // Discard the immediate consumed token
         match format[tmp_fmt_idx] {
             b'%' => {
+                tmp_fmt_idx += 1;
+                if tmp_fmt_idx == format.len() {
+                    return Err(MatchFailure::BadInput(params_idx))
+                }
+
                 let Some(param) = param_ty(&format[tmp_fmt_idx..]) else {
                     return Err(MatchFailure::BadInput(params_idx))
                 };
@@ -92,6 +108,11 @@ fn scan_incremental(format: &[u8], input: &[u8], params: &[*mut libc::c_void]) -
         while tmp_fmt_idx < format.len() {
             match format[tmp_fmt_idx] {
                 b'%' => {
+                    tmp_fmt_idx += 1;
+                    if tmp_fmt_idx == format.len() {
+                        return Err(MatchFailure::BadInput(params_idx))
+                    }
+
                     let Some(param) = param_ty(&format[tmp_fmt_idx..]) else {
                         return Err(MatchFailure::BadInput(params_idx))
                     };
@@ -225,55 +246,61 @@ fn param_ty(format: &[u8]) -> Option<ParamInfo> {
     let mut max_field_width = None;
     let mut ptr_ty = None;
 
-    // Step 1: parse `%n$` structure, if applicable
-    while let Some(&c) = format.get(idx) {
-        match c {
-            b'0'..=b'9' => param_idx = Some(match param_idx {
-                None => (c - b'0') as usize,
-                Some(i) => (i * 10) + ((c - b'0') as usize),
-            }),
-            b'$' if param_idx.is_none() => return None, // no number between `%` and `$`
-            b'$' => {
-                idx += 1;
-                break
+    'prefix_end: {
+        // Step 1: parse `%n$` structure, if applicable
+        while let Some(&c) = format.get(idx) {
+            match c {
+                b'0'..=b'9' => param_idx = Some(match param_idx {
+                    None => (c - b'0') as usize,
+                    Some(i) => (i * 10) + ((c - b'0') as usize),
+                }),
+                b'$' if param_idx.is_none() => return None, // no number between `%` and `$`
+                b'$' => {
+                    idx += 1;
+                    break
+                }
+                _ if param_idx.is_none() => break,
+                _ => {
+                    // This was actually the maximum field width
+                    max_field_width = param_idx.take();
+                    break 'prefix_end
+                }
             }
-            _ if param_idx.is_none() => break,
-            _ => return None, // unrecognized characters before closing `$`
+
+            idx += 1;
         }
 
-        idx += 1;
-    }
-
-    // Step 2: parse `*` assignment-suppression character and `'` quote character in any order.
-    while let Some(&c) = format.get(idx) {
-        match c {
-            b'*' if masked => return None,
-            b'*' => masked = true,
-            b'\'' if thousands_separators => return None,
-            b'\'' => thousands_separators = true,
-            _ => break
-        }
-        
-        idx += 1;
-    }
-
-    // Step 3: optionally parse `m` character
-    if let Some(b'm') = format.get(idx) {
-        idx += 1;
-        do_alloc = true;
-    }
-
-    // Step 4: optional maximum field width
-    while let Some(&c) = format.get(idx) {
-        match c {
-            b'0'..=b'9' => max_field_width = Some(match max_field_width {
-                None => (c - b'0') as usize,
-                Some(i) => (i * 10) + ((c - b'0') as usize),
-            }),
-            _ => break,
+        // Step 2: parse `*` assignment-suppression character and `'` quote character in any order.
+        while let Some(&c) = format.get(idx) {
+            match c {
+                b'*' if masked => return None,
+                b'*' => masked = true,
+                b'\'' if thousands_separators => return None,
+                b'\'' => thousands_separators = true,
+                _ => break
+            }
+            
+            idx += 1;
         }
 
-        idx += 1;
+        // Step 3: optionally parse `m` character
+        if let Some(b'm') = format.get(idx) {
+            idx += 1;
+            do_alloc = true;
+        }
+
+        // Step 4: optional maximum field width
+        while let Some(&c) = format.get(idx) {
+            match c {
+                b'0'..=b'9' => max_field_width = Some(match max_field_width {
+                    None => (c - b'0') as usize,
+                    Some(i) => (i * 10) + ((c - b'0') as usize),
+                }),
+                _ => break,
+            }
+
+            idx += 1;
+        }
     }
 
     // Step 5: optional type modifier
@@ -377,20 +404,22 @@ fn param_ty(format: &[u8]) -> Option<ParamInfo> {
 /// 
 /// If there isn't enough data to match the parameter, this returns Err(true).
 /// If processing would return the error, this returns Err(false).
-fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _params_idx: usize) -> Result<ParamSuccess, bool> {
-    let param_info = param_ty(format).ok_or(false)?;
+fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _params_idx: usize) -> Result<ParamSuccess, Option<usize>> {
+    log::debug!("match_param(format={:?}, input={:?}) -> ...", format, input);
+
+    let param_info = param_ty(format).ok_or(None)?;
 
     let mut input_idx = 0;
 
     let max_width = param_info.max_field_width.unwrap_or(usize::MAX);
     if max_width == 0 {
-        return Err(false)
+        return Err(None)
     }
 
     match param_info.ty {
         ParamType::Percent => {
             let Some(&b'%') = input.get(0) else {
-                return Err(false)
+                return Err(None)
             };
             input_idx += 1;
         }
@@ -398,13 +427,13 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
             if matches!(input.get(0), Some(b'-')) {
                 input_idx += 1;
                 if max_width == 1 {
-                    return Err(false)
+                    return Err(None)
                 }
             }
 
             // TODO: are leading 0s allowed?
             if !matches!(input.get(input_idx), Some(b'0'..=b'9')) {
-                return Err(false)
+                return Err(None)
             }
 
             input_idx += 1;
@@ -420,7 +449,7 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
             }
 
             if !param_success && input_idx < max_width {
-                return Err(true)
+                return Err(Some(param_info.min_length()))
             }
         }
         ParamType::SignedInt => {
@@ -431,28 +460,27 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
 
                     while input_idx < input.len() && input_idx < max_width {
                         let c = input[input_idx];
-                        input_idx += 1;
                         if c < b'0' || c > b'9' {
                             param_success = true;
                             break;
                         }
+                        input_idx += 1;
                     }
 
                     if !param_success && input_idx < max_width {
-                        return Err(true)
+                        return Err(Some(param_info.min_length()))
                     }
                 }
                 (Some(b'0'), _) if max_width == 1 => {
                     input_idx += 1;
                 }
-                (Some(b'0'), Some(b'x' | b'X')) if max_width == 2 => return Err(false),
+                (Some(b'0'), Some(b'x' | b'X')) if max_width == 2 => return Err(None),
                 (Some(b'0'), Some(b'x' | b'X')) => {
                     let mut param_success = false;
                     input_idx += 2;
 
                     while input_idx < input.len() && input_idx < max_width {
                         let c = input[input_idx];
-                        input_idx += 1;
                         match c {
                             b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F' => (),
                             _ => {
@@ -460,10 +488,11 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
                                 break;
                             }
                         }
+                        input_idx += 1;
                     }
 
                     if !param_success && input_idx < max_width {
-                        return Err(true)
+                        return Err(Some(param_info.min_length()))
                     }
                 }
                 (Some(b'0'), _) => {
@@ -472,10 +501,9 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
 
                     while input_idx < input.len() && input_idx < max_width {
                         let c = input[input_idx];
-                        input_idx += 1;
                         match c {
-                            b'0'..=b'7' => (),
-                            b'8'..=b'9' => return Err(false), // Non-octal characters
+                            b'0'..=b'7' => input_idx += 1,
+                            b'8'..=b'9' => return Err(None), // Non-octal characters
                             _ => {
                                 param_success = true;
                                 break;
@@ -484,7 +512,7 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
                     }
 
                     if !param_success && input_idx < max_width {
-                        return Err(true)
+                        return Err(Some(param_info.min_length()))
                     }
                 }
                 (Some(b'1'..=b'9'), _) => {
@@ -493,9 +521,8 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
 
                     while input_idx < input.len() && input_idx < max_width {
                         let c = input[input_idx];
-                        input_idx += 1;
                         match c {
-                            b'0'..=b'9' => (),
+                            b'0'..=b'9' => input_idx += 1,
                             _ => {
                                 param_success = true;
                                 break;
@@ -504,11 +531,11 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
                     }
 
                     if !param_success && input_idx < max_width {
-                        return Err(true)
+                        return Err(Some(param_info.min_length()))
                     }
                 }
-                (Some(_), _) => return Err(false),
-                (None, _) => return Err(true),
+                (Some(_), _) => return Err(None),
+                (None, _) => return Err(Some(param_info.min_length())),
             }
 
             if matches!(input.get(input_idx), Some(b'-')) {
@@ -518,7 +545,7 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
         ParamType::UnsignedOctInt => {
             // TODO: are leading 0s allowed?
             if !matches!(input.get(input_idx), Some(b'0'..=b'7')) {
-                return Err(false)
+                return Err(None)
             }
 
             input_idx += 1;
@@ -526,21 +553,22 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
 
             while input_idx < input.len() && input_idx < max_width {
                 let c = input[input_idx];
-                input_idx += 1;
                 if c < b'0' || c > b'7' {
                     param_success = true;
                     break;
                 }
+
+                input_idx += 1;
             }
 
             if !param_success && input_idx < max_width {
-                return Err(true)
+                return Err(Some(param_info.min_length()))
             }
         }
         ParamType::UnsignedDecimalInt => {
             // TODO: are leading 0s allowed?
             if !matches!(input.get(input_idx), Some(b'0'..=b'9')) {
-                return Err(false)
+                return Err(Some(param_info.min_length()))
             }
 
             input_idx += 1;
@@ -548,15 +576,16 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
 
             while input_idx < input.len() && input_idx < max_width {
                 let c = input[input_idx];
-                input_idx += 1;
                 if c < b'0' || c > b'9' {
                     param_success = true;
                     break;
                 }
+
+                input_idx += 1;
             }
 
             if !param_success && input_idx < max_width {
-                return Err(true)
+                return Err(Some(param_info.min_length()))
             }
         }
         ParamType::UnsignedHexInt => {
@@ -564,14 +593,13 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
                 (Some(b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F'), _) if max_width == 1 => {
                     input_idx += 1;
                 }
-                (Some(b'0'), Some(b'x' | b'X')) if max_width == 2 => return Err(false),
+                (Some(b'0'), Some(b'x' | b'X')) if max_width == 2 => return Err(None),
                 (Some(b'0'), Some(b'x' | b'X')) => {
                     let mut param_success = false;
                     input_idx += 2;
 
                     while input_idx < input.len() && input_idx < max_width {
                         let c = input[input_idx];
-                        input_idx += 1;
                         match c {
                             b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F' => (),
                             _ => {
@@ -579,10 +607,11 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
                                 break;
                             }
                         }
+                        input_idx += 1;
                     }
 
                     if !param_success && input_idx < max_width {
-                        return Err(true)
+                        return Err(Some(param_info.min_length()))
                     }
                 }
                 (Some(b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F'), _) => {
@@ -591,7 +620,6 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
 
                     while input_idx < input.len() && input_idx < max_width {
                         let c = input[input_idx];
-                        input_idx += 1;
                         match c {
                             b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F' => (),
                             _ => {
@@ -599,26 +627,27 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
                                 break;
                             }
                         }
+                        input_idx += 1;
                     }
 
                     if !param_success && input_idx < max_width {
-                        return Err(true)
+                        return Err(Some(param_info.min_length()))
                     }
                 }
-                _ => return Err(false),
+                _ => return Err(None),
             }
         }
         ParamType::Float => {
             if matches!(input.get(0), Some(b'-')) {
                 input_idx += 1;
                 if max_width == 1 {
-                    return Err(false)
+                    return Err(None)
                 }
             }
 
             // TODO: are leading 0s allowed?
             if !matches!(input.get(input_idx), Some(b'0'..=b'9')) {
-                return Err(false)
+                return Err(None)
             }
 
             input_idx += 1;
@@ -626,15 +655,16 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
 
             while input_idx < input.len() && input_idx < max_width {
                 let c = input[input_idx];
-                input_idx += 1;
                 if (c < b'0' || c > b'9') && c != b'.' { // TODO: what about multiple dots? ending exponent?
                     param_success = true;
                     break;
                 }
+
+                input_idx += 1;
             }
 
             if !param_success && input_idx < max_width {
-                return Err(true)
+                return Err(Some(param_info.min_length()))
             }
         }
         ParamType::Sequence => {
@@ -642,20 +672,21 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
 
             while input_idx < input.len() && input_idx < max_width {
                 let c = input[input_idx];
-                input_idx += 1;
                 if unsafe { libc::isspace(c as libc::c_int) } != 0 {
                     param_success = true;
                     break
                 }
+
+                input_idx += 1;
             }
 
             if !param_success && input_idx < max_width {
-                return Err(true)
+                return Err(Some(param_info.min_length()))
             }
         }
         ParamType::CSequence => {
             if input.len() < max_width {
-                return Err(true)
+                return Err(Some(param_info.min_length() - input.len()))
             }
             input_idx += max_width;
         }
@@ -664,15 +695,15 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
 
             while input_idx < input.len() && input_idx < max_width {
                 let c = input[input_idx];
-                input_idx += 1;
                 if !items.contains(&c) {
                     param_success = true;
                     break
                 }
+                input_idx += 1;
             }
 
             if !param_success && input_idx < max_width {
-                return Err(true)
+                return Err(Some(param_info.min_length()))
             }
         }
         ParamType::NotCharset(items) => {
@@ -680,15 +711,15 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
 
             while input_idx < input.len() && input_idx < max_width {
                 let c = input[input_idx];
-                input_idx += 1;
                 if items.contains(&c) {
                     param_success = true;
                     break
                 }
+                input_idx += 1;
             }
 
             if !param_success && input_idx < max_width {
-                return Err(true)
+                return Err(Some(param_info.min_length()))
             }
         }
         ParamType::Pointer => todo!(),
@@ -748,9 +779,10 @@ pub unsafe extern "C" fn scanf(
                 total_matched += matched;
                 format_bytes = &format_bytes[format_consumed..];
                 buf_consumed += input_consumed;
+                let prev_end = buf.len();
                 buf.extend(std::iter::repeat(0).take(min_remainder));
 
-                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[buf_consumed..], 1,  false, false)) {
+                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[prev_end..prev_end + min_remainder], 1,  false, false)) {
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
@@ -839,9 +871,10 @@ pub unsafe extern "C" fn __isoc99_scanf(
                 total_matched += matched;
                 format_bytes = &format_bytes[format_consumed..];
                 buf_consumed += input_consumed;
+                let prev_end = buf.len();
                 buf.extend(std::iter::repeat(0).take(min_remainder));
 
-                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[buf_consumed..], 1,  false, false)) {
+                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[prev_end..prev_end + min_remainder], 1,  false, false)) {
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
@@ -931,9 +964,10 @@ pub unsafe extern "C" fn __isoc23_scanf(
                 total_matched += matched;
                 format_bytes = &format_bytes[format_consumed..];
                 buf_consumed += input_consumed;
+                let prev_end = buf.len();
                 buf.extend(std::iter::repeat(0).take(min_remainder));
 
-                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[buf_consumed..], 1,  false, false)) {
+                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[prev_end..prev_end + min_remainder], 1,  false, false)) {
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
@@ -1023,9 +1057,10 @@ pub unsafe extern "C" fn fscanf(
                 total_matched += matched;
                 format_bytes = &format_bytes[format_consumed..];
                 buf_consumed += input_consumed;
+                let prev_end = buf.len();
                 buf.extend(std::iter::repeat(0).take(min_remainder));
 
-                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[buf_consumed..], 1,  false, false)) {
+                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[prev_end..prev_end + min_remainder], 1,  false, false)) {
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
@@ -1115,9 +1150,10 @@ pub unsafe extern "C" fn __isoc99_fscanf(
                 total_matched += matched;
                 format_bytes = &format_bytes[format_consumed..];
                 buf_consumed += input_consumed;
+                let prev_end = buf.len();
                 buf.extend(std::iter::repeat(0).take(min_remainder));
 
-                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[buf_consumed..], 1,  false, false)) {
+                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[prev_end..prev_end + min_remainder], 1,  false, false)) {
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
@@ -1207,9 +1243,10 @@ pub unsafe extern "C" fn __isoc23_fscanf(
                 total_matched += matched;
                 format_bytes = &format_bytes[format_consumed..];
                 buf_consumed += input_consumed;
+                let prev_end = buf.len();
                 buf.extend(std::iter::repeat(0).take(min_remainder));
 
-                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[buf_consumed..], 1,  false, false)) {
+                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[prev_end..prev_end + min_remainder], 1,  false, false)) {
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
@@ -1298,9 +1335,10 @@ pub unsafe extern "C" fn vscanf(
                 total_matched += matched;
                 format_bytes = &format_bytes[format_consumed..];
                 buf_consumed += input_consumed;
+                let prev_end = buf.len();
                 buf.extend(std::iter::repeat(0).take(min_remainder));
 
-                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[buf_consumed..], 1,  false, false)) {
+                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[prev_end..prev_end + min_remainder], 1,  false, false)) {
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
@@ -1389,9 +1427,10 @@ pub unsafe extern "C" fn __isoc99_vscanf(
                 total_matched += matched;
                 format_bytes = &format_bytes[format_consumed..];
                 buf_consumed += input_consumed;
+                let prev_end = buf.len();
                 buf.extend(std::iter::repeat(0).take(min_remainder));
 
-                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[buf_consumed..], 1,  false, false)) {
+                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[prev_end..prev_end + min_remainder], 1,  false, false)) {
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
@@ -1481,9 +1520,10 @@ pub unsafe extern "C" fn __isoc23_vscanf(
                 total_matched += matched;
                 format_bytes = &format_bytes[format_consumed..];
                 buf_consumed += input_consumed;
+                let prev_end = buf.len();
                 buf.extend(std::iter::repeat(0).take(min_remainder));
 
-                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[buf_consumed..], 1,  false, false)) {
+                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[prev_end..prev_end + min_remainder], 1,  false, false)) {
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
@@ -1573,9 +1613,10 @@ pub unsafe extern "C" fn vfscanf(
                 total_matched += matched;
                 format_bytes = &format_bytes[format_consumed..];
                 buf_consumed += input_consumed;
+                let prev_end = buf.len();
                 buf.extend(std::iter::repeat(0).take(min_remainder));
 
-                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[buf_consumed..], 1,  false, false)) {
+                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[prev_end..prev_end + min_remainder], 1,  false, false)) {
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
@@ -1665,9 +1706,10 @@ pub unsafe extern "C" fn __isoc99_vfscanf(
                 total_matched += matched;
                 format_bytes = &format_bytes[format_consumed..];
                 buf_consumed += input_consumed;
+                let prev_end = buf.len();
                 buf.extend(std::iter::repeat(0).take(min_remainder));
 
-                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[buf_consumed..], 1,  false, false)) {
+                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[prev_end..prev_end + min_remainder], 1,  false, false)) {
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
@@ -1757,9 +1799,10 @@ pub unsafe extern "C" fn __isoc23_vfscanf(
                 total_matched += matched;
                 format_bytes = &format_bytes[format_consumed..];
                 buf_consumed += input_consumed;
+                let prev_end = buf.len();
                 buf.extend(std::iter::repeat(0).take(min_remainder));
 
-                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[buf_consumed..], 1,  false, false)) {
+                let read = match Scheduler::handle_event(&mut ctx, StreamReadEvent::new(stream_ptr, &mut buf[prev_end..prev_end + min_remainder], 1,  false, false)) {
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
