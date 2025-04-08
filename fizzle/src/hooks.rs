@@ -20,6 +20,7 @@ pub mod printf;
 pub mod process;
 pub mod pthread;
 pub mod resolv;
+pub mod scanf;
 pub mod semaphore;
 pub mod signal;
 pub mod sleep;

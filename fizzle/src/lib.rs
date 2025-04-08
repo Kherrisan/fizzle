@@ -102,6 +102,12 @@ unsafe extern "C" {
         ap: VaList,
     ) -> libc::c_int;
 
+    pub fn vsscanf(
+        str: *const libc::c_char,
+        format: *const libc::c_char,
+        ap: VaList
+    ) -> libc::c_int;
+
     static mut stdin: *mut libc::FILE;
 
     static mut stdout: *mut libc::FILE;

@@ -1855,6 +1855,7 @@ impl Event for StreamReadEvent<'_> {
                     errno.set_errno();
                     Outcome::Error(self.bytes_read / self.chunk_size)
                 } else {
+                    Errno::SUCCESS.set_errno();
                     Outcome::Success(self.bytes_read / self.chunk_size)
                 }
             }
