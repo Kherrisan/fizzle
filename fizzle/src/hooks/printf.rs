@@ -151,6 +151,96 @@ pub unsafe extern "C" fn fprintf(
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn ___fprintf_chk(
+    stream: *mut libc::FILE,
+    format: *const libc::c_char,
+    mut va_args: ...
+) -> libc::c_int {
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        let mut out_string = ptr::null_mut();
+        let res = crate::vasprintf(&raw mut out_string, format, va_args.as_va_list());
+        if res < 0 {
+            Errno::ENOMEM.set_errno();
+            return libc::EOF
+        }
+
+        let ret = libc::fputs(out_string.cast_const(), stream);
+        return ret
+    };
+
+    crate::strace!(
+        "__fprintf_chk(stream={:?}, format={:?}, ...) -> ...",
+        stream,
+        format
+    );
+
+    let format_cstr = CStr::from_ptr(format);
+    let mut out_string = ptr::null_mut();
+
+    let Some(stream_ptr) = FilePtr::from_raw(stream) else {
+        crate::strace!(
+            "__fprintf_chk(stream={:?}, format={:?}) -> -1 (EINVAL)",
+            stream,
+            format_cstr
+        );
+        Errno::EINVAL.set_errno();
+        crate::hooks::post_hook();
+        return libc::EOF;
+    };
+
+    let res = crate::vasprintf(&raw mut out_string, format, va_args.as_va_list());
+    if res < 0 {
+        let e = Errno::get_errno();
+        crate::strace!(
+            "__fprintf_chk(stream={:?}, format={:?}, ...) -> -1 ({})",
+            stream,
+            format_cstr,
+            e
+        );
+        e.set_errno();
+        crate::hooks::post_hook();
+        return res;
+    }
+
+    let out_cstr = CStr::from_ptr(out_string);
+    let out_bytes = out_cstr.to_bytes();
+    let io_slice = IoSlice::new(out_bytes);
+
+    crate::strace!(
+        "__fprintf_chk wrote \"{:?}\"",
+        out_cstr
+    );
+
+    match Scheduler::handle_event(
+        &mut ctx,
+        StreamWriteEvent::new(stream_ptr, &io_slice, 1, false),
+    ) {
+        Ok(()) => {
+            libc::free(out_string.cast::<libc::c_void>());
+            crate::strace!(
+                "__fprintf_chk(stream={:?}, format={:?}, ...) -> {}",
+                stream,
+                format_cstr,
+                out_bytes.len()
+            );
+            crate::hooks::post_hook();
+            out_bytes.len() as libc::c_int
+        }
+        Err(written) => {
+            libc::free(out_string.cast::<libc::c_void>());
+            crate::strace!(
+                "__fprintf_chk(stream={:?}, format={:?}, ...) -> {}",
+                stream,
+                format_cstr,
+                written
+            );
+            crate::hooks::post_hook();
+            written as libc::c_int
+        }
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn dprintf(
     fd: libc::c_int,
     format: *const libc::c_char,
