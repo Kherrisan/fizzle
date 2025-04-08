@@ -151,8 +151,9 @@ pub unsafe extern "C" fn fprintf(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn ___fprintf_chk(
+pub unsafe extern "C" fn __fprintf_chk(
     stream: *mut libc::FILE,
+    flag: libc::c_int,
     format: *const libc::c_char,
     mut va_args: ...
 ) -> libc::c_int {
@@ -169,8 +170,9 @@ pub unsafe extern "C" fn ___fprintf_chk(
     };
 
     crate::strace!(
-        "__fprintf_chk(stream={:?}, format={:?}, ...) -> ...",
+        "__fprintf_chk(stream={:?}, flag={}, format={:?}, ...) -> ...",
         stream,
+        flag,
         format
     );
 
@@ -179,8 +181,9 @@ pub unsafe extern "C" fn ___fprintf_chk(
 
     let Some(stream_ptr) = FilePtr::from_raw(stream) else {
         crate::strace!(
-            "__fprintf_chk(stream={:?}, format={:?}) -> -1 (EINVAL)",
+            "__fprintf_chk(stream={:?}, flag={}, format={:?}) -> -1 (EINVAL)",
             stream,
+            flag,
             format_cstr
         );
         Errno::EINVAL.set_errno();
@@ -192,8 +195,9 @@ pub unsafe extern "C" fn ___fprintf_chk(
     if res < 0 {
         let e = Errno::get_errno();
         crate::strace!(
-            "__fprintf_chk(stream={:?}, format={:?}, ...) -> -1 ({})",
+            "__fprintf_chk(stream={:?}, flag={}, format={:?}, ...) -> -1 ({})",
             stream,
+            flag,
             format_cstr,
             e
         );
@@ -218,8 +222,9 @@ pub unsafe extern "C" fn ___fprintf_chk(
         Ok(()) => {
             libc::free(out_string.cast::<libc::c_void>());
             crate::strace!(
-                "__fprintf_chk(stream={:?}, format={:?}, ...) -> {}",
+                "__fprintf_chk(stream={:?}, flag={}, format={:?}, ...) -> {}",
                 stream,
+                flag,
                 format_cstr,
                 out_bytes.len()
             );
@@ -229,8 +234,9 @@ pub unsafe extern "C" fn ___fprintf_chk(
         Err(written) => {
             libc::free(out_string.cast::<libc::c_void>());
             crate::strace!(
-                "__fprintf_chk(stream={:?}, format={:?}, ...) -> {}",
+                "__fprintf_chk(stream={:?}, flag={}, format={:?}, ...) -> {}",
                 stream,
+                flag,
                 format_cstr,
                 written
             );
