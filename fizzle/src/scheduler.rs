@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::RawFd;
 use std::process::{self, Command};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::ThreadId;
 use std::time::Duration;
 use std::{cmp, env, mem, ptr, slice, thread};
@@ -60,6 +61,12 @@ impl FizzleSingleton {
             .borrow_mut()
     }
 
+    pub fn as_ptr(&self) -> *mut FizzleState {
+        FIZZLE_STATE
+            .get_or_init(|| SequentialRefCell::new(FizzleState::new()))
+            .as_ptr()
+    }
+
     /// Deallocates shared memory for all global state (including the interprocess allocator),
     /// and drops local state.
     pub unsafe fn dealloc(&mut self) {
@@ -71,6 +78,48 @@ impl FizzleSingleton {
         unsafe {
             fizzle_dealloc();
         }
+    }
+}
+
+pub fn afl_onetime_init(state: &mut FizzleSingleton) {
+    static IS_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+    // True if this is not the first process created with Fizzle
+    let is_first_process = env::var(FIZZLE_MEMORY_ENV).is_err();
+
+    if is_first_process && !IS_INITIALIZED.fetch_or(true, Ordering::Relaxed) {
+        #[cfg(feature = "pcr")]
+        unsafe {
+            crate::__afl_sharedmem_fuzzing = 1;
+        }
+
+        #[cfg(feature = "afl")]
+        unsafe {
+            crate::__afl_selective_coverage = 1;
+            crate::__afl_selective_coverage_start_off = 1;
+        }
+
+        #[cfg(feature = "afl")]
+        unsafe {
+            crate::__afl_manual_init();
+        }
+
+        let is_singleprocess =
+            matches!(env::var(FIZZLE_SINGLEPROCESS_ENV), Ok(s) if s.as_str() == "1");
+
+        if !is_singleprocess {
+            // Transition memory to being shared rather than anonymous
+            
+            let alloc = ptr::from_ref(*FIZZLE_ALLOC.get().unwrap()).cast_mut();
+            let state = ptr::from_mut(state.acquire().global);
+
+            unsafe {
+                reallocate_to_shared(alloc);
+                FizzleState::reallocate_to_shared(state);
+            }
+        }
+
+
     }
 }
 
@@ -107,14 +156,11 @@ pub fn fizzle_alloc() -> GlobalHeap {
     &FIZZLE_ALLOC
         .get_or_init(|| {
             let size = mem::size_of::<InterprocessAllocator>();
-            let is_singleprocess =
-                matches!(env::var(FIZZLE_SINGLEPROCESS_ENV), Ok(s) if s.as_str() == "1");
+            let is_first_process = !env::var(FIZZLE_MEMORY_ENV).is_ok();
 
             log::debug!("fizzle_alloc() being initialized for this process");
 
-            let is_first_process = !env::var(FIZZLE_MEMORY_ENV).is_ok();
-
-            let location = if is_singleprocess {
+            let location = if is_first_process {
                 let loc = unsafe {
                     libc::mmap(
                         ptr::null_mut(),
@@ -137,8 +183,6 @@ pub fn fizzle_alloc() -> GlobalHeap {
             } else {
                 // Shared memory doesn't play well with the forkserver, so we need to make sure that
                 // processes are forked *before* any shared memory is created.
-
-                crate::afl_onetime_init();
 
                 let memfd = match env::var(FIZZLE_ALLOC_ENV) {
                     Ok(var) => {
@@ -235,6 +279,56 @@ pub fn fizzle_alloc() -> GlobalHeap {
             unsafe { &*(location.cast_const()) }
         })
         .heap
+}
+
+unsafe fn reallocate_to_shared(old: *mut InterprocessAllocator) {
+    let size = mem::size_of::<InterprocessAllocator>();
+
+    log::debug!("allocating public shared memory object...");
+    let memfd = InterprocessState::interprocess_shmem_create();
+    log::debug!("allocated public shared memory object with fd {}", memfd);
+    env::set_var(FIZZLE_ALLOC_ENV, memfd.to_string());
+
+    let ret = unsafe {
+        libc::ftruncate(memfd, size as i64)
+    };
+    assert_eq!(
+        ret,
+        0,
+        "ftruncate() failed for interprocess memory: {}",
+        Errno::get_errno()
+    );
+
+    // 1. mmap the new location
+    let tmp_copy_ptr = libc::mmap(
+        ptr::null_mut(),
+        size,
+        libc::PROT_READ | libc::PROT_WRITE,
+        libc::MAP_SHARED,
+        memfd,
+        0,
+    );
+
+    // 2. Copy data from old to new location
+    libc::memcpy(tmp_copy_ptr, old.cast(), size);
+
+    assert_eq!(libc::munmap(tmp_copy_ptr, size), 0, "failed to unmap temporary shared map");
+    assert_eq!(libc::munmap(old.cast(), size), 0, "failed to unmap temporary shared map");
+
+    let new = libc::mmap(
+        old.cast(),
+        size,
+        libc::PROT_READ | libc::PROT_WRITE,
+        libc::MAP_SHARED,
+        memfd,
+        0,
+    );
+
+    if new == libc::MAP_FAILED {
+        panic!("failed to mmap global memory: {}", Errno::get_errno());
+    }
+
+    env::set_var(FIZZLE_ALLOC_OFFSET_ENV, new.addr().to_string());
 }
 
 // Signals the given semaphore in a manner that safely downreferences the Rc<> wrapping the semaphore.
@@ -1545,8 +1639,8 @@ impl Scheduler {
 
     // TODO: clean this up better
     fn round_complete(ctx: &mut FizzleSingleton) {
+        afl_onetime_init(ctx);
         let mut state = ctx.acquire();
-
         Scheduler::prepare_fuzz_input(&mut state);
 
         // Reset fuzz endpoint state (e.g. endpoints configured with the `fuzz` option)
@@ -1692,8 +1786,6 @@ impl Scheduler {
     }
 
     fn prepare_fuzz_input(state: &mut FizzleState) {
-        crate::afl_onetime_init();
-
         #[cfg(not(feature = "pcr"))]
         if !state.global.fuzz_input.is_empty() {
             // Only one input per harness execution--end here
@@ -1788,11 +1880,11 @@ impl Scheduler {
     fn run_subprocess(ctx: &mut FizzleSingleton, mut cmd: Command) {
         // TODO: need to upref all reference-counted (non-CLOEXEC) global variables here
 
+        // Initialize AFL (forkservers and multi-process applications don't play well)
+        afl_onetime_init(ctx);
+
         // TODO: need to prepare signal handlers to be passed
         let mut state = ctx.acquire();
-
-        // Initialize AFL (forkservers and multi-process applications don't play well)
-        crate::afl_onetime_init();
 
         let parent_info = state.local.process_info.clone();
         let ppid = Pid::INIT;

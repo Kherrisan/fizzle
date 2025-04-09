@@ -59,8 +59,10 @@ pub fn pre_hook() -> Option<FizzleSingleton> {
             .init();
         log::info!("Logger initialized");
 
+        /*
         #[cfg(feature = "afl")]
         unsafe {
+            
             if !matches!(std::env::var("FIZZLE_SINGLEPROCESS"), Ok(s) if s.as_str() == "1") {
 
                 // These need to be called before __afl_manual_init().
@@ -81,6 +83,7 @@ pub fn pre_hook() -> Option<FizzleSingleton> {
 
             }
         }
+        */
     }
 
     unsafe { Some(crate::scheduler::fizzle_singleton()) }

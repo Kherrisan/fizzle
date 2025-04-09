@@ -170,7 +170,7 @@ impl FizzleState {
     /// Allocates and initizes all of Fizzle's state.
     pub fn new() -> Self {
         // NOTE: must go before `allocate_global_memory`, as this env variable gets set within it.
-        let is_first_process = matches!(env::var(FIZZLE_MEMORY_ENV), Err(_));
+        let is_first_process = env::var(FIZZLE_MEMORY_ENV).is_err();
         if is_first_process {
             // Set the process group ID of the main Fizzle process to itself.
             // This enables us to kill all processes in Fizzle when we detect a crash without
@@ -511,14 +511,70 @@ impl FizzleState {
         state
     }
 
+    pub fn reallocate_to_shared(old: *mut InterprocessState) {
+        let size = mem::size_of::<InterprocessState>();
+
+        log::debug!("allocating public shared memory object...");
+        let memfd = InterprocessState::interprocess_shmem_create();
+        log::debug!("allocated public shared memory object with fd {}", memfd);
+        env::set_var(FIZZLE_MEMORY_ENV, memfd.to_string());
+
+        let ret = unsafe {
+            libc::ftruncate(memfd, size as i64)
+        };
+        assert_eq!(
+            ret,
+            0,
+            "ftruncate() failed for interprocess memory: {}",
+            Errno::get_errno()
+        );
+
+        // 1. mmap the new location
+        let tmp_copy_ptr = unsafe {
+            libc::mmap(
+                ptr::null_mut(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                memfd,
+                0,
+            )
+        };
+
+        // 2. Copy data from old to new location
+        unsafe {
+            libc::memcpy(tmp_copy_ptr, old.cast(), size)
+        };
+
+        assert_eq!(unsafe { libc::munmap(tmp_copy_ptr, size) }, 0, "failed to unmap temporary shared map");
+        assert_eq!(unsafe { libc::munmap(old.cast(), size) }, 0, "failed to unmap temporary shared map");
+
+        let new = unsafe {
+            libc::mmap(
+                old.cast(),
+                size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                memfd,
+                0,
+            )
+        };
+
+        if new == libc::MAP_FAILED {
+            panic!("failed to mmap global memory: {}", Errno::get_errno());
+        }
+
+        env::set_var(FIZZLE_MEMORY_OFFSET_ENV, new.addr().to_string());
+    }
+
     /// Maps the memory to Fizzle's global shared state, creating a new shared memory object if this
     /// is the primary process.
     fn allocate_global_memory() -> &'static mut MaybeUninit<InterprocessState> {
         let size = mem::size_of::<InterprocessState>();
-        let is_singleprocess =
-            matches!(env::var(FIZZLE_SINGLEPROCESS_ENV), Ok(s) if s.as_str() == "1");
 
-        if is_singleprocess {
+        let is_first_process = env::var(FIZZLE_MEMORY_ENV).is_err();
+
+        if is_first_process {
             unsafe {
                 let location = libc::mmap(
                     ptr::null_mut(),
@@ -539,10 +595,6 @@ impl FizzleState {
                 return &mut *(location.cast::<MaybeUninit<InterprocessState>>());
             }
         }
-
-        // Shared memory doesn't play well with the forkserver, so we need to make sure that
-        // processes are forked *before* any shared memory is created.
-        crate::afl_onetime_init();
 
         let memfd = match env::var(FIZZLE_MEMORY_ENV) {
             Ok(var) => {
@@ -1785,6 +1837,7 @@ impl InterprocessState {
     }
 }
 
+#[repr(C)]
 pub struct InterprocessAllocator {
     pub heap: TlsfHeap,
     pub heap_memory: [MaybeUninit<u8>; FIZZLE_HEAP_SIZE],

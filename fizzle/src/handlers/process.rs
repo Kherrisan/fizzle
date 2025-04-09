@@ -185,9 +185,6 @@ impl Event for ProcessForkEvent {
                 Outcome::Yield(YieldUntil::Immediate)
             }
             ProcessForkState::RunFork => {
-                // Initialize AFL (forkservers and multi-process applications don't play well)
-                crate::afl_onetime_init();
-
                 state.mark_thread_ready(thread::current().id());
 
                 self.state = ProcessForkState::RunPostHandlers;

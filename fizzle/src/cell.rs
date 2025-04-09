@@ -36,6 +36,10 @@ impl<T> SequentialRefCell<T> {
     pub fn into_inner(self) -> T {
         self.inner.into_inner()
     }
+
+    pub fn as_ptr(&self) -> *mut T {
+        self.inner.as_ptr()
+    }
 }
 
 unsafe impl<T> Sync for SequentialRefCell<T> {}

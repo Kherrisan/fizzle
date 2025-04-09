@@ -7,7 +7,7 @@ use std::ffi::{CStr, CString};
 
 use fizzle_common::path::FilePath;
 
-use crate::constants::*;
+use crate::{constants::*, scheduler};
 use crate::errno::Errno;
 use crate::handlers::descriptor::Descriptor;
 use crate::handlers::id::*;
@@ -21,6 +21,10 @@ pub type CloneFunction = unsafe extern "C" fn(*mut libc::c_void) -> libc::c_int;
 hook_macros::hook! {
     unsafe fn fork() -> libc::pid_t => fizzle_fork(ctx) {
         crate::strace!("fork() -> ...");
+
+        // Initialize AFL (forkservers and multi-process applications don't play well)
+        scheduler::afl_onetime_init(&mut ctx);
+
         match Scheduler::handle_event(&mut ctx, ProcessForkEvent::new()) {
             Ok(pid) => {
                 crate::strace!("fork() -> {}", pid);
@@ -38,8 +42,11 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn vfork() -> libc::pid_t => fizzle_vfork(ctx) {
         // TODO: set `vfork` local flag to check for UB
-
         crate::strace!("vfork() -> ...");
+
+        // Initialize AFL (forkservers and multi-process applications don't play well)
+        scheduler::afl_onetime_init(&mut ctx);
+
         match Scheduler::handle_event(&mut ctx, ProcessForkEvent::new()) {
             Ok(pid) => {
                 crate::strace!("vfork() -> {}", pid);

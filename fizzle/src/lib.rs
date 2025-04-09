@@ -31,7 +31,7 @@ use std::ffi::VaList;
 use std::os::fd::RawFd;
 use std::ptr;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
 
 pub type GlobalRc<T> = Rc<RefCell<T>, GlobalHeap>;
@@ -144,28 +144,6 @@ pub enum WaitDuration {
     Timed(Duration),
     /// Waits indefinitely until the semaphore can be acquired.
     Indefinite,
-}
-
-fn afl_onetime_init() {
-    static IS_INITIALIZED: AtomicBool = AtomicBool::new(false);
-
-    if !IS_INITIALIZED.fetch_or(true, Ordering::Relaxed) {
-        #[cfg(feature = "pcr")]
-        unsafe {
-            crate::__afl_sharedmem_fuzzing = 1;
-        }
-
-        #[cfg(feature = "afl")]
-        unsafe {
-            crate::__afl_selective_coverage = 1;
-            crate::__afl_selective_coverage_start_off = 1;
-        }
-
-        #[cfg(feature = "afl")]
-        unsafe {
-            crate::__afl_manual_init();
-        }
-    }
 }
 
 /// Creates a new location in memory that is guaranteed to be unique to others.

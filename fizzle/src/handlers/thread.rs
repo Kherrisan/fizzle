@@ -283,9 +283,6 @@ impl Event for ThreadCreateEvent {
             ThreadCreateState::Start => {
                 self.state = ThreadCreateState::Finish;
 
-                // Initialize AFL (forkservers and multithreading don't play well)
-                crate::afl_onetime_init();
-
                 // SAFETY: `self.wrapper` is guaranteed to remain in scope untio `pt_wrapper_fn`
                 // is called; it copies the internal pointers in `self.wrapper`.
                 let thread_ctx = ThreadCreateContext {

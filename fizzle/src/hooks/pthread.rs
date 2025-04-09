@@ -9,6 +9,7 @@ use crate::handlers::mutex::*;
 use crate::handlers::rwlock::*;
 use crate::handlers::spinlock::*;
 use crate::handlers::thread::*;
+use crate::scheduler;
 use crate::scheduler::Scheduler;
 use crate::{hook_macros, WaitDuration};
 
@@ -42,6 +43,9 @@ hook_macros::hook! {
         arg: *mut libc::c_void
     ) -> libc::c_int => fizzle_pthread_create(ctx) {
         crate::strace!("pthread_create(thread={:?}, attr={:?}, start_routine={:?}, arg={:?}) -> ...", thread, attr, start_routine, arg);
+
+        // Initialize AFL (forkservers and multithreading don't play well)
+        scheduler::afl_onetime_init(&mut ctx);
 
         match Scheduler::handle_event(&mut ctx, ThreadCreateEvent::new(thread, attr, start_routine, arg)) {
             Ok(()) => {
