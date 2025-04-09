@@ -32,14 +32,8 @@ pub const FIZZLE_STREAM_BUFSIZ: usize = libc::BUFSIZ as usize;
 pub const FIZZLE_AFL_LOOP: usize = 1000;
 
 pub const FIZZLE_SOMAXCONN: usize = 64;
-pub const FIZZLE_MAX_SOCKADDRS: usize = 128;
-
-/// The maximum number of paths to files fizzle emulates.
-pub const FIZZLE_MAX_FILE_PATHS: usize = 128;
 
 pub const FIZZLE_BUFFER_LENGTH: usize = 262_144; // 256 KB per buffer (twice the Linux default for `/proc/sys/net/ipv4/tcp_rmem`)
-
-pub const FIZZLE_MAX_NAMED_SEMAPHORES: usize = 128;
 
 pub const FIZZLE_EPHEMERAL_PORT_START: u16 = 32768;
 pub const FIZZLE_EPHEMERAL_PORT_END: u16 = 61000;
