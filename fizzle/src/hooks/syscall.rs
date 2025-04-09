@@ -2,6 +2,7 @@ use std::time::Duration;
 use std::{mem, slice};
 
 use crate::errno::Errno;
+use crate::handlers::descriptor::*;
 use crate::handlers::entropy::*;
 use crate::handlers::futex::*;
 use crate::scheduler::Scheduler;
@@ -83,6 +84,18 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
     };
 
     let res = match number {
+        libc::SYS_close => {
+            let fd: libc::c_int = va_args.arg();
+            let descriptor_id = Descriptor::from_raw_fd(fd);
+
+            match Scheduler::handle_event(&mut ctx, DescriptorCloseEvent::new(descriptor_id)) {
+                Ok(()) => 0,
+                Err(e) => {
+                    e.set_errno();
+                    -1
+                },
+            }
+        }
         libc::SYS_io_setup => {
             crate::strace!("syscall(SYS_io_setup, ...) -> ...");
 
@@ -365,6 +378,11 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                 libc::FUTEX_CMP_REQUEUE_PI => unimplemented!("FUTEX_CMP_REQUEUE_PI"),
                 _ => panic!("SYS_futex syscall with unrecognized `futex_op` argument"),
             }
+        }
+        libc::SYS_membarrier => {
+            let cmd: libc::c_int = va_args.arg();
+            let flags: libc::c_int = va_args.arg();
+            hook_macros::real_syscall()(324, cmd, flags)
         }
         _ => panic!("syscall({}, ...) unsupported by Fizzle", number),
     };
