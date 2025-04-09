@@ -228,13 +228,9 @@ impl Event for GetAddressInfoEvent<'_> {
                     Err(_) => return Outcome::Error((Errno::EILSEQ, libc::EAI_SYSTEM)),
                 };
 
-                if template.ai_flags & libc::AI_NUMERICHOST == libc::AI_NUMERICHOST {
+                if let Ok(addr) = IpAddr::from_str(host) {
                     let mut info = Box::new(template.clone());
 
-                    let addr = match IpAddr::from_str(host) {
-                        Ok(addr) => addr,
-                        Err(_err) => return Outcome::Error((Errno::EIO, libc::EAI_NONAME)),
-                    };
                     let sockaddr = match addr {
                         IpAddr::V4(v4_addr) => {
                             if info.ai_family == libc::AF_UNSPEC {
@@ -274,90 +270,94 @@ impl Event for GetAddressInfoEvent<'_> {
                     info.ai_addrlen = len as u32;
 
                     return Outcome::Success(info);
-                }
 
-                // Otherwise, mock lookups for `node`
+                } else if template.ai_flags & libc::AI_NUMERICHOST == libc::AI_NUMERICHOST {
+                    return Outcome::Error((Errno::EIO, libc::EAI_NONAME))
+                } else {
 
-                let Ok(node) = node.to_str() else {
-                    log::warn!("non-UTF8 input `node` to getaddrinfo()");
-                    return Outcome::Error((Errno::EINVAL, libc::EAI_NONAME));
-                };
+                    // Otherwise, mock lookups for `node`
 
-                let mut addrs = Vec::new();
-
-                if template.ai_family == libc::AF_UNSPEC || template.ai_family == libc::AF_INET {
-                    match node {
-                        "localhost" => addrs.push(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
-                        _ => {
-                            log::warn!("getaddrinfo() with node `{}` has no IPv4 addrs assigned--giving default 192.168.0.1", node);
-                            addrs.push(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)));
-                        }
-                    }
-                }
-
-                if template.ai_family == libc::AF_UNSPEC || template.ai_family == libc::AF_INET6 {
-                    match node {
-                        "localhost" => {
-                            addrs.push(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)))
-                        }
-                        _ => {
-                            log::warn!("getaddrinfo() with node `{}` has no IPv4 addrs assigned--giving default [::10]", node);
-                            addrs.push(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 10)));
-                        }
-                    }
-                }
-
-                for addr in addrs {
-                    let mut info = Box::new(template.clone());
-
-                    let mut storage: Box<libc::sockaddr_storage> =
-                        Box::new(unsafe { MaybeUninit::zeroed().assume_init() });
-                    let storage_ptr: *mut libc::sockaddr_storage = &mut *storage;
-                    let storage_slice = unsafe {
-                        slice::from_raw_parts_mut(
-                            storage_ptr.cast(),
-                            mem::size_of::<libc::sockaddr_storage>(),
-                        )
+                    let Ok(node) = node.to_str() else {
+                        log::warn!("non-UTF8 input `node` to getaddrinfo()");
+                        return Outcome::Error((Errno::EINVAL, libc::EAI_NONAME));
                     };
 
-                    match addr {
-                        IpAddr::V4(v4) => {
-                            if template.ai_family == libc::AF_UNSPEC
-                                || template.ai_family == libc::AF_INET
-                            {
-                                let len = SockAddr::Ipv4(SocketAddrV4::new(v4, port))
-                                    .encode(storage_slice);
-                                info.ai_addr = Box::into_raw(storage).cast();
-                                info.ai_addrlen = len as u32;
-                                info.ai_family = libc::AF_INET;
-                            }
-                        }
-                        IpAddr::V6(v6) => {
-                            if template.ai_family == libc::AF_UNSPEC
-                                || template.ai_family == libc::AF_INET6
-                            {
-                                let len = SockAddr::Ipv6(SocketAddrV6::new(v6, port, 0, 0))
-                                    .encode(storage_slice);
-                                info.ai_addr = Box::into_raw(storage).cast();
-                                info.ai_addrlen = len.try_into().unwrap();
-                                info.ai_family = libc::AF_INET6;
+                    let mut addrs = Vec::new();
+
+                    if template.ai_family == libc::AF_UNSPEC || template.ai_family == libc::AF_INET {
+                        match node {
+                            "localhost" => addrs.push(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
+                            _ => {
+                                log::warn!("getaddrinfo() with node `{}` has no IPv4 addrs assigned--giving default 192.168.0.1", node);
+                                addrs.push(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)));
                             }
                         }
                     }
 
-                    let Some(next_record) = first_record.as_mut() else {
-                        first_record = Some(info);
-                        continue;
-                    };
+                    if template.ai_family == libc::AF_UNSPEC || template.ai_family == libc::AF_INET6 {
+                        match node {
+                            "localhost" => {
+                                addrs.push(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)))
+                            }
+                            _ => {
+                                log::warn!("getaddrinfo() with node `{}` has no IPv6 addrs assigned--giving default [::10]", node);
+                                addrs.push(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 10)));
+                            }
+                        }
+                    }
 
-                    let mut next_ptr: *mut libc::addrinfo = &mut **next_record;
+                    for addr in addrs {
+                        let mut info = Box::new(template.clone());
 
-                    unsafe {
-                        while !(*next_ptr).ai_next.is_null() {
-                            next_ptr = (*next_ptr).ai_next;
+                        let mut storage: Box<libc::sockaddr_storage> =
+                            Box::new(unsafe { MaybeUninit::zeroed().assume_init() });
+                        let storage_ptr: *mut libc::sockaddr_storage = &mut *storage;
+                        let storage_slice = unsafe {
+                            slice::from_raw_parts_mut(
+                                storage_ptr.cast(),
+                                mem::size_of::<libc::sockaddr_storage>(),
+                            )
+                        };
+
+                        match addr {
+                            IpAddr::V4(v4) => {
+                                if template.ai_family == libc::AF_UNSPEC
+                                    || template.ai_family == libc::AF_INET
+                                {
+                                    let len = SockAddr::Ipv4(SocketAddrV4::new(v4, port))
+                                        .encode(storage_slice);
+                                    info.ai_addr = Box::into_raw(storage).cast();
+                                    info.ai_addrlen = len as u32;
+                                    info.ai_family = libc::AF_INET;
+                                }
+                            }
+                            IpAddr::V6(v6) => {
+                                if template.ai_family == libc::AF_UNSPEC
+                                    || template.ai_family == libc::AF_INET6
+                                {
+                                    let len = SockAddr::Ipv6(SocketAddrV6::new(v6, port, 0, 0))
+                                        .encode(storage_slice);
+                                    info.ai_addr = Box::into_raw(storage).cast();
+                                    info.ai_addrlen = len.try_into().unwrap();
+                                    info.ai_family = libc::AF_INET6;
+                                }
+                            }
                         }
 
-                        (*next_ptr).ai_next = Box::into_raw(info).cast();
+                        let Some(next_record) = first_record.as_mut() else {
+                            first_record = Some(info);
+                            continue;
+                        };
+
+                        let mut next_ptr: *mut libc::addrinfo = &mut **next_record;
+
+                        unsafe {
+                            while !(*next_ptr).ai_next.is_null() {
+                                next_ptr = (*next_ptr).ai_next;
+                            }
+
+                            (*next_ptr).ai_next = Box::into_raw(info).cast();
+                        }
                     }
                 }
             }
