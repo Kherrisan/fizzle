@@ -73,9 +73,17 @@ hook_macros::hook! {
         log::warn!("`fopen()` partially unimplemented");
 
         let fd = if stream_mode.flags.contains(FileOpenFlags::CREATE) {
-            unsafe { libc::open(pathname, stream_mode.flags.bits(), access_mode.bits()) }
+            if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+                unsafe { libc::open(c"/dev/null".as_ptr(), stream_mode.flags.bits(), access_mode.bits()) }
+            } else {
+                unsafe { libc::open(pathname, stream_mode.flags.bits(), access_mode.bits()) }
+            }
         } else {
-            unsafe { libc::open(pathname, stream_mode.flags.bits()) }
+            if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+                unsafe { libc::open(c"/dev/null".as_ptr(), stream_mode.flags.bits(), access_mode.bits()) }
+            } else {
+                unsafe { libc::open(pathname, stream_mode.flags.bits()) }
+            }
         };
 
         if fd < 0 {
@@ -129,9 +137,17 @@ hook_macros::hook! {
         log::warn!("`fopen64()` partially unimplemented");
 
         let fd = if stream_mode.flags.contains(FileOpenFlags::CREATE) {
-            unsafe { libc::open(pathname, stream_mode.flags.bits(), access_mode.bits()) }
+            if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+                unsafe { libc::open(c"/dev/null".as_ptr(), stream_mode.flags.bits(), access_mode.bits()) }
+            } else {
+                unsafe { libc::open(pathname, stream_mode.flags.bits(), access_mode.bits()) }
+            }
         } else {
-            unsafe { libc::open(pathname, stream_mode.flags.bits()) }
+            if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+                unsafe { libc::open(c"/dev/null".as_ptr(), stream_mode.flags.bits(), access_mode.bits()) }
+            } else {
+                unsafe { libc::open(pathname, stream_mode.flags.bits()) }
+            }
         };
 
         if fd < 0 {
@@ -173,7 +189,7 @@ hook_macros::hook! {
         crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> ...", path_cstr, mode_cstr, stream);
 
         let Some(stream_mode) = FileStreamMode::from_cstr(mode_cstr) else {
-            crate::strace!("fopen64(pathname={:?}, mode={:?}) -> NULL (EINVAL)", path_cstr, mode_cstr);
+            crate::strace!("freopen(pathname={:?}, mode={:?}) -> NULL (EINVAL)", path_cstr, mode_cstr);
             Errno::EINVAL.set_errno();
             return ptr::null_mut()
         };
@@ -182,7 +198,12 @@ hook_macros::hook! {
             panic!("freopen() passed null `stream` parameter")
         };
 
-        let fd = libc::open(pathname, stream_mode.flags.bits());
+        let fd = if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+            unsafe { libc::open(c"/dev/null".as_ptr(), stream_mode.flags.bits()) }
+        } else {
+            unsafe { libc::open(pathname, stream_mode.flags.bits()) }
+        };
+
         if fd < 0 {
             // TODO: need to finish implementing
             crate::strace!("freopen(pathname={:?}, mode={:?}, stream={:?}) -> NULL", path_cstr, mode_cstr, stream);
@@ -195,7 +216,7 @@ hook_macros::hook! {
                 file_ptr.as_raw()
             }
             Err(e) => {
-                crate::strace!("fdopen(fd={}, mode={:?}) -> NULL ({})", fd, mode_cstr, e);
+                crate::strace!("freopen(fd={}, mode={:?}) -> NULL ({})", fd, mode_cstr, e);
                 e.set_errno();
                 ptr::null_mut()
             }
@@ -224,7 +245,12 @@ hook_macros::hook! {
             panic!("freopen64() passed null `stream` parameter")
         };
 
-        let fd = libc::open(pathname, stream_mode.flags.bits());
+        let fd = if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+            unsafe { libc::open(c"/dev/null".as_ptr(), stream_mode.flags.bits()) }
+        } else {
+            unsafe { libc::open(pathname, stream_mode.flags.bits()) }
+        };
+
         if fd < 0 {
             // TODO: need to finish implementing
             crate::strace!("freopen64(pathname={:?}, mode={:?}, stream={:?}) -> NULL", path_cstr, mode_cstr, stream);

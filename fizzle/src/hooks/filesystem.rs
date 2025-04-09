@@ -1,6 +1,7 @@
 use std::ffi::CStr;
 
 use fizzle_common::path::FilePath;
+use libc::CS;
 
 use crate::errno::Errno;
 use crate::handlers::file::*;
@@ -64,6 +65,11 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_open(ctx) {
         crate::strace!("open(pathname={:?}, flags={:?}, mode={:?}) -> ...", pathname, flags, mode);
 
+        let path_cstr = CStr::from_ptr(pathname);
+        if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+            return unsafe { libc::open(c"/dev/null".as_ptr(), flags, mode) };
+        }
+
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::open(pathname, flags, mode) };
 
@@ -116,6 +122,11 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_creat(ctx) {
         let open_flags = FileOpenFlags::CREATE | FileOpenFlags::TRUNC | FileOpenFlags::WRITEONLY;
 
+        let path_cstr = CStr::from_ptr(pathname);
+        if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+            return unsafe { libc::creat(pathname, mode) };
+        }
+
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::creat(pathname, mode) };
 
@@ -157,6 +168,11 @@ hook_macros::hook! {
         flags: libc::c_int,
         mode: libc::mode_t
     ) -> libc::c_int => fizzle_openat(ctx) {
+
+        let path_cstr = CStr::from_ptr(pathname);
+        if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+            return unsafe { libc::openat(dirfd, c"/dev/null".as_ptr(), flags, mode) };
+        }
 
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::openat(dirfd, pathname, flags, mode) };
