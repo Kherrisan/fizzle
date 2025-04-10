@@ -67,6 +67,7 @@ hook_macros::hook! {
 
         let path_cstr = CStr::from_ptr(pathname);
         if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+            log::info!("open() random /dev accessed--passing null bytes...");
             return unsafe { libc::open(c"/dev/null".as_ptr(), flags, mode) };
         }
 
@@ -122,11 +123,6 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_creat(ctx) {
         let open_flags = FileOpenFlags::CREATE | FileOpenFlags::TRUNC | FileOpenFlags::WRITEONLY;
 
-        let path_cstr = CStr::from_ptr(pathname);
-        if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
-            return unsafe { libc::creat(pathname, mode) };
-        }
-
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::creat(pathname, mode) };
 
@@ -171,6 +167,7 @@ hook_macros::hook! {
 
         let path_cstr = CStr::from_ptr(pathname);
         if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+            log::info!("openat() random /dev accessed--passing null bytes...");
             return unsafe { libc::openat(dirfd, c"/dev/null".as_ptr(), flags, mode) };
         }
 
@@ -599,157 +596,6 @@ hook_macros::hook! {
                 -1
             }
         }
-    }
-}
-
-hook_macros::hook! {
-    unsafe fn stat(
-        pathname: *mut libc::c_char,
-        statbuf: *mut libc::stat
-    ) -> libc::c_int => fizzle_stat(ctx) {
-        strace!("stat(pathname={:?}, statbuf={:?}) -> ...", pathname, statbuf);
-
-        #[cfg(feature = "passthroughfs")]
-        return unsafe { libc::stat(pathname, statbuf) };
-
-        let stat_mut = statbuf.as_mut().unwrap();
-
-        let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
-            strace!("stat(pathname={:?}, statbuf={:?}) -> -1 (EINVAL)", pathname, statbuf);
-            Errno::EINVAL.set_errno();
-            return -1
-        };
-
-
-        match Scheduler::handle_event(&mut ctx, StatEvent::new(StatSource::Path(relative_path), stat_mut, StatFlags::empty())) {
-            Ok(()) => {
-                strace!("stat(pathname={:?}, statbuf={:?}) -> 0", pathname, statbuf);
-                0
-            },
-            Err(e) => {
-                strace!("stat(pathname={:?}, statbuf={:?}) -> -1 ({})", pathname, statbuf, e);
-                e.set_errno();
-                -1
-            }
-        }
-    }
-}
-
-hook_macros::hook! {
-    unsafe fn lstat(
-        pathname: *mut libc::c_char,
-        statbuf: *mut libc::stat
-    ) -> libc::c_int => fizzle_lstat(ctx) {
-        strace!("lstat(pathname={:?}, statbuf={:?}) -> ...", pathname, statbuf);
-
-        #[cfg(feature = "passthroughfs")]
-        return unsafe { libc::lstat(pathname, statbuf) };
-
-        let stat_mut = statbuf.as_mut().unwrap();
-
-        let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
-            strace!("lstat(pathname={:?}, statbuf={:?}) -> -1 (EINVAL)", pathname, statbuf);
-            Errno::EINVAL.set_errno();
-            return -1
-        };
-
-
-        match Scheduler::handle_event(&mut ctx, StatEvent::new(StatSource::Path(relative_path), stat_mut, StatFlags::AT_SYMLINK_NOFOLLOW)) {
-            Ok(()) => {
-                strace!("lstat(pathname={:?}, statbuf={:?}) -> 0", pathname, statbuf);
-                0
-            },
-            Err(e) => {
-                strace!("lstat(pathname={:?}, statbuf={:?}) -> -1 ({})", pathname, statbuf, e);
-                e.set_errno();
-                -1
-            }
-        }
-    }
-}
-
-hook_macros::hook! {
-    unsafe fn fstat(
-        fd: libc::c_int,
-        statbuf: *mut libc::stat
-    ) -> libc::c_int => fizzle_fstat(ctx) {
-        strace!("fstat(fd={}, statbuf={:?}) -> ...", fd, statbuf);
-
-        #[cfg(feature = "passthroughfs")]
-        return unsafe { libc::fstat(fd, statbuf) };
-
-        let stat_mut = statbuf.as_mut().unwrap();
-
-        match Scheduler::handle_event(&mut ctx, StatEvent::new(StatSource::Descriptor(fd), stat_mut, StatFlags::empty())) {
-            Ok(()) => {
-                strace!("fstat(fd={}, statbuf={:?}) -> 0", fd, statbuf);
-                0
-            },
-            Err(e) => {
-                strace!("fstat(fd={}, statbuf={:?}) -> -1 ({})", fd, statbuf, e);
-                e.set_errno();
-                -1
-            }
-        }
-    }
-}
-
-hook_macros::hook! {
-    unsafe fn fstatat(
-        dirfd: libc::c_int,
-        pathname: *mut libc::c_char,
-        statbuf: *mut libc::stat,
-        flags: libc::c_int
-    ) -> libc::c_int => fizzle_fstatat(ctx) {
-        strace!("fstatat(dirfd={}, pathname={:?}, statbuf={:?}, flags={}) -> ...", dirfd, pathname, statbuf, flags);
-
-        #[cfg(feature = "passthroughfs")]
-        return unsafe { libc::fstatat(dirfd, pathname, statbuf, flags) };
-
-        let stat_mut = statbuf.as_mut().unwrap();
-
-        let stat_flags = StatFlags::from_bits_truncate(flags);
-
-        let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
-            strace!("fstatat(dirfd={}, pathname={:?}, statbuf={:?}, flags={}) -> -1 (EINVAL)", dirfd, pathname, statbuf, flags);
-            Errno::EINVAL.set_errno();
-            return -1
-        };
-
-        match Scheduler::handle_event(&mut ctx, StatEvent::new(StatSource::PathAt(relative_path, dirfd), stat_mut, stat_flags)) {
-            Ok(()) => {
-                strace!("fstatat(dirfd={}, pathname={:?}, statbuf={:?}, flags={}) -> 0", dirfd, pathname, statbuf, flags);
-                0
-            },
-            Err(e) => {
-                strace!("fstatat(dirfd={}, pathname={:?}, statbuf={:?}, flags={}) -> -1 ({})", dirfd, pathname, statbuf, flags, e);
-                e.set_errno();
-                -1
-            }
-        }
-    }
-}
-
-hook_macros::hook! {
-    unsafe fn statvfs(
-        path: *mut libc::c_char,
-        buf: *mut libc::statvfs
-    ) -> libc::c_int => fizzle_statvfs(_ctx) {
-        #[cfg(feature = "passthroughfs")]
-        return unsafe { libc::statvfs(path, buf) };
-
-        unimplemented!("statvfs()")
-    }
-}
-
-hook_macros::hook! {
-    unsafe fn fstatvfs(
-        fd: libc::c_int,
-        buf: *mut libc::statvfs
-    ) -> libc::c_int => fizzle_fstatvfs(_ctx) {
-        #[cfg(feature = "passthroughfs")]
-        return unsafe { libc::fstatvfs(fd, buf) };
-        unimplemented!("fstatvfs()")
     }
 }
 

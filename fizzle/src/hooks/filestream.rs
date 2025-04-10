@@ -74,12 +74,14 @@ hook_macros::hook! {
 
         let fd = if stream_mode.flags.contains(FileOpenFlags::CREATE) {
             if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+                log::info!("fopen() random /dev accessed--passing null bytes...");
                 unsafe { libc::open(c"/dev/null".as_ptr(), stream_mode.flags.bits(), access_mode.bits()) }
             } else {
                 unsafe { libc::open(pathname, stream_mode.flags.bits(), access_mode.bits()) }
             }
         } else {
             if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+                log::info!("fopen() random /dev accessed--passing null bytes...");
                 unsafe { libc::open(c"/dev/null".as_ptr(), stream_mode.flags.bits(), access_mode.bits()) }
             } else {
                 unsafe { libc::open(pathname, stream_mode.flags.bits()) }
@@ -138,12 +140,14 @@ hook_macros::hook! {
 
         let fd = if stream_mode.flags.contains(FileOpenFlags::CREATE) {
             if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+                log::info!("fopen64() random /dev accessed--passing null bytes...");
                 unsafe { libc::open(c"/dev/null".as_ptr(), stream_mode.flags.bits(), access_mode.bits()) }
             } else {
                 unsafe { libc::open(pathname, stream_mode.flags.bits(), access_mode.bits()) }
             }
         } else {
             if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+                log::info!("fopen64() random /dev accessed--passing null bytes...");
                 unsafe { libc::open(c"/dev/null".as_ptr(), stream_mode.flags.bits(), access_mode.bits()) }
             } else {
                 unsafe { libc::open(pathname, stream_mode.flags.bits()) }

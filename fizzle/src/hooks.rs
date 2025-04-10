@@ -25,6 +25,7 @@ pub mod semaphore;
 pub mod signal;
 pub mod sleep;
 pub mod socket;
+pub mod stat;
 pub mod syscall;
 pub mod sysv_mq;
 pub mod time;
