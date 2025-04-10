@@ -9,6 +9,8 @@ use crate::WaitDuration;
 
 use super::mutex::MutexPtr;
 
+static COND_STATIC_INIT: libc::pthread_cond_t = libc::PTHREAD_COND_INITIALIZER;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CondVarPtr(usize);
 
@@ -83,6 +85,15 @@ impl Event for CondDestroyEvent {
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let Some(cond_info) = state.local.condvars.remove(&self.cond) else {
+            if unsafe {
+                libc::memcmp(
+                    self.cond.to_mut_ptr().cast::<libc::c_void>(),
+                    ptr::addr_of!(COND_STATIC_INIT).cast::<libc::c_void>(),
+                    mem::size_of::<libc::pthread_cond_t>(),
+                ) == 0
+            } {
+                return Outcome::Success(())
+            }
             panic!("[UB] `pthread_cond_destroy()` called on uninitialized condvar");
         };
 
@@ -113,8 +124,6 @@ impl Event for CondSignalEvent {
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        static COND_STATIC_INIT: libc::pthread_cond_t = libc::PTHREAD_COND_INITIALIZER;
-
         if let Some(cond_info) = state.local.condvars.get_mut(&self.cond) {
             if let Some(thread_id) = cond_info.waiting.pop_front() {
                 cond_info.ready.insert(thread_id);
@@ -154,8 +163,6 @@ impl Event for CondBroadcastEvent {
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        static COND_STATIC_INIT: libc::pthread_cond_t = libc::PTHREAD_COND_INITIALIZER;
-
         if let Some(cond_info) = state.local.condvars.get_mut(&self.cond) {
             let mut waiting_queue = VecDeque::new();
             mem::swap(&mut waiting_queue, &mut cond_info.waiting);
@@ -216,8 +223,6 @@ impl Event for CondWaitEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        static COND_STATIC_INIT: libc::pthread_cond_t = libc::PTHREAD_COND_INITIALIZER;
-
         match self.state {
             CondWaitState::Start => {
                 self.state = CondWaitState::AwaitCond;
