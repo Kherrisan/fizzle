@@ -51,7 +51,7 @@ impl Event for BarrierInitEvent {
             .insert(self.barrier, BarrierInfo::new(self.count))
             .is_some()
         {
-            panic!("[UB] `pthread_mutex_init()` called twice on one mutex");
+            panic!("[UB] `pthread_barrier_init()` called twice on one mutex");
         }
 
         Outcome::Success(())
