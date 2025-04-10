@@ -81,7 +81,7 @@ impl FizzleSingleton {
     }
 }
 
-pub fn afl_onetime_init(state: &mut FizzleSingleton) {
+pub fn afl_onetime_init(ctx: &mut FizzleSingleton) {
     static IS_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
     // True if this is not the first process created with Fizzle
@@ -111,15 +111,15 @@ pub fn afl_onetime_init(state: &mut FizzleSingleton) {
             // Transition memory to being shared rather than anonymous
             
             let alloc = ptr::from_ref(*FIZZLE_ALLOC.get().unwrap()).cast_mut();
-            let state = ptr::from_mut(state.acquire().global);
+            let state = ptr::from_mut(ctx.acquire().global);
 
             unsafe {
                 reallocate_to_shared(alloc);
                 FizzleState::reallocate_to_shared(state);
+                // TODO: will this mess with process-shared semaphores? The'll technically have
+                // the same virtual address, but the underlying address will have changed
             }
         }
-
-
     }
 }
 
@@ -1676,11 +1676,14 @@ impl Scheduler {
         let plugins = state.global.plugins.clone();
 
         for plugin_info in plugins {
-            plugin_info.borrow_mut().read_buf.clear();
-            plugin_info.borrow_mut().write_buf.clear();
+            let mut plugin_info_mut = plugin_info.borrow_mut();
+            plugin_info_mut.read_buf.clear();
+            plugin_info_mut.read_idx = 0;
+            plugin_info_mut.write_buf.clear();
+            plugin_info_mut.write_idx = 0;
 
-            state.lower_polled(&plugin_info.borrow_mut().read_polled);
-            state.raise_polled(&plugin_info.borrow_mut().write_polled);
+            state.lower_polled(&plugin_info_mut.read_polled);
+            state.raise_polled(&plugin_info_mut.write_polled);
         }
 
         // Reset per-round fuzzing clients
@@ -1807,6 +1810,7 @@ impl Scheduler {
         #[cfg(feature = "pcr")]
         unsafe {
             let rounds = if crate::__afl_connected == 0 {
+                log::warn!("__afl_connected was 0--only 1 round of fuzzing");
                 1
             } else {
                 state.global.persistent_rounds as libc::c_uint
@@ -1867,8 +1871,7 @@ impl Scheduler {
         }
 
         if state.global.fuzz_input.is_empty() {
-            log::error!("failed to read any fuzzing input in--exiting");
-            unsafe { libc::_exit(0) }
+            panic!("failed to read any fuzzing input in");
         }
 
         state.global.time_fuzz_idx = 0;
