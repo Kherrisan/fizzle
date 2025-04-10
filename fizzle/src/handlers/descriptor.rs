@@ -463,7 +463,7 @@ impl Event for DescriptorDuplicateEvent {
             // `ctx`
             match DescriptorCloseEvent::new(new_fd).run(state) {
                 Outcome::Success(()) => (),
-                Outcome::Error(_) => unreachable!("internal state inconsistency"),
+                Outcome::Error(_) => log::error!("internal state inconsistency--descriptor close returned error (could be due to AFL fd 198/199)"),
                 _ => unreachable!(),
             }
         }
