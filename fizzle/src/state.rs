@@ -495,9 +495,28 @@ impl FizzleState {
             comptime::populate_plugins(&mut endpoints);
             log::info!("comptime-generated plugins populated.");
 
+            let tmpfiles = comptime::tmpfiles();
+            for tmpfile in tmpfiles.iter() {
+                if let Err(e) = std::fs::remove_file(tmpfile) {
+                    log::warn!("error removing tmpfile {}: {:?}", tmpfile, e);
+                }
+            }
+
+            let tmpfolders = comptime::tmpfolders();
+            for tmpfolder in tmpfolders.iter() {
+                if let Err(e) = std::fs::remove_dir_all(tmpfolder) {
+                    log::warn!("error removing tmpfolder {}: {:?}", tmpfolder, e);
+                }
+                if let Err(e) = std::fs::create_dir(tmpfolder) {
+                    panic!("could not create tmpfolder {}: {:?}", tmpfolder, e);
+                }
+            }
+
             state.local.main_state = Some(MainProcessState {
                 onstartup_commands,
                 onready_commands,
+                tmpfiles,
+                tmpfolders,
                 pasture: HashMap::default(),
             });
 
@@ -1177,6 +1196,8 @@ pub struct InheritedState {
 pub struct MainProcessState {
     pub onstartup_commands: Vec<Command>,
     pub onready_commands: Vec<Command>,
+    pub tmpfiles: Vec<&'static str>,
+    pub tmpfolders: Vec<&'static str>,
     pub pasture: HashMap<CowId, CowInfo>,
 }
 

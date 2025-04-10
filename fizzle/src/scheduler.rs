@@ -769,6 +769,7 @@ impl TerminateProcessTask {
 
         if pid == Pid::PRIMARY {
             log::error!("main process forcibly terminated");
+
             unsafe {
                 libc::_exit(-libc::SIGTERM); // Same value as SIGTERM sighandler; nullifies race condition
             }
@@ -1641,6 +1642,23 @@ impl Scheduler {
     fn round_complete(ctx: &mut FizzleSingleton) {
         afl_onetime_init(ctx);
         let mut state = ctx.acquire();
+
+        let main_state_ref = state.local.main_state.as_ref().unwrap();
+        for tmpfile in main_state_ref.tmpfiles.iter() {
+            if let Err(e) = std::fs::remove_file(tmpfile) {
+                log::warn!("error removing tmpfile {}: {:?}", tmpfile, e);
+            }
+        }
+
+        for tmpfolder in main_state_ref.tmpfolders.iter() {
+            if let Err(e) = std::fs::remove_dir_all(tmpfolder) {
+                log::warn!("error removing tmpfolder {}: {:?}", tmpfolder, e);
+            }
+            if let Err(e) = std::fs::create_dir(tmpfolder) {
+                panic!("could not create tmpfolder {}: {:?}", tmpfolder, e);
+            }
+        }
+
         Scheduler::prepare_fuzz_input(&mut state);
 
         // Reset fuzz endpoint state (e.g. endpoints configured with the `fuzz` option)

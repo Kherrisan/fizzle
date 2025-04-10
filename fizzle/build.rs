@@ -19,6 +19,10 @@ pub struct FizzleConfiguration {
     pub io: HashMap<IoEndpoint, IoInputVariant>,
     #[serde(default)]
     pub process: Vec<ProcessConfiguration>,
+    #[serde(default)]
+    pub tmpfiles: Vec<String>,
+    #[serde(default)]
+    pub tmpfolders: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -184,6 +188,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let plugins_impl = gen_populate_plugins(&config);
     let (onstartup_process_impl, onready_process_impl) = gen_processes(&config);
 
+    let tmpfiles = config.tmpfiles;
+    let tmpfolders = config.tmpfolders;
+
     let final_tokens = quote::quote! {
         #[allow(unused)]
         use fizzle_plugin::{IoEndpointVariant, Plugin, PluginModule};
@@ -214,6 +221,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         pub fn populate_onready_processes(#[allow(unused)] processes: &mut Vec<std::process::Command>) {
             #onready_process_impl
+        }
+
+        pub fn tmpfiles() -> Vec<&'static str> {
+            vec![#(#tmpfiles),*]
+        }
+
+        pub fn tmpfolders() -> Vec<&'static str> {
+            vec![#(#tmpfolders),*]
         }
     };
     fs::write("src/comptime.rs", final_tokens.to_string())?;
