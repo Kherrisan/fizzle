@@ -393,7 +393,7 @@ impl Event for StreamCreateEvent<'_> {
                 };
 
                 if let FileStreamSource::Descriptor(_fd) = file_obj.source {
-                    todo!("implement fd cleanup on frepoen failure")
+                    log::error!("TODO: implement fd cleanup on frepoen failure");
                 }
 
                 *file_obj = new_file_obj;
