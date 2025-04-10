@@ -32,6 +32,7 @@ pub enum MutexKind {
     Fast,
     Recursive,
     ErrorChecking,
+    Adaptive
 }
 
 impl Display for MutexKind {
@@ -40,6 +41,7 @@ impl Display for MutexKind {
             Self::Fast => f.write_str("PTHREAD_MUTEX_FAST_NP"),
             Self::ErrorChecking => f.write_str("PTHREAD_MUTEX_ERRORCHECK_NP"),
             Self::Recursive => f.write_str("PTHREAD_MUTEX_RECURSIVE_NP"),
+            Self::Adaptive => f.write_str("PTHREAD_MUTEX_ADAPTIVE_NP"),
         }
     }
 }
@@ -219,7 +221,7 @@ impl Event for MutexLockEvent {
                         if holding_thread == current_thread {
                             match mutex_info.kind {
                                 // Suspend calling thread forever
-                                MutexKind::Fast => {
+                                MutexKind::Fast | MutexKind::Adaptive => {
                                     log::error!(
                                         "[Deadlock] Thread locking a mutex it already holds"
                                     );

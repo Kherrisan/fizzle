@@ -561,6 +561,7 @@ hook_macros::hook! {
                 PTHREAD_MUTEX_FAST_NP => MutexKind::Fast,
                 PTHREAD_MUTEX_RECURSIVE_NP => MutexKind::Recursive,
                 PTHREAD_MUTEX_ERRORCHECK_NP => MutexKind::ErrorChecking,
+                libc::PTHREAD_MUTEX_ADAPTIVE_NP => MutexKind::Adaptive,
                 _ => {
                     crate::strace!("pthread_mutex_init(mutex={:?}, attr={{type={}, robust={}}}) -> -1 (EINVAL)", lock, kind, robustness);
                     Errno::EINVAL.set_errno();
