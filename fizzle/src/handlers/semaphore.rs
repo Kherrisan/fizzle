@@ -59,7 +59,7 @@ impl Event for SemInitEvent {
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         if self.pshared {
-            panic!("shared anonymous semaphores unsupported by fizzle")
+            log::error!("shared anonymous semaphores unsupported by fizzle")
         }
 
         if state
