@@ -1138,6 +1138,54 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
+    unsafe fn fseeko64(
+        stream: *mut libc::FILE,
+        offset: libc::off_t,
+        whence: libc::c_int
+    ) -> libc::c_int => fizzle_fseeko64(ctx) {
+        crate::strace!("fseeko(stream={:?}, offset={}, whence={}) -> ...", stream, offset, whence);
+
+        let Some(file_ptr) = FilePtr::from_raw(stream) else {
+            panic!("invalid FILE* pointer passed to fseeko64()")
+        };
+
+        let position = match whence {
+            libc::SEEK_SET => SeekPosition::Start,
+            libc::SEEK_CUR => SeekPosition::Current,
+            libc::SEEK_END => SeekPosition::End,
+            _ => {
+                crate::strace!("fseeko64(stream={:?}, offset={}, whence={}) -> -1 (EINVAL)", stream, offset, whence);
+                Errno::EINVAL.set_errno();
+                return -1
+            }
+        };
+
+        match Scheduler::handle_event(&mut ctx, StreamFlushEvent::new(Some(file_ptr), false)) {
+            Ok(()) => (),
+            Err(_) => {
+                let e = Errno::get_errno();
+                log::warn!("flush during fseeko64() failed: {}", e);
+                crate::strace!("__fseeko(stream={:?}, offset={}, whence={}) -> -1 (EINVAL)", stream, offset, whence);
+                e.set_errno();
+                return -1
+            }
+        }
+
+        match Scheduler::handle_event(&mut ctx, StreamSeekEvent::new(file_ptr, position, offset as i64, false)) {
+            Ok(_) => {
+                crate::strace!("fseeko64(stream={:?}, offset={}, whence={}) -> 0", stream, offset, whence);
+                0
+            }
+            Err(e) => {
+                crate::strace!("fseeko64(stream={:?}, offset={}, whence={}) -> -1 ({})", stream, offset, whence, e);
+                e.set_errno();
+                -1
+            }
+        }
+    }
+}
+
+hook_macros::hook! {
     unsafe fn ftell(
         stream: *mut libc::FILE
     ) -> libc::c_long => fizzle_ftell(ctx) {
@@ -1170,6 +1218,26 @@ hook_macros::hook! {
         match Scheduler::handle_event(&mut ctx, StreamTellEvent::new(file_ptr)) {
             Ok(offset) => {
                 crate::strace!("ftello(stream={:?}) -> {}", stream, offset);
+                offset as libc::off_t
+            }
+            Err(()) => unreachable!(),
+        }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn ftello64(
+        stream: *mut libc::FILE
+    ) -> libc::c_long => fizzle_ftello64(ctx) {
+        crate::strace!("ftello64(stream={:?}) -> ...", stream);
+
+        let Some(file_ptr) = FilePtr::from_raw(stream) else {
+            panic!("invalid FILE* pointer passed to ftello64()")
+        };
+
+        match Scheduler::handle_event(&mut ctx, StreamTellEvent::new(file_ptr)) {
+            Ok(offset) => {
+                crate::strace!("ftello64(stream={:?}) -> {}", stream, offset);
                 offset as libc::off_t
             }
             Err(()) => unreachable!(),
