@@ -108,6 +108,15 @@ impl Event for DescriptorCloseEvent {
             return Outcome::Success(()) // Mask stdout, stderr
         }
 
+        #[cfg(feature = "quikcov")]
+        if let Ok(fd_str) = std::env::var("QUIKCOV_LDPRELOAD_PIPE_FD") {
+            let fd: RawFd = fd_str.parse().unwrap();
+            if self.fd.as_raw_fd() == fd {
+                return Outcome::Success(())
+            }
+        }
+
+
         let Some(fd_info) = state.local.fds.get(&self.fd) else {
             #[cfg(not(feature = "passthroughfs"))]
             return Outcome::Error(Errno::EBADF);

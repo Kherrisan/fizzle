@@ -426,6 +426,20 @@ impl FizzleState {
                 },
             );
 
+            #[cfg(feature = "quikcov")]
+            if let Ok(quikcov_fd) = std::env::var("QUIKCOV_LDPRELOAD_PIPE_FD") {
+                let fd: RawFd = quikcov_fd.parse().unwrap();
+                local.fds.insert(
+                    Descriptor::from_raw_fd(fd),
+                    DescriptorInfo {
+                        close_on_exec: false,
+                        nonblocking: false,
+                        is_passthrough: true,
+                        resource: FdResource::Opaque,
+                    },
+                );
+            }
+
             local.initialize_thread(tid, None);
         }
 

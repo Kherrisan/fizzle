@@ -14,6 +14,7 @@ afl = []
 # NOTE: requires `AFL_PERSISTENT=1` to work
 pcr = ["afl"]
 passthroughfs = []
+quikcov = []
 
 [build-dependencies]
 proc-macro2 = { version = "1.0" }
