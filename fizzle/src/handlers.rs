@@ -3,6 +3,7 @@ pub mod condvar;
 pub mod descriptor;
 pub mod directory;
 pub mod entropy;
+pub mod env;
 pub mod epoll;
 pub mod eventfd;
 pub mod file;

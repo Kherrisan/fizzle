@@ -110,6 +110,12 @@ impl<'a> FileStreamMode<'a> {
 
         let flags = match bytes.next()? {
             (_, b'r') => {
+                let mut flags = None;
+                if bytes.peek().map(|&(_, c)| c) == Some(b'+') {
+                    bytes.next();
+                    flags = Some(FileOpenFlags::READWRITE);
+                }
+
                 match bytes.peek() {
                     Some(&(_, b'b')) => {
                         bytes.next();
@@ -122,7 +128,9 @@ impl<'a> FileStreamMode<'a> {
                     _ => (),
                 }
 
-                if bytes.peek().map(|&(_, c)| c) == Some(b'+') {
+                if let Some(flags) = flags {
+                    flags
+                } else if bytes.peek().map(|&(_, c)| c) == Some(b'+') {
                     bytes.next();
                     FileOpenFlags::READWRITE
                 } else {
@@ -130,6 +138,12 @@ impl<'a> FileStreamMode<'a> {
                 }
             }
             (_, b'w') => {
+                let mut flags = None;
+                if bytes.peek().map(|&(_, c)| c) == Some(b'+') {
+                    bytes.next();
+                    flags = Some(FileOpenFlags::READWRITE | FileOpenFlags::CREATE | FileOpenFlags::TRUNC);
+                }
+
                 match bytes.peek() {
                     Some(&(_, b'b')) => {
                         bytes.next();
@@ -142,7 +156,9 @@ impl<'a> FileStreamMode<'a> {
                     _ => (),
                 }
 
-                if bytes.peek().map(|&(_, c)| c) == Some(b'+') {
+                if let Some(flags) = flags {
+                    flags
+                } else if bytes.peek().map(|&(_, c)| c) == Some(b'+') {
                     bytes.next();
                     FileOpenFlags::READWRITE | FileOpenFlags::CREATE | FileOpenFlags::TRUNC
                 } else {
@@ -150,6 +166,12 @@ impl<'a> FileStreamMode<'a> {
                 }
             }
             (_, b'a') => {
+                let mut flags = None;
+                if bytes.peek().map(|&(_, c)| c) == Some(b'+') {
+                    bytes.next();
+                    flags = Some(FileOpenFlags::READWRITE | FileOpenFlags::CREATE | FileOpenFlags::APPEND);
+                }
+
                 match bytes.peek() {
                     Some(&(_, b'b')) => {
                         bytes.next();
@@ -162,7 +184,9 @@ impl<'a> FileStreamMode<'a> {
                     _ => (),
                 }
 
-                if bytes.peek().map(|&(_, c)| c) == Some(b'+') {
+                if let Some(flags) = flags {
+                    flags
+                } else if bytes.peek().map(|&(_, c)| c) == Some(b'+') {
                     bytes.next();
                     FileOpenFlags::READWRITE | FileOpenFlags::CREATE | FileOpenFlags::APPEND
                 } else {

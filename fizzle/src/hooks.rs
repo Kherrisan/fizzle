@@ -4,6 +4,7 @@ pub mod aio;
 pub mod dir;
 pub mod entropy;
 pub mod eventfd;
+pub mod env;
 pub mod fanotify;
 pub mod fd;
 pub mod filestream;

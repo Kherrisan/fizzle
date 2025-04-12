@@ -14,6 +14,8 @@ pub const FIZZLE_SINGLEPROCESS_ENV: &str = "FIZZLE_SINGLEPROCESS";
 
 pub const FIZZLE_UID_ENV: &str = "FIZZLE_UID";
 
+pub const FIZZLE_LOOP_ENV: &str = "FIZZLE_PERSISTENT_LOOP";
+
 pub const FIZZLE_TICK_ENV: &str = "FIZZLE_TICK";
 pub const FIZZLE_TIMEOUT_ENV: &str = "FIZZLE_TIMEOUT";
 
@@ -28,8 +30,6 @@ pub const FIZZLE_STREAM_BUFSIZ: usize = libc::BUFSIZ as usize;
 // pub const FIZZLE_NOEXIT_ENV: &str = "FIZZLE_NOEXIT";
 
 // Static buffers
-
-pub const FIZZLE_AFL_LOOP: usize = 1000;
 
 pub const FIZZLE_SOMAXCONN: usize = 64;
 

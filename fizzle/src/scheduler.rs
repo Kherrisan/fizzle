@@ -88,21 +88,23 @@ pub fn afl_onetime_init(ctx: &mut FizzleSingleton) {
     let is_first_process = env::var(FIZZLE_MEMORY_ENV).is_err();
 
     if is_first_process && !IS_INITIALIZED.fetch_or(true, Ordering::Relaxed) {
-        #[cfg(feature = "pcr")]
-        unsafe {
-            crate::__afl_sharedmem_fuzzing = 1;
-        }
-
         #[cfg(feature = "afl")]
         unsafe {
             crate::__afl_selective_coverage = 1;
             crate::__afl_selective_coverage_start_off = 1;
         }
 
+        #[cfg(feature = "pcr")]
+        unsafe {
+            crate::__afl_sharedmem_fuzzing = 1;
+        }   
+
+
         #[cfg(feature = "afl")]
         unsafe {
             crate::__afl_manual_init();
         }
+
 
         let is_singleprocess =
             matches!(env::var(FIZZLE_SINGLEPROCESS_ENV), Ok(s) if s.as_str() == "1");
@@ -771,7 +773,7 @@ impl TerminateProcessTask {
             log::error!("main process forcibly terminated");
 
             unsafe {
-                libc::_exit(-libc::SIGTERM); // Same value as SIGTERM sighandler; nullifies race condition
+                libc::exit(-libc::SIGTERM); // Same value as SIGTERM sighandler; nullifies race condition
             }
         }
 
@@ -1811,7 +1813,7 @@ impl Scheduler {
         if !state.global.fuzz_input.is_empty() {
             // Only one input per harness execution--end here
             unsafe {
-                libc::_exit(0);
+                libc::exit(0);
             }
         }
 
@@ -1833,11 +1835,14 @@ impl Scheduler {
             } else {
                 state.global.persistent_rounds as libc::c_uint
             };
+
+            let fuzz_ptr = crate::__afl_fuzz_ptr;
+
             if crate::__afl_persistent_loop(rounds) == 0 {
-                libc::_exit(0); // _exit to avoid `atexit` handlers that would reduce efficiency
+                libc::exit(0); // _exit to avoid `atexit` handlers that would reduce efficiency
             }
 
-            if crate::__afl_fuzz_ptr.is_null() {
+            if fuzz_ptr.is_null() {
                 panic!("__afl_fuzz_ptr was null--is shared-memory fuzzing enabled?")
                 /*
                 let read_amount =
@@ -1849,7 +1854,7 @@ impl Scheduler {
                 */
             } else {
                 let afl_buf =
-                    slice::from_raw_parts(crate::__afl_fuzz_ptr, *crate::__afl_fuzz_len as usize);
+                    slice::from_raw_parts(fuzz_ptr, *crate::__afl_fuzz_len as usize);
                 state.global.fuzz_input.extend_from_slice(afl_buf);
 
                 state

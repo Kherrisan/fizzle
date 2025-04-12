@@ -217,7 +217,7 @@ unsafe extern "C" fn fizzle_handle_term_signal(signum: libc::c_int) {
     // TODO: this is important for multi-processed programs, but it doesn't play well with AFL++...
     #[cfg(not(feature = "afl"))]
     libc::kill(0, signum);
-    libc::_exit(-signum);
+    libc::exit(-signum);
 }
 
 /// Utility for logging the `strace`-formatted output of each glibc call.

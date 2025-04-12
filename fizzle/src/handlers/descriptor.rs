@@ -103,7 +103,6 @@ impl Event for DescriptorCloseEvent {
         }
 
         // TODO: temporary patch--fix
-        #[cfg(feature = "afl")]
         if self.fd.as_raw_fd() == 1 || self.fd.as_raw_fd() == 2 {
             return Outcome::Success(()) // Mask stdout, stderr
         }
@@ -173,15 +172,11 @@ impl Event for DescriptorCloseEvent {
             }
         }
 
-        // Destroy the underlying file descriptor in use.
+        // Destroy the underlying file descriptor in use (including for passthrough descriptors).
         match &fd_info.resource {
             FdResource::Stdin | FdResource::Stdout | FdResource::Stderr => (),
             _ => unsafe { libc::close(self.fd.as_raw_fd()); },
         };
-
-        if fd_info.is_passthrough {
-            unsafe { libc::close(self.fd.as_raw_fd()); }
-        }
 
         state.local.fds.remove(&self.fd);
         Outcome::Success(())

@@ -184,6 +184,11 @@ impl FizzleState {
             }
         }
 
+        #[cfg(feature = "pcr")]
+        unsafe {
+            crate::__afl_sharedmem_fuzzing = 1;
+        }
+
         // Set signal mask to be inherited by all threads/processes of Fizzle
         let new_set = SignalSet::SIGPIPE.to_sigset();
         let mut old_set = SignalSet::empty().to_sigset();
@@ -1442,7 +1447,13 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).inherited_state) = None;
             *ptr::addr_of_mut!((*state).mask_stderr) = false;
 
-            *ptr::addr_of_mut!((*state).persistent_rounds) = FIZZLE_AFL_LOOP; // TODO: make configurable
+            let rounds = if let Ok(loop_str) = std::env::var(FIZZLE_LOOP_ENV) {
+                loop_str.parse().unwrap()
+            } else {
+                1000
+            };
+
+            *ptr::addr_of_mut!((*state).persistent_rounds) = rounds;
             *ptr::addr_of_mut!((*state).next_stream_id) = StreamId::from(0);
             *ptr::addr_of_mut!((*state).next_ephemeral_port) = FIZZLE_EPHEMERAL_PORT_START;
             *ptr::addr_of_mut!((*state).next_cow_id) = CowId::first();
