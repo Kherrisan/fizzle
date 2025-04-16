@@ -18,6 +18,10 @@ use crate::scheduler::Scheduler;
 
 pub type CloneFunction = unsafe extern "C" fn(*mut libc::c_void) -> libc::c_int;
 
+// Note: we don't hook __libc_start_main, but we *could* if we need to for actions that immediately precede the beginning of program execution.
+// This is a Linux-specific glibc call, however, so it wouldn't be portable generally to *nix.
+
+
 hook_macros::hook! {
     unsafe fn fork() -> libc::pid_t => fizzle_fork(ctx) {
         crate::strace!("fork() -> ...");

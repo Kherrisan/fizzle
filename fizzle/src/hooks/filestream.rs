@@ -759,6 +759,27 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
+    unsafe fn getline(
+        lineptr: *mut *mut libc::c_char,
+        n: libc::size_t,
+        stream: *mut libc::FILE
+    ) -> *mut libc::c_char => fizzle_getline(ctx) {
+        unimplemented!()
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn getdelim(
+        lineptr: *mut *mut libc::c_char,
+        n: libc::size_t,
+        delim: libc::c_int,
+        stream: *mut libc::FILE
+    ) -> *mut libc::c_char => fizzle_getdelim(ctx) {
+        unimplemented!()
+    }
+}
+
+hook_macros::hook! {
     unsafe fn fgets_unlocked(
         s: *mut libc::c_char,
         size: libc::c_int,
