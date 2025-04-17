@@ -152,29 +152,6 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
-    unsafe fn random() -> libc::c_uint => fizzle_random(ctx) {
-        const UINT_SIZE: usize = mem::size_of::<libc::c_uint>();
-        let mut int_array = [0u8; UINT_SIZE];
-
-        crate::strace!("random() -> ...");
-        match Scheduler::handle_event(&mut ctx, GetEntropyEvent::new(int_array.as_mut_slice())) {
-            Ok(UINT_SIZE) => {
-                let out = libc::c_uint::from_ne_bytes(int_array);
-                crate::strace!("random() -> {}", out);
-                out
-            },
-            _ => unreachable!(),
-        }
-    }
-}
-
-hook_macros::hook! {
-    unsafe fn srandom(_seed: libc::c_uint) => fizzle_srandom(_ctx) {
-        // Do nothing
-    }
-}
-
-hook_macros::hook! {
     unsafe fn srand48(_seedval: libc::c_long) => fizzle_srand48(_ctx) {
         // Do nothing
     }
