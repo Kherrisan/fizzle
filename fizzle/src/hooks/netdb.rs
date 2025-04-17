@@ -1,5 +1,5 @@
 use std::ffi::{CStr, CString};
-use std::mem::MaybeUninit;
+use std::mem::{self, MaybeUninit};
 use std::{ptr, slice};
 
 use fizzle_common::io::SockAddr;
@@ -165,7 +165,7 @@ hook_macros::hook! {
 
         let addr_info = match Scheduler::handle_event(&mut ctx, GetAddressInfoEvent::new(Some(name_cstr), None, libc::AF_INET, 0, 0, GetAddrInfoFlags::empty())) {
             Ok(addr_info) => addr_info,
-            Err((errno, ret)) => {
+            Err((errno, _ret)) => {
                 errno.set_errno();
                 crate::strace!("gethostbyname(name={:?}) -> NULL", name);
                 return ptr::null_mut()
@@ -187,6 +187,43 @@ hook_macros::hook! {
         let ptr = Box::into_raw(hostent);
 
         crate::strace!("gethostbyname(name={:?}) -> {:?}", name, ptr);
+        ptr
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn gethostbyname2(
+        name: *const libc::c_char,
+        af: libc::c_int
+    ) -> *mut libc::hostent => fizzle_gethostbyname2(ctx) {
+        crate::strace!("gethostbyname2(name={:?}, af={}) -> ...", name, af);
+
+        let name_cstr = CStr::from_ptr(name);
+
+        let addr_info = match Scheduler::handle_event(&mut ctx, GetAddressInfoEvent::new(Some(name_cstr), None, af, 0, 0, GetAddrInfoFlags::empty())) {
+            Ok(addr_info) => addr_info,
+            Err((errno, _ret)) => {
+                errno.set_errno();
+                crate::strace!("gethostbyname2(name={:?}, af={}) -> NULL", name, af);
+                return ptr::null_mut()
+            }
+        };
+
+        let mut hostent: Box<libc::hostent> = Box::new(unsafe { MaybeUninit::zeroed().assume_init() });
+
+        let aliases = Box::new([ptr::null_mut::<libc::c_char>()]);
+        let addr_list = Box::new([addr_info.ai_addr, ptr::null_mut()]);
+
+        hostent.h_name = CString::into_raw(name_cstr.to_owned());
+        hostent.h_addrtype = addr_info.ai_family;
+        hostent.h_addr_list = Box::into_raw(addr_list).cast();
+        hostent.h_aliases = Box::into_raw(aliases).cast();
+        hostent.h_length = addr_info.ai_addrlen as i32;
+
+        // TODO: we just leak everything here...
+        let ptr = Box::into_raw(hostent);
+
+        crate::strace!("gethostbyname2(name={:?}, af={}) -> {:?}", name, af, ptr);
         ptr
     }
 }
@@ -265,5 +302,75 @@ hook_macros::hook! {
                 ret
             }
         }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn getservbyname(
+        name: *const libc::c_char,
+        proto: *const libc::c_char
+    ) -> *mut libc::servent => fizzle_getservbyname(ctx) {
+        let name_cstr = CStr::from_ptr(name);
+        let proto_cstr = if proto.is_null() {
+            None
+        } else {
+            Some(CStr::from_ptr(proto))
+        };
+
+        crate::strace!("getservbyname(name={:?}, proto={:?}) -> ...", name_cstr, proto_cstr);
+
+        let proto_hint = match proto_cstr {
+            None => 0,
+            Some(s) if s == c"tcp" => libc::IPPROTO_TCP,
+            Some(s) if s == c"udp" => libc::IPPROTO_UDP,
+            Some(s) => {
+                log::warn!("unrecognized service {:?} passed to getservbyname()", s);
+
+                crate::strace!("getservbyname(name={:?}, proto={:?}) -> NULL", name_cstr, proto_cstr);
+                return ptr::null_mut()
+            }
+        };
+
+        let addr_info = match Scheduler::handle_event(&mut ctx, GetAddressInfoEvent::new(None, Some(name_cstr), libc::AF_INET, 0, proto_hint, GetAddrInfoFlags::empty())) {
+            Ok(addr_info) => addr_info,
+            Err((errno, _ret)) => {
+                errno.set_errno();
+                crate::strace!("getservbyname(name={:?}, proto={:?}) -> NULL", name_cstr, proto_cstr);
+                return ptr::null_mut()
+            }
+        };
+
+        let aliases = Box::new(ptr::null_mut());
+        let port = if addr_info.ai_addrlen == mem::size_of::<libc::sockaddr_in>() as u32 {
+            (*addr_info.ai_addr.cast::<libc::sockaddr_in>()).sin_port
+        } else if addr_info.ai_addrlen == mem::size_of::<libc::sockaddr_in6>() as u32 {
+            (*addr_info.ai_addr.cast::<libc::sockaddr_in6>()).sin6_port
+        } else {
+            unreachable!()
+        };
+
+        let proto = match addr_info.ai_protocol {
+            libc::IPPROTO_TCP => c"tcp",
+            libc::IPPROTO_UDP => c"udp",
+            _ => unreachable!(),
+        };
+
+        let servent: Box<libc::servent> = Box::new(libc::servent {
+            s_name: CString::into_raw(CString::from(name_cstr)),
+            s_aliases: Box::into_raw(aliases),
+            s_port: port as i32,
+            s_proto: proto.as_ptr().cast_mut(),
+        });
+
+        match Scheduler::handle_event(&mut ctx, FreeAddressInfoEvent::new(Box::into_raw(addr_info))) {
+            Ok(()) => (),
+            Err(()) => unreachable!(),
+        }
+
+        let ptr = Box::into_raw(servent);
+        crate::strace!("getservbyname(name={:?}, proto={:?}) -> {:?}", name_cstr, proto_cstr, ptr);
+
+        // TODO: this is clearly a memory leak,
+        return ptr
     }
 }
