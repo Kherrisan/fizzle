@@ -104,6 +104,8 @@ hook_macros::hook! {
     }
 }
 
+// TODO: hook `getprotoent`, `getpwnam`, `getgrnam`
+
 hook_macros::hook! {
     unsafe fn getpwnam(name: *const libc::c_char) -> *mut libc::passwd => fizzle_getpwnam(ctx) {
         crate::strace!("getpwnam(name={:?}) -> ...", name);
