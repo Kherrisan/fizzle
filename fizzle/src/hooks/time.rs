@@ -163,6 +163,25 @@ hook_macros::hook! {
     }
 }
 
+/*
+hook_macros::hook! {
+     unsafe fn times(
+        tms: *mut libc::tms
+    ) -> libc::clock_t => fizzle_times(_ctx) {
+        unimplemented!("times()")
+    }
+}
+
+hook_macros::hook! {
+     unsafe fn getrusage(
+        who: libc::c_int,
+        usage: *mut libc::rusage
+    ) -> libc::clock_t => fizzle_getrusage(_ctx) {
+        unimplemented!("getrusage()")
+    }
+}
+*/
+
 hook_macros::hook! {
     unsafe fn alarm(
         seconds: libc::c_uint
