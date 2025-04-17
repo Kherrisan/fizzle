@@ -23,6 +23,23 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
+    unsafe fn getentropy(
+        buf: *mut libc::c_void,
+        buflen: libc::size_t
+    ) -> libc::ssize_t => fizzle_getentropy(ctx) {
+        crate::strace!("getentropy(buf={:?}, buflen={}) -> ...", buf, buflen);
+        let s = slice::from_raw_parts_mut(buf.cast::<u8>(), buflen);
+        match Scheduler::handle_event(&mut ctx, GetEntropyEvent::new(s)) {
+            Ok(len) => {
+                crate::strace!("getentropy(buf={:?}, buflen={}) -> {:.16?}", buf, buflen, &s[..len]);
+                len as isize
+            },
+            Err(_) => unreachable!(),
+        }
+    }
+}
+
+hook_macros::hook! {
     unsafe fn srand(
         _seed: libc::c_uint
     ) => fizzle_srand(_ctx) {
