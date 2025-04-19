@@ -119,6 +119,24 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
+    unsafe fn getcpu(
+        _cpu: *mut libc::c_uint,
+        _node: *mut libc::c_uint,
+        _tcache: *mut libc::c_void // struct getcpu_cache
+    ) -> libc::c_int => fizzle_getcpu(_ctx) {
+        unimplemented!("getcpu()")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn ftime(
+        _tp: *mut libc::c_void // struct timeb
+    ) -> libc::c_int => fizzle_ftime(_ctx) {
+        unimplemented!("ftime()")
+    }
+}
+
+hook_macros::hook! {
     unsafe fn clock_getcpuclockid(
         _pid: libc::pid_t,
         _clockid: *mut libc::clockid_t
@@ -163,7 +181,7 @@ hook_macros::hook! {
     }
 }
 
-/*
+
 hook_macros::hook! {
      unsafe fn times(
         tms: *mut libc::tms
@@ -172,6 +190,7 @@ hook_macros::hook! {
     }
 }
 
+/*
 hook_macros::hook! {
      unsafe fn getrusage(
         who: libc::c_int,
