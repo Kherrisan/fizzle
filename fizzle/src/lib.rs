@@ -108,6 +108,18 @@ unsafe extern "C" {
         ap: VaList
     ) -> libc::c_int;
 
+    pub fn res_mkquery(
+        op: libc::c_int,
+        dname: *const libc::c_char,
+        class: libc::c_int,
+        ty: libc::c_int,
+        data: *const libc::c_uchar,
+        datalen: libc::c_int,
+        newrr: *const libc::c_uchar,
+        buf: *mut libc::c_uchar,
+        buflen: libc::c_int
+    ) -> libc::c_int;
+
     static mut stdin: *mut libc::FILE;
 
     static mut stdout: *mut libc::FILE;
