@@ -2387,7 +2387,7 @@ impl Event for SocketReadEvent<'_> {
                         let mut idx = 0;
                         for s in data.iter_mut() {
                             let read = cmp::min(s.len(), message.data.len() - idx);
-                            s.copy_from_slice(&message.data[idx..idx + read]);
+                            s[..read].copy_from_slice(&message.data[idx..idx + read]);
                             idx += read;
                         }
 
