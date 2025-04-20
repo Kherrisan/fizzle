@@ -659,7 +659,7 @@ hook_macros::hook! {
         pathname: *mut libc::c_char,
         buf: *mut libc::c_char,
         bufsiz: libc::size_t
-    ) -> libc::c_int => fizzle_readlink(_ctx) {
+    ) -> libc::ssize_t => fizzle_readlink(_ctx) {
         log::warn!("`readlink` unimplemented by Fizzle");
         hook_macros::real!(readlink)(pathname, buf, bufsiz)
     }
@@ -671,7 +671,7 @@ hook_macros::hook! {
         pathname: *mut libc::c_char,
         buf: *mut libc::c_char,
         bufsiz: libc::size_t
-    ) -> libc::c_int => fizzle_readlinkat(_ctx) {
+    ) -> libc::ssize_t => fizzle_readlinkat(_ctx) {
         log::warn!("`readlinkat` unimplemented by Fizzle");
         hook_macros::real!(readlinkat)(dirfd, pathname, buf, bufsiz)
     }
