@@ -84,6 +84,18 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
     };
 
     let res = match number {
+        libc::SYS_read => {
+            let fd: libc::c_int = va_args.arg();
+            let buf: *mut libc::c_void = va_args.arg();
+            let count: libc::size_t = va_args.arg();
+            unsafe { libc::read(fd, buf, count) as i64 }
+        }
+        libc::SYS_open => {
+            let pathname: *const libc::c_char = va_args.arg();
+            let flags: libc::c_int = va_args.arg();
+            let mode: libc::mode_t = va_args.arg();
+            unsafe { libc::open(pathname, flags, mode) as i64 }
+        }
         libc::SYS_close => {
             let fd: libc::c_int = va_args.arg();
             let descriptor_id = Descriptor::from_raw_fd(fd);
