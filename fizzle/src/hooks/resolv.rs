@@ -51,12 +51,14 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_res_nquery(ctx) {
         let mut buf = [0u8; 1024];
 
-        crate::strace!("res_nquery(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> ...", statep, dname, class, ty, answer, anslen);
+        let dname_cstr = CStr::from_ptr(dname);
+
+        crate::strace!("res_nquery(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> ...", statep, dname_cstr, class, ty, answer, anslen);
 
         let len = crate::res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
         if len < 0 {
-            log::error!("res_mkquery() failed for res_nquery");
-            crate::strace!("res_nquery(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", statep, dname, class, ty, answer, anslen);
+            log::error!("res_mkquery() failed for res_nquery with dname {:?}", dname_cstr);
+            crate::strace!("res_nquery(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", statep, dname_cstr, class, ty, answer, anslen);
             return -1
         }
 
@@ -65,11 +67,11 @@ hook_macros::hook! {
                 let len = cmp::min(response.len(), anslen as usize);
                 let answer_slice = slice::from_raw_parts_mut(answer.cast::<u8>(), anslen as usize);
                 answer_slice[..len].copy_from_slice(&response[..len]);
-                crate::strace!("res_nquery(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> {}", statep, dname, class, ty, answer, anslen, len);
+                crate::strace!("res_nquery(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> {}", statep, dname_cstr, class, ty, answer, anslen, len);
                 len as libc::c_int // TODO: correct behavior on truncation?
             }
             Err(e) => {
-                crate::strace!("res_nquery(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", statep, dname, class, ty, answer, anslen);
+                crate::strace!("res_nquery(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", statep, dname_cstr, class, ty, answer, anslen);
                 -1
             }
         }
@@ -183,7 +185,7 @@ hook_macros::hook! {
 
         let len = crate::res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
         if len < 0 {
-            log::error!("res_search() failed for res_query");
+            log::error!("res_mkquery() failed for res_query");
             crate::strace!("res_search(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", dname, class, ty, answer, anslen);
             return -1
         }
