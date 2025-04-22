@@ -11,6 +11,7 @@ use rand::Rng;
 use entropic::prelude::*;
 
 
+#[derive(Debug)]
 struct Spf {
     data: Vec<u8>,
 }
@@ -18,8 +19,35 @@ struct Spf {
 impl Spf {
     pub fn to_vec(&self) -> Vec<u8> {
         let mut v = Vec::new();
-        v.push(self.data.len() as u8);
-        v.extend(&self.data);
+
+        let mut idx = 0;
+        while self.data.len() - idx > 255 {
+            v.push(255u8);
+            v.extend(&self.data[idx..idx + 255]);
+            idx += 255;
+        }
+
+        if self.data.len() > 0 {
+            v.push((self.data.len() - idx) as u8);
+            v.extend(&self.data[idx..]);
+        }
+
+        v
+    }
+
+    pub fn to_txt(&self) -> Vec<&[u8]> {
+        let mut v = Vec::new();
+
+        let mut idx = 0;
+        while self.data.len() - idx > 255 {
+            v.push(&self.data[idx..idx + 255]);
+            idx += 255;
+        }
+
+        if self.data.len() > 0 {
+            v.push(&self.data[idx..]);
+        }
+
         v
     }
 }
@@ -88,8 +116,8 @@ impl Entropic for Spf {
             v.push(b' ');
         }
         
-        let num_elems = source.get_uniform_range(1..=20)?;
-        for i in 0..num_elems {
+        let num_elems = source.get_bounded_len(1..=20)?;
+        for _ in 0..num_elems {
             match source.get_uniform_range(0..=7)? {
                 idx @ 0..=3 => v.push(RECORD_QUALIFIERS[idx]),
                 _ => (),
@@ -143,15 +171,13 @@ impl Entropic for Spf {
                         v.extend(b"%_");
                     }
                     5 => {
-                        let length = source.get_bounded_len(1..=8)?;
+                        let length = source.get_bounded_len(1..=16)?;
                         // Alphanumeric characters
                         v.extend(iter::repeat(source.get_uniform_ranges(&[0x30..=0x39, 0x41..=0x5A, 0x61..=0x7a])?).take(length));
                     }
                     6 => {
                         // Arbitrary data
-                        let length = source.get_bounded_len(0..=32)?;
-                        v.extend(iter::repeat(source.get_byte()?).take(length));
-                        break
+                        v.push(source.get_byte()?);
                     }
                     _ => break,
                 }
@@ -483,8 +509,8 @@ impl Event for DnsResolveEvent<'_> {
                     };
                 },
                 RecordType::TXT => {
-                    match TXT::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
-                        Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::TXT(rdata))).to_bytes() {
+                    match Spf::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
+                        Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::TXT(TXT::from_bytes(rdata.to_txt())))).to_bytes() {
                             Ok(b) => break b,
                             Err(e) => {
                                 log::error!("Entropic created DNS TXT Resource Record that failed to convert to bytes--retrying...");
@@ -498,13 +524,16 @@ impl Event for DnsResolveEvent<'_> {
                 RecordType::Unknown(99) => { // SPF
                     match Spf::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                         Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::Unknown { code: RecordType::Unknown(99), rdata: NULL::with(rdata.to_vec()) })).to_bytes() {
-                            Ok(b) => break b,
+                            Ok(b) => {
+                                log::debug!("SPF record {:?} returned", rdata);
+                                break b
+                            },
                             Err(e) => {
-                                log::error!("Entropic created DNS TXT Resource Record that failed to convert to bytes--retrying...");
+                                log::error!("Entropic created DNS SPF Resource Record that failed to convert to bytes--retrying...");
                             }
                         }
                         Err(e) => {
-                            log::error!("Entropic failed to generate DNS TXT Resource Record--retrying...");
+                            log::error!("Entropic failed to generate DNS SPF Resource Record--retrying...");
                         }
                     };
                 },
