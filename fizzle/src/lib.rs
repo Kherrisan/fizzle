@@ -74,12 +74,6 @@ unsafe extern "C" {
     #[cfg(feature = "pcr")]
     pub static __afl_already_initialized_second: u32;
 
-    #[cfg(feature = "afl")]
-    pub static mut __afl_selective_coverage: libc::c_int;
-
-    #[cfg(feature = "afl")]
-    pub static mut __afl_selective_coverage_start_off: libc::c_int;
-
     // TODO: three underscores for Apple
     #[cfg(feature = "pcr")]
     pub fn __afl_persistent_loop(input: libc::c_uint) -> libc::c_int;

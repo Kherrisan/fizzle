@@ -88,12 +88,6 @@ pub fn afl_onetime_init(ctx: &mut FizzleSingleton) {
     let is_first_process = env::var(FIZZLE_MEMORY_ENV).is_err();
 
     if is_first_process && !IS_INITIALIZED.fetch_or(true, Ordering::Relaxed) {
-        #[cfg(feature = "afl")]
-        unsafe {
-            crate::__afl_selective_coverage = 1;
-            crate::__afl_selective_coverage_start_off = 1;
-        }
-
         #[cfg(feature = "pcr")]
         unsafe {
             crate::__afl_sharedmem_fuzzing = 1;
