@@ -1372,7 +1372,6 @@ impl Scheduler {
         Scheduler::increment_time(ctx);
 
         loop {
-            log::trace!("next iteration of event.run() loop");
             let mut state = ctx.acquire();
             let (task_opt, until) = match event.run(&mut state) {
                 Outcome::Success(s) => {
@@ -1418,6 +1417,7 @@ impl Scheduler {
             drop(state);
 
             Scheduler::yield_worker(ctx);
+            log::trace!("beginning next iteration of event.run() loop");
         }
     }
 
