@@ -164,6 +164,7 @@ impl<'de> de::Visitor<'de> for IoEndpointVisitor {
                 })?))
             }
             None if value == "stdio" => Ok(IoEndpoint::Stdio),
+            None if value == "nameservers" => Ok(IoEndpoint::Nameservers),
             _ => Err(de::Error::custom(format!(
                 "invalid I/O endpoint \"{}\"",
                 value
