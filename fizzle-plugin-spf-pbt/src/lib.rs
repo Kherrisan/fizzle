@@ -8,13 +8,14 @@ use hickory_proto::rr::rdata::*;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use rand::{Rng, SeedableRng};
 
-const SPF_RESULT_NONE: u8 = 0;
+const SPF_RESULT_INVALID: u8 = 0;
 const SPF_RESULT_NEUTRAL: u8 = 1;
 const SPF_RESULT_PASS: u8 = 2;
 const SPF_RESULT_FAIL: u8 = 3;
 const SPF_RESULT_SOFTFAIL: u8 = 4;
-const SPF_RESULT_TEMPERROR: u8 = 5;
-const SPF_RESULT_PERMERROR: u8 = 6;
+const SPF_RESULT_NONE: u8 = 5;
+const SPF_RESULT_TEMPERROR: u8 = 6;
+const SPF_RESULT_PERMERROR: u8 = 7;
 
 #[derive(Debug)]
 struct Spf {
@@ -58,10 +59,10 @@ impl Spf {
 }
 
 const RECORD_QUALIFIERS: &[u8] = &[
-    b'+',
     b'-',
     b'~',
     b'?',
+    b'+',
 ];
 
 const RECORD_GRAMMAR: &[&[u8]] = &[
@@ -71,7 +72,7 @@ const RECORD_GRAMMAR: &[&[u8]] = &[
     b"ip4:",
     b"ip6:",
     b"exists:",
-    b"all",
+    b"-all",
     b"exp=",
 ];
 
@@ -123,7 +124,7 @@ impl Entropic for Spf {
         
         let num_elems = source.get_bounded_len(1..=20)?;
         for _ in 0..num_elems {
-            match source.get_uniform_range(0..=7)? {
+            match source.get_uniform_range(0..=31)? {
                 idx @ 0..=3 => v.push(RECORD_QUALIFIERS[idx]),
                 _ => (),
             }
@@ -579,6 +580,9 @@ impl PluginModule for SpfPbtClient {
                 assert_eq!(buf.len(), 1);
                 let spf_result = buf[0];
                 match spf_result {
+                    SPF_RESULT_INVALID => {
+
+                    }
                     SPF_RESULT_NONE => {
 
                     }
@@ -586,7 +590,7 @@ impl PluginModule for SpfPbtClient {
 
                     }
                     SPF_RESULT_PASS => {
-                        
+                        panic!("property violated: highly unlikely pass succeeded");
                     }
                     SPF_RESULT_FAIL => {
 
