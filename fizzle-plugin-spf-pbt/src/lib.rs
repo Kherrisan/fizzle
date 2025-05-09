@@ -202,7 +202,7 @@ impl Entropic for Spf {
     }
 }
 
-pub struct SpfPbtClient {
+pub struct SpfPbtModule {
     input: Vec<u8>,
     input_idx: usize,
     nameserver_rsp: Option<Vec<u8>>,
@@ -211,7 +211,7 @@ pub struct SpfPbtClient {
 }
 
 #[allow(non_camel_case_types)]
-impl PluginModule for SpfPbtClient {
+impl PluginModule for SpfPbtModule {
     fn fuzz_round_start(&mut self, entropy: &[u8]) {
         self.input.clear();
         self.input_idx = 0;
@@ -632,9 +632,15 @@ impl PluginModule for SpfPbtClient {
                 Ok(len)
             }
             _ => {
-                assert_eq!(buf.len(), 1);
-                buf[0].write(1);
-                Ok(buf.len())
+                if !self.input.is_empty() {
+                    for i in 0..buf.len() {
+                        buf[i].write(0);
+                    }
+
+                    Ok(buf.len())
+                } else {
+                    Err(PluginError::NotReady)
+                }
             }
         }
     }
@@ -648,7 +654,7 @@ impl PluginModule for SpfPbtClient {
     }
 }
 
-impl Plugin for SpfPbtClient {
+impl Plugin for SpfPbtModule {
     fn new(
         _config: std::collections::HashMap<fizzle_plugin::IoEndpointVariant, toml::Table>,
     ) -> Self {
