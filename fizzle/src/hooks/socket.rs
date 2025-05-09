@@ -322,7 +322,7 @@ hook_macros::hook! {
                 accept_fd
             },
             Err(e) => {
-                crate::strace!("connect4(fd={}, addr={:?}, addrlen={:?}, flags={}) -> -1 ({})", fd, addr, addrlen, flags_fmt, e);
+                crate::strace!("accept4(fd={}, addr={:?}, addrlen={:?}, flags={}) -> -1 ({})", fd, addr, addrlen, flags_fmt, e);
                 e.set_errno();
                 -1
             },
