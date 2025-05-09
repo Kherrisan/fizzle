@@ -778,8 +778,8 @@ impl Event for SocketListenEvent {
 
         let addr = get_or_assign_local(&mut socket_info, state);
 
-        let mut sock_info_borrow = socket_info.borrow_mut();
-        let SocketState::Unassociated(_) = &sock_info_borrow.state else {
+        let mut sock_info_mut = socket_info.borrow_mut();
+        let SocketState::Unassociated(_) = &sock_info_mut.state else {
             log::error!(
                 "calling listen() on a connected or listening socket unsupported by Fizzle"
             );
@@ -804,15 +804,16 @@ impl Event for SocketListenEvent {
                 .pending,
             LinkedList::new_in(fizzle_alloc()),
         );
+
         if !connecting.is_empty() {
             log::debug!("listen() socket had pending connections--raising polled");
             state.raise_polled(&ready_to_connect);
         }
 
         // In the case of an ephemeral address, the concrete address now needs to be assigned to the socket
-        sock_info_borrow.local_addr = LocalAddress::Assigned(addr.addr().clone());
+        sock_info_mut.local_addr = LocalAddress::Assigned(addr.addr().clone());
 
-        sock_info_borrow.state = SocketState::Server(ServerSocket {
+        sock_info_mut.state = SocketState::Server(ServerSocket {
             backend: ServerBackend::Peered(()),
             connecting,
             ready_to_connect,
