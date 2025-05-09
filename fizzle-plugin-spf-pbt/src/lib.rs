@@ -214,8 +214,10 @@ pub struct SpfPbtModule {
 impl PluginModule for SpfPbtModule {
     fn fuzz_round_start(&mut self, entropy: &[u8]) {
         self.input.clear();
-        self.input_idx = 0;
         self.input.extend_from_slice(entropy);
+        self.input_idx = 0;
+        self.nameserver_rsp = None;
+        self.query_count = 0;
 
         let mut rng_seed: u64 = 0;
         for i in 0..cmp::min(8, self.input.len()) {
@@ -637,6 +639,8 @@ impl PluginModule for SpfPbtModule {
                         buf[i].write(0);
                     }
 
+                    self.input_idx = self.input.len();
+
                     Ok(buf.len())
                 } else {
                     Err(PluginError::NotReady)
@@ -650,7 +654,7 @@ impl PluginModule for SpfPbtModule {
     }
 
     fn can_write(&self, _ctx: &fizzle_plugin::Context) -> bool {
-        !self.input.is_empty()
+        self.input_idx < self.input.len()
     }
 }
 
