@@ -3,13 +3,14 @@ members = [
     "fizzle",
     "fizzle-common",
     "fizzle-plugin",
-    "fizzle-plugin-fuzz-s1ap",
-    "fizzle-plugin-butterfly-generic",
     "fizzle-plugin-aflnet-generic",
     "fizzle-plugin-aflnet-dns",
     "fizzle-plugin-aflnet-dns-better",
     "fizzle-plugin-aflnet-sip",
     "fizzle-plugin-aflnet-dtls",
+    "fizzle-plugin-butterfly-generic",
+    "fizzle-plugin-fuzz-s1ap",
+    "fizzle-plugin-spf-pbt",
 ]
 resolver = "2"
 

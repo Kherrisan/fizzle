@@ -76,6 +76,7 @@ pub enum IoEndpointVariant {
     UdpClient(SocketAddr),
     SctpServer(SocketAddr),
     SctpClient(SocketAddr),
+    Nameservers,
 }
 
 /// An error that a plugin may return during calls to [`read()`](PluginModule::read) or
@@ -90,6 +91,7 @@ pub enum PluginError {
     // NOTE: replaced by a read/write that returns 0
     // /// The underlying data transport medium the plugin communicates on should be closed.
     // Disconnect,
+    ProtocolError,
 }
 
 /// A plugin to `Fizzle` that can be used to model any source of I/O for a program.

@@ -725,6 +725,14 @@ impl FizzleState {
             for _ in 0..endpoint.num_streams {
                 let endpoint_variant = endpoint.endpoint_variant.clone();
                 match endpoint_variant {
+                    IoEndpointVariant::Nameservers => {
+                        let plugin_module = match &endpoint.emulation_type {
+                            IoEmulationType::Plugin(rc) => rc.clone(),
+                            _ => unreachable!(),
+                        };
+
+                        assert!(self.global.nameserver_plugin.replace(plugin_module).is_none());
+                    }
                     IoEndpointVariant::Stdio => {
                         self.global.stdio = match &endpoint.emulation_type {
                             IoEmulationType::Feedback => StdioBackend::Feedback(StandardFeedback {
@@ -1345,6 +1353,7 @@ pub struct InterprocessState {
     pub next_stream_id: StreamId,
     pub process_groups: GlobalMap<Pgid, GlobalSet<Pid>>,
     pub plugins: GlobalVec<GlobalRc<PluginInfo>>,
+    pub nameserver_plugin: Option<Rc<RefCell<dyn PluginModule + 'static>>>,
 
     // TODO: BTreeMap would be unwise--FilePath has an expensive `eq` comparison
     pub file_paths: GlobalHashMap<FilePath<MAX_PATH_LEN>, GlobalRc<FileInfo>>,
@@ -1489,6 +1498,7 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).time_fuzz_idx) = 0;
             *ptr::addr_of_mut!((*state).fuzz_endpoints) = Vec::new_in(fizzle_alloc());
             *ptr::addr_of_mut!((*state).plugins) = Vec::new_in(fizzle_alloc());
+            *ptr::addr_of_mut!((*state).nameserver_plugin) = None;
 
             *ptr::addr_of_mut!((*state).tasks) = LinkedList::new_in(fizzle_alloc());
 

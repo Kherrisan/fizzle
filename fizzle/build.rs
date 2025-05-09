@@ -93,6 +93,7 @@ pub struct IoPluginConfiguration {
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum IoEndpoint {
+    Nameservers,
     File(PathBuf),
     TcpClient(SocketAddr),
     TcpServer(SocketAddr),
@@ -298,6 +299,10 @@ fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
     let mut comptime_output_tokens = TokenStream::new();
 
     for (endpoint, input_variant) in config.io.iter() {
+        if matches!(endpoint, &IoEndpoint::Nameservers) {
+            assert!(matches!(input_variant, &IoInputVariant::Plugin(IoPluginConfiguration { streams: None | Some(1), .. })), "Nameservers must be a Plugin with exactly 1 stream");
+        }
+
         let io_variant = match input_variant {
             IoInputVariant::Basic(IoBasicMethod::Feedback) => quote::quote! {
                 let num_streams = 1;
@@ -391,6 +396,9 @@ fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
 
         for (endpoint, table) in endpoint_configs {
             let endpoint_quote = match endpoint {
+                IoEndpoint::Nameservers => quote::quote! {
+                    IoEndpointVariant::Nameservers
+                },
                 IoEndpoint::File(path) => {
                     let path = path.to_str().unwrap();
                     quote::quote! {
@@ -457,6 +465,9 @@ fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
 
 fn gen_io_endpoint_def(endpoint: &IoEndpoint) -> TokenStream {
     match endpoint {
+        IoEndpoint::Nameservers => quote::quote! {
+            let endpoint_variant = IoEndpointVariant::Nameservers;
+        },
         IoEndpoint::File(path) => {
             let path = path.to_str().unwrap();
             quote::quote! {
