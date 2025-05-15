@@ -1641,6 +1641,12 @@ hook_macros::hook! {
     ) -> libc::size_t => fizzle_fbufsize(ctx) {
         crate::strace!("__fbufsize(stream={:?}) -> ...", stream);
 
+        #[cfg(feature = "sigsan")] {
+            if in_sighandler() {
+                panic!("async-signal-unsafe function __fbufsize() called within signal handler")
+            }           
+        }
+
         let Some(file_ptr) = FilePtr::from_raw(stream) else {
             panic!("invalid FILE* pointer passed to __fbufsize()")
         };

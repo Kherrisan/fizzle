@@ -679,7 +679,9 @@ impl HandleLocalSignalTask {
 
                 let mut siginfo = siginfo_t::from_raised(raised);
                 Scheduler::run_outside_hook(ctx, || unsafe {
+                    set_entered_sighandler(true);
                     action(raised.signum(), ptr::addr_of_mut!(siginfo), ptr::null_mut());
+                    set_entered_sighandler(false);
                 });
             }
             SigDisposition::Handler(handler) => {
@@ -691,7 +693,9 @@ impl HandleLocalSignalTask {
 
                 drop(state);
                 Scheduler::run_outside_hook(ctx, || unsafe {
+                    set_entered_sighandler(true);
                     handler(raised.signum());
+                    set_entered_sighandler(false);
                 });
             }
             SigDisposition::Default => {

@@ -62,6 +62,26 @@ std::thread_local! {
     static ENTERED_HANDLER: RefCell<bool> = const { RefCell::new(false) };
 }
 
+std::thread_local! {
+    static IN_SIGHANDLER: RefCell<bool> = const { RefCell::new(false) };
+}
+
+/// Marks a thread-local variable indicating whether the calling thread is currently in a signal handler.
+pub fn set_entered_sighandler(entered: bool) {
+    IN_SIGHANDLER.with(|e| {
+        *e.borrow_mut() = entered;
+    });
+}
+
+/// Indicates whether the thread being called from is currently in a signal handler.
+pub fn in_sighandler() -> bool {
+    let mut in_sighandler = false;
+    IN_SIGHANDLER.with(|e| {
+        in_sighandler = *e.borrow();
+    });
+    in_sighandler
+}
+
 /// Marks the thread as currently executing within a fizzle handler.
 pub fn set_entered_handler(entered: bool) {
     ENTERED_HANDLER.with(|e| {
