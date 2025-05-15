@@ -14,6 +14,7 @@ pub mod io;
 pub mod io_uring;
 pub mod mem;
 pub mod netdb;
+pub mod other;
 pub mod pipe;
 pub mod poll;
 pub mod posix_mq;
