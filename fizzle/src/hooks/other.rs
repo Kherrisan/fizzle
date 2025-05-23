@@ -282,7 +282,7 @@ hook_macros::hook! {
 pub unsafe extern "C" fn argp_error(
         _state: *mut libc::c_void,
         _fmt: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     )  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("argp_error() unimplemented for Fizzle internal use");
@@ -305,7 +305,7 @@ pub unsafe extern "C" fn argp_failure(
         _status: libc::c_int,
         _errnum: libc::c_int,
         _fmt: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     )  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("argp_failure() unimplemented for Fizzle internal use");
@@ -540,7 +540,7 @@ hook_macros::hook! {
 pub unsafe extern "C" fn asprintf(
         _ptr: *mut *mut libc::c_void,
         _template: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("asprintf() unimplemented for Fizzle internal use");
@@ -915,7 +915,7 @@ hook_macros::hook! {
 pub unsafe extern "C" fn dprintf(
         _fd: libc::c_int,
         _template: libc::c_int,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("dprintf() unimplemented for Fizzle internal use");
@@ -1164,7 +1164,7 @@ hook_macros::hook! {
 pub unsafe extern "C" fn err(
         _status: libc::c_int,
         _format: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     )  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("err() unimplemented for Fizzle internal use");
@@ -1186,7 +1186,7 @@ pub unsafe extern "C" fn error(
         _status: libc::c_int,
         _errnum: libc::c_int,
         _format: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     )  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("error() unimplemented for Fizzle internal use");
@@ -1210,7 +1210,7 @@ pub unsafe extern "C" fn error_at_line(
         _fname: *mut libc::c_void,
         _lineno: libc::c_uint,
         _format: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     )  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("error_at_line() unimplemented for Fizzle internal use");
@@ -1231,7 +1231,7 @@ pub unsafe extern "C" fn error_at_line(
 pub unsafe extern "C" fn errx(
         _status: libc::c_int,
         _format: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     )  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("errx() unimplemented for Fizzle internal use");
@@ -1252,7 +1252,7 @@ pub unsafe extern "C" fn errx(
 pub unsafe extern "C" fn execl(
         _filename: *mut libc::c_void,
         _arg0: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("execl() unimplemented for Fizzle internal use");
@@ -1273,7 +1273,7 @@ pub unsafe extern "C" fn execl(
 pub unsafe extern "C" fn execle(
         _filename: *mut libc::c_void,
         _arg0: *mut libc::c_void,
-        _va_args: VaList,
+        _va_args: std::ffi::VaList,
         _env: *mut libc::c_void
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
@@ -1295,7 +1295,7 @@ pub unsafe extern "C" fn execle(
 pub unsafe extern "C" fn execlp(
         _filename: *mut libc::c_void,
         _arg0: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("execlp() unimplemented for Fizzle internal use");
@@ -1796,7 +1796,7 @@ hook_macros::hook! {
 pub unsafe extern "C" fn fprintf(
         _stream: *mut libc::c_void,
         _template: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("fprintf() unimplemented for Fizzle internal use");
@@ -2001,7 +2001,7 @@ hook_macros::hook! {
 pub unsafe extern "C" fn fscanf(
         _stream: *mut libc::c_void,
         _template: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("fscanf() unimplemented for Fizzle internal use");
@@ -2172,7 +2172,7 @@ hook_macros::hook! {
 pub unsafe extern "C" fn fwprintf(
         _stream: *mut libc::c_void,
         _template: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("fwprintf() unimplemented for Fizzle internal use");
@@ -2227,7 +2227,7 @@ hook_macros::hook! {
 pub unsafe extern "C" fn fwscanf(
         _stream: *mut libc::c_void,
         _template: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("fwscanf() unimplemented for Fizzle internal use");
@@ -4070,7 +4070,7 @@ hook_macros::hook! {
 pub unsafe extern "C" fn obstack_printf(
         _obstack: *mut libc::c_void,
         _template: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("obstack_printf() unimplemented for Fizzle internal use");
@@ -4091,7 +4091,7 @@ hook_macros::hook! {
     unsafe fn obstack_vprintf(
         _obstack: *mut libc::c_void,
         _template: *mut libc::c_void,
-        _ap: VaList
+        _ap: std::ffi::VaList
     ) -> libc::c_int => fizzle_obstack_vprintf(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -4282,7 +4282,7 @@ hook_macros::hook! {
 #[no_mangle]
 pub unsafe extern "C" fn printf(
         _template: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("printf() unimplemented for Fizzle internal use");
@@ -4996,7 +4996,7 @@ hook_macros::hook! {
 #[no_mangle]
 pub unsafe extern "C" fn scanf(
         _template: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("scanf() unimplemented for Fizzle internal use");
@@ -5076,7 +5076,7 @@ hook_macros::hook! {
 pub unsafe extern "C" fn sem_open(
         _name: *mut libc::c_void,
         _oflag: libc::c_int,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     ) -> *mut libc::c_void  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("sem_open() unimplemented for Fizzle internal use");
@@ -5712,7 +5712,7 @@ pub unsafe extern "C" fn snprintf(
         _s: *mut libc::c_void,
         _size: libc::size_t,
         _template: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("snprintf() unimplemented for Fizzle internal use");
@@ -5733,7 +5733,7 @@ pub unsafe extern "C" fn snprintf(
 pub unsafe extern "C" fn sprintf(
         _s: *mut libc::c_void,
         _template: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("sprintf() unimplemented for Fizzle internal use");
@@ -5796,7 +5796,7 @@ hook_macros::hook! {
 pub unsafe extern "C" fn sscanf(
         _s: *mut libc::c_void,
         _template: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("sscanf() unimplemented for Fizzle internal use");
@@ -5892,7 +5892,7 @@ pub unsafe extern "C" fn strfmon(
         _s: *mut libc::c_void,
         _maxsize: libc::size_t,
         _format: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     ) -> libc::ssize_t  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("strfmon() unimplemented for Fizzle internal use");
@@ -6057,7 +6057,7 @@ pub unsafe extern "C" fn swprintf(
         _ws: *mut libc::c_void,
         _size: libc::size_t,
         _template: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("swprintf() unimplemented for Fizzle internal use");
@@ -6078,7 +6078,7 @@ pub unsafe extern "C" fn swprintf(
 pub unsafe extern "C" fn swscanf(
         _ws: *mut libc::c_void,
         _template: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("swscanf() unimplemented for Fizzle internal use");
@@ -6113,7 +6113,7 @@ hook_macros::hook! {
 pub unsafe extern "C" fn syslog(
         _facility_priority: libc::c_int,
         _format: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     )  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("syslog() unimplemented for Fizzle internal use");
@@ -6476,7 +6476,7 @@ hook_macros::hook! {
     unsafe fn vasprintf(
         _ptr: *mut *mut libc::c_void,
         _template: *mut libc::c_void,
-        _ap: VaList
+        _ap: std::ffi::VaList
     ) -> libc::c_int => fizzle_vasprintf(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -6492,7 +6492,7 @@ hook_macros::hook! {
     unsafe fn vdprintf(
         _fd: libc::c_int,
         _template: *mut libc::c_void,
-        _ap: VaList
+        _ap: std::ffi::VaList
     ) -> libc::c_int => fizzle_vdprintf(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -6508,7 +6508,7 @@ hook_macros::hook! {
     unsafe fn verr(
         _status: libc::c_int,
         _format: *mut libc::c_void,
-        _ap: VaList
+        _ap: std::ffi::VaList
     ) => fizzle_verr(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -6524,7 +6524,7 @@ hook_macros::hook! {
     unsafe fn verrx(
         _status: libc::c_int,
         _format: *mut libc::c_void,
-        _ap: VaList
+        _ap: std::ffi::VaList
     ) => fizzle_verrx(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -6552,7 +6552,7 @@ hook_macros::hook! {
     unsafe fn vfprintf(
         _stream: *mut libc::c_void,
         _template: *mut libc::c_void,
-        _ap: VaList
+        _ap: std::ffi::VaList
     ) -> libc::c_int => fizzle_vfprintf(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -6568,7 +6568,7 @@ hook_macros::hook! {
     unsafe fn vfscanf(
         _stream: *mut libc::c_void,
         _template: *mut libc::c_void,
-        _ap: VaList
+        _ap: std::ffi::VaList
     ) -> libc::c_int => fizzle_vfscanf(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -6584,7 +6584,7 @@ hook_macros::hook! {
     unsafe fn vfwprintf(
         _stream: *mut libc::c_void,
         _template: *mut libc::c_void,
-        _ap: VaList
+        _ap: std::ffi::VaList
     ) -> libc::c_int => fizzle_vfwprintf(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -6600,7 +6600,7 @@ hook_macros::hook! {
     unsafe fn vfwscanf(
         _stream: *mut libc::c_void,
         _template: *mut libc::c_void,
-        _ap: VaList
+        _ap: std::ffi::VaList
     ) -> libc::c_int => fizzle_vfwscanf(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -6630,7 +6630,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn vprintf(
         _template: *mut libc::c_void,
-        _ap: VaList
+        _ap: std::ffi::VaList
     ) -> libc::c_int => fizzle_vprintf(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -6645,7 +6645,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn vscanf(
         _template: *mut libc::c_void,
-        _ap: VaList
+        _ap: std::ffi::VaList
     ) -> libc::c_int => fizzle_vscanf(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -6662,7 +6662,7 @@ hook_macros::hook! {
         _s: *mut libc::c_void,
         _size: libc::size_t,
         _template: *mut libc::c_void,
-        _ap: VaList
+        _ap: std::ffi::VaList
     ) -> libc::c_int => fizzle_vsnprintf(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -6678,7 +6678,7 @@ hook_macros::hook! {
     unsafe fn vsprintf(
         _s: *mut libc::c_void,
         _template: *mut libc::c_void,
-        _ap: VaList
+        _ap: std::ffi::VaList
     ) -> libc::c_int => fizzle_vsprintf(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -6694,7 +6694,7 @@ hook_macros::hook! {
     unsafe fn vsscanf(
         _s: *mut libc::c_void,
         _template: *mut libc::c_void,
-        _ap: VaList
+        _ap: std::ffi::VaList
     ) -> libc::c_int => fizzle_vsscanf(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -6711,7 +6711,7 @@ hook_macros::hook! {
         _ws: *mut libc::c_void,
         _size: libc::size_t,
         _template: *mut libc::c_void,
-        _ap: VaList
+        _ap: std::ffi::VaList
     ) -> libc::c_int => fizzle_vswprintf(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -6727,7 +6727,7 @@ hook_macros::hook! {
     unsafe fn vswscanf(
         _s: *mut libc::c_void,
         _template: *mut libc::c_void,
-        _ap: VaList
+        _ap: std::ffi::VaList
     ) -> libc::c_int => fizzle_vswscanf(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -6743,7 +6743,7 @@ hook_macros::hook! {
     unsafe fn vsyslog(
         _facility_priority: libc::c_int,
         _format: *mut libc::c_void,
-        _arglist: VaList
+        _arglist: std::ffi::VaList
     ) => fizzle_vsyslog(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -6758,7 +6758,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn vwarn(
         _format: *mut libc::c_void,
-        _ap: VaList
+        _ap: std::ffi::VaList
     ) => fizzle_vwarn(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -6773,7 +6773,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn vwarnx(
         _format: *mut libc::c_void,
-        _ap: VaList
+        _ap: std::ffi::VaList
     ) => fizzle_vwarnx(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -6788,7 +6788,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn vwprintf(
         _template: *mut libc::c_void,
-        _ap: VaList
+        _ap: std::ffi::VaList
     ) -> libc::c_int => fizzle_vwprintf(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -6803,7 +6803,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn vwscanf(
         _template: *mut libc::c_void,
-        _ap: VaList
+        _ap: std::ffi::VaList
     ) -> libc::c_int => fizzle_vwscanf(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -6818,7 +6818,7 @@ hook_macros::hook! {
 #[no_mangle]
 pub unsafe extern "C" fn warn(
         _format: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     )  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("warn() unimplemented for Fizzle internal use");
@@ -6838,7 +6838,7 @@ pub unsafe extern "C" fn warn(
 #[no_mangle]
 pub unsafe extern "C" fn warnx(
         _format: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     )  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("warnx() unimplemented for Fizzle internal use");
@@ -7032,7 +7032,7 @@ hook_macros::hook! {
 #[no_mangle]
 pub unsafe extern "C" fn wprintf(
         _template: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("wprintf() unimplemented for Fizzle internal use");
@@ -7068,7 +7068,7 @@ hook_macros::hook! {
 #[no_mangle]
 pub unsafe extern "C" fn wscanf(
         _template: *mut libc::c_void,
-        _va_args: VaList
+        _va_args: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("wscanf() unimplemented for Fizzle internal use");
