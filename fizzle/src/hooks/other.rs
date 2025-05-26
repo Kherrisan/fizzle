@@ -2673,7 +2673,7 @@ hook_macros::hook! {
     
 hook_macros::hook! {
     unsafe fn longjmp(
-        _state: *mut setjmp::jmp_buf,
+        _state: *mut libc::c_void,
         _value: libc::c_int
     ) => fizzle_longjmp(ctx) {
         #[cfg(feature = "sigsan")] {
@@ -3968,7 +3968,7 @@ hook_macros::hook! {
     
 hook_macros::hook! {
     unsafe fn siglongjmp(
-        _state: *mut setjmp::sigjmp_buf,
+        _state: *mut libc::c_void,
         _value: libc::c_int
     ) => fizzle_siglongjmp(ctx) {
         #[cfg(feature = "sigsan")] {
@@ -3997,7 +3997,7 @@ hook_macros::hook! {
     
 hook_macros::hook! {
     unsafe fn sigsetjmp(
-        _state: *mut setjmp::sigjmp_buf,
+        _state: *mut libc::c_void,
         _savesigs: libc::c_int
     ) -> libc::c_int => fizzle_sigsetjmp(ctx) {
         #[cfg(feature = "sigsan")] {
