@@ -10,7 +10,7 @@ members = [
     "fizzle-plugin-aflnet-dtls",
     "fizzle-plugin-butterfly-generic",
     "fizzle-plugin-fuzz-s1ap",
-    "fizzle-plugin-spf-pbt",
+    "fizzle-plugin-spf-pbt", "fizzle-plugin-libafl-stream", "fizzle-plugin-libafl-datagram",
 ]
 resolver = "2"
 
