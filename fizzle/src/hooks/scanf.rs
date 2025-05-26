@@ -4,7 +4,7 @@ use std::{mem, usize};
 use crate::errno::Errno;
 use crate::handlers::filestream::{FilePtr, StreamReadEvent, StreamUngetEvent};
 use crate::scheduler::Scheduler;
-
+use crate::state::in_sighandler;
 
 enum MatchFailure {
     Truncated {
@@ -738,6 +738,13 @@ pub unsafe extern "C" fn scanf(
     format: *const libc::c_char,
     mut va_args: ...
 ) -> libc::c_int {
+
+    #[cfg(feature = "sigsan")] {
+        if in_sighandler() {
+            panic!("async-signal-unsafe function scanf() called within signal handler")
+        }
+    }
+    
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("scanf() unimplemented for Fizzle internal use");
     };
@@ -830,6 +837,13 @@ pub unsafe extern "C" fn __isoc99_scanf(
     format: *const libc::c_char,
     mut va_args: ...,
 ) -> libc::c_int {
+
+    #[cfg(feature = "sigsan")] {
+        if in_sighandler() {
+            panic!("async-signal-unsafe function __isoc99_scanf() called within signal handler")
+        }
+    }
+
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("__isoc99_scanf() unimplemented for Fizzle internal use");
     };
@@ -922,6 +936,13 @@ pub unsafe extern "C" fn __isoc23_scanf(
     format: *const libc::c_char,
     mut va_args: ...,
 ) -> libc::c_int {
+
+    #[cfg(feature = "sigsan")] {
+        if in_sighandler() {
+            panic!("async-signal-unsafe function __isoc23_scanf() called within signal handler")
+        }
+    }
+
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("__isoc23_scanf() unimplemented for Fizzle internal use");
     };
@@ -1016,6 +1037,13 @@ pub unsafe extern "C" fn fscanf(
     format: *const libc::c_char,
     mut va_args: ...,
 ) -> libc::c_int {
+
+    #[cfg(feature = "sigsan")] {
+        if in_sighandler() {
+            panic!("async-signal-unsafe function fscanf() called within signal handler")
+        }
+    }
+
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("fscanf() unimplemented for Fizzle internal use");
     };
@@ -1109,6 +1137,13 @@ pub unsafe extern "C" fn __isoc99_fscanf(
     format: *const libc::c_char,
     mut va_args: ...,
 ) -> libc::c_int {
+
+    #[cfg(feature = "sigsan")] {
+        if in_sighandler() {
+            panic!("async-signal-unsafe function __isoc99_fscanf() called within signal handler")
+        }
+    }
+
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("__isoc99_fscanf() unimplemented for Fizzle internal use");
     };
@@ -1202,6 +1237,13 @@ pub unsafe extern "C" fn __isoc23_fscanf(
     format: *const libc::c_char,
     mut va_args: ...,
 ) -> libc::c_int {
+    
+    #[cfg(feature = "sigsan")] {
+        if in_sighandler() {
+            panic!("async-signal-unsafe function __isoc23_fscanf() called within signal handler")
+        }
+    }
+
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("__isoc23_fscanf() unimplemented for Fizzle internal use");
     };
@@ -1294,6 +1336,13 @@ pub unsafe extern "C" fn vscanf(
     format: *const libc::c_char,
     mut va_args: VaList
 ) -> libc::c_int {
+    
+    #[cfg(feature = "sigsan")] {
+        if in_sighandler() {
+            panic!("async-signal-unsafe function vscanf() called within signal handler")
+        }
+    }
+
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("vscanf() unimplemented for Fizzle internal use");
     };
@@ -1386,6 +1435,13 @@ pub unsafe extern "C" fn __isoc99_vscanf(
     format: *const libc::c_char,
     mut va_args: VaList,
 ) -> libc::c_int {
+    
+    #[cfg(feature = "sigsan")] {
+        if in_sighandler() {
+            panic!("async-signal-unsafe function __isoc99_vscanf() called within signal handler")
+        }
+    }
+
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("__isoc99_vscanf() unimplemented for Fizzle internal use");
     };
@@ -1478,6 +1534,13 @@ pub unsafe extern "C" fn __isoc23_vscanf(
     format: *const libc::c_char,
     mut va_args: VaList,
 ) -> libc::c_int {
+
+    #[cfg(feature = "sigsan")] {
+        if in_sighandler() {
+            panic!("async-signal-unsafe function __isoc23_vscanf() called within signal handler")
+        }
+    }
+
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("__isoc23_vscanf() unimplemented for Fizzle internal use");
     };
@@ -1572,6 +1635,13 @@ pub unsafe extern "C" fn vfscanf(
     format: *const libc::c_char,
     mut va_args: VaList,
 ) -> libc::c_int {
+
+    #[cfg(feature = "sigsan")] {
+        if in_sighandler() {
+            panic!("async-signal-unsafe function vfscanf() called within signal handler")
+        }
+    }
+
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("vfscanf() unimplemented for Fizzle internal use");
     };
@@ -1665,6 +1735,13 @@ pub unsafe extern "C" fn __isoc99_vfscanf(
     format: *const libc::c_char,
     mut va_args: VaList,
 ) -> libc::c_int {
+
+    #[cfg(feature = "sigsan")] {
+        if in_sighandler() {
+            panic!("async-signal-unsafe function __isoc99_vfscanf() called within signal handler")
+        }
+    }
+
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("__isoc99_vfscanf() unimplemented for Fizzle internal use");
     };
@@ -1758,6 +1835,13 @@ pub unsafe extern "C" fn __isoc23_vfscanf(
     format: *const libc::c_char,
     mut va_args: VaList,
 ) -> libc::c_int {
+
+    #[cfg(feature = "sigsan")] {
+        if in_sighandler() {
+            panic!("async-signal-unsafe function __isoc23_vfscanf() called within signal handler")
+        }
+    }
+
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("__isoc23_vfscanf() unimplemented for Fizzle internal use");
     };

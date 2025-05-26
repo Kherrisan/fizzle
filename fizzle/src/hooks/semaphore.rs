@@ -7,6 +7,7 @@ use crate::{hook_macros, WaitDuration};
 use std::ffi::CStr;
 use std::ptr;
 use std::time::Duration;
+use crate::state::in_sighandler;
 
 hook_macros::hook! {
     unsafe fn sem_init(
@@ -35,6 +36,13 @@ hook_macros::hook! {
         mode: libc::mode_t,
         value: libc::c_uint
     ) -> *mut libc::sem_t => fizzle_sem_open(ctx) {
+
+        #[cfg(feature = "sigsan")] {
+            if in_sighandler() {
+                panic!("async-signal-unsafe function sem_open() called within signal handler")
+            }
+        }
+
 
         let name = CStr::from_ptr(name);
 
@@ -91,6 +99,13 @@ hook_macros::hook! {
     unsafe fn sem_close(
         sem: *mut libc::sem_t
     ) -> libc::c_int => fizzle_sem_close(ctx) {
+
+        #[cfg(feature = "sigsan")] {
+            if in_sighandler() {
+                panic!("async-signal-unsafe function sem_close() called within signal handler")
+            }
+        }
+
         let sem_ptr = SemaphorePtr::from(sem);
 
         crate::strace!("sem_close(sem={:?}) -> ...", sem);
@@ -113,6 +128,13 @@ hook_macros::hook! {
     unsafe fn sem_unlink(
         path: *const libc::c_char
     ) -> libc::c_int => fizzle_sem_unlink(ctx) {
+
+        #[cfg(feature = "sigsan")] {
+            if in_sighandler() {
+                panic!("async-signal-unsafe function sem_unlink() called within signal handler")
+            }
+        }
+
         let name = CStr::from_ptr(path);
 
         crate::strace!("sem_unlink(path={:?}) -> ...", name);

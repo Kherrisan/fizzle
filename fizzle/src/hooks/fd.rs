@@ -8,6 +8,7 @@ use crate::handlers::descriptor::{
 };
 use crate::scheduler::Scheduler;
 use crate::{hook_macros, strace};
+use crate::state::in_sighandler;
 
 hook_macros::hook! {
     unsafe fn close(
@@ -124,6 +125,13 @@ pub const F_SET_FILE_RW_HINT: libc::c_int = 1038;
 
 #[no_mangle]
 pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: ...) -> libc::c_int {
+
+    #[cfg(feature = "sigsan")] {
+        if in_sighandler() {
+            panic!("async-signal-unsafe function fcntl() called within signal handler")
+        }
+    }
+    
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         return match cmd {
             libc::F_DUPFD
@@ -237,6 +245,8 @@ pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: .
             return -1;
         }
     }
+
+
 }
 
 // GNU libc unconditionally pulls a void* from va_args, so we should (hypothetically?) be okay doing this.

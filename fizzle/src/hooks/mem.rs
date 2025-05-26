@@ -3,6 +3,7 @@ use std::{env, ffi::CStr};
 use crate::constants::FIZZLE_SINGLEPROCESS_ENV;
 use crate::hook_macros;
 use crate::scheduler;
+use crate::state::in_sighandler;
 
 hook_macros::hook! {
     unsafe fn memfd_create(
@@ -59,6 +60,13 @@ hook_macros::hook! {
     unsafe fn strdup(
         name: *const libc::c_char
     ) -> *mut libc::c_char => fizzle_strdup(_ctx) {
+
+        #[cfg(feature = "sigsan")] {
+            if in_sighandler() {
+                panic!("async-signal-unsafe function strdup() called within signal handler")
+            }
+        }
+
         let name_cstr = CStr::from_ptr(name);
 
         log::debug!("strdup({:?}", name_cstr);

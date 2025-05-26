@@ -1,4 +1,5 @@
 use crate::{constants::FIZZLE_UID_ENV, hook_macros};
+use crate::state::in_sighandler;
 
 hook_macros::hook! {
     unsafe fn getuid() -> libc::uid_t => fizzle_getuid(ctx) {
@@ -17,6 +18,13 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn setuid(uid: libc::uid_t) -> libc::c_int => fizzle_setuid(ctx) {
+
+        #[cfg(feature = "sigsan")] {
+            if in_sighandler() {
+                panic!("async-signal-unsafe function setuid() called within signal handler")
+            }
+        }
+
         crate::strace!("setuid({}) -> ...", uid);
 
         log::warn!("unimplemented: setuid({})", uid);
@@ -43,6 +51,13 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn seteuid(uid: libc::uid_t) -> libc::c_int => fizzle_seteuid(ctx) {
+
+        #[cfg(feature = "sigsan")] {
+            if in_sighandler() {
+                panic!("async-signal-unsafe function seteuid() called within signal handler")
+            }
+        }
+
         crate::strace!("seteuid({}) -> ...", uid);
 
         log::warn!("unimplemented: seteuid({})", uid);
@@ -69,6 +84,13 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn setgid(uid: libc::uid_t) -> libc::c_int => fizzle_setgid(ctx) {
+
+        #[cfg(feature = "sigsan")] {
+            if in_sighandler() {
+                panic!("async-signal-unsafe function setgid() called within signal handler")
+            }
+        }
+
         crate::strace!("setgid({}) -> ...", uid);
 
         log::warn!("unimplemented: setgid({})", uid);
@@ -95,6 +117,13 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn setegid(uid: libc::uid_t) -> libc::c_int => fizzle_setegid(ctx) {
+
+        #[cfg(feature = "sigsan")] {
+            if in_sighandler() {
+                panic!("async-signal-unsafe function setegid() called within signal handler")
+            }
+        }
+
         crate::strace!("setegid({}) -> ...", uid);
 
         log::warn!("unimplemented: setegid({})", uid);
@@ -108,6 +137,13 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn getpwnam(name: *const libc::c_char) -> *mut libc::passwd => fizzle_getpwnam(ctx) {
+
+        #[cfg(feature = "sigsan")] {
+            if in_sighandler() {
+                panic!("async-signal-unsafe function getpwnam() called within signal handler")
+            }
+        }
+
         crate::strace!("getpwnam(name={:?}) -> ...", name);
 
         log::warn!("unimplemented: getpwnam() (passthrough)");
@@ -122,6 +158,13 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn getpwuid(uid: libc::uid_t) -> *mut libc::passwd => fizzle_getpwuid(ctx) {
+
+        #[cfg(feature = "sigsan")] {
+            if in_sighandler() {
+                panic!("async-signal-unsafe function getpwuid() called within signal handler")
+            }
+        }
+
         crate::strace!("getpwuid(uid={}) -> ...", uid);
 
         log::warn!("unimplemented: getpwuid() (passthrough)");

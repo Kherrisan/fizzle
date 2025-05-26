@@ -7,6 +7,7 @@ use fizzle_common::io::SockAddr;
 use crate::handlers::netdb::*;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
+use crate::state::in_sighandler;
 
 // TODO: Upstream this.
 const EAI_ADDRFAMILY: libc::c_int = -9;
@@ -150,6 +151,13 @@ hook_macros::hook! {
         len: libc::socklen_t,
         ty: libc::c_int
     ) -> *mut libc::hostent => fizzle_gethostbyaddr(ctx) {
+
+        #[cfg(feature = "sigsan")] {
+            if in_sighandler() {
+                panic!("async-signal-unsafe function gethostbyaddr() called within signal handler")
+            }
+        }
+
         // deprecated--should we implement??
         unimplemented!("gethostbyaddr")
     }
@@ -159,6 +167,13 @@ hook_macros::hook! {
     unsafe fn gethostbyname(
         name: *const libc::c_char
     ) -> *mut libc::hostent => fizzle_gethostbyname(ctx) {
+
+        #[cfg(feature = "sigsan")] {
+            if in_sighandler() {
+                panic!("async-signal-unsafe function gethostbyname() called within signal handler")
+            }
+        }
+
         crate::strace!("gethostbyname(name={:?}) -> ...", name);
 
         let name_cstr = CStr::from_ptr(name);
@@ -196,6 +211,13 @@ hook_macros::hook! {
         name: *const libc::c_char,
         af: libc::c_int
     ) -> *mut libc::hostent => fizzle_gethostbyname2(ctx) {
+
+        #[cfg(feature = "sigsan")] {
+            if in_sighandler() {
+                panic!("async-signal-unsafe function gethostbyname2() called within signal handler")
+            }
+        }
+
         crate::strace!("gethostbyname2(name={:?}, af={}) -> ...", name, af);
 
         let name_cstr = CStr::from_ptr(name);
@@ -310,6 +332,13 @@ hook_macros::hook! {
         name: *const libc::c_char,
         proto: *const libc::c_char
     ) -> *mut libc::servent => fizzle_getservbyname(ctx) {
+
+        #[cfg(feature = "sigsan")] {
+            if in_sighandler() {
+                panic!("async-signal-unsafe function getservbyname() called within signal handler")
+            }
+        }
+
         let name_cstr = CStr::from_ptr(name);
         let proto_cstr = if proto.is_null() {
             None
