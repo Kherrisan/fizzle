@@ -27,17 +27,27 @@ toml = "0.8" # For reading Fizzle.toml
 
 [dependencies]
 bitflags = "2.6.0"
-critical-section = { version = "1.1", features = [] } # We implement our own lock-free crit section to improve perf
-embedded-alloc = { version = "0.6.0", features = ["tlsf", "allocator_api"] } # For interprocess allocation
-env_logger = "0.11" # For trace logs
-hashbrown = { version = "0.15", features = ["nightly"] } # For allocatior API
+# Use: lock-free application of interprocess heap for improved performance
+critical-section = { version = "1.1", features = [] }
+# Use: interprocess heap allocation primitive
+embedded-alloc = { version = "0.6.0", features = ["tlsf", "allocator_api"] }
+# Use: emitting logs to stdout
+env_logger = "0.11"
+# Use: Allocator API for `HashMap`/`HashSet` types; faster hashing algs
+hashbrown = { version = "0.15", features = ["nightly"] }
+# Use: calling underlying implementations of standard library functions
 libc = "0.2" # For various low-level operations
+# Use: logging for debugging purposes
 log = { version = "0.4" } # For trace logs
-rand = { version = "0.8", features = ["small_rng"] } # For per-round RNG
+# Use: Fast, deterministic RNG for shadowing rand() APIs
+rand = { version = "0.8", features = ["small_rng"] }
 
+# Use: libresolv mocking (TODO: pull out into `fizzle-plugin-resolv` plugin)
 hickory-proto = { version = "0.25.1", git = "https://github.com/nathaniel-bennett/hickory-dns" }
+# Use: libresolv mocking (TODO: pull out
 entropic = { version = "0.1.1" }
 
+# Plugin dependencies 
 fizzle-common = { version = "0.1", path = "../fizzle-common" }
 fizzle-plugin = { version = "0.1", path = "../fizzle-plugin" }
 fizzle-plugin-aflnet-dns = {version = "0.1", path = "../fizzle-plugin-aflnet-dns"}
@@ -47,14 +57,3 @@ fizzle-plugin-aflnet-generic = {version = "0.1", path = "../fizzle-plugin-aflnet
 fizzle-plugin-aflnet-sip = {version = "0.1", path = "../fizzle-plugin-aflnet-sip"}
 fizzle-plugin-fuzz-s1ap = {version = "0.1", path = "../fizzle-plugin-fuzz-s1ap"}
 fizzle-plugin-spf-pbt = {version = "0.1", path = "../fizzle-plugin-spf-pbt"}
-
-# Examples:
-# 
-# fizzle-http = "0.1"
-# fizzle-yaml = "0.2.0"
-# fizzle-zmq-client = "0.4.2"
-# fizzle-http-customheaders = { version = "0.1", path = "../../fizzle-http-customheaders" }
-#
-
-
-# End of Fizzle Plugin Dependencies
