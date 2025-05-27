@@ -46,6 +46,10 @@ fn scan_incremental(format: &[u8], input: &[u8], params: &[*mut libc::c_void]) -
                 // This will break out of while loop and result in a `Truncated` error
             }
         } else if format[format_idx] == b'%' {
+            if format_idx + 1 == format.len() {
+                return Err(MatchFailure::BadInput(format_idx))
+            }
+
             match match_param(&format[format_idx + 1..], &input[input_idx..], params, params_idx) {
                 Ok(ParamSuccess { input_consumed, format_consumed, assigned }) => {
                     log::debug!("match_param() -> Success {{ input_consumed={}, format_consumed={}, assigned={} }}", input_consumed, format_consumed, assigned);
@@ -177,8 +181,8 @@ impl ParamInfo<'_> {
             ParamType::Float => 1,
             ParamType::Sequence => 1,
             ParamType::CSequence => self.max_field_width.unwrap_or(1), // TODO: likely incorrect
-            ParamType::Charset(items) => 1,
-            ParamType::NotCharset(items) => 1,
+            ParamType::Charset(_) => 1,
+            ParamType::NotCharset(_) => 1,
             ParamType::Pointer => todo!(),
             ParamType::Consumed => 0,
         }
@@ -1163,6 +1167,7 @@ pub unsafe extern "C" fn __isoc99_fscanf(
         match scan_incremental(format_bytes, &buf[buf_consumed..], &mut []) {
             Ok(consumed) => {
                 buf_consumed += consumed;
+                debug_assert!(buf_consumed < buf.len());
                 // We have all the bytes we need--now actually scan into va_args
 
                 let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args.as_va_list());
