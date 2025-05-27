@@ -2,10 +2,7 @@
 //!
 
 use crate::errno::Errno;
-use crate::handlers::descriptor::{
-    f_owner_ex, Descriptor, DescriptorCloseEvent, DescriptorDuplicateEvent, FcntlCommand,
-    FcntlEvent,
-};
+use crate::handlers::descriptor::*;
 use crate::scheduler::Scheduler;
 use crate::{hook_macros, strace};
 #[cfg(feature = "sigsan")]
@@ -36,19 +33,16 @@ hook_macros::hook! {
     unsafe fn close_range(
         first: libc::c_uint,
         last: libc::c_uint,
-        flags: libc::c_uint,
-        fd: libc::c_int
+        flags: libc::c_int
     ) -> libc::c_int => fizzle_close_range(ctx) {
-        let descriptor_id = Descriptor::from_raw_fd(first as i32);
-
-        crate::strace!("close(fd={}) -> ...", fd);
-        match Scheduler::handle_event(&mut ctx, DescriptorCloseEvent::new(descriptor_id)) {
+        crate::strace!("close_range(first={first}, last={last}, flags={flags}) -> ...");
+        match Scheduler::handle_event(&mut ctx, DescriptorCloseRangeEvent::new(first, last, flags)) {
             Ok(()) => {
-                crate::strace!("close(fd={}) -> 0", fd);
+                crate::strace!("close_range(first={first}, last={last}, flags={flags}) -> 0");
                 0
             },
             Err(e) => {
-                crate::strace!("close(fd={}) -> -1 ({})", fd, e);
+                crate::strace!("close_range(first={first}, last={last}, flags={flags}) -> -1 ({e})");
                 e.set_errno();
                 -1
             },

@@ -186,13 +186,13 @@ impl Event for DescriptorCloseEvent {
 pub struct DescriptorCloseRangeEvent {
     first: libc::c_uint,
     last: libc::c_uint,
-    flags: libc::c_uint,
+    flags: libc::c_int,
 }
 
 impl DescriptorCloseRangeEvent {
     #[inline]
     // TODO: turn flags into proper type
-    pub fn new(first: libc::c_uint, last: libc::c_uint, flags: libc::c_uint) -> Self {
+    pub fn new(first: libc::c_uint, last: libc::c_uint, flags: libc::c_int) -> Self {
         Self {
             first,
             last,
@@ -206,7 +206,7 @@ impl Event for DescriptorCloseRangeEvent {
     type Error = Errno;
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
-        if self.flags & libc::CLOSE_RANGE_CLOEXEC > 0 {
+        if (self.flags as u32) & libc::CLOSE_RANGE_CLOEXEC > 0 {
             panic!("unimplemented: CLOSE_RANGE_CLOEXEC");
         }
 
