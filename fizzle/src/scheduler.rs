@@ -771,7 +771,10 @@ impl TerminateProcessTask {
             log::error!("main process forcibly terminated");
 
             unsafe {
+                #[cfg(feature = "quikcov")]
                 libc::exit(-libc::SIGTERM); // Same value as SIGTERM sighandler; nullifies race condition
+                #[cfg(not(feature = "quikcov"))]
+                libc::_exit(-libc::SIGTERM); // Same value as SIGTERM sighandler; nullifies race condition
             }
         }
 
@@ -1811,7 +1814,10 @@ impl Scheduler {
         if !state.global.fuzz_input.is_empty() {
             // Only one input per harness execution--end here
             unsafe {
+                #[cfg(feature = "quikcov")]
                 libc::exit(0);
+                #[cfg(not(feature = "quikcov"))]
+                libc::_exit(0);
             }
         }
 
@@ -1837,7 +1843,10 @@ impl Scheduler {
             let fuzz_ptr = crate::__afl_fuzz_ptr;
 
             if crate::__afl_persistent_loop(rounds) == 0 {
-                libc::exit(0); // _exit to avoid `atexit` handlers that would reduce efficiency
+                #[cfg(feature = "quikcov")]
+                libc::exit(0);
+                #[cfg(not(feature = "quikcov"))]
+                libc::_exit(0);
             }
 
             if fuzz_ptr.is_null() {
