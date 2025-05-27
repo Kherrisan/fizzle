@@ -203,6 +203,7 @@ fn create_inotify_watch() -> libc::c_int {
 }
 
 unsafe extern "C" fn fizzle_handle_sigchld(_signal: libc::c_int) {
+    // TODO: BUG: this will not work with the current `has_entered_handler` implementation...
     let was_in_handler = crate::state::has_entered_handler();
     crate::state::set_entered_handler(true);
 

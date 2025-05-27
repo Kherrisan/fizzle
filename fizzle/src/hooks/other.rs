@@ -961,10 +961,10 @@ hook_macros::hook! {
 #[no_mangle]
 pub unsafe extern "C" fn err(
         status: libc::c_int,
-        format: *const libc::c_char,
-        mut va_args: ...
+        _format: *const libc::c_char,
+        _va_args: ...
     )  {
-    let Some(mut ctx) = crate::hooks::pre_hook() else {
+    let Some(_ctx) = crate::hooks::pre_hook() else {
         log::error!("err() called internally by Fizzle");
         std::process::exit(status);
     };
@@ -1048,7 +1048,7 @@ pub unsafe extern "C" fn errx(
         status: libc::c_int,
         _format: *mut libc::c_void,
         _va_args: ...
-    )  {
+    ) {
     let Some(_ctx) = crate::hooks::pre_hook() else {
         log::error!("errx() called internally by Fizzle");
         std::process::exit(status);
@@ -2858,7 +2858,7 @@ hook_macros::hook! {
     
 hook_macros::hook! {
     unsafe fn mcheck(
-        _abortfn: unsafe extern "C" fn(libc::__exit_status) -> *mut libc::c_void
+        abortfn: unsafe extern "C" fn(libc::__exit_status) -> *mut libc::c_void
     ) -> libc::c_int => fizzle_mcheck(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -2866,7 +2866,7 @@ hook_macros::hook! {
             }
         }
 
-        hook_macros::real!(mcheck)(_abortfn)
+        hook_macros::real!(mcheck)(abortfn)
     }
 }
     
@@ -3579,27 +3579,27 @@ hook_macros::hook! {
     
 hook_macros::hook! {
     unsafe fn scandir(
-        _dir: *mut libc::c_void,
-        _namelist: *mut *mut *mut libc::c_void,
-        _selector: unsafe extern "C" fn(*mut libc::c_void) -> *mut libc::c_void,
-        _cmp: unsafe extern "C" fn(*mut *mut libc::c_void, *mut *mut libc::c_void) -> *mut libc::c_void
-    ) -> libc::c_int => fizzle_scandir(ctx) {
+        dir: *mut libc::c_void,
+        namelist: *mut *mut *mut libc::c_void,
+        selector: unsafe extern "C" fn(*mut libc::c_void) -> *mut libc::c_void,
+        cmp: unsafe extern "C" fn(*mut *mut libc::c_void, *mut *mut libc::c_void) -> *mut libc::c_void
+    ) -> libc::c_int => fizzle_scandir(_ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
                 panic!("async-signal-unsafe function scandir() called within signal handler")
             }
         }
 
-        hook_macros::real!(scandir)(_dir, _namelist, _selector, _cmp)
+        hook_macros::real!(scandir)(dir, namelist, selector, cmp)
     }
 }
     
 hook_macros::hook! {
     unsafe fn scandir64(
-        _dir: *mut libc::c_void,
-        _namelist: *mut *mut *mut libc::c_void,
-        _selector: unsafe extern "C" fn(*mut libc::c_void) -> *mut libc::c_void,
-        _cmp: unsafe extern "C" fn(*mut *mut libc::c_void, *mut *mut libc::c_void) -> *mut libc::c_void
+        dir: *mut libc::c_void,
+        namelist: *mut *mut *mut libc::c_void,
+        selector: unsafe extern "C" fn(*mut libc::c_void) -> *mut libc::c_void,
+        cmp: unsafe extern "C" fn(*mut *mut libc::c_void, *mut *mut libc::c_void) -> *mut libc::c_void
     ) -> libc::c_int => fizzle_scandir64(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -3607,7 +3607,7 @@ hook_macros::hook! {
             }
         }
 
-        hook_macros::real!(scandir64)(_dir, _namelist, _selector, _cmp)
+        hook_macros::real!(scandir64)(dir, namelist, selector, cmp)
     }
 }
     
