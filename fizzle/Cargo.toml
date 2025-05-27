@@ -50,6 +50,8 @@ entropic = { version = "0.1.1" }
 # Plugin dependencies 
 fizzle-common = { version = "0.1", path = "../fizzle-common" }
 fizzle-plugin = { version = "0.1", path = "../fizzle-plugin" }
+fizzle-plugin-libafl-datagram = { version = "0.1", path = "../fizzle-plugin-libafl-datagram" }
+fizzle-plugin-libafl-stream = { version = "0.1", path = "../fizzle-plugin-libafl-stream" }
 fizzle-plugin-aflnet-dns = {version = "0.1", path = "../fizzle-plugin-aflnet-dns"}
 fizzle-plugin-aflnet-dns-better = {version = "0.1", path = "../fizzle-plugin-aflnet-dns-better"}
 fizzle-plugin-aflnet-dtls = {version = "0.1", path = "../fizzle-plugin-aflnet-dtls"}
