@@ -459,6 +459,9 @@ impl Event for FcntlEvent<'_> {
                     }
                     FcntlCommand::SetFl(flags) => {
                         fd_info.nonblocking = flags & libc::O_NONBLOCK > 0;
+                        if flags & libc::O_ASYNC > 0 {
+                            log::warn!("unimplemented fcntl command O_SETFL(O_ASYNC) used");
+                        }
                         Outcome::Success(0)
                     }
                     FcntlCommand::GetFd => {
@@ -513,6 +516,10 @@ impl Event for FcntlEvent<'_> {
                         );
 
                         Outcome::Success(dupfd)
+                    }
+                    FcntlCommand::SetOwn(_) => {
+                        log::warn!("unimplemented fcntl command F_SETOWN() used");
+                        Outcome::Success(0)
                     }
                     _ => {
                         log::error!("unimplemented fcntl command");
