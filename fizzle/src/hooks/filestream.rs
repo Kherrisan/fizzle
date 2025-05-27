@@ -7,6 +7,7 @@ use crate::handlers::file::{AccessMode, FileOpenFlags, SeekPosition};
 use crate::handlers::filestream::*;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
+#[cfg(feature = "sigsan")]
 use crate::state::in_sighandler;
 
 const FSETLOCKING_QUERY: libc::c_int = 0;

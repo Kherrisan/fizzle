@@ -3,6 +3,7 @@ use std::{env, ffi::CStr};
 use crate::constants::FIZZLE_SINGLEPROCESS_ENV;
 use crate::hook_macros;
 use crate::scheduler;
+#[cfg(feature = "sigsan")]
 use crate::state::in_sighandler;
 
 hook_macros::hook! {

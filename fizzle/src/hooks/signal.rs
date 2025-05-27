@@ -8,6 +8,7 @@ use crate::handlers::signal::*;
 use crate::handlers::thread::Tid;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
+#[cfg(feature = "sigsan")]
 use crate::state::in_sighandler;
 
 // SIGSEGV, SIGBUS, SIGFPE and family can't be caught using `sigwait` or `signalfd`. But SIGCHLD can...

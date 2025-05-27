@@ -12,6 +12,7 @@ use crate::handlers::thread::*;
 use crate::scheduler;
 use crate::scheduler::Scheduler;
 use crate::{hook_macros, WaitDuration};
+#[cfg(feature = "sigsan")]
 use crate::state::in_sighandler;
 
 // TODO: add these to libc

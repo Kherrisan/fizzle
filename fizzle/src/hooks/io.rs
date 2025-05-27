@@ -6,6 +6,7 @@ use crate::errno::Errno;
 use crate::handlers::descriptor::*;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
+#[cfg(feature = "sigsan")]
 use crate::state::in_sighandler;
 
 hook_macros::hook! {

@@ -5,6 +5,7 @@ use std::ptr;
 use crate::errno::Errno;
 use crate::handlers::filestream::*;
 use crate::scheduler::Scheduler;
+#[cfg(feature = "sigsan")]
 use crate::state::in_sighandler;
 
 #[no_mangle]

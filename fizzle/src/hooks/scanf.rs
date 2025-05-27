@@ -4,6 +4,7 @@ use std::{mem, usize};
 use crate::errno::Errno;
 use crate::handlers::filestream::{FilePtr, StreamReadEvent, StreamUngetEvent};
 use crate::scheduler::Scheduler;
+#[cfg(feature = "sigsan")]
 use crate::state::in_sighandler;
 
 enum MatchFailure {

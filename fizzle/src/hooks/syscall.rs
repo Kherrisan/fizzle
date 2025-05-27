@@ -7,6 +7,7 @@ use crate::handlers::entropy::*;
 use crate::handlers::futex::*;
 use crate::scheduler::Scheduler;
 use crate::{hook_macros, WaitDuration};
+#[cfg(feature = "sigsan")]
 use crate::state::in_sighandler;
 
 /*

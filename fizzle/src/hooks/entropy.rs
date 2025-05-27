@@ -3,6 +3,7 @@ use std::{mem, slice};
 use crate::handlers::entropy::GetEntropyEvent;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
+#[cfg(feature = "sigsan")]
 use crate::state::in_sighandler;
 
 hook_macros::hook! {

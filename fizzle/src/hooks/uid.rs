@@ -1,4 +1,5 @@
 use crate::{constants::FIZZLE_UID_ENV, hook_macros};
+#[cfg(feature = "sigsan")]
 use crate::state::in_sighandler;
 
 hook_macros::hook! {

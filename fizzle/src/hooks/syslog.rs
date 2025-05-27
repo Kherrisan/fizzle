@@ -1,4 +1,5 @@
 use crate::hook_macros;
+#[cfg(feature = "sigsan")]
 use crate::state::in_sighandler;
 
 hook_macros::hook! {

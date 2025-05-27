@@ -7,6 +7,7 @@ use fizzle_common::io::SockAddr;
 use crate::handlers::netdb::*;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
+#[cfg(feature = "sigsan")]
 use crate::state::in_sighandler;
 
 // TODO: Upstream this.

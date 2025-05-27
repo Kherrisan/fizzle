@@ -15,6 +15,7 @@ use crate::handlers::process::*;
 use crate::handlers::signal::*;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
+#[cfg(feature = "sigsan")]
 use crate::state::in_sighandler;
 
 pub type CloneFunction = unsafe extern "C" fn(*mut libc::c_void) -> libc::c_int;

@@ -3,6 +3,7 @@ use std::time::Duration;
 use crate::handlers::sleep::SleepEvent;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
+#[cfg(feature = "sigsan")]
 use crate::state::in_sighandler;
 
 hook_macros::hook! {
