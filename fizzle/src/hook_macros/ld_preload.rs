@@ -1,7 +1,5 @@
 // Uses code from `redhook` project, available under BSD 2-Clause License
 
-use std::cell::OnceCell;
-
 #[link(name = "dl")]
 unsafe extern "C" {
     unsafe fn dlsym(
@@ -29,35 +27,32 @@ macro_rules! hook {
 
         impl $real_fn {
             fn get(&self) -> unsafe extern "C" fn ( $($v : $t),* ) -> $r {
-                use std::cell::OnceCell;
+                use crate::cell::SequentialRefCell;
 
-                std::thread_local! {
-                    static REAL: OnceCell<*const u8> = OnceCell::new();
-                }
+                static REAL: SequentialRefCell<*const u8> = SequentialRefCell::new(std::ptr::null());
 
                 unsafe {
-                    std::mem::transmute(REAL.with(|cell| {
-                        *cell.get_or_init(|| {
-                            crate::hook_macros::ld_preload::dlsym_next(concat!(stringify!($real_fn), "\0"))
-                        })
-                    }))
+                    std::mem::transmute(
+                        if (*REAL.as_ptr()).is_null() {
+                            let ptr = crate::hook_macros::ld_preload::dlsym_next(concat!(stringify!($real_fn), "\0"));
+                            *REAL.as_ptr() = ptr;
+                            ptr
+                        } else {
+                            *REAL.as_ptr()
+                        }
+                    )
                 }
             }
 
             #[no_mangle]
             pub unsafe extern "C" fn $real_fn ( $($v : $t),* ) -> $r {
-                ::std::panic::catch_unwind(|| {
-                    let Some($state) = crate::hooks::pre_hook() else {
-                        return $real_fn.get() ( $($v),* )
-                    };
+                let Some($state) = crate::hooks::pre_hook() else {
+                    return $real_fn.get() ( $($v),* )
+                };
 
-                    let res = $hook_fn ( $state, $($v),*);
-                    crate::hooks::post_hook();
-                    res
-
-                }).unwrap_or_else(|_| {
-                    std::process::abort(); // Panic unwind hook already prints out stack info
-                })
+                let res = $hook_fn ( $state, $($v),*);
+                crate::hooks::post_hook();
+                res
             }
         }
 
@@ -91,18 +86,20 @@ macro_rules! resolve {
 
         impl $real_fn {
             fn get(&self) -> unsafe extern "C" fn ( $($t),* ) -> $r {
-                use std::cell::OnceCell;
+                use crate::cell::SequentialRefCell;
 
-                std::thread_local! {
-                    static REAL: OnceCell<*const u8> = OnceCell::new();
-                }
+                static REAL: SequentialRefCell<*const u8> = SequentialRefCell::new(std::ptr::null());
 
                 unsafe {
-                    std::mem::transmute(REAL.with(|cell| {
-                        *cell.get_or_init(|| {
-                            crate::hook_macros::ld_preload::dlsym_next(concat!(stringify!($real_fn), "\0"))
-                        })
-                    }))
+                    std::mem::transmute(
+                        if (*REAL.as_ptr()).is_null() {
+                            let ptr = crate::hook_macros::ld_preload::dlsym_next(concat!(stringify!($real_fn), "\0"));
+                            *REAL.as_ptr() = ptr;
+                            ptr
+                        } else {
+                            *REAL.as_ptr()
+                        }
+                    )
                 }
             }
         }
@@ -119,17 +116,37 @@ macro_rules! resolve {
 pub(crate) use resolve;
 
 pub fn real_syscall() -> extern "C" fn(libc::c_long, ...) -> libc::c_long {
-    std::thread_local! {
-        static REAL: OnceCell<*const u8> = OnceCell::new();
-    }
+    use crate::cell::SequentialRefCell;
 
-    unsafe { std::mem::transmute(REAL.with(|cell| *cell.get_or_init(|| dlsym_next("syscall\0")))) }
+    static REAL: SequentialRefCell<*const u8> = SequentialRefCell::new(std::ptr::null());
+
+    unsafe {
+        std::mem::transmute(
+            if (*REAL.as_ptr()).is_null() {
+                let ptr = crate::hook_macros::ld_preload::dlsym_next("syscall\0");
+                *REAL.as_ptr() = ptr;
+                ptr
+            } else {
+                *REAL.as_ptr()
+            }
+        )
+    }
 }
 
 pub fn real_fcntl() -> extern "C" fn(libc::c_int, libc::c_int, ...) -> libc::c_int {
-    std::thread_local! {
-        static REAL: OnceCell<*const u8> = OnceCell::new();
-    }
+    use crate::cell::SequentialRefCell;
 
-    unsafe { std::mem::transmute(REAL.with(|cell| *cell.get_or_init(|| dlsym_next("fcntl\0")))) }
+    static REAL: SequentialRefCell<*const u8> = SequentialRefCell::new(std::ptr::null());
+
+    unsafe {
+        std::mem::transmute(
+            if (*REAL.as_ptr()).is_null() {
+                let ptr = crate::hook_macros::ld_preload::dlsym_next("fcntl\0");
+                *REAL.as_ptr() = ptr;
+                ptr
+            } else {
+                *REAL.as_ptr()
+            }
+        )
+    }
 }
