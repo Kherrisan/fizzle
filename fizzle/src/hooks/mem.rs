@@ -69,7 +69,7 @@ hook_macros::hook! {
 
         let name_cstr = CStr::from_ptr(name);
 
-        log::debug!("strdup({:?}", name_cstr);
+        log::debug!("strdup({:?})", name_cstr);
 
         libc::strdup(name)
     }

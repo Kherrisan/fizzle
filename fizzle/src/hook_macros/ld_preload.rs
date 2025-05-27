@@ -82,6 +82,42 @@ macro_rules! real {
 
 pub(crate) use real;
 
+macro_rules! resolve {
+    ($res:ident <= $real_fn:ident ( $($v:ident : $t:ty),* ) -> $r:ty) => {
+        #[allow(non_camel_case_types)]
+        pub struct $real_fn {__private_field: ()}
+        #[allow(non_upper_case_globals)]
+        static $real_fn: $real_fn = $real_fn {__private_field: ()};
+
+        impl $real_fn {
+            fn get(&self) -> unsafe extern "C" fn ( $($t),* ) -> $r {
+                use std::cell::OnceCell;
+
+                std::thread_local! {
+                    static REAL: OnceCell<*const u8> = OnceCell::new();
+                }
+
+                unsafe {
+                    std::mem::transmute(REAL.with(|cell| {
+                        *cell.get_or_init(|| {
+                            crate::hook_macros::ld_preload::dlsym_next(concat!(stringify!($real_fn), "\0"))
+                        })
+                    }))
+                }
+            }
+        }
+
+        $res = $real_fn.get() ( $($v),* );
+    };
+
+    // Handle case where function signature has no return type
+    ($res:ident <= $real_fn:ident ( $($v:ident : $t:ty),* )) => {
+        $crate::hook! { $real_fn ( $($v : $t),* ) -> ()}
+    };
+}
+
+pub(crate) use resolve;
+
 pub fn real_syscall() -> extern "C" fn(libc::c_long, ...) -> libc::c_long {
     std::thread_local! {
         static REAL: OnceCell<*const u8> = OnceCell::new();

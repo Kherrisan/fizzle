@@ -182,9 +182,8 @@ pub unsafe extern "C" fn argp_error(
         }
     }
 
+    todo!("argp_error");
     crate::hooks::post_hook();
-    
-    todo!("argp_error")
 }
 
 #[no_mangle]
@@ -205,9 +204,8 @@ pub unsafe extern "C" fn argp_failure(
         }
     }
 
+    todo!("argp_failure");
     crate::hooks::post_hook();
-    
-    todo!("argp_failure")
 }
 
 hook_macros::hook! {
@@ -440,9 +438,8 @@ pub unsafe extern "C" fn asprintf(
         }
     }
 
+    todo!("asprintf");
     crate::hooks::post_hook();
-    
-    todo!("asprintf")
 }
 
 hook_macros::hook! {
@@ -977,9 +974,8 @@ pub unsafe extern "C" fn err(
         }
     }
 
+    todo!("err");
     crate::hooks::post_hook();
-    
-    todo!("err")
 }
 
 #[no_mangle]
@@ -999,9 +995,8 @@ pub unsafe extern "C" fn error(
         }
     }
 
+    todo!("error");
     crate::hooks::post_hook();
-    
-    todo!("error")
 }
 
 #[no_mangle]
@@ -1023,9 +1018,8 @@ pub unsafe extern "C" fn error_at_line(
         }
     }
 
+    todo!("error_at_line");
     crate::hooks::post_hook();
-    
-    todo!("error_at_line")
 }
 
 #[no_mangle]
@@ -1044,9 +1038,8 @@ pub unsafe extern "C" fn errx(
         }
     }
 
+    todo!("errx");
     crate::hooks::post_hook();
-    
-    todo!("errx")
 }
 
 hook_macros::hook! {
@@ -1401,9 +1394,8 @@ pub unsafe extern "C" fn fwscanf(
         }
     }
 
+    todo!("fwscanf");
     crate::hooks::post_hook();
-    
-    todo!("fwscanf")
 }
 
 hook_macros::hook! {
@@ -3026,9 +3018,8 @@ pub unsafe extern "C" fn obstack_printf(
         }
     }
 
+    todo!("obstack_printf");
     crate::hooks::post_hook();
-    
-    todo!("obstack_printf")
 }
 
 #[no_mangle]
@@ -3047,9 +3038,8 @@ pub unsafe extern "C" fn obstack_vprintf(
         }
     }
 
+    todo!("obstack_vprintf");
     crate::hooks::post_hook();
-    
-    todo!("obstack_vprintf")
 }
 
 hook_macros::hook! {
@@ -4056,9 +4046,8 @@ pub unsafe extern "C" fn snprintf(
         }
     }
 
+    todo!("snprintf");
     crate::hooks::post_hook();
-    
-    todo!("snprintf")
 }
 
 #[no_mangle]
@@ -4077,9 +4066,8 @@ pub unsafe extern "C" fn sprintf(
         }
     }
 
+    todo!("sprintf");
     crate::hooks::post_hook();
-    
-    todo!("sprintf")
 }
 
 #[no_mangle]
@@ -4098,9 +4086,8 @@ pub unsafe extern "C" fn sscanf(
         }
     }
 
+    todo!("sscanf");
     crate::hooks::post_hook();
-    
-    todo!("sscanf")
 }
 
 hook_macros::hook! {
@@ -4180,9 +4167,8 @@ pub unsafe extern "C" fn strfmon(
         }
     }
 
+    todo!("strfmon");
     crate::hooks::post_hook();
-    
-    todo!("strfmon")
 }
 
 hook_macros::hook! {
@@ -4345,9 +4331,8 @@ pub unsafe extern "C" fn swprintf(
         }
     }
 
+    todo!("swprintf");
     crate::hooks::post_hook();
-    
-    todo!("swprintf")
 }
 
 #[no_mangle]
@@ -4366,9 +4351,8 @@ pub unsafe extern "C" fn swscanf(
         }
     }
 
+    todo!("swscanf");
     crate::hooks::post_hook();
-    
-    todo!("swscanf")
 }
 
 hook_macros::hook! {
@@ -4714,9 +4698,8 @@ pub unsafe extern "C" fn vasprintf(
         }
     }
 
+    todo!("vasprintf");
     crate::hooks::post_hook();
-    
-    todo!("vasprintf")
 }
 
 #[no_mangle]
@@ -4735,9 +4718,8 @@ pub unsafe extern "C" fn verr(
         }
     }
 
+    todo!("verr");
     crate::hooks::post_hook();
-    
-    todo!("verr")
 }
 
 #[no_mangle]
@@ -4756,9 +4738,8 @@ pub unsafe extern "C" fn verrx(
         }
     }
 
+    todo!("verrx");
     crate::hooks::post_hook();
-    
-    todo!("verrx")
 }
 
 #[no_mangle]
@@ -4777,9 +4758,8 @@ pub unsafe extern "C" fn vfwscanf(
         }
     }
 
+    todo!("vfwscanf");
     crate::hooks::post_hook();
-    
-    todo!("vfwscanf")
 }
 
 hook_macros::hook! {
@@ -4799,10 +4779,10 @@ hook_macros::hook! {
     
 #[no_mangle]
 pub unsafe extern "C" fn vsnprintf(
-        _s: *mut libc::c_void,
-        _size: libc::size_t,
-        _template: *mut libc::c_void,
-        _ap: std::ffi::VaList
+        s: *mut libc::c_void,
+        size: libc::size_t,
+        template: *mut libc::c_void,
+        ap: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("vsnprintf() unimplemented for Fizzle internal use");
@@ -4814,16 +4794,17 @@ pub unsafe extern "C" fn vsnprintf(
         }
     }
 
+    let res;
+    hook_macros::resolve!(res <= vsnprintf(s: *mut libc::c_void, size: libc::size_t, template: *mut libc::c_void, ap: std::ffi::VaList) -> libc::c_int);
     crate::hooks::post_hook();
-    
-    todo!("vsnprintf")
+    res
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn vsprintf(
-        _s: *mut libc::c_void,
-        _template: *mut libc::c_void,
-        _ap: std::ffi::VaList
+        s: *mut libc::c_void,
+        template: *mut libc::c_void,
+        ap: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("vsprintf() unimplemented for Fizzle internal use");
@@ -4835,16 +4816,17 @@ pub unsafe extern "C" fn vsprintf(
         }
     }
 
+    let res;
+    hook_macros::resolve!(res <= vsprintf(s: *mut libc::c_void, template: *mut libc::c_void, ap: std::ffi::VaList) -> libc::c_int);
     crate::hooks::post_hook();
-    
-    todo!("vsprintf")
+    res
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn vsscanf(
-        _s: *mut libc::c_void,
-        _template: *mut libc::c_void,
-        _ap: std::ffi::VaList
+        s: *mut libc::c_void,
+        template: *mut libc::c_void,
+        ap: std::ffi::VaList
     ) -> libc::c_int  {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("vsscanf() unimplemented for Fizzle internal use");
@@ -4856,9 +4838,10 @@ pub unsafe extern "C" fn vsscanf(
         }
     }
 
+    let res;
+    hook_macros::resolve!(res <= vsscanf(s: *mut libc::c_void, template: *mut libc::c_void, ap: std::ffi::VaList) -> libc::c_int);
     crate::hooks::post_hook();
-    
-    todo!("vsscanf")
+    res
 }
 
 #[no_mangle]
@@ -4877,10 +4860,9 @@ pub unsafe extern "C" fn vswprintf(
             panic!("async-signal-unsafe function vswprintf() called within signal handler")
         }
     }
+    todo!("vswprintf");
 
-    crate::hooks::post_hook();
-    
-    todo!("vswprintf")
+    crate::hooks::post_hook();   
 }
 
 #[no_mangle]
@@ -4898,10 +4880,9 @@ pub unsafe extern "C" fn vswscanf(
             panic!("async-signal-unsafe function vswscanf() called within signal handler")
         }
     }
+    todo!("vswscanf");
 
     crate::hooks::post_hook();
-    
-    todo!("vswscanf")
 }
 
 #[no_mangle]
@@ -4918,10 +4899,9 @@ pub unsafe extern "C" fn vwarn(
             panic!("async-signal-unsafe function vwarn() called within signal handler")
         }
     }
+    todo!("vwarn");
 
     crate::hooks::post_hook();
-    
-    todo!("vwarn")
 }
 
 #[no_mangle]
@@ -4938,10 +4918,9 @@ pub unsafe extern "C" fn vwarnx(
             panic!("async-signal-unsafe function vwarnx() called within signal handler")
         }
     }
+    todo!("vwarnx");
 
     crate::hooks::post_hook();
-    
-    todo!("vwarnx")
 }
 
 #[no_mangle]
@@ -4958,10 +4937,9 @@ pub unsafe extern "C" fn vwscanf(
             panic!("async-signal-unsafe function vwscanf() called within signal handler")
         }
     }
+    todo!("vwscanf");
 
     crate::hooks::post_hook();
-    
-    todo!("vwscanf")
 }
 
 #[no_mangle]
@@ -4978,10 +4956,9 @@ pub unsafe extern "C" fn warn(
             panic!("async-signal-unsafe function warn() called within signal handler")
         }
     }
+    todo!("warn");
 
     crate::hooks::post_hook();
-    
-    todo!("warn")
 }
 
 #[no_mangle]
@@ -4998,10 +4975,9 @@ pub unsafe extern "C" fn warnx(
             panic!("async-signal-unsafe function warnx() called within signal handler")
         }
     }
+    todo!("warnx");
 
     crate::hooks::post_hook();
-    
-    todo!("warnx")
 }
 
 hook_macros::hook! {
@@ -5192,8 +5168,7 @@ pub unsafe extern "C" fn wscanf(
             panic!("async-signal-unsafe function wscanf() called within signal handler")
         }
     }
+    todo!("wscanf");
 
     crate::hooks::post_hook();
-    
-    todo!("wscanf")
 }
