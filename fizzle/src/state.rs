@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, LinkedList, VecDeque};
 use std::fmt::Debug;
 use std::mem::MaybeUninit;
@@ -57,36 +57,76 @@ use crate::backend::{
     ConnectingBackend, ConnectionlessBackend, FeedbackConnectionless, FileBackend, FileFeedback, PendingBackend, ServerBackend, StandardFeedback, StdioBackend
 };
 
+#[repr(transparent)]
+struct UnsafeBool {
+    inner: UnsafeCell<bool>
+}
+
+impl UnsafeBool {
+    pub const fn new(value: bool) -> Self {
+        Self {
+            inner: UnsafeCell::new(value)
+        }
+    }
+
+    unsafe fn get_and_set(&self) -> bool {
+        let res = *self.inner.get();
+        *self.inner.get() = true;
+        res
+    }
+
+    unsafe fn clear(&self) {
+        *self.inner.get() = false;
+    }
+}
+
+unsafe impl Send for UnsafeBool {}
+
+unsafe impl Sync for UnsafeBool {}
+
+static ENTERED_HANDLER_META: UnsafeBool = UnsafeBool::new(false);
+
+static IN_SIGHANDLER_META: UnsafeBool = UnsafeBool::new(false);
+
 // See `set_entered_handler` and `has_entered_handler`
 std::thread_local! {
-    static ENTERED_HANDLER: RefCell<bool> = const { RefCell::new(false) };
+    static ENTERED_HANDLER: Cell<bool> = const { Cell::new(false) };
 }
 
 std::thread_local! {
-    static IN_SIGHANDLER: RefCell<bool> = const { RefCell::new(false) };
+    static IN_SIGHANDLER: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Marks a thread-local variable indicating whether the calling thread is currently in a signal handler.
 pub fn set_entered_sighandler(entered: bool) {
-    IN_SIGHANDLER.with(|e| {
-        *e.borrow_mut() = entered;
+    IN_SIGHANDLER.with(|e| unsafe {
+        *e.as_ptr() = entered;
     });
 }
 
 /// Indicates whether the thread being called from is currently in a signal handler.
+#[cfg(feature = "sigsan")]
 pub fn in_sighandler() -> bool {
+    if unsafe { IN_SIGHANDLER_META.get_and_set() } {
+        return true
+    }
+
     let mut in_sighandler = false;
-    IN_SIGHANDLER.with(|e| {
-        in_sighandler = *e.borrow();
+    IN_SIGHANDLER.with(|e| unsafe {
+        in_sighandler = *e.as_ptr();
     });
+
+    unsafe {
+        IN_SIGHANDLER_META.clear();
+    }
     in_sighandler
 }
 
 /// Marks the thread as currently executing within a fizzle handler.
 pub fn set_entered_handler(entered: bool) {
-    ENTERED_HANDLER.with(|e| {
-        *e.borrow_mut() = entered;
-    });
+    ENTERED_HANDLER.with(|e| unsafe {
+        *e.as_ptr() = entered;
+    })
 }
 
 /// Indicates whether the thread is currently executing within a fizzle handler.
@@ -95,10 +135,34 @@ pub fn set_entered_handler(entered: bool) {
 /// infinite recursion. To do so, we keep track of whether we've already hooked the current
 /// function using a thread-local variable.
 pub fn has_entered_handler() -> bool {
-    let mut entered = true;
-    ENTERED_HANDLER.with(|e| {
-        entered = *e.borrow();
+    if unsafe { ENTERED_HANDLER_META.get_and_set() } {
+        // `ENTERED_HANDLER.with()` may call libc functions such as `malloc()` and `free()`, which
+        // are hooked by Fizzle. To avoid an infinite recursion here, this META global varaible
+        // is added. `has_entered_handler()` can never be called by two threads at once (thanks to
+        // the fact that yielded threads have always set their ENTERED_HANDLER variable prior to
+        // delegating control flow), so using a global is safe as long as it's reset within this
+        // context.
+        //
+        // On the first invocation of `has_entered_handler()`, this META variable will be false and
+        // control flow will continue on to `ENTERED_HANDLER.with()`. However, if that function ends
+        // up recursively calling this `has_entered_handler()` at any point, the META variable will
+        // be true on that invocation and will force `true` to be returned. This will enable the
+        // `with()` call to run normally and return, at which point the META variable will be
+        // cleared and the proper result of checking this thread-local variable will be returned.
+        //
+        // Like many of the other constructs in Fizzle, this is only possible because threads are
+        // scheduled in a strictly sequential manner.
+        return true
+    }
+
+    let mut entered = false;
+    ENTERED_HANDLER.with(|e| unsafe {
+        entered = *e.as_ptr();
     });
+
+    unsafe {
+        ENTERED_HANDLER_META.clear();
+    }
     entered
 }
 
