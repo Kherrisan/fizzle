@@ -14,7 +14,7 @@ pub struct SequentialRefCell<T> {
 
 impl<T> SequentialRefCell<T> {
     /// Creates a new `SequentialRefCell` containing a value.
-    pub fn new(inner: T) -> Self {
+    pub const fn new(inner: T) -> Self {
         Self {
             inner: RefCell::new(inner),
         }
