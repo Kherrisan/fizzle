@@ -347,14 +347,7 @@ pub unsafe extern "C" fn vfprintf(
     stream: *mut libc::FILE,
     format: *const libc::c_char,
     mut va_args: VaList,
-) -> libc::c_int {
-
-    #[cfg(feature = "sigsan")] {
-        if in_sighandler() {
-            panic!("async-signal-unsafe function vfprintf() called within signal handler")
-        }
-    }
-    
+) -> libc::c_int {   
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("vfprintf() unimplemented for Fizzle internal use");
     };
@@ -364,6 +357,12 @@ pub unsafe extern "C" fn vfprintf(
         stream,
         format
     );
+
+    #[cfg(feature = "sigsan")] {
+        if in_sighandler() {
+            panic!("async-signal-unsafe function vfprintf() called within signal handler")
+        }
+    }
 
     let format_cstr = CStr::from_ptr(format);
     let mut out_string = ptr::null_mut();
