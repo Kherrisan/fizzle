@@ -107,18 +107,22 @@ pub fn set_entered_sighandler(entered: bool) {
 /// Indicates whether the thread being called from is currently in a signal handler.
 #[cfg(feature = "sigsan")]
 pub fn in_sighandler() -> bool {
+    /*
     if unsafe { IN_SIGHANDLER_META.get_and_set() } {
         return true
     }
+    */
 
     let mut in_sighandler = false;
     IN_SIGHANDLER.with(|e| unsafe {
         in_sighandler = *e.as_ptr();
     });
 
+    /*
     unsafe {
         IN_SIGHANDLER_META.clear();
     }
+    */
     in_sighandler
 }
 
@@ -135,6 +139,7 @@ pub fn set_entered_handler(entered: bool) {
 /// infinite recursion. To do so, we keep track of whether we've already hooked the current
 /// function using a thread-local variable.
 pub fn has_entered_handler() -> bool {
+    /*
     if unsafe { ENTERED_HANDLER_META.get_and_set() } {
         // `ENTERED_HANDLER.with()` may call libc functions such as `malloc()` and `free()`, which
         // are hooked by Fizzle. To avoid an infinite recursion here, this META global varaible
@@ -154,15 +159,18 @@ pub fn has_entered_handler() -> bool {
         // scheduled in a strictly sequential manner.
         return true
     }
+    */
 
     let mut entered = false;
     ENTERED_HANDLER.with(|e| unsafe {
         entered = *e.as_ptr();
     });
 
+    /*
     unsafe {
         ENTERED_HANDLER_META.clear();
     }
+    */
     entered
 }
 
