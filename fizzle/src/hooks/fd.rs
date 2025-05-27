@@ -8,6 +8,7 @@ use crate::handlers::descriptor::{
 };
 use crate::scheduler::Scheduler;
 use crate::{hook_macros, strace};
+#[cfg(feature = "sigsan")]
 use crate::state::in_sighandler;
 
 hook_macros::hook! {
@@ -15,6 +16,30 @@ hook_macros::hook! {
         fd: libc::c_int
     ) -> libc::c_int => fizzle_close(ctx) {
         let descriptor_id = Descriptor::from_raw_fd(fd);
+
+        crate::strace!("close(fd={}) -> ...", fd);
+        match Scheduler::handle_event(&mut ctx, DescriptorCloseEvent::new(descriptor_id)) {
+            Ok(()) => {
+                crate::strace!("close(fd={}) -> 0", fd);
+                0
+            },
+            Err(e) => {
+                crate::strace!("close(fd={}) -> -1 ({})", fd, e);
+                e.set_errno();
+                -1
+            },
+        }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn close_range(
+        first: libc::c_uint,
+        last: libc::c_uint,
+        flags: libc::c_uint,
+        fd: libc::c_int
+    ) -> libc::c_int => fizzle_close_range(ctx) {
+        let descriptor_id = Descriptor::from_raw_fd(first as i32);
 
         crate::strace!("close(fd={}) -> ...", fd);
         match Scheduler::handle_event(&mut ctx, DescriptorCloseEvent::new(descriptor_id)) {

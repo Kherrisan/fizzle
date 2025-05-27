@@ -183,6 +183,136 @@ impl Event for DescriptorCloseEvent {
     }
 }
 
+pub struct DescriptorCloseRangeEvent {
+    first: libc::c_uint,
+    last: libc::c_uint,
+    flags: libc::c_uint,
+}
+
+impl DescriptorCloseRangeEvent {
+    #[inline]
+    // TODO: turn flags into proper type
+    pub fn new(first: libc::c_uint, last: libc::c_uint, flags: libc::c_uint) -> Self {
+        Self {
+            first,
+            last,
+            flags,
+        }
+    }
+}
+
+impl Event for DescriptorCloseRangeEvent {
+    type Success = ();
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        if self.flags & libc::CLOSE_RANGE_CLOEXEC > 0 {
+            panic!("unimplemented: CLOSE_RANGE_CLOEXEC");
+        }
+
+        let mut to_remove = Vec::new();
+
+        for (fd, fd_info) in state.local.fds.iter() {
+            let raw_fd = fd.as_raw_fd() as u32;
+            if raw_fd < self.first {
+                continue
+            }
+
+            if raw_fd > self.last {
+                break
+            }
+
+            #[cfg(feature = "afl")]
+            if raw_fd == 198 || raw_fd == 199 {
+                continue // Mask AFL pipe
+            }
+
+            // TODO: temporary patch--fix
+            if raw_fd == 1 || raw_fd == 2 {
+                continue // Mask stdout, stderr
+            }
+
+            #[cfg(feature = "quikcov")]
+            if let Ok(fd_str) = std::env::var("QUIKCOV_LDPRELOAD_PIPE_FD") {
+                let fd: RawFd = fd_str.parse().unwrap();
+                if fd.as_raw_fd() == fd {
+                    continue
+                }
+            }
+
+            let Some(fd_info) = state.local.fds.get(&fd) else {
+                #[cfg(not(feature = "passthroughfs"))]
+                return Outcome::Error(Errno::EBADF);
+                #[cfg(feature = "passthroughfs")]
+                return match unsafe { libc::close(fd.as_raw_fd()) } {
+                    0 => Outcome::Success(()),
+                    _ => Outcome::Error(Errno::get_errno()),
+                };
+            };
+
+            if let FdResource::Socket(socket_info) = fd_info.resource.clone() {
+                // Decrement the number of fd references to the socket
+                socket_info.borrow_mut().fd_count.checked_sub(1).unwrap();
+
+                // Is this the last file descriptor referencing the socket?
+                if socket_info.borrow().fd_count == 0 {
+                    // Remove the socket's address from the global space
+                    if let LocalAddress::Assigned(sockaddr) = socket_info.borrow().local_addr.clone() {
+                        let protocol = socket_info.borrow().protocol;
+                        state
+                            .global
+                            .socket_locations
+                            .remove(&TransportAddress { sockaddr, protocol })
+                            .unwrap();
+                    }
+
+                    // Certain socket states contain cyclic references with other sockets.
+                    // We need to manually remove these to
+                    if let SocketState::Connected(connected) = &mut socket_info.borrow_mut().state {
+                        if !connected.peer_closed {
+                            connected.peer_closed = true;
+                            if let ConnectedBackend::Peered(peer_info) = &mut connected.backend {
+                                // TODO: do we take the peer's socket ID here so that we can set peer_closed = true on it?
+                                // TODO: do we raise the poll of the peer here?
+                                peer_info.peer = Weak::new_in(fizzle_alloc());
+                            }
+                        }
+                    }
+                }
+
+                if let Some(addr) = socket_info.borrow().local_transport() {
+                    // Remove bound address
+                    match state.global.socket_locations.entry(addr) {
+                        Entry::Vacant(_) => unreachable!(),
+                        Entry::Occupied(mut o) => {
+                            let transport_info_mut = o.get_mut();
+                            for i in 0..transport_info_mut.bound_sockets.len() {
+                                if Rc::ptr_eq(&transport_info_mut.bound_sockets[i], &socket_info) {
+                                    transport_info_mut.bound_sockets.remove(i).unwrap();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Destroy the underlying file descriptor in use (including for passthrough descriptors).
+            match &fd_info.resource {
+                FdResource::Stdin | FdResource::Stdout | FdResource::Stderr => (),
+                _ => unsafe { libc::close(fd.as_raw_fd()); },
+            };
+
+            to_remove.push(*fd);
+        }
+
+        for fd in to_remove {
+            state.local.fds.remove(&fd);
+        }
+
+        Outcome::Success(())
+    }
+}
+
 #[allow(non_camel_case_types)]
 #[repr(C)]
 pub enum pid_type {
