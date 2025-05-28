@@ -155,7 +155,7 @@ hook_macros::hook! {
 
         let ret = libc::getpwnam(name);
 
-        crate::strace!("getpwnam(name={name_cstr:?}) -> {:?}", name, ret);
+        crate::strace!("getpwnam(name={name_cstr:?}) -> {:?}", ret);
         
         ret
     }
