@@ -1,3 +1,5 @@
+use std::ffi::CStr;
+
 use crate::{constants::FIZZLE_UID_ENV, hook_macros};
 #[cfg(feature = "sigsan")]
 use crate::state::in_sighandler;
@@ -145,13 +147,15 @@ hook_macros::hook! {
             }
         }
 
-        crate::strace!("getpwnam(name={:?}) -> ...", name);
+        let name_cstr = CStr::from_ptr(name);
+
+        crate::strace!("getpwnam(name={name_cstr:?}) -> ...");
 
         log::warn!("unimplemented: getpwnam() (passthrough)");
 
         let ret = libc::getpwnam(name);
 
-        crate::strace!("getpwnam(name={:?}) -> {:?}", name, ret);
+        crate::strace!("getpwnam(name={name_cstr:?}) -> {:?}", name, ret);
         
         ret
     }
