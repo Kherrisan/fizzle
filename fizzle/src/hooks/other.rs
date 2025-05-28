@@ -2053,11 +2053,11 @@ hook_macros::hook! {
     
 hook_macros::hook! {
     unsafe fn getpwnam_r(
-        _name: *mut libc::c_void,
-        _result_buf: *mut libc::c_void,
-        _buffer: *mut libc::c_void,
-        _buflen: libc::size_t,
-        _result: *mut *mut libc::c_void
+        name: *mut libc::c_void,
+        result_buf: *mut libc::c_void,
+        buffer: *mut libc::c_void,
+        buflen: libc::size_t,
+        result: *mut *mut libc::c_void
     ) -> libc::c_int => fizzle_getpwnam_r(ctx) {
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -2065,7 +2065,7 @@ hook_macros::hook! {
             }
         }
 
-        hook_macros::real!(getpwnam_r)(_name, _result_buf, _buffer, _buflen, _result)
+        hook_macros::real!(getpwnam_r)(name, result_buf, buffer, buflen, result)
     }
 }
     
