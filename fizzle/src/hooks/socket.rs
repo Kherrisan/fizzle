@@ -179,7 +179,7 @@ hook_macros::hook! {
                 0
             },
             Err(e) => {
-                crate::strace!("bind(fd={}, addr={:?}, addrlen={}) -> 0", fd, addr, addrlen);
+                crate::strace!("bind(fd={}, addr={:?}, addrlen={}) -> -1", fd, addr, addrlen);
                 e.set_errno();
                 -1
             },
