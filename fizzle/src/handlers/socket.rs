@@ -1549,6 +1549,7 @@ pub enum OptLevel {
 }
 
 pub enum SocketOption {
+    SocketPeerCred(libc::ucred),
     SocketIsListening(bool),
     SocketDontRoute(bool),
     SocketDomain(AddressFamily),
@@ -1588,6 +1589,20 @@ pub enum SocketOption {
 impl SocketOption {
     pub fn encode(&self, out: &mut [MaybeUninit<u8>]) -> usize {
         match self {
+            Self::SocketPeerCred(ucred) => {
+                // SAFETY: u8 never should have alignment issues, so this should turn &linger to &[u8]
+                let ucred_bytes: &[u8] = unsafe { slice::from_ref(&ucred).align_to().1 };
+                assert!(
+                    ucred_bytes.len() == mem::size_of_val(&ucred),
+                    "align_to() failed to convert `libc::ucred` to bytes"
+                );
+                
+                for (dst, src) in out.iter_mut().zip(ucred_bytes) {
+                    dst.write(*src);
+                }
+
+               ucred_bytes.len()
+            }
             Self::IpOptions(v) | Self::SctpGetLocalAddrs(v) => {
                 for (dst, src) in out.iter_mut().zip(v) {
                     dst.write(*src);
@@ -1894,6 +1909,13 @@ impl Event for SocketGetOptionEvent {
                 // TODO: pass errors raised during polling here
                 Outcome::Success(SocketOption::SocketError(0))
             }
+            (OptLevel::Socket, libc::SO_PEERCRED) => {
+                Outcome::Success(SocketOption::SocketPeerCred(libc::ucred {
+                    pid: 0,
+                    gid: 0,
+                    uid: 0,
+                }))
+            }
             (OptLevel::Socket, libc::SO_KEEPALIVE) => {
                 // TODO: implement assignment of this flag
                 Outcome::Success(SocketOption::SocketKeepalive(false))
@@ -2182,6 +2204,7 @@ impl Event for SocketSetOptionEvent {
             | SocketOption::SocketType(_)
             | SocketOption::SocketError(_)
             | SocketOption::SocketProtocol(_)
+            | SocketOption::SocketPeerCred(_)
             | SocketOption::SctpGetLocalAddrs(_) => Outcome::Error(Errno::ENOPROTOOPT),
             // TODO: implement
             SocketOption::SocketDontRoute(_b) => Outcome::Success(()),
