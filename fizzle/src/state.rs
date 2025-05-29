@@ -483,6 +483,7 @@ impl FizzleState {
                     close_on_exec: false,
                     nonblocking: false,
                     is_passthrough: false,
+                    is_random: false,
                     resource: FdResource::Stdin,
                 },
             );
@@ -493,6 +494,7 @@ impl FizzleState {
                     close_on_exec: false,
                     nonblocking: false,
                     is_passthrough: false,
+                    is_random: false,
                     resource: FdResource::Stdout,
                 },
             );
@@ -503,6 +505,7 @@ impl FizzleState {
                     close_on_exec: false,
                     nonblocking: false,
                     is_passthrough: false,
+                    is_random: false,
                     resource: FdResource::Stderr,
                 },
             );
@@ -514,6 +517,7 @@ impl FizzleState {
                     close_on_exec: false,
                     nonblocking: false,
                     is_passthrough: true,
+                    is_random: false,
                     resource: FdResource::Opaque,
                 },
             );
@@ -525,6 +529,7 @@ impl FizzleState {
                     close_on_exec: false,
                     nonblocking: false,
                     is_passthrough: true,
+                    is_random: false,
                     resource: FdResource::Opaque,
                 },
             );

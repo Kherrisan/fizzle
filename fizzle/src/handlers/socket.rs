@@ -383,6 +383,7 @@ impl Event for SocketCreateEvent {
                 close_on_exec: self.cloexec,
                 nonblocking: self.nonblocking,
                 is_passthrough: self.domain == AddressFamily::Netlink, // TODO: implement Netlink routines
+                is_random: false,
                 resource: FdResource::Socket(socket_info),
             },
         );
@@ -406,6 +407,7 @@ impl Event for NetlinkCreateEvent {
                 close_on_exec: false,
                 nonblocking: false,
                 is_passthrough: true,
+                is_random: false,
                 resource: FdResource::Opaque,
             },
         );
@@ -557,6 +559,7 @@ impl Event for SocketCreatePairEvent {
                 close_on_exec: self.cloexec,
                 nonblocking: self.nonblocking,
                 is_passthrough: false,
+                is_random: false,
                 resource: FdResource::Socket(socket1.clone()),
             },
         );
@@ -567,6 +570,7 @@ impl Event for SocketCreatePairEvent {
                 close_on_exec: self.cloexec,
                 nonblocking: self.nonblocking,
                 is_passthrough: false,
+                is_random: false,
                 resource: FdResource::Socket(socket2.clone()),
             },
         );
@@ -1345,6 +1349,7 @@ impl Event for SocketAcceptEvent {
                         close_on_exec,
                         is_passthrough: false,
                         nonblocking: self.nonblock,
+                        is_random: false,
                         resource: FdResource::Socket(accepting_info),
                     },
                 );

@@ -605,6 +605,7 @@ impl Event for EpollCreateEvent {
                 close_on_exec: self.cloexec,
                 nonblocking: false,
                 is_passthrough: false,
+                is_random: false,
                 resource: FdResource::Epoll(epoll),
             },
         );

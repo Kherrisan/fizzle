@@ -91,6 +91,7 @@ impl Event for InotifyInitEvent {
                 close_on_exec,
                 nonblocking,
                 is_passthrough: false,
+                is_random: false,
                 resource: FdResource::Inotify(inotify_info),
             },
         );

@@ -25,6 +25,7 @@ use crate::GlobalRc;
 use bitflags::bitflags;
 use fizzle_common::io::TransportAddress;
 use hashbrown::hash_map::Entry;
+use rand::RngCore;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Descriptor(usize);
@@ -47,6 +48,8 @@ pub struct DescriptorInfo {
     pub nonblocking: bool,
     /// Whether the file descriptor represents a real file descriptor or an emulated one.
     pub is_passthrough: bool,
+    /// Stopgap solution for /dev/urandom files
+    pub is_random: bool,
     /// The resource the file descriptor points to.
     pub resource: FdResource,
 }
@@ -478,6 +481,8 @@ impl Event for FcntlEvent<'_> {
                     }
                     FcntlCommand::DupFd(newfd) => {
                         let nonblocking = fd_info.nonblocking;
+                        let is_passthrough = fd_info.is_passthrough;
+                        let is_random = fd_info.is_random;
                         let resource = fd_info.resource.clone();
                         let dupfd =
                             unsafe { libc::fcntl(self.fd.as_raw_fd(), libc::F_DUPFD, *newfd) };
@@ -489,7 +494,8 @@ impl Event for FcntlEvent<'_> {
                             DescriptorInfo {
                                 close_on_exec: false,
                                 nonblocking,
-                                is_passthrough: false,
+                                is_passthrough,
+                                is_random,
                                 resource,
                             },
                         );
@@ -498,6 +504,8 @@ impl Event for FcntlEvent<'_> {
                     }
                     FcntlCommand::DupFdCloexec(newfd) => {
                         let nonblocking = fd_info.nonblocking;
+                        let is_passthrough = fd_info.is_passthrough;
+                        let is_random = fd_info.is_random;
                         let resource = fd_info.resource.clone();
                         let dupfd = unsafe {
                             libc::fcntl(self.fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, *newfd)
@@ -510,7 +518,8 @@ impl Event for FcntlEvent<'_> {
                             DescriptorInfo {
                                 close_on_exec: true,
                                 nonblocking,
-                                is_passthrough: false,
+                                is_passthrough,
+                                is_random,
                                 resource,
                             },
                         );
@@ -702,6 +711,10 @@ enum DescriptorReadState<'a> {
     Stdin(StdinReadEvent<'a>),
 }
 
+fn write_random(state: &mut FizzleState, data: &mut [u8]) {
+    state.global.prefuzz_rng.fill_bytes(data);
+}
+
 pub struct DescriptorReadEvent<'a> {
     pub fd: Descriptor,
     pub data: Option<ReadData<'a>>,
@@ -726,6 +739,7 @@ impl Event for DescriptorReadEvent<'_> {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match &mut self.state {
             DescriptorReadState::Start => {
+                let is_random = matches!(state.local.fds.get(&self.fd), Some(DescriptorInfo { is_random: true, .. }));
                 let Some(
                     fd_info @ DescriptorInfo {
                         is_passthrough: false,
@@ -741,7 +755,12 @@ impl Event for DescriptorReadEvent<'_> {
                             libc::read(self.fd.as_raw_fd(), s.as_mut_ptr().cast(), s.len())
                         } {
                             ..=-1 => Outcome::Error(Errno::get_errno()),
-                            len @ 0.. => Outcome::Success(len as usize),
+                            len @ 0.. => {
+                                if is_random {
+                                    write_random(state, &mut s[..len as usize]);
+                                }
+                                Outcome::Success(len as usize)
+                            },
                         },
                         ReadData::Iovec(io_slice) => match unsafe {
                             libc::readv(
@@ -751,7 +770,14 @@ impl Event for DescriptorReadEvent<'_> {
                             )
                         } {
                             ..=-1 => Outcome::Error(Errno::get_errno()),
-                            len @ 0.. => Outcome::Success(len as usize),
+                            len @ 0.. => {
+                                if is_random {
+                                    for iov in io_slice {
+                                        write_random(state, iov);
+                                    }
+                                }
+                                Outcome::Success(len as usize)
+                            }
                         },
                         ReadData::File(data) => match unsafe {
                             libc::preadv2(
@@ -763,7 +789,14 @@ impl Event for DescriptorReadEvent<'_> {
                             )
                         } {
                             ..=-1 => Outcome::Error(Errno::get_errno()),
-                            len @ 0.. => Outcome::Success(len as usize),
+                            len @ 0.. => {
+                                if is_random {
+                                    for iov in data.buf.iter_mut() {
+                                        write_random(state, iov);
+                                    }
+                                }
+                                Outcome::Success(len as usize)
+                            }
                         },
                         ReadData::Socket(msgs, msgflags) => {
                             if msgs.len() != 1 {
@@ -789,6 +822,11 @@ impl Event for DescriptorReadEvent<'_> {
                                 Outcome::Error(Errno::get_errno())
                             } else {
                                 *msg.buflen = ret as u32;
+                                if is_random {
+                                    for iov in msg.buf.iter_mut() {
+                                        write_random(state, iov);
+                                    }
+                                }
                                 Outcome::Success(1)
                             }
                         }

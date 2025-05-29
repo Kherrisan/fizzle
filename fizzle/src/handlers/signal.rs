@@ -716,6 +716,7 @@ impl Event for SignalfdCreateEvent {
                         close_on_exec: self.flags.contains(SignalfdFlags::CLOSE_ON_EXEC),
                         nonblocking: self.flags.contains(SignalfdFlags::NONBLOCK),
                         is_passthrough: false,
+                        is_random: false,
                         resource: FdResource::Signalfd(signalfd),
                     },
                 );

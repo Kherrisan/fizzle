@@ -88,6 +88,7 @@ impl Event for EventfdCreateEvent {
                 close_on_exec: self.close_on_exec,
                 nonblocking: self.nonblocking,
                 is_passthrough: false,
+                is_random: false,
                 resource: FdResource::EventFd(eventfd),
             },
         );

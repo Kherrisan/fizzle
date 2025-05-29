@@ -38,7 +38,7 @@ hook_macros::hook! {
             return ptr::null_mut()
         };
 
-        match Scheduler::handle_event(&mut ctx, StreamCreateEvent::new(source, stream_mode, None)) {
+        match Scheduler::handle_event(&mut ctx, StreamCreateEvent::new(source, stream_mode, None, false)) {
             Ok(mut file_ptr) => {
                 crate::strace!("fdopen(fd={}, mode={:?}) -> {:?}", fd, mode_cstr, file_ptr);
                 file_ptr.as_raw()
@@ -88,15 +88,17 @@ hook_macros::hook! {
 
         log::warn!("`fopen()` partially unimplemented");
 
+        let is_random = path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom";
+
         let fd = if stream_mode.flags.contains(FileOpenFlags::CREATE) {
-            if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+            if is_random {
                 log::info!("fopen() random /dev accessed--passing null bytes...");
                 unsafe { libc::open(c"/dev/zero".as_ptr(), stream_mode.flags.bits(), access_mode.bits()) }
             } else {
                 unsafe { libc::open(pathname, stream_mode.flags.bits(), access_mode.bits()) }
             }
         } else {
-            if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+            if is_random {
                 log::info!("fopen() random /dev accessed--passing null bytes...");
                 unsafe { libc::open(c"/dev/zero".as_ptr(), stream_mode.flags.bits(), access_mode.bits()) }
             } else {
@@ -117,7 +119,7 @@ hook_macros::hook! {
             return ptr::null_mut()
         };
 
-        match Scheduler::handle_event(&mut ctx, StreamCreateEvent::new(source, stream_mode, None)) {
+        match Scheduler::handle_event(&mut ctx, StreamCreateEvent::new(source, stream_mode, None, is_random)) {
             Ok(mut file_ptr) => {
                 crate::strace!("fopen(pathname={:?}, mode={:?}) -> {:?}", path_cstr, mode_cstr, file_ptr);
                 file_ptr.as_raw()
@@ -159,17 +161,19 @@ hook_macros::hook! {
         let access_mode = AccessMode::USER_READ | AccessMode::USER_WRITE | AccessMode::GROUP_READ
                 | AccessMode::GROUP_WRITE | AccessMode::OTHER_READ | AccessMode::OTHER_WRITE;
 
+        let is_random = path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom";
+
         log::warn!("`fopen64()` partially unimplemented");
 
         let fd = if stream_mode.flags.contains(FileOpenFlags::CREATE) {
-            if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+            if is_random {
                 log::info!("fopen64() random /dev accessed--passing null bytes...");
                 unsafe { libc::open(c"/dev/zero".as_ptr(), stream_mode.flags.bits(), access_mode.bits()) }
             } else {
                 unsafe { libc::open(pathname, stream_mode.flags.bits(), access_mode.bits()) }
             }
         } else {
-            if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+            if is_random {
                 log::info!("fopen64() random /dev accessed--passing null bytes...");
                 unsafe { libc::open(c"/dev/zero".as_ptr(), stream_mode.flags.bits(), access_mode.bits()) }
             } else {
@@ -190,7 +194,7 @@ hook_macros::hook! {
             return ptr::null_mut()
         };
 
-        match Scheduler::handle_event(&mut ctx, StreamCreateEvent::new(source, stream_mode, None)) {
+        match Scheduler::handle_event(&mut ctx, StreamCreateEvent::new(source, stream_mode, None, is_random)) {
             Ok(mut file_ptr) => {
                 crate::strace!("fopen64(pathname={:?}, mode={:?}) -> {:?}", path_cstr, mode_cstr, file_ptr);
                 file_ptr.as_raw()
@@ -232,7 +236,9 @@ hook_macros::hook! {
             panic!("freopen() passed null `stream` parameter")
         };
 
-        let fd = if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+        let is_random = path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom";
+
+        let fd = if is_random {
             unsafe { libc::open(c"/dev/zero".as_ptr(), stream_mode.flags.bits()) }
         } else {
             unsafe { libc::open(pathname, stream_mode.flags.bits()) }
@@ -244,7 +250,7 @@ hook_macros::hook! {
             return ptr::null_mut()
         }
 
-        match Scheduler::handle_event(&mut ctx, StreamCreateEvent::new(FileStreamSource::Descriptor(fd), stream_mode, Some(file_ptr))) {
+        match Scheduler::handle_event(&mut ctx, StreamCreateEvent::new(FileStreamSource::Descriptor(fd), stream_mode, Some(file_ptr), is_random)) {
             Ok(mut file_ptr) => {
                 crate::strace!("freopen(fd={}, mode={:?}) -> {:?}", fd, mode_cstr, file_ptr);
                 file_ptr.as_raw()
@@ -286,7 +292,8 @@ hook_macros::hook! {
             panic!("freopen64() passed null `stream` parameter")
         };
 
-        let fd = if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
+        let is_random = path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom";
+        let fd = if is_random {
             unsafe { libc::open(c"/dev/zero".as_ptr(), stream_mode.flags.bits()) }
         } else {
             unsafe { libc::open(pathname, stream_mode.flags.bits()) }
@@ -298,7 +305,7 @@ hook_macros::hook! {
             return ptr::null_mut()
         }
 
-        match Scheduler::handle_event(&mut ctx, StreamCreateEvent::new(FileStreamSource::Descriptor(fd), stream_mode, Some(file_ptr))) {
+        match Scheduler::handle_event(&mut ctx, StreamCreateEvent::new(FileStreamSource::Descriptor(fd), stream_mode, Some(file_ptr), is_random)) {
             Ok(mut file_ptr) => {
                 crate::strace!("freopen64(fd={}, mode={:?}) -> {:?}", fd, mode_cstr, file_ptr);
                 file_ptr.as_raw()

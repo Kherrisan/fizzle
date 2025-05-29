@@ -324,6 +324,8 @@ pub struct StreamCreateEvent<'a> {
     source: FileStreamSource,
     mode: FileStreamMode<'a>,
     file_ptr: Option<FilePtr>,
+    // Temporary stopgap for /dev/urandom files
+    is_random: bool,
 }
 
 impl<'a> StreamCreateEvent<'a> {
@@ -332,11 +334,13 @@ impl<'a> StreamCreateEvent<'a> {
         source: FileStreamSource,
         mode: FileStreamMode<'a>,
         file_ptr: Option<FilePtr>,
+        is_random: bool,
     ) -> Self {
         Self {
             source,
             mode,
             file_ptr,
+            is_random,
         }
     }
 }
@@ -358,6 +362,7 @@ impl Event for StreamCreateEvent<'_> {
                             close_on_exec: self.mode.cloexec,
                             nonblocking: false,
                             is_passthrough: true,
+                            is_random: self.is_random,
                             resource: FdResource::Opaque, // TODO: file support currently unimplemented
                         },
                     );

@@ -136,6 +136,7 @@ impl Event for PipeCreateEvent {
             close_on_exec,
             nonblocking,
             is_passthrough: false,
+            is_random: false,
             resource: FdResource::Pipe(first_pipe),
         };
 
@@ -143,6 +144,7 @@ impl Event for PipeCreateEvent {
             close_on_exec,
             nonblocking,
             is_passthrough: false,
+            is_random: false,
             resource: FdResource::Pipe(second_pipe),
         };
 
