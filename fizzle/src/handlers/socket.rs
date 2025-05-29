@@ -928,7 +928,7 @@ impl Event for SocketConnectEvent {
                                     fizzle_alloc(),
                                 );
 
-                                server_sock_mut.state = SocketState::Connecting(ConnectingSocket {
+                                borrowed_socket_info.state = SocketState::Connecting(ConnectingSocket {
                                     backend: ConnectingBackend::Peered(()),
                                     connect_polled: client_poll.clone(),
                                 });
