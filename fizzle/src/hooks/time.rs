@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::errno::Errno;
-use crate::handlers::time::{GetItimerEvent, GetTimeEvent, ItimerValue, SetItimerEvent};
+use crate::handlers::time::*;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
 use crate::state::TimerType;
@@ -185,8 +185,21 @@ hook_macros::hook! {
 hook_macros::hook! {
      unsafe fn times(
         tms: *mut libc::tms
-    ) -> libc::clock_t => fizzle_times(_ctx) {
-        unimplemented!("times()")
+    ) -> libc::clock_t => fizzle_times(ctx) {
+        crate::strace!("times(tms={tms:?}) -> ...");
+
+        match Scheduler::handle_event(&mut ctx, GetTimesEvent) {
+            Ok(t) => {
+                *tms = t;
+                crate::strace!("times(tms={tms:?}) -> 0");
+                0
+            },
+            Err(e) => {
+                crate::strace!("times(tms={tms:?}) -> -1 ({e})");
+                e.set_errno();
+                -1
+            },
+        }
     }
 }
 

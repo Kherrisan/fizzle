@@ -20,6 +20,27 @@ impl Event for GetTimeEvent {
     }
 }
 
+pub struct GetTimesEvent;
+
+impl Event for GetTimesEvent {
+    type Success = libc::tms;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let start = Duration::from_secs(1735924847);
+        let current = state.global.current_time;
+        let diff = current - start;
+
+        // hardcoded 4GHz clock
+        Outcome::Success(libc::tms {
+            tms_utime: 4 * diff.as_nanos() as i64,
+            tms_stime: 4 * diff.as_nanos() as i64,
+            tms_cutime: 4 * diff.as_nanos() as i64,
+            tms_cstime: 4 * diff.as_nanos() as i64,
+        })
+    }
+}
+
 pub struct ItimerValue {
     pub interval: Duration,
     pub val: Duration,
