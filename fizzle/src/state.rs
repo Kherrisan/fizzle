@@ -261,6 +261,12 @@ pub struct FizzleState {
 impl FizzleState {
     /// Allocates and initizes all of Fizzle's state.
     pub fn new() -> Self {
+        if let Ok(_) = env::var(FIZZLE_CLEANUP_CHILDREN_ENV) {
+            unsafe {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            }
+        }
+
         // NOTE: must go before `allocate_global_memory`, as this env variable gets set within it.
         let is_first_process = env::var(FIZZLE_MEMORY_ENV).is_err();
         if is_first_process {
