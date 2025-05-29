@@ -297,7 +297,7 @@ hook_macros::hook! {
 
         match Scheduler::handle_event(&mut ctx, EpollWaitEvent::new(ep_descriptor, event_info, duration, None)) {
             Ok(count) => {
-                crate::strace!("epoll_wait(epfd={}, events={:?}, maxevents={}, timeout={:?}) -> {})", epfd, events, maxevents, duration, count);
+                crate::strace!("epoll_wait(epfd={}, events={:?}, maxevents={}, timeout={:?}) -> {}", epfd, events, maxevents, duration, count);
                 count as libc::c_int
             },
             Err(e) => {
