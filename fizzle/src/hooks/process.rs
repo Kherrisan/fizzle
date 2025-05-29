@@ -457,6 +457,7 @@ hook_macros::hook! {
         env.push(CString::new(format!("{}={}", FIZZLE_MEMORY_OFFSET_ENV, env::var(FIZZLE_MEMORY_OFFSET_ENV).unwrap())).unwrap());
         env.push(CString::new(format!("{}={}", FIZZLE_ALLOC_ENV, env::var(FIZZLE_ALLOC_ENV).unwrap())).unwrap());
         env.push(CString::new(format!("{}={}", FIZZLE_ALLOC_OFFSET_ENV, env::var(FIZZLE_ALLOC_OFFSET_ENV).unwrap())).unwrap());
+        env.push(CString::new(format!("{}={}", FIZZLE_CLEANUP_CHILDREN_ENV, env::var(FIZZLE_CLEANUP_CHILDREN_ENV).unwrap())).unwrap());
 
         let file_cstr = unsafe { CStr::from_ptr(pathname) };
 
@@ -514,6 +515,7 @@ hook_macros::hook! {
         env.push(CString::new(format!("{}={}", FIZZLE_MEMORY_OFFSET_ENV, env::var(FIZZLE_MEMORY_OFFSET_ENV).unwrap())).unwrap());
         env.push(CString::new(format!("{}={}", FIZZLE_ALLOC_ENV, env::var(FIZZLE_ALLOC_ENV).unwrap())).unwrap());
         env.push(CString::new(format!("{}={}", FIZZLE_ALLOC_OFFSET_ENV, env::var(FIZZLE_ALLOC_OFFSET_ENV).unwrap())).unwrap());
+        env.push(CString::new(format!("{}={}", FIZZLE_CLEANUP_CHILDREN_ENV, env::var(FIZZLE_CLEANUP_CHILDREN_ENV).unwrap())).unwrap());
 
         let file_cstr = unsafe { CStr::from_ptr(pathname) };
 
@@ -579,6 +581,7 @@ hook_macros::hook! {
         env.push(CString::new(format!("{}={}", FIZZLE_MEMORY_OFFSET_ENV, env::var(FIZZLE_MEMORY_OFFSET_ENV).unwrap())).unwrap());
         env.push(CString::new(format!("{}={}", FIZZLE_ALLOC_ENV, env::var(FIZZLE_ALLOC_ENV).unwrap())).unwrap());
         env.push(CString::new(format!("{}={}", FIZZLE_ALLOC_OFFSET_ENV, env::var(FIZZLE_ALLOC_OFFSET_ENV).unwrap())).unwrap());
+        env.push(CString::new(format!("{}={}", FIZZLE_CLEANUP_CHILDREN_ENV, env::var(FIZZLE_CLEANUP_CHILDREN_ENV).unwrap())).unwrap());
 
         crate::strace!("fexecve(fd={}, args={:?}, env={:?}) -> ...", fd, args, env);
 
@@ -624,6 +627,7 @@ hook_macros::hook! {
         env.push(CString::new(format!("{}={}", FIZZLE_MEMORY_OFFSET_ENV, env::var(FIZZLE_MEMORY_OFFSET_ENV).unwrap())).unwrap());
         env.push(CString::new(format!("{}={}", FIZZLE_ALLOC_ENV, env::var(FIZZLE_ALLOC_ENV).unwrap())).unwrap());
         env.push(CString::new(format!("{}={}", FIZZLE_ALLOC_OFFSET_ENV, env::var(FIZZLE_ALLOC_OFFSET_ENV).unwrap())).unwrap());
+        env.push(CString::new(format!("{}={}", FIZZLE_CLEANUP_CHILDREN_ENV, env::var(FIZZLE_CLEANUP_CHILDREN_ENV).unwrap())).unwrap());
 
         let file_cstr = unsafe { CStr::from_ptr(file) };
 
