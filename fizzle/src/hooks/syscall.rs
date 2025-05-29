@@ -97,8 +97,44 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
             let fd: libc::c_int = va_args.arg();
             let buf: *mut libc::c_void = va_args.arg();
             let count: libc::size_t = va_args.arg();
-            unsafe { libc::read(fd, buf, count) as i64 }
+            let descriptor_id = Descriptor::from_raw_fd(fd);
+
+            crate::strace!("syscall(SYS_read, {fd}, {buf:?}, {count}) -> ...");
+            let data = slice::from_raw_parts_mut(buf.cast::<u8>(), count);
+
+            match Scheduler::handle_event(&mut ctx, DescriptorReadEvent::new(descriptor_id, ReadData::BasicSlice(data))) {
+                Ok(read) => {
+                    crate::strace!("syscall(SYS_read, {fd}, {buf:?}, {count}) -> {read}");
+                    read as i64
+                }
+                Err(e) => {
+                    crate::strace!("syscall(SYS_read, {fd}, {buf:?}, {count}) -> -1 ({e})");
+                    e.set_errno();
+                    -1
+                },
+            }
         }
+         libc::SYS_write => {
+            let fd: libc::c_int = va_args.arg();
+            let buf: *const libc::c_void = va_args.arg();
+            let count: libc::size_t = va_args.arg();
+            let descriptor_id = Descriptor::from_raw_fd(fd);
+            let data = slice::from_raw_parts(buf.cast::<u8>(), count);
+
+            crate::strace!("syscall(SYS_write, {fd}, {buf:?}, {count}) -> ...");
+
+            match Scheduler::handle_event(&mut ctx, DescriptorWriteEvent::new(descriptor_id, WriteData::BasicSlice(data))) {
+                Ok(written) => {
+                    crate::strace!("syscall(SYS_write, {fd}, {buf:?}, {count}) -> {written}");
+                    written as i64
+                }
+                Err(e) => {
+                    crate::strace!("syscall(SYS_write, {fd}, {buf:?}, {count}) -> -1 ({e})");
+                    e.set_errno();
+                    -1
+                },
+            }
+        }       
         libc::SYS_open => {
             let pathname: *const libc::c_char = va_args.arg();
             let flags: libc::c_int = va_args.arg();
@@ -109,9 +145,15 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
             let fd: libc::c_int = va_args.arg();
             let descriptor_id = Descriptor::from_raw_fd(fd);
 
+            crate::strace!("syscall(SYS_close, {fd}) -> ...");
+
             match Scheduler::handle_event(&mut ctx, DescriptorCloseEvent::new(descriptor_id)) {
-                Ok(()) => 0,
+                Ok(()) => {
+                    crate::strace!("syscall(SYS_close, {fd}) -> 0");
+                    0
+                }
                 Err(e) => {
+                    crate::strace!("syscall(SYS_close, {fd}) -> -1 ({e})");
                     e.set_errno();
                     -1
                 },
