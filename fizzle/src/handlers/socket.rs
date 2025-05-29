@@ -2322,7 +2322,26 @@ impl Event for SocketReadEvent<'_> {
             (SocketReadState::Start, _) => {
                 let read_polled = match &borrowed_socket_info.state {
                     SocketState::Connectionless(c) => c.read_polled(),
-                    SocketState::Connected(c) => c.read_polled(),
+                    SocketState::Connected(c) => {
+                        // If the socket has *just* connected, it may have a raised read poll (for the sake of alerting `connect()`).
+                        let has_data = match &c.backend {
+                            ConnectedBackend::Passthrough => true,
+                            ConnectedBackend::Peered(p) => !p.recv_buf.is_empty(),
+                            ConnectedBackend::Feedback(f) => !f.buf.is_empty(),
+                            ConnectedBackend::Plugin(p) => !p.borrow().read_buf.is_empty(),
+                            ConnectedBackend::Sink => false,
+                            ConnectedBackend::NullSink => true,
+                            ConnectedBackend::Fuzz(rc) => rc.borrow().read_idx < state.global.fuzz_input.len(),
+                        };
+
+                        c.read_polled().and_then(|p| {
+                            if !has_data {
+                                state.lower_polled(&p);
+                            }
+
+                            Some(p)
+                        })
+                    },
                     _ => return Outcome::Error(Errno::ENOTCONN),
                 };
 
