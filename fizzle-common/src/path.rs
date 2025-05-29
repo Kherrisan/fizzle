@@ -40,7 +40,7 @@ impl SemaphorePath {
     }
 
     pub fn as_cstr(&self) -> &CStr {
-        unsafe { CStr::from_bytes_with_nul_unchecked(self.buf.data()) }
+        CStr::from_bytes_until_nul(&self.buf.data()).unwrap()
     }
 }
 
