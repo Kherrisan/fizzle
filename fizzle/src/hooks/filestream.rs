@@ -91,14 +91,14 @@ hook_macros::hook! {
         let fd = if stream_mode.flags.contains(FileOpenFlags::CREATE) {
             if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
                 log::info!("fopen() random /dev accessed--passing null bytes...");
-                unsafe { libc::open(c"/dev/null".as_ptr(), stream_mode.flags.bits(), access_mode.bits()) }
+                unsafe { libc::open(c"/dev/zero".as_ptr(), stream_mode.flags.bits(), access_mode.bits()) }
             } else {
                 unsafe { libc::open(pathname, stream_mode.flags.bits(), access_mode.bits()) }
             }
         } else {
             if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
                 log::info!("fopen() random /dev accessed--passing null bytes...");
-                unsafe { libc::open(c"/dev/null".as_ptr(), stream_mode.flags.bits(), access_mode.bits()) }
+                unsafe { libc::open(c"/dev/zero".as_ptr(), stream_mode.flags.bits(), access_mode.bits()) }
             } else {
                 unsafe { libc::open(pathname, stream_mode.flags.bits()) }
             }
@@ -164,14 +164,14 @@ hook_macros::hook! {
         let fd = if stream_mode.flags.contains(FileOpenFlags::CREATE) {
             if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
                 log::info!("fopen64() random /dev accessed--passing null bytes...");
-                unsafe { libc::open(c"/dev/null".as_ptr(), stream_mode.flags.bits(), access_mode.bits()) }
+                unsafe { libc::open(c"/dev/zero".as_ptr(), stream_mode.flags.bits(), access_mode.bits()) }
             } else {
                 unsafe { libc::open(pathname, stream_mode.flags.bits(), access_mode.bits()) }
             }
         } else {
             if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
                 log::info!("fopen64() random /dev accessed--passing null bytes...");
-                unsafe { libc::open(c"/dev/null".as_ptr(), stream_mode.flags.bits(), access_mode.bits()) }
+                unsafe { libc::open(c"/dev/zero".as_ptr(), stream_mode.flags.bits(), access_mode.bits()) }
             } else {
                 unsafe { libc::open(pathname, stream_mode.flags.bits()) }
             }
@@ -233,7 +233,7 @@ hook_macros::hook! {
         };
 
         let fd = if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
-            unsafe { libc::open(c"/dev/null".as_ptr(), stream_mode.flags.bits()) }
+            unsafe { libc::open(c"/dev/zero".as_ptr(), stream_mode.flags.bits()) }
         } else {
             unsafe { libc::open(pathname, stream_mode.flags.bits()) }
         };
@@ -287,7 +287,7 @@ hook_macros::hook! {
         };
 
         let fd = if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
-            unsafe { libc::open(c"/dev/null".as_ptr(), stream_mode.flags.bits()) }
+            unsafe { libc::open(c"/dev/zero".as_ptr(), stream_mode.flags.bits()) }
         } else {
             unsafe { libc::open(pathname, stream_mode.flags.bits()) }
         };
@@ -1412,7 +1412,7 @@ hook_macros::hook! {
             Err(_) => {
                 let e = Errno::get_errno();
                 log::warn!("flush during fseeko64() failed: {}", e);
-                crate::strace!("__fseeko(stream={:?}, offset={}, whence={}) -> -1 (EINVAL)", stream, offset, whence);
+                crate::strace!("fseeko64(stream={:?}, offset={}, whence={}) -> -1 (EINVAL)", stream, offset, whence);
                 e.set_errno();
                 return -1
             }

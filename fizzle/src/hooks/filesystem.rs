@@ -70,7 +70,7 @@ hook_macros::hook! {
         let path_cstr = CStr::from_ptr(pathname);
         if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
             log::info!("open() random /dev accessed--passing null bytes...");
-            return unsafe { libc::open(c"/dev/null".as_ptr(), flags, mode) };
+            return unsafe { libc::open(c"/dev/zero".as_ptr(), flags, mode) };
         }
 
         #[cfg(feature = "passthroughfs")]
@@ -170,7 +170,7 @@ hook_macros::hook! {
         let path_cstr = CStr::from_ptr(pathname);
         if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
             log::info!("openat() random /dev accessed--passing null bytes...");
-            return unsafe { libc::openat(dirfd, c"/dev/null".as_ptr(), flags, mode) };
+            return unsafe { libc::openat(dirfd, c"/dev/zero".as_ptr(), flags, mode) };
         }
 
         #[cfg(feature = "passthroughfs")]
