@@ -260,7 +260,7 @@ impl SockAddr {
             SockAddr::Ipv4(v4_addr) => {
                 let sockaddr_in = libc::sockaddr_in {
                     sin_family: libc::AF_INET as u16,
-                    sin_port: v4_addr.port(),
+                    sin_port: v4_addr.port().to_be(),
                     sin_addr: libc::in_addr {
                         s_addr: u32::from_le_bytes(v4_addr.ip().octets()), // TODO: verify this is correct endianness
                     },
@@ -280,7 +280,7 @@ impl SockAddr {
             SockAddr::Ipv6(v6_addr) => {
                 let sockaddr_in6 = libc::sockaddr_in6 {
                     sin6_family: libc::AF_INET6 as u16,
-                    sin6_port: v6_addr.port(),
+                    sin6_port: v6_addr.port().to_be(),
                     sin6_addr: libc::in6_addr {
                         s6_addr: v6_addr.ip().octets(), // TODO: verify this is correct endianness
                     },
