@@ -304,7 +304,7 @@ hook_macros::hook! {
             (true, true) => "SOCK_NONBLOCK|SOCK_CLOEXEC",
         };
 
-        match Scheduler::handle_event(&mut ctx, SocketAcceptEvent::new(descriptor_id, false, false)) {
+        match Scheduler::handle_event(&mut ctx, SocketAcceptEvent::new(descriptor_id, nonblocking, cloexec)) {
             Ok((descriptor_id, accept_addr)) => {
                 let accept_fd = descriptor_id.as_raw_fd();
 
