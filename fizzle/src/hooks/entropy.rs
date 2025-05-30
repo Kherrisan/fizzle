@@ -34,7 +34,7 @@ hook_macros::hook! {
         match Scheduler::handle_event(&mut ctx, GetEntropyEvent::new(s)) {
             Ok(len) => {
                 crate::strace!("getentropy(buf={:?}, buflen={}) -> {:.16?}", buf, buflen, &s[..len]);
-                len as isize
+                0
             },
             Err(_) => unreachable!(),
         }
