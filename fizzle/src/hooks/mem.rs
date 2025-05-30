@@ -1,6 +1,7 @@
 use std::{env, ffi::CStr};
 
 use crate::constants::FIZZLE_SINGLEPROCESS_ENV;
+use crate::errno::Errno;
 use crate::hook_macros;
 use crate::scheduler;
 #[cfg(feature = "sigsan")]
@@ -30,14 +31,14 @@ hook_macros::hook! {
 
         let mut flags = flags;
 
-        crate::strace!("mmap(addr={:?}, length={}, prot={}, flags={}, fd={}, offset={}) -> ...", addr, length, prot, flags, fd, offset);
+        crate::strace!("mmap(addr={addr:?}, length={length}, prot={prot}, flags={flags}, fd={fd}, offset={offset}) -> ...");
 
         let is_singleprocess = matches!(env::var(FIZZLE_SINGLEPROCESS_ENV), Ok(s) if s == "1");
 
-        if flags & (libc::MAP_SHARED | libc::MAP_SHARED_VALIDATE) > 0 {
+        if flags & libc::MAP_SHARED > 0 {
             if is_singleprocess {
                 log::warn!("disabling MAP_SHARED for mmap()");
-                flags &= !(libc::MAP_SHARED | libc::MAP_SHARED_VALIDATE);
+                flags &= !libc::MAP_SHARED;
             } else {
                 scheduler::afl_onetime_init(&mut ctx);
             }
@@ -52,7 +53,15 @@ hook_macros::hook! {
             }
         }
 
-        libc::mmap(addr, length, prot, flags, fd, offset)
+        let res = libc::mmap(addr, length, prot, flags, fd, offset);
+
+        if res == libc::MAP_FAILED {
+            crate::strace!("mmap(addr={addr:?}, length={length}, prot={prot}, flags={flags}, fd={fd}, offset={offset}) -> -1 ({})", Errno::get_errno());
+        } else {
+            crate::strace!("mmap(addr={addr:?}, length={length}, prot={prot}, flags={flags}, fd={fd}, offset={offset}) -> {res:?}");
+        }
+
+        res
     }
 }
 
