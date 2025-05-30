@@ -162,14 +162,7 @@ pub const F_GET_FILE_RW_HINT: libc::c_int = 1037;
 pub const F_SET_FILE_RW_HINT: libc::c_int = 1038;
 
 #[no_mangle]
-pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: ...) -> libc::c_int {
-
-    #[cfg(feature = "sigsan")] {
-        if in_sighandler() {
-            panic!("async-signal-unsafe function fcntl() called within signal handler")
-        }
-    }
-    
+pub unsafe extern "C" fn fcntl64(fd: libc::c_int, cmd: libc::c_int, mut va_args: ...) -> libc::c_int {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         return match cmd {
             libc::F_DUPFD
@@ -213,6 +206,135 @@ pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: .
     };
 
     crate::strace!("fcntl(fd={}, cmd={}, ...) -> ...", fd, cmd);
+
+    #[cfg(feature = "sigsan")] {
+        if in_sighandler() {
+            panic!("async-signal-unsafe function fcntl() called within signal handler")
+        }
+    }
+
+    let command = match cmd {
+        libc::F_DUPFD => FcntlCommand::DupFd(va_args.arg()),
+        libc::F_DUPFD_CLOEXEC => FcntlCommand::DupFdCloexec(va_args.arg()),
+        libc::F_SETFD => FcntlCommand::SetFd(va_args.arg()),
+        libc::F_SETFL => FcntlCommand::SetFl(va_args.arg()),
+        libc::F_SETOWN => FcntlCommand::SetOwn(va_args.arg()),
+        F_SETSIG => FcntlCommand::SetSig(va_args.arg()),
+        libc::F_NOTIFY => FcntlCommand::Notify(va_args.arg()),
+        libc::F_SETPIPE_SZ => FcntlCommand::SetPipeSize(va_args.arg()),
+        libc::F_ADD_SEALS => FcntlCommand::AddSeals(va_args.arg()),
+        libc::F_GETFD => FcntlCommand::GetFd,
+        libc::F_GETFL => FcntlCommand::GetFl,
+        libc::F_GETOWN => FcntlCommand::GetOwn,
+        libc::F_GETLEASE => FcntlCommand::GetLease,
+        libc::F_GET_SEALS => FcntlCommand::GetSeals,
+        libc::F_SETLK => {
+            FcntlCommand::SetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+        }
+        libc::F_SETLKW => {
+            FcntlCommand::SetLockWait(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+        }
+        libc::F_GETLK => {
+            FcntlCommand::GetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+        }
+        libc::F_OFD_SETLK => {
+            FcntlCommand::SetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+        }
+        libc::F_OFD_SETLKW => {
+            FcntlCommand::SetLockWait(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+        }
+        libc::F_OFD_GETLK => {
+            FcntlCommand::GetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+        }
+        F_GETOWN_EX => FcntlCommand::GetOwnEx(unsafe { &mut *(va_args.arg::<*mut f_owner_ex>()) }),
+        F_SETOWN_EX => FcntlCommand::SetOwnEx(unsafe { &mut *(va_args.arg::<*mut f_owner_ex>()) }),
+        F_GET_RW_HINT => FcntlCommand::GetRwHint(unsafe { &mut *(va_args.arg::<*mut u64>()) }),
+        F_SET_RW_HINT => FcntlCommand::SetRwHint(unsafe { &mut *(va_args.arg::<*mut u64>()) }),
+        F_GET_FILE_RW_HINT => {
+            FcntlCommand::GetFileRwHint(unsafe { &mut *(va_args.arg::<*mut u64>()) })
+        }
+        F_SET_FILE_RW_HINT => {
+            FcntlCommand::SetFileRwHint(unsafe { &mut *(va_args.arg::<*mut u64>()) })
+        }
+        _ => {
+            strace!("fcntl(fd={}, cmd={}, ...) -> -1 (EINVAL)", fd, cmd);
+            Errno::EINVAL.set_errno();
+            crate::state::set_entered_handler(false);
+            return -1;
+        }
+    };
+
+    match Scheduler::handle_event(
+        &mut ctx,
+        FcntlEvent::new(Descriptor::from_raw_fd(fd), command),
+    ) {
+        Ok(i) => {
+            strace!("fcntl(fd={}, cmd={}, ...) -> {}", fd, cmd, i);
+            drop(ctx);
+            crate::hooks::post_hook();
+            return i;
+        }
+        Err(e) => {
+            strace!("fcntl(fd={}, cmd={}, ...) -> -1 ({})", fd, cmd, e);
+            e.set_errno();
+            drop(ctx);
+            crate::hooks::post_hook();
+            return -1;
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: ...) -> libc::c_int {
+    let Some(mut ctx) = crate::hooks::pre_hook() else {
+        return match cmd {
+            libc::F_DUPFD
+            | libc::F_DUPFD_CLOEXEC
+            | libc::F_SETFD
+            | libc::F_SETFL
+            | libc::F_SETOWN
+            | F_SETSIG
+            | libc::F_NOTIFY
+            | libc::F_SETPIPE_SZ
+            | libc::F_ADD_SEALS => {
+                let arg: libc::c_int = va_args.arg();
+                hook_macros::real_fcntl()(fd, cmd, arg)
+            }
+            libc::F_GETFD
+            | libc::F_GETFL
+            | libc::F_GETOWN
+            | F_GETSIG
+            | libc::F_GETLEASE
+            | libc::F_GET_SEALS => hook_macros::real_fcntl()(fd, cmd),
+            libc::F_SETLK
+            | libc::F_SETLKW
+            | libc::F_GETLK
+            | libc::F_OFD_SETLK
+            | libc::F_OFD_SETLKW
+            | libc::F_OFD_GETLK
+            | F_GETOWN_EX
+            | F_SETOWN_EX
+            | F_GET_RW_HINT
+            | F_SET_RW_HINT
+            | F_GET_FILE_RW_HINT
+            | F_SET_FILE_RW_HINT => {
+                let arg: *mut libc::c_void = va_args.arg();
+                hook_macros::real_fcntl()(fd, cmd, arg)
+            }
+            _ => {
+                Errno::EINVAL.set_errno();
+                return -1;
+            }
+        };
+    };
+
+    crate::strace!("fcntl(fd={}, cmd={}, ...) -> ...", fd, cmd);
+
+    #[cfg(feature = "sigsan")] {
+        if in_sighandler() {
+            panic!("async-signal-unsafe function fcntl() called within signal handler")
+        }
+    }
 
     let command = match cmd {
         libc::F_DUPFD => FcntlCommand::DupFd(va_args.arg()),
