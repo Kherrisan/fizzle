@@ -146,6 +146,7 @@ hook_macros::hook! {
     }
 }
 
+/*
 hook_macros::hook! {
     unsafe fn gethostbyaddr(
         addr: *const libc::c_void,
@@ -163,6 +164,7 @@ hook_macros::hook! {
         unimplemented!("gethostbyaddr")
     }
 }
+*/
 
 hook_macros::hook! {
     unsafe fn gethostbyname(
