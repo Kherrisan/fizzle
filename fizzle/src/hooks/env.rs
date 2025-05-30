@@ -9,7 +9,7 @@ use crate::scheduler::Scheduler;
 // happens to call a setenv before checking the variable.
 
 hook_macros::hook! {
-    unsafe fn getenv(name: *const libc::c_char) -> *mut libc::c_char => fizzle_fork(ctx) {
+    unsafe fn getenv(name: *const libc::c_char) -> *mut libc::c_char => fizzle_getenv(ctx) {
         let name_cstr = CStr::from_ptr(name);
         crate::strace!("getenv({:?}) -> ...", name_cstr);
 

@@ -36,13 +36,32 @@ hook_macros::hook! {
         flags: libc::c_int
     ) -> libc::c_int => fizzle_close_range(ctx) {
         crate::strace!("close_range(first={first}, last={last}, flags={flags}) -> ...");
-        match Scheduler::handle_event(&mut ctx, DescriptorCloseRangeEvent::new(first, last, flags)) {
+        match Scheduler::handle_event(&mut ctx, DescriptorCloseRangeEvent::new(first, Some(last), flags)) {
             Ok(()) => {
                 crate::strace!("close_range(first={first}, last={last}, flags={flags}) -> 0");
                 0
             },
             Err(e) => {
                 crate::strace!("close_range(first={first}, last={last}, flags={flags}) -> -1 ({e})");
+                e.set_errno();
+                -1
+            },
+        }
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn closefrom(
+        lowfd: libc::c_int
+    ) -> libc::c_int => fizzle_closefrom(ctx) {
+        crate::strace!("closefrom(lowfd={lowfd}) -> ...");
+        match Scheduler::handle_event(&mut ctx, DescriptorCloseRangeEvent::new(lowfd as libc::c_uint, None, 0)) {
+            Ok(()) => {
+                crate::strace!("closefrom(first={lowfd}) -> 0");
+                0
+            },
+            Err(e) => {
+                crate::strace!("closefrom(first={lowfd}) -> -1 ({e})");
                 e.set_errno();
                 -1
             },

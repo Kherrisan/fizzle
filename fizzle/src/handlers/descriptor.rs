@@ -188,14 +188,14 @@ impl Event for DescriptorCloseEvent {
 
 pub struct DescriptorCloseRangeEvent {
     first: libc::c_uint,
-    last: libc::c_uint,
+    last: Option<libc::c_uint>,
     flags: libc::c_int,
 }
 
 impl DescriptorCloseRangeEvent {
     #[inline]
     // TODO: turn flags into proper type
-    pub fn new(first: libc::c_uint, last: libc::c_uint, flags: libc::c_int) -> Self {
+    pub fn new(first: libc::c_uint, last: Option<libc::c_uint>, flags: libc::c_int) -> Self {
         Self {
             first,
             last,
@@ -221,8 +221,10 @@ impl Event for DescriptorCloseRangeEvent {
                 continue
             }
 
-            if raw_fd > self.last {
-                break
+            if let Some(last) = self.last {
+                if raw_fd > last {
+                    break
+                }
             }
 
             #[cfg(feature = "afl")]

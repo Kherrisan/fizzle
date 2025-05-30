@@ -45,8 +45,11 @@ hook_macros::hook! {
 
         crate::strace!("umask(mask={}) -> ...", access_mode);
 
-        #[cfg(feature = "passthroughfs")]
-        return unsafe { libc::umask(mask) };
+        #[cfg(feature = "passthroughfs")] {
+            let res = unsafe { libc::umask(mask) };
+            crate::strace!("umask(mask={}) -> {}", access_mode, res);
+            return res
+        }
 
         // TODO: needs to return the previous mask
         match Scheduler::handle_event(&mut ctx, UmaskEvent::new(access_mode)) {
@@ -73,15 +76,27 @@ hook_macros::hook! {
             return unsafe { libc::open(c"/dev/zero".as_ptr(), flags, mode) };
         }
 
-        #[cfg(feature = "passthroughfs")]
-        return unsafe { libc::open(pathname, flags, mode) };
-
         let Some(open_flags) = FileOpenFlags::from_bits(flags) else {
             log::warn!("unrecognized flags in `open()`");
-            strace!("open(pathname={:?}, flags={}) -> -1 (EINVAL)", pathname, flags);
+            strace!("open(pathname={:?}, flags={}) -> -1 (EINVAL)", path_cstr, flags);
             Errno::EINVAL.set_errno();
             return -1
         };
+
+        #[cfg(feature = "passthroughfs")] {
+            let res = if open_flags.contains(FileOpenFlags::CREATE) {
+                libc::open(pathname, flags, mode)
+            } else {
+                libc::open(pathname, flags)
+            };
+            if res < 0 {
+                strace!("open(path_cstr={path_cstr:?}, flags={open_flags:?}) -> -1 ({})", Errno::get_errno());
+            } else {
+                strace!("open(path_cstr={path_cstr:?}, flags={open_flags:?}) -> {res}");
+            }
+
+            return res
+        }
 
         // TODO: track atime
 
