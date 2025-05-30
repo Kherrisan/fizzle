@@ -1,5 +1,6 @@
 use std::cell::{RefCell, RefMut};
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::{Hash, Hasher};
 use std::os::fd::RawFd;
 use std::process::{self, Command};
 use std::rc::Rc;
@@ -10,6 +11,8 @@ use std::{cmp, env, mem, ptr, slice, thread};
 
 use embedded_alloc::TlsfHeap;
 use fizzle_common::io::{SocketType, TransportProtocol};
+use rand_chacha::rand_core::SeedableRng;
+use rand_chacha::ChaCha20Rng;
 
 use crate::backend::{
     ConnectedBackend, ConnectionlessBackend, FileBackend, FileFeedback, PendingBackend,
@@ -1903,6 +1906,10 @@ impl Scheduler {
         if state.global.fuzz_input.is_empty() {
             panic!("failed to read any fuzzing input in");
         }
+
+        let mut hasher = std::hash::DefaultHasher::new();
+        hasher.write(state.global.fuzz_input.as_slice());
+        state.global.prefuzz_rng = ChaCha20Rng::seed_from_u64(hasher.finish());
 
         state.global.time_fuzz_idx = 0;
     }

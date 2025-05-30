@@ -8,9 +8,8 @@ use hickory_proto::op::Message;
 use hickory_proto::rr::{RData, Record, RecordType};
 use hickory_proto::rr::rdata::*;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
-use rand::Rng;
 use entropic::prelude::*;
-
+use rand_chacha::rand_core::TryRngCore;
 
 #[derive(Debug)]
 struct Spf {
@@ -270,7 +269,7 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
 
     let record_bytes = loop {
         let mut data = [0u8; 1024];
-        state.global.prefuzz_rng.fill(&mut data);
+        state.global.prefuzz_rng.try_fill_bytes(&mut data).unwrap();
 
         let amount = cmp::min(state.global.fuzz_input.len(), data.len());
         for i in 0..amount {

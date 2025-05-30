@@ -25,7 +25,7 @@ use crate::GlobalRc;
 use bitflags::bitflags;
 use fizzle_common::io::TransportAddress;
 use hashbrown::hash_map::Entry;
-use rand::RngCore;
+use rand_chacha::rand_core::TryRngCore;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Descriptor(usize);
@@ -714,7 +714,7 @@ enum DescriptorReadState<'a> {
 }
 
 fn write_random(state: &mut FizzleState, data: &mut [u8]) {
-    state.global.prefuzz_rng.fill_bytes(data);
+    state.global.prefuzz_rng.try_fill_bytes(data);
 }
 
 pub struct DescriptorReadEvent<'a> {

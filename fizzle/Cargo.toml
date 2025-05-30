@@ -39,8 +39,8 @@ hashbrown = { version = "0.15", features = ["nightly"] }
 libc = "0.2" # For various low-level operations
 # Use: logging for debugging purposes
 log = { version = "0.4" } # For trace logs
-# Use: Fast, deterministic RNG for shadowing rand() APIs
-rand = { version = "0.8", features = ["small_rng"] }
+# Use: RNG for shadowing rand() APIs
+rand_chacha = "0.9.0"
 
 # Use: libresolv mocking (TODO: pull out into `fizzle-plugin-resolv` plugin)
 hickory-proto = { version = "0.25.1", git = "https://github.com/nathaniel-bennett/hickory-dns" }

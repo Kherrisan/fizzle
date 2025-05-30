@@ -18,8 +18,8 @@ use fizzle_common::io::{
 };
 use fizzle_common::path::{FilePath, SemaphorePath};
 use fizzle_plugin::{IoEndpointVariant, PluginModule, StreamId};
-use rand::rngs::SmallRng;
-use rand::SeedableRng;
+use rand_chacha::rand_core::SeedableRng;
+use rand_chacha::ChaCha20Rng;
 
 use crate::constants::*;
 use crate::errno::Errno;
@@ -1477,7 +1477,7 @@ pub struct InterprocessState {
     pub connectionless_endpoints: GlobalVec<GlobalRc<SocketInfo>>,
     /// Per-round plugin/fuzzing endpoints that are currently active.
     pub per_round_endpoints: GlobalVec<GlobalRc<SocketInfo>>,
-    pub prefuzz_rng: rand::rngs::SmallRng,
+    pub prefuzz_rng: ChaCha20Rng,
     pub current_time: Duration,
     pub tick: Duration,
     pub timeout: Duration,
@@ -1580,7 +1580,7 @@ impl InterprocessState {
             *ptr::addr_of_mut!((*state).stdio) = StdioBackend::Passthrough;
             *ptr::addr_of_mut!((*state).per_round_clients) = Vec::new_in(fizzle_alloc());
             *ptr::addr_of_mut!((*state).prefuzz_rng) =
-                SmallRng::seed_from_u64(0xABAD_5EED_ABAD_5EED_u64); // TODO: enable custom seed loading
+                ChaCha20Rng::seed_from_u64(0xABAD_5EED_ABAD_5EED_u64); // TODO: enable custom seed loading
             *ptr::addr_of_mut!((*state).current_time) = Duration::from_secs(1735924847); // TODO: set this randomly each fuzzing round
             *ptr::addr_of_mut!((*state).uid) = 1000; // TODO: make this configurable
             *ptr::addr_of_mut!((*state).gid) = 1000; // TODO: make this configurable
