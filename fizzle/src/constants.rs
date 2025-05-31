@@ -24,6 +24,7 @@ pub const FIZZLE_DEFAULT_TICK: Duration = Duration::from_micros(10);
 pub const FIZZLE_DEFAULT_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub const FIZZLE_HEAP_SIZE: usize = 30 * 1024 * 1024; // 30 MB by default
+// ^ TODO: Drop this down to 256KB to more than DOUBLE the execution speed
 
 pub const FIZZLE_STREAM_BUFSIZ: usize = libc::BUFSIZ as usize;
 
