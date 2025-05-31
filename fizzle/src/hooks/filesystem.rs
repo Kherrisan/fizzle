@@ -1,7 +1,6 @@
 use std::ffi::CStr;
 
 use fizzle_common::path::FilePath;
-use libc::CS;
 
 use crate::errno::Errno;
 use crate::handlers::file::*;

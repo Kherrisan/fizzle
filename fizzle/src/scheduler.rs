@@ -1,6 +1,6 @@
 use std::cell::{RefCell, RefMut};
 use std::collections::{BTreeMap, BTreeSet};
-use std::hash::{Hash, Hasher};
+use std::hash::Hasher;
 use std::os::fd::RawFd;
 use std::process::{self, Command};
 use std::rc::Rc;

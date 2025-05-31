@@ -271,11 +271,11 @@ pub unsafe extern "C" fn __fprintf_chk(
 
 #[no_mangle]
 pub unsafe extern "C" fn dprintf(
-    fd: libc::c_int,
-    format: *const libc::c_char,
-    mut va_args: ...
+    _fd: libc::c_int,
+    _format: *const libc::c_char,
+    _va_args: ...
 ) -> libc::c_int {
-    let Some(mut ctx) = crate::hooks::pre_hook() else {
+    let Some(_ctx) = crate::hooks::pre_hook() else {
         panic!("dprintf() unimplemented for Fizzle internal use");
     };
 
@@ -427,11 +427,11 @@ pub unsafe extern "C" fn vfprintf(
 
 #[no_mangle]
 pub unsafe extern "C" fn vdprintf(
-    fd: libc::c_int,
-    format: *const libc::c_char,
-    mut va_args: VaList,
+    _fd: libc::c_int,
+    _format: *const libc::c_char,
+    _va_args: VaList,
 ) -> libc::c_int {
-    let Some(mut ctx) = crate::hooks::pre_hook() else {
+    let Some(_ctx) = crate::hooks::pre_hook() else {
         panic!("vdprintf() unimplemented for Fizzle internal use");
     };
 
@@ -445,8 +445,8 @@ pub unsafe extern "C" fn vdprintf(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn wprintf(format: *const libc::wchar_t, mut va_args: VaList) -> libc::c_int {
-    let Some(mut ctx) = crate::hooks::pre_hook() else {
+pub unsafe extern "C" fn wprintf(_format: *const libc::wchar_t, _va_args: VaList) -> libc::c_int {
+    let Some(_ctx) = crate::hooks::pre_hook() else {
         panic!("wprintf() unimplemented for Fizzle internal use");
     };
 
@@ -461,11 +461,11 @@ pub unsafe extern "C" fn wprintf(format: *const libc::wchar_t, mut va_args: VaLi
 
 #[no_mangle]
 pub unsafe extern "C" fn fwprintf(
-    stream: *mut libc::FILE,
-    format: *const libc::wchar_t,
-    mut va_args: VaList,
+    _stream: *mut libc::FILE,
+    _format: *const libc::wchar_t,
+    _va_args: VaList,
 ) -> libc::c_int {
-    let Some(mut ctx) = crate::hooks::pre_hook() else {
+    let Some(_ctx) = crate::hooks::pre_hook() else {
         panic!("fwprintf() unimplemented for Fizzle internal use");
     };
 
@@ -480,10 +480,10 @@ pub unsafe extern "C" fn fwprintf(
 
 #[no_mangle]
 pub unsafe extern "C" fn vwprintf(
-    format: *const libc::wchar_t,
-    mut va_args: VaList,
+    _format: *const libc::wchar_t,
+    _va_args: VaList,
 ) -> libc::c_int {
-    let Some(mut ctx) = crate::hooks::pre_hook() else {
+    let Some(_ctx) = crate::hooks::pre_hook() else {
         panic!("vwprintf() unimplemented for Fizzle internal use");
     };
     #[cfg(feature = "sigsan")] {
@@ -497,11 +497,11 @@ pub unsafe extern "C" fn vwprintf(
 
 #[no_mangle]
 pub unsafe extern "C" fn vfwprintf(
-    stream: *mut libc::FILE,
-    format: *const libc::wchar_t,
-    mut va_args: VaList,
+    _stream: *mut libc::FILE,
+    _format: *const libc::wchar_t,
+    _va_args: VaList,
 ) -> libc::c_int {
-    let Some(mut ctx) = crate::hooks::pre_hook() else {
+    let Some(_ctx) = crate::hooks::pre_hook() else {
         panic!("vfwprintf() unimplemented for Fizzle internal use");
     };
 

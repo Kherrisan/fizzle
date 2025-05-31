@@ -9,8 +9,8 @@ pub(crate) use ld_preload::hook;
 #[cfg(any(target_env = "gnu", target_os = "android"))]
 pub(crate) use ld_preload::real;
 
-#[cfg(any(target_env = "gnu", target_os = "android"))]
-pub(crate) use ld_preload::resolve;
+//#[cfg(any(target_env = "gnu", target_os = "android"))]
+//pub(crate) use ld_preload::resolve;
 
 #[cfg(any(target_env = "gnu", target_os = "android"))]
 pub(crate) use ld_preload::real_syscall;

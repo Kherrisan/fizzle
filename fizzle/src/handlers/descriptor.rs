@@ -714,7 +714,7 @@ enum DescriptorReadState<'a> {
 }
 
 fn write_random(state: &mut FizzleState, data: &mut [u8]) {
-    state.global.prefuzz_rng.try_fill_bytes(data);
+    state.global.prefuzz_rng.try_fill_bytes(data).unwrap();
 }
 
 pub struct DescriptorReadEvent<'a> {
