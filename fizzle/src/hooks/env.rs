@@ -27,3 +27,17 @@ hook_macros::hook! {
         }
     }
 }
+
+hook_macros::hook! {
+    unsafe fn clearenv() -> libc::c_int => fizzle_clearenv(_ctx) {
+        #[cfg(feature = "sigsan")] {
+            if in_sighandler() {
+                panic!("async-signal-unsafe function clearenv() called within signal handler")
+            }
+        }
+
+        log::error!("clearenv() called");
+
+        0
+    }
+}
