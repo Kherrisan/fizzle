@@ -35,7 +35,8 @@ hook_macros::hook! {
 
         crate::strace!("fork() -> ...");
 
-        if env::var(FIZZLE_IGNORE_FORK_ENV).is_ok() {
+        // TODO: fixme
+        if true { // env::var(FIZZLE_IGNORE_FORK_ENV).is_ok() {
             crate::strace!("fork() -> 0 (FIZZLE_IGNORE_FORK activated)");
             return 0
         }

@@ -525,6 +525,8 @@ hook_macros::hook! {
             }
             (OptLevel::Tcp, libc::TCP_KEEPIDLE | libc::TCP_KEEPCNT | libc::TCP_KEEPINTVL | libc::TCP_SYNCNT) => return 0,
             (OptLevel::Tcp, _) => {
+                return 0;
+                // TODO: fixme
                 panic!("Unrecognized socket option: SOL_TCP, optname {}", optname);
             }
             // Socket options that are readonly
