@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+pub const FIZZLE_IGNORE_FORK_ENV: &str = "FIZZLE_IGNORE_FORK";
+
 pub const FIZZLE_ALLOC_OFFSET_ENV: &str = "FIZZLE_ALLOC_OFFSET";
 pub const FIZZLE_ALLOC_ENV: &str = "FIZZLE_ALLOC";
 /// Indicates the shared memory key that child processes should access

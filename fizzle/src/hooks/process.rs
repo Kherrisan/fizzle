@@ -35,6 +35,11 @@ hook_macros::hook! {
 
         crate::strace!("fork() -> ...");
 
+        if env::var(FIZZLE_IGNORE_FORK_ENV).is_ok() {
+            crate::strace!("fork() -> 0 (FIZZLE_IGNORE_FORK activated)");
+            return 0
+        }
+
         // Initialize AFL (forkservers and multi-process applications don't play well)
         scheduler::afl_onetime_init(&mut ctx);
 
@@ -63,6 +68,11 @@ hook_macros::hook! {
 
         // TODO: set `vfork` local flag to check for UB
         crate::strace!("vfork() -> ...");
+
+        if env::var(FIZZLE_IGNORE_FORK_ENV).is_ok() {
+            crate::strace!("vfork() -> 0 (FIZZLE_IGNORE_FORK activated)");
+            return 0
+        }
 
         // Initialize AFL (forkservers and multi-process applications don't play well)
         scheduler::afl_onetime_init(&mut ctx);
