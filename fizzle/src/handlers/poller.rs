@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::os::fd::RawFd;
 use std::rc::Rc;
 use std::time::Duration;
@@ -71,14 +72,16 @@ impl<'a> SelectEvent<'a> {
         readfds: Option<&'a mut libc::fd_set>,
         writefds: Option<&'a mut libc::fd_set>,
         exceptfds: Option<&'a mut libc::fd_set>,
-        timeout: Option<Duration>,
+        mut timeout: Option<Duration>,
         sigmask: Option<SignalSet>,
     ) -> Self {
         // TODO: temporary workaround for certain programs that loop on a zero timeout duration
-        let timeout = match timeout {
-            Some(t) if t == Duration::ZERO => Some(Duration::from_secs(5)),
-            t => t,
-        };
+        if env::var("FIZZLE_NOZERO_SELECT").is_ok() {
+            timeout = match timeout {
+                Some(t) if t == Duration::ZERO => Some(Duration::from_secs(5)),
+                t => t,
+            };
+        }
 
         Self {
             nfds,
@@ -235,8 +238,8 @@ impl Event for SelectEvent<'_> {
 
                 self.state = SelectState::EndPoll(poller_id, read_pollers, write_pollers);
                 Outcome::Yield(match self.timeout {
+                    None | Some(Duration::ZERO) => YieldUntil::None,
                     Some(timeout) => YieldUntil::Reschedule(timeout),
-                    None => YieldUntil::None,
                 })
             }
             SelectState::CheckDescriptorsFail(e) => match self.sigmask {
