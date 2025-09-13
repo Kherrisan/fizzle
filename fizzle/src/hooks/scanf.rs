@@ -37,7 +37,7 @@ fn scan_incremental(format: &[u8], input: &[u8], params: &[*mut libc::c_void]) -
 
     while input_idx < input.len() && format_idx < format.len() {
         if unsafe { libc::isspace(format[format_idx] as i32) != 0 } {
-            if let Some(consumed) = match_whitespace(input) {
+            if let Some(consumed) = match_whitespace(&input[input_idx..]) {
                 input_idx += consumed;
                 format_idx += 1;
             } else {
@@ -143,7 +143,8 @@ fn scan_incremental(format: &[u8], input: &[u8], params: &[*mut libc::c_void]) -
 
 fn match_whitespace(input: &[u8]) -> Option<usize> {
     for (idx, c) in input.iter().enumerate() {
-        if unsafe { libc::isspace(*c as i32) != 0 } {
+        if unsafe { libc::isspace(*c as i32) == 0 } {
+            // return when the first non-whitespace character is reached
             return Some(idx)
         }
     }
@@ -370,12 +371,14 @@ fn param_ty(format: &[u8]) -> Option<ParamInfo> {
 
             while let Some(&c) = format.get(idx) {
                 match c {
+                    // Make sure there's no backslash immediately preceding the closing bracket that would escape it
+                    b']' if matches!(format.get(idx - 1), Some(b'\\')) && !matches!(format.get(idx - 2), Some(b'\\')) => (),
                     b']' if negation => {
                         charset = Some(ParamType::NotCharset(&format[start_idx..idx]));
                         idx += 1;
                         break
                     },
-                    b']' if negation => {
+                    b']' => {
                         charset = Some(ParamType::Charset(&format[start_idx..idx - 1]));
                         idx += 1;
                         break
@@ -699,11 +702,39 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
             let mut param_success = false;
 
             while input_idx < input.len() && input_idx < max_width {
+                let mut matched_charset = false;
                 let c = input[input_idx];
-                if !items.contains(&c) {
+
+                let mut i = 0;
+                // TODO: need to implement hyphen parsing here too...
+                while i < items.len() {
+                    /*
+                    if items[i] == b'\\' && (i + 1 < items.len()) {
+                        i += 1;
+                        match (items[i], c) {
+                            (b'a', 0x07) | (b'b', 0x08) | (b'e', 0x1b) | (b'f', 0x0c) | (b'n', 0x0a) | (b'r', 0x0d) | (b't', b'\t') | (b'v', 0x0b) | (b'\\', b'\\') | (b'\'', b'\'') | (b'\"', b'\"') | (b'?', b'?') => {
+                                matched_charset = true;
+                            }
+                            _ => (),
+                        }
+                    } else 
+                    */
+                    if items[i] == b'-' && (i + 1 < items.len()) {
+                        todo!("implement item ranges for Charset")
+                    } else if c == items[i] {
+                        matched_charset = true;
+                        break
+                    }
+
+                    i += 1;
+                }
+
+                if !matched_charset {
+                    // We've reached past the last character matching this charset
                     param_success = true;
                     break
                 }
+
                 input_idx += 1;
             }
 
@@ -712,18 +743,43 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
             }
         }
         ParamType::NotCharset(items) => {
-            let mut param_success = false;
+            let mut matched_charset = false;
 
             while input_idx < input.len() && input_idx < max_width {
                 let c = input[input_idx];
-                if items.contains(&c) {
-                    param_success = true;
+
+                let mut i = 0;
+                // TODO: need to implement hyphen parsing here too...
+                while i < items.len() {
+                    /*
+                    if items[i] == b'\\' && i+1 < items.len() {
+                        i += 1;
+                        match (items[i], c) {
+                            (b'a', 0x07) | (b'b', 0x08) | (b'e', 0x1b) | (b'f', 0x0c) | (b'n', 0x0a) | (b'r', 0x0d) | (b't', b'\t') | (b'v', 0x0b) | (b'\\', b'\\') | (b'\'', b'\'') | (b'\"', b'\"') | (b'?', b'?') => {
+                                matched_charset = true;
+                            }
+                            _ => (),
+                        }
+                    } else 
+                    */
+                    if items[i] == b'-' && (i + 1 < items.len()) {
+                        todo!("implement item ranges for NotCharset")
+                    } else if c == items[i] {
+                        matched_charset = true;
+                        break
+                    }
+
+                    i += 1;
+                }
+
+                if matched_charset {
                     break
                 }
+
                 input_idx += 1;
             }
 
-            if !param_success && input_idx < max_width {
+            if !matched_charset && input_idx < max_width {
                 return Err(Some(param_info.min_length()))
             }
         }
@@ -798,7 +854,7 @@ pub unsafe extern "C" fn scanf(
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
-                        if e != Errno::SUCCESS {
+                        if e != Errno::SUCCESS || (read == 0 && total_matched == 0) {
                             break libc::EOF
                         }
 
@@ -897,7 +953,7 @@ pub unsafe extern "C" fn __isoc99_scanf(
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
-                        if e != Errno::SUCCESS {
+                        if e != Errno::SUCCESS || (read == 0 && total_matched == 0) {
                             break libc::EOF
                         }
 
@@ -997,7 +1053,7 @@ pub unsafe extern "C" fn __isoc23_scanf(
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
-                        if e != Errno::SUCCESS {
+                        if e != Errno::SUCCESS || (read == 0 && total_matched == 0) {
                             break libc::EOF
                         }
 
@@ -1097,7 +1153,7 @@ pub unsafe extern "C" fn fscanf(
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
-                        if e != Errno::SUCCESS {
+                        if e != Errno::SUCCESS || (read == 0 && total_matched == 0) {
                             break libc::EOF
                         }
 
@@ -1167,7 +1223,7 @@ pub unsafe extern "C" fn __isoc99_fscanf(
         match scan_incremental(format_bytes, &buf[buf_consumed..], &mut []) {
             Ok(consumed) => {
                 buf_consumed += consumed;
-                debug_assert!(buf_consumed < buf.len());
+                debug_assert!(buf_consumed <= buf.len());
                 // We have all the bytes we need--now actually scan into va_args
 
                 let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args.as_va_list());
@@ -1198,7 +1254,7 @@ pub unsafe extern "C" fn __isoc99_fscanf(
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
-                        if e != Errno::SUCCESS {
+                        if e != Errno::SUCCESS || (read == 0 && total_matched == 0) {
                             break libc::EOF
                         }
 
@@ -1218,7 +1274,6 @@ pub unsafe extern "C" fn __isoc99_fscanf(
                 // Now time to retry through the loop
             }
             Err(MatchFailure::BadInput(written)) => if written == 0 {
-
                 Errno::EILSEQ.set_errno();
                 break libc::EOF
             } else {
@@ -1298,7 +1353,7 @@ pub unsafe extern "C" fn __isoc23_fscanf(
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
-                        if e != Errno::SUCCESS {
+                        if e != Errno::SUCCESS || (read == 0 && total_matched == 0) {
                             break libc::EOF
                         }
 
@@ -1397,7 +1452,7 @@ pub unsafe extern "C" fn vscanf(
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
-                        if e != Errno::SUCCESS {
+                        if e != Errno::SUCCESS || (read == 0 && total_matched == 0) {
                             break libc::EOF
                         }
 
@@ -1496,7 +1551,7 @@ pub unsafe extern "C" fn __isoc99_vscanf(
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
-                        if e != Errno::SUCCESS {
+                        if e != Errno::SUCCESS || (read == 0 && total_matched == 0) {
                             break libc::EOF
                         }
 
@@ -1596,7 +1651,7 @@ pub unsafe extern "C" fn __isoc23_vscanf(
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
-                        if e != Errno::SUCCESS {
+                        if e != Errno::SUCCESS || (read == 0 && total_matched == 0) {
                             break libc::EOF
                         }
 
@@ -1696,7 +1751,7 @@ pub unsafe extern "C" fn vfscanf(
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
-                        if e != Errno::SUCCESS {
+                        if e != Errno::SUCCESS || (read == 0 && total_matched == 0) {
                             break libc::EOF
                         }
 
@@ -1796,7 +1851,7 @@ pub unsafe extern "C" fn __isoc99_vfscanf(
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
-                        if e != Errno::SUCCESS {
+                        if e != Errno::SUCCESS || (read == 0 && total_matched == 0) {
                             break libc::EOF
                         }
 
@@ -1896,7 +1951,7 @@ pub unsafe extern "C" fn __isoc23_vfscanf(
                     Ok(read) => read,
                     Err(read) => {
                         let e = Errno::get_errno();
-                        if e != Errno::SUCCESS {
+                        if e != Errno::SUCCESS || (read == 0 && total_matched == 0) {
                             break libc::EOF
                         }
 
