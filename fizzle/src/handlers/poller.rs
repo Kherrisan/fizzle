@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
-use std::os::fd::RawFd;
+use std::os::fd::{AsRawFd, RawFd};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -1163,8 +1163,20 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
         FdResource::Inotify(inotify) => PolledStatus::Pollable(inotify.borrow().polled.clone()),
         FdResource::Signalfd(signalfd) => PolledStatus::Pollable(signalfd.borrow().polled.clone()),
         FdResource::Opaque => {
-            log::error!("POLLIN for opaque socket unimplemented");
-            PolledStatus::NotPollable
+            let mut pfd = libc::pollfd {
+                fd: fd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+
+            log::warn!("POLLIN on Opaque socket--falling back to instantaneous `poll` of underlying fd");
+
+            let res = unsafe { libc::poll(&raw mut pfd, 1, 0) };
+            if res > 0 && (pfd.revents & libc::POLLIN) > 0 {
+                PolledStatus::ImmediatelyPollable
+            } else {
+                PolledStatus::NotPollable
+            }
         }
     }
 }
