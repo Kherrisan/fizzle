@@ -339,7 +339,7 @@ unsafe fn reallocate_to_shared(old: *mut InterprocessAllocator) {
 pub fn safe_post(sem: Rc<Semaphore, GlobalHeap>) {
     assert!(Rc::strong_count(&sem) > 1);
 
-    let sem_ptr = Rc::into_raw(sem);
+    let (sem_ptr, _) = Rc::into_raw_with_allocator(sem);
     unsafe {
         Rc::decrement_strong_count(sem_ptr);
     }

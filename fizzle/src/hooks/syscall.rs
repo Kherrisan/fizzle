@@ -346,7 +346,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
 
                     // Convert timeout to val2
                     let val2 = u32::from_le_bytes(
-                        (*(timeout_ptr as *const [u8; mem::size_of::<libc::timespec>()]))
+                        (&(*(timeout_ptr as *const [u8; mem::size_of::<libc::timespec>()])))
                             [mem::size_of::<libc::timespec>() - 4..]
                             .try_into()
                             .unwrap(),
