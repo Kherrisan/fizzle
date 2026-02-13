@@ -215,7 +215,7 @@ impl Event for DescriptorCloseRangeEvent {
 
         let mut to_remove = Vec::new();
 
-        for (fd, fd_info) in state.local.fds.iter() {
+        for (fd, _fd_info) in state.local.fds.iter() {
             let raw_fd = fd.as_raw_fd() as u32;
             if raw_fd < self.first {
                 continue
@@ -741,7 +741,7 @@ impl Event for DescriptorReadEvent<'_> {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match &mut self.state {
             DescriptorReadState::Start => {
-                let is_random = matches!(state.local.fds.get(&self.fd), Some(DescriptorInfo { is_random: true, .. }));
+                let _is_random = matches!(state.local.fds.get(&self.fd), Some(DescriptorInfo { is_random: true, .. }));
                 let Some(
                     fd_info @ DescriptorInfo {
                         is_passthrough: false,

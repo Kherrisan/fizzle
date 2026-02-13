@@ -2497,9 +2497,9 @@ impl Event for SocketReadEvent<'_> {
                 }
             }
             (
-                SocketReadState::Finish(poller_id),
+                SocketReadState::Finish(_poller_id),
                 SocketState::Connectionless(ConnectionlessSocket {
-                    backend: ConnectionlessBackend::Feedback(feedback),
+                    backend: ConnectionlessBackend::Feedback(_feedback),
                     ..
                 }),
             ) => {
@@ -3045,7 +3045,7 @@ impl Event for SocketReadEvent<'_> {
                         Outcome::Success(total_read)
                     }
                     ReadData::File(_) => Outcome::Error(Errno::ESPIPE),
-                    ReadData::Socket(out_msgs, socket_flags) => {
+                    ReadData::Socket(out_msgs, _socket_flags) => {
                         for msg in out_msgs.iter_mut() {
                             *msg.addrlen = 0;
                             *msg.control_len = 0;
@@ -3113,7 +3113,7 @@ impl Event for SocketReadEvent<'_> {
                         Outcome::Success(total_read)
                     }
                     ReadData::File(_) => Outcome::Error(Errno::ESPIPE),
-                    ReadData::Socket(out_msgs, socket_flags) => {
+                    ReadData::Socket(out_msgs, _socket_flags) => {
                         let mut total_read = 0;
                         for out_msg in out_msgs.iter_mut() {
                             for s in out_msg.buf.iter_mut() {

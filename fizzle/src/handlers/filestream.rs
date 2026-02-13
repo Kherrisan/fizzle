@@ -1184,7 +1184,7 @@ impl Event for StreamWriteEvent<'_> {
                         FileStreamBuffer::Slice(filebuf_ptr) => unsafe {
                             &mut filebuf_ptr.as_mut()[rw_split..buf_write_idx]
                         },
-                        FileStreamBuffer::None(pushback) => {
+                        FileStreamBuffer::None(_pushback) => {
                             unimplemented!()
                         }
                     };

@@ -1560,12 +1560,12 @@ impl Event for RenameEvent {
         };
 
         if let Some(new_file_info) = state.global.file_paths.get(&newpath) {
-            if let Some(cow_id) = new_file_info.borrow().cow {
+            if let Some(_cow_id) = new_file_info.borrow().cow {
                 // TODO: what to do here?
             };
         }
 
-        if let Some(old_file_info) = state.global.file_paths.get(&oldpath) {
+        if let Some(_old_file_info) = state.global.file_paths.get(&oldpath) {
             // TODO: what to do here?
         }
 

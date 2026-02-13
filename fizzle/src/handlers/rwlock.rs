@@ -141,7 +141,7 @@ impl Event for RwLockDestroyEvent {
             }
             None => {
                 // We need to find out if this lock is statically-initialized
-                let Some(rwlock_kind) = static_rwlock_kind(self.rwlock) else {
+                let Some(_rwlock_kind) = static_rwlock_kind(self.rwlock) else {
                     panic!("[UB] `pthread_rwlock_destroy` called on uninitialized rwlock")
                 };
             }

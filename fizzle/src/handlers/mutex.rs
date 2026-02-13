@@ -143,7 +143,7 @@ impl Event for MutexDestroyEvent {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         let Some(mutex_info) = state.local.mutexes.get(&self.lock) else {
 
-            if let Some(kind) = static_mutex_kind(self.lock) {
+            if let Some(_kind) = static_mutex_kind(self.lock) {
                 log::debug!("pthread_mutex_destroy() called on statically-initialized mutex");
             } else {
                 // TODO: upgrade this to panic!() in the future

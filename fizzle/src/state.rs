@@ -334,7 +334,7 @@ impl FizzleState {
 
         // Set SIGCHLD hanlder
         let sa = libc::sigaction {
-            sa_sigaction: crate::fizzle_handle_sigchld as usize,
+            sa_sigaction: crate::fizzle_handle_sigchld as *const () as usize,
             sa_mask: SignalSet::empty().to_sigset(),
             sa_flags: 0,
             sa_restorer: None,

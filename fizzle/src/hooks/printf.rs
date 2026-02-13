@@ -9,7 +9,7 @@ use crate::scheduler::Scheduler;
 use crate::state::in_sighandler;
 
 #[no_mangle]
-pub unsafe extern "C" fn printf(format: *const libc::c_char, mut va_args: ...) -> libc::c_int {
+pub unsafe extern "C" fn printf(format: *const libc::c_char, va_args: ...) -> libc::c_int {
 
     #[cfg(feature = "sigsan")] {
         if in_sighandler() {
@@ -73,7 +73,7 @@ pub unsafe extern "C" fn printf(format: *const libc::c_char, mut va_args: ...) -
 pub unsafe extern "C" fn fprintf(
     stream: *mut libc::FILE,
     format: *const libc::c_char,
-    mut va_args: ...
+    va_args: ...
 ) -> libc::c_int {
 
     #[cfg(feature = "sigsan")] {
@@ -171,7 +171,7 @@ pub unsafe extern "C" fn __fprintf_chk(
     stream: *mut libc::FILE,
     flag: libc::c_int,
     format: *const libc::c_char,
-    mut va_args: ...
+    va_args: ...
 ) -> libc::c_int {
 
     #[cfg(feature = "sigsan")] {
@@ -289,7 +289,7 @@ pub unsafe extern "C" fn dprintf(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn vprintf(format: *const libc::c_char, mut va_args: VaList) -> libc::c_int {
+pub unsafe extern "C" fn vprintf(format: *const libc::c_char, va_args: VaList) -> libc::c_int {
 
     #[cfg(feature = "sigsan")] {
         if in_sighandler() {
@@ -347,7 +347,7 @@ pub unsafe extern "C" fn vprintf(format: *const libc::c_char, mut va_args: VaLis
 pub unsafe extern "C" fn vfprintf(
     stream: *mut libc::FILE,
     format: *const libc::c_char,
-    mut va_args: VaList,
+    va_args: VaList,
 ) -> libc::c_int {   
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("vfprintf() unimplemented for Fizzle internal use");

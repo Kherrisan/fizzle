@@ -114,7 +114,6 @@ macro_rules! resolve {
     };
 }
 
-pub(crate) use resolve;
 
 pub fn real_syscall() -> extern "C" fn(libc::c_long, ...) -> libc::c_long {
     use crate::cell::SequentialRefCell;

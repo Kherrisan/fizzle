@@ -151,7 +151,7 @@ impl Entropic for Spf {
                         }
                         v.push(b'{');
                         let len = source.get_bounded_len(1..=4)?;
-                        for i in 1..=len {
+                        for _i in 1..=len {
                             match source.get_uniform_range(0..=11)? {
                                 idx @  0..=10 => v.push(MACRO_CHARACTERS[idx]),
                                 11 => {
@@ -190,7 +190,7 @@ impl Entropic for Spf {
 
     fn to_entropy_sink<'a, I: Iterator<Item = &'a mut u8>, E: EntropyScheme>(
         &self,
-        sink: &mut Sink<'a, I, E>,
+        _sink: &mut Sink<'a, I, E>,
     ) -> Result<usize, EntropicError> {
         todo!()
     }
@@ -282,11 +282,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match A::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::A(rdata))).to_vec() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS A Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS A Resource Record--retrying...");
                     }
                 };
@@ -295,11 +295,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match AAAA::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::AAAA(rdata))).to_vec() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS AAAA Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS AAAA Resource Record--retrying...");
                     }
                 };
@@ -308,11 +308,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match ANAME::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::ANAME(rdata))).to_vec() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS ANAME Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS ANAME Resource Record--retrying...");
                     }
                 };
@@ -321,11 +321,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match CAA::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::CAA(rdata))).to_bytes() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS CAA Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS CAA Resource Record--retrying...");
                     }
                 };
@@ -334,11 +334,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match CERT::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::CERT(rdata))).to_bytes() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS CERT Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS CERT Resource Record--retrying...");
                     }
                 };
@@ -347,11 +347,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match CNAME::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::CNAME(rdata))).to_bytes() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS CNAME Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS CNAME Resource Record--retrying...");
                     }
                 };
@@ -360,11 +360,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match CSYNC::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::CSYNC(rdata))).to_bytes() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS CSYNC Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS CSYNC Resource Record--retrying...");
                     }
                 };
@@ -373,11 +373,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match HINFO::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::HINFO(rdata))).to_bytes() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS HINFO Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS HINFO Resource Record--retrying...");
                     }
                 };
@@ -386,11 +386,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match HTTPS::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::HTTPS(rdata))).to_bytes() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS HTTPS Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS HTTPS Resource Record--retrying...");
                     }
                 };
@@ -399,11 +399,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match MX::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::MX(rdata))).to_bytes() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS MX Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS MX Resource Record--retrying...");
                     }
                 };
@@ -412,11 +412,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match NAPTR::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::NAPTR(rdata))).to_bytes() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS NAPTR Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS NAPTR Resource Record--retrying...");
                     }
                 };
@@ -425,11 +425,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match NS::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::NS(rdata))).to_bytes() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS NS Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS NS Resource Record--retrying...");
                     }
                 };
@@ -438,11 +438,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match NULL::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::NULL(rdata))).to_bytes() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS NULL Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS NULL Resource Record--retrying...");
                     }
                 };
@@ -451,11 +451,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match OPT::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::OPT(rdata))).to_bytes() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS OPT Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS OPT Resource Record--retrying...");
                     }
                 };
@@ -464,11 +464,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match PTR::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::PTR(rdata))).to_bytes() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS PTR Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS PTR Resource Record--retrying...");
                     }
                 };
@@ -477,11 +477,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match SOA::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::SOA(rdata))).to_bytes() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS SOA Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS SOA Resource Record--retrying...");
                     }
                 };
@@ -490,11 +490,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match SRV::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::SRV(rdata))).to_bytes() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS SRV Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS SRV Resource Record--retrying...");
                     }
                 };
@@ -503,11 +503,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match SSHFP::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::SSHFP(rdata))).to_bytes() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS SSHFP Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS SSHFP Resource Record--retrying...");
                     }
                 };
@@ -516,11 +516,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match SVCB::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::SVCB(rdata))).to_bytes() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS SVCB Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS SVCB Resource Record--retrying...");
                     }
                 };
@@ -529,11 +529,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match TLSA::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::TLSA(rdata))).to_bytes() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS TLSA Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS TLSA Resource Record--retrying...");
                     }
                 };
@@ -542,11 +542,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match Spf::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::TXT(TXT::from_bytes(rdata.to_txt())))).to_bytes() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS TXT Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS TXT Resource Record--retrying...");
                     }
                 };
@@ -558,11 +558,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                             log::debug!("SPF record {:?} returned", rdata);
                             break b
                         },
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS SPF Resource Record that failed to convert to bytes--retrying...");
                         }
                     }
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS SPF Resource Record--retrying...");
                     }
                 };
@@ -571,11 +571,11 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                 match A::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::A(rdata))).to_bytes() {
                         Ok(b) => break b,
-                        Err(e) => {
+                        Err(_e) => {
                             log::error!("Entropic created DNS TXT Resource Record that failed to convert to bytes--retrying...");
                         }
                     } 
-                    Err(e) => {
+                    Err(_e) => {
                         log::error!("Entropic failed to generate DNS TXT Resource Record--retrying...");
                     }
                 };

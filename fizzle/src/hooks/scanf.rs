@@ -243,7 +243,7 @@ impl PointerType {
     }
 }
 
-fn param_ty(format: &[u8]) -> Option<ParamInfo> {
+fn param_ty(format: &[u8]) -> Option<ParamInfo<'_>> {
     let mut idx = 0;
     let mut masked = false;
     let mut thousands_separators = false;
@@ -797,7 +797,7 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
 #[no_mangle]
 pub unsafe extern "C" fn scanf(
     format: *const libc::c_char,
-    mut va_args: ...
+    va_args: ...
 ) -> libc::c_int {
 
     #[cfg(feature = "sigsan")] {
@@ -896,7 +896,7 @@ pub unsafe extern "C" fn scanf(
 #[no_mangle]
 pub unsafe extern "C" fn __isoc99_scanf(
     format: *const libc::c_char,
-    mut va_args: ...,
+    va_args: ...,
 ) -> libc::c_int {
 
     #[cfg(feature = "sigsan")] {
@@ -995,7 +995,7 @@ pub unsafe extern "C" fn __isoc99_scanf(
 #[no_mangle]
 pub unsafe extern "C" fn __isoc23_scanf(
     format: *const libc::c_char,
-    mut va_args: ...,
+    va_args: ...,
 ) -> libc::c_int {
 
     #[cfg(feature = "sigsan")] {
@@ -1096,7 +1096,7 @@ pub unsafe extern "C" fn __isoc23_scanf(
 pub unsafe extern "C" fn fscanf(
     stream: *mut libc::FILE,
     format: *const libc::c_char,
-    mut va_args: ...,
+    va_args: ...,
 ) -> libc::c_int {
 
     #[cfg(feature = "sigsan")] {
@@ -1196,7 +1196,7 @@ pub unsafe extern "C" fn fscanf(
 pub unsafe extern "C" fn __isoc99_fscanf(
     stream: *mut libc::FILE,
     format: *const libc::c_char,
-    mut va_args: ...,
+    va_args: ...,
 ) -> libc::c_int {
 
     #[cfg(feature = "sigsan")] {
@@ -1296,7 +1296,7 @@ pub unsafe extern "C" fn __isoc99_fscanf(
 pub unsafe extern "C" fn __isoc23_fscanf(
     stream: *mut libc::FILE,
     format: *const libc::c_char,
-    mut va_args: ...,
+    va_args: ...,
 ) -> libc::c_int {
     
     #[cfg(feature = "sigsan")] {
@@ -1395,7 +1395,7 @@ pub unsafe extern "C" fn __isoc23_fscanf(
 #[no_mangle]
 pub unsafe extern "C" fn vscanf(
     format: *const libc::c_char,
-    mut va_args: VaList
+    va_args: VaList
 ) -> libc::c_int {
     
     #[cfg(feature = "sigsan")] {
@@ -1494,7 +1494,7 @@ pub unsafe extern "C" fn vscanf(
 #[no_mangle]
 pub unsafe extern "C" fn __isoc99_vscanf(
     format: *const libc::c_char,
-    mut va_args: VaList,
+    va_args: VaList,
 ) -> libc::c_int {
     
     #[cfg(feature = "sigsan")] {
@@ -1593,7 +1593,7 @@ pub unsafe extern "C" fn __isoc99_vscanf(
 #[no_mangle]
 pub unsafe extern "C" fn __isoc23_vscanf(
     format: *const libc::c_char,
-    mut va_args: VaList,
+    va_args: VaList,
 ) -> libc::c_int {
 
     #[cfg(feature = "sigsan")] {
@@ -1694,7 +1694,7 @@ pub unsafe extern "C" fn __isoc23_vscanf(
 pub unsafe extern "C" fn vfscanf(
     stream: *mut libc::FILE,
     format: *const libc::c_char,
-    mut va_args: VaList,
+    va_args: VaList,
 ) -> libc::c_int {
 
     #[cfg(feature = "sigsan")] {
@@ -1794,7 +1794,7 @@ pub unsafe extern "C" fn vfscanf(
 pub unsafe extern "C" fn __isoc99_vfscanf(
     stream: *mut libc::FILE,
     format: *const libc::c_char,
-    mut va_args: VaList,
+    va_args: VaList,
 ) -> libc::c_int {
 
     #[cfg(feature = "sigsan")] {
@@ -1894,7 +1894,7 @@ pub unsafe extern "C" fn __isoc99_vfscanf(
 pub unsafe extern "C" fn __isoc23_vfscanf(
     stream: *mut libc::FILE,
     format: *const libc::c_char,
-    mut va_args: VaList,
+    va_args: VaList,
 ) -> libc::c_int {
 
     #[cfg(feature = "sigsan")] {

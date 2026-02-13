@@ -32,7 +32,7 @@ hook_macros::hook! {
                 crate::strace!("res_query(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> {}", dname, class, ty, answer, anslen, len);
                 len as libc::c_int // TODO: correct behavior on truncation?
             }
-            Err(e) => {
+            Err(_e) => {
                 crate::strace!("res_query(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", dname, class, ty, answer, anslen);
                 -1
             }
@@ -70,7 +70,7 @@ hook_macros::hook! {
                 crate::strace!("res_nquery(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> {}", statep, dname_cstr, class, ty, answer, anslen, len);
                 len as libc::c_int // TODO: correct behavior on truncation?
             }
-            Err(e) => {
+            Err(_e) => {
                 crate::strace!("res_nquery(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", statep, dname_cstr, class, ty, answer, anslen);
                 -1
             }
@@ -116,7 +116,7 @@ hook_macros::hook! {
                 crate::strace!("res_querydomain(name={:?}, domain={:?}, class={}, ty={}, answer={:?}, anslen={}) -> {}", name, domain, class, ty, answer, anslen, len);
                 len as libc::c_int // TODO: correct behavior on truncation?
             }
-            Err(e) => {
+            Err(_e) => {
                 crate::strace!("res_querydomain(name={:?}, domain={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", name, domain, class, ty, answer, anslen);
                 -1
             }
@@ -163,7 +163,7 @@ hook_macros::hook! {
                 crate::strace!("res_nquerydomain(statep={:?}, name={:?}, domain={:?}, class={}, ty={}, answer={:?}, anslen={}) -> {}", statep, name, domain, class, ty, answer, anslen, len);
                 len as libc::c_int // TODO: correct behavior on truncation?
             }
-            Err(e) => {
+            Err(_e) => {
                 crate::strace!("res_nquerydomain(statep={:?}, name={:?}, domain={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", statep, name, domain, class, ty, answer, anslen);
                 -1
             }
@@ -198,7 +198,7 @@ hook_macros::hook! {
                 crate::strace!("res_search(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> {}", dname, class, ty, answer, anslen, len);
                 len as libc::c_int // TODO: correct behavior on truncation?
             }
-            Err(e) => {
+            Err(_e) => {
                 crate::strace!("res_search(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", dname, class, ty, answer, anslen);
                 -1
             }
@@ -234,7 +234,7 @@ hook_macros::hook! {
                 crate::strace!("res_nsearch(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> {}", statep, dname, class, ty, answer, anslen, len);
                 len as libc::c_int // TODO: correct behavior on truncation?
             }
-            Err(e) => {
+            Err(_e) => {
                 crate::strace!("res_nsearch(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", statep, dname, class, ty, answer, anslen);
                 -1
             }
@@ -261,7 +261,7 @@ hook_macros::hook! {
                 crate::strace!("res_send(msg={:?}, msglen={}, answer={:?}, anslen={}) -> {}", msg, msglen, answer, anslen, len);
                 len as libc::c_int // TODO: correct behavior on truncation?
             }
-            Err(e) => {
+            Err(_e) => {
                 crate::strace!("res_send(msg={:?}, msglen={}, answer={:?}, anslen={}) -> -1", msg, msglen, answer, anslen);
                 -1
             }
@@ -288,7 +288,7 @@ hook_macros::hook! {
                 crate::strace!("res_nsend(statep={:?}, msg={:?}, msglen={}, answer={:?}, anslen={}) -> {}", statep, msg, msglen, answer, anslen, len);
                 len as libc::c_int // TODO: correct behavior on truncation?
             }
-            Err(e) => {
+            Err(_e) => {
                 crate::strace!("res_nsend(statep={:?}, msg={:?}, msglen={}, answer={:?}, anslen={}) -> -1", statep, msg, msglen, answer, anslen);
                 -1
             }
