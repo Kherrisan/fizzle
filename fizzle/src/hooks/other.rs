@@ -430,7 +430,7 @@ pub unsafe extern "C" fn asprintf(
         mut va_args: ...
     ) -> libc::c_int  {
     let Some(_ctx) = crate::hooks::pre_hook() else {
-        return crate::vasprintf(ptr, template, va_args.as_va_list())
+        return crate::vasprintf(ptr, template, va_args)
     };
 
     #[cfg(feature = "sigsan")] {
@@ -439,7 +439,7 @@ pub unsafe extern "C" fn asprintf(
         }
     }
 
-    let res = crate::vasprintf(ptr, template, va_args.as_va_list());
+    let res = crate::vasprintf(ptr, template, va_args);
     crate::hooks::post_hook();
     res
 }
@@ -4071,7 +4071,7 @@ pub unsafe extern "C" fn snprintf(
         template: *mut libc::c_void,
         mut va_args: ...
     ) -> libc::c_int {
-    let res = vsnprintf(s, size, template, va_args.as_va_list());
+    let res = vsnprintf(s, size, template, va_args);
 
     let Some(_ctx) = crate::hooks::pre_hook() else {
         return res
@@ -4097,7 +4097,7 @@ pub unsafe extern "C" fn sprintf(
         mut va_args: ...
     ) -> libc::c_int  {
 
-    let res = vsprintf(s, template, va_args.as_va_list());
+    let res = vsprintf(s, template, va_args);
 
     let Some(_ctx) = crate::hooks::pre_hook() else {
         return res

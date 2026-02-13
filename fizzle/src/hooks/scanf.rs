@@ -826,7 +826,7 @@ pub unsafe extern "C" fn scanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args.as_va_list());
+                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -925,7 +925,7 @@ pub unsafe extern "C" fn __isoc99_scanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args.as_va_list());
+                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -1025,7 +1025,7 @@ pub unsafe extern "C" fn __isoc23_scanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args.as_va_list());
+                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -1125,7 +1125,7 @@ pub unsafe extern "C" fn fscanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args.as_va_list());
+                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -1226,7 +1226,7 @@ pub unsafe extern "C" fn __isoc99_fscanf(
                 debug_assert!(buf_consumed <= buf.len());
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args.as_va_list());
+                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -1325,7 +1325,7 @@ pub unsafe extern "C" fn __isoc23_fscanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args.as_va_list());
+                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -1424,7 +1424,7 @@ pub unsafe extern "C" fn vscanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args.as_va_list());
+                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -1523,7 +1523,7 @@ pub unsafe extern "C" fn __isoc99_vscanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args.as_va_list());
+                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -1623,7 +1623,7 @@ pub unsafe extern "C" fn __isoc23_vscanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args.as_va_list());
+                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -1723,7 +1723,7 @@ pub unsafe extern "C" fn vfscanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args.as_va_list());
+                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -1823,7 +1823,7 @@ pub unsafe extern "C" fn __isoc99_vfscanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args.as_va_list());
+                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -1923,7 +1923,7 @@ pub unsafe extern "C" fn __isoc23_vfscanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args.as_va_list());
+                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }

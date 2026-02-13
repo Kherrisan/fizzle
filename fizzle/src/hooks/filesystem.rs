@@ -18,7 +18,6 @@ hook_macros::hook! {
     ) -> libc::off_t => fizzle_lseek(_ctx) {
         log::error!("unimplemented function `lseek`");
 
-        #[cfg(feature = "passthroughfs")]
         return unsafe { libc::lseek(fd, offset, whence) };
     }
 }
@@ -31,7 +30,6 @@ hook_macros::hook! {
     ) -> libc::off64_t => fizzle_lseek64(_ctx) {
         log::error!("unimplemented function `lseek64`");
 
-        #[cfg(feature = "passthroughfs")]
         return unsafe { libc::lseek64(fd, offset, whence) };
     }
 }

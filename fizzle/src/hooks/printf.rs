@@ -26,7 +26,7 @@ pub unsafe extern "C" fn printf(format: *const libc::c_char, mut va_args: ...) -
     let format_cstr = CStr::from_ptr(format);
     let mut out_string = ptr::null_mut();
 
-    let res = crate::vasprintf(&raw mut out_string, format, va_args.as_va_list());
+    let res = crate::vasprintf(&raw mut out_string, format, va_args);
     if res < 0 {
         let e = Errno::get_errno();
         crate::strace!("printf(format={:?}, ...) -> -1 ({})", format_cstr, e);
@@ -84,7 +84,7 @@ pub unsafe extern "C" fn fprintf(
 
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         let mut out_string = ptr::null_mut();
-        let res = crate::vasprintf(&raw mut out_string, format, va_args.as_va_list());
+        let res = crate::vasprintf(&raw mut out_string, format, va_args);
         if res < 0 {
             Errno::ENOMEM.set_errno();
             return libc::EOF
@@ -114,7 +114,7 @@ pub unsafe extern "C" fn fprintf(
         return libc::EOF;
     };
 
-    let res = crate::vasprintf(&raw mut out_string, format, va_args.as_va_list());
+    let res = crate::vasprintf(&raw mut out_string, format, va_args);
     if res < 0 {
         let e = Errno::get_errno();
         crate::strace!(
@@ -182,7 +182,7 @@ pub unsafe extern "C" fn __fprintf_chk(
 
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         let mut out_string = ptr::null_mut();
-        let res = crate::vasprintf(&raw mut out_string, format, va_args.as_va_list());
+        let res = crate::vasprintf(&raw mut out_string, format, va_args);
         if res < 0 {
             Errno::ENOMEM.set_errno();
             return libc::EOF
@@ -214,7 +214,7 @@ pub unsafe extern "C" fn __fprintf_chk(
         return libc::EOF;
     };
 
-    let res = crate::vasprintf(&raw mut out_string, format, va_args.as_va_list());
+    let res = crate::vasprintf(&raw mut out_string, format, va_args);
     if res < 0 {
         let e = Errno::get_errno();
         crate::strace!(
@@ -306,7 +306,7 @@ pub unsafe extern "C" fn vprintf(format: *const libc::c_char, mut va_args: VaLis
     let format_cstr = CStr::from_ptr(format);
     let mut out_string = ptr::null_mut();
 
-    let res = crate::vasprintf(&raw mut out_string, format, va_args.as_va_list());
+    let res = crate::vasprintf(&raw mut out_string, format, va_args);
     if res < 0 {
         let e = Errno::get_errno();
         crate::strace!("vprintf(format={:?}, ...) -> -1 ({})", format_cstr, e);
@@ -379,7 +379,7 @@ pub unsafe extern "C" fn vfprintf(
         return libc::EOF;
     };
 
-    let res = crate::vasprintf(&raw mut out_string, format, va_args.as_va_list());
+    let res = crate::vasprintf(&raw mut out_string, format, va_args);
     if res < 0 {
         let e = Errno::get_errno();
         crate::strace!(

@@ -83,9 +83,9 @@ hook_macros::hook! {
     }
 }
 
+/*
 type FtwFn = unsafe extern "C" fn(fpath: *const char, sb: *const libc::stat, typeflag: libc::c_int);
 
-/*
 hook_macros::hook! {
     unsafe fn ftw(
         dirpath: *const libc::c_char,
@@ -101,6 +101,7 @@ hook_macros::hook! {
 }
 */
 
+/*
 type NftwFn = unsafe extern "C" fn(
     fpath: *const char,
     sb: *const libc::stat,
@@ -108,7 +109,6 @@ type NftwFn = unsafe extern "C" fn(
     ftwbuf: *mut libc::c_void,
 );
 
-/*
 hook_macros::hook! {
     unsafe fn nftw(
         _dirpath: *const libc::c_char,
@@ -121,10 +121,11 @@ hook_macros::hook! {
 }
 */
 
+/*
 type FTS = libc::c_void;
 type FTSENT = libc::c_void;
 type FtsCompareFn = unsafe extern "C" fn(*const *const FTSENT, *const *const FTSENT);
-/*
+
 hook_macros::hook! {
     unsafe fn fts_open(
         _path_argv: *const *const libc::c_char,

@@ -209,7 +209,7 @@ pub fn run_plugins(state: &mut FizzleState) -> bool {
                         state.raise_polled(&polled);
                     }
                 }
-                IoBackend::Fuzz(fuzz_endpoint) => {
+                IoBackend::Fuzz(_fuzz_endpoint) => {
                     todo!()
                 }
                 IoBackend::Feedback(feedback) => {

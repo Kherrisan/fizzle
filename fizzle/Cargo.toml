@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [features]
-default = ["passthroughfs", "afl"]
+default = ["afl"]
 # Adds code needed to run AFL++ with deferred forkserver mode
 afl = []
 # Adds code needed to run AFL++ Persistent mode with Channel Reset (PCR)
@@ -30,11 +30,11 @@ bitflags = "2.6.0"
 # Use: lock-free application of interprocess heap for improved performance
 critical-section = { version = "1.1", features = [] }
 # Use: interprocess heap allocation primitive
-embedded-alloc = { version = "0.6.0", features = ["tlsf", "allocator_api"] }
+embedded-alloc = { version = "0.7.0", features = ["tlsf", "allocator_api"], git = "https://github.com/rust-embedded/embedded-alloc" }
 # Use: emitting logs to stdout
 env_logger = "0.11"
 # Use: Allocator API for `HashMap`/`HashSet` types; faster hashing algs
-hashbrown = { version = "0.15", features = ["nightly"] }
+hashbrown = { version = "0.16.1", features = ["nightly"] }
 # Use: calling underlying implementations of standard library functions
 libc = "0.2" # For various low-level operations
 # Use: logging for debugging purposes
