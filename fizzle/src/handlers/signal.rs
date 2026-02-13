@@ -548,7 +548,7 @@ impl SignalSet {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub enum SigDisposition {
     #[default]
     Default,
