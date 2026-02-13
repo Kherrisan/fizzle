@@ -321,8 +321,11 @@ impl Event for DescriptorCloseRangeEvent {
 #[allow(non_camel_case_types)]
 #[repr(C)]
 pub enum pid_type {
+    #[allow(unused)]
     F_OWNER_TID = 0,
+    #[allow(unused)]
     F_OWNER_PID,
+    #[allow(unused)]
     F_OWNER_PGRP, // F_OWNER_GID
 }
 

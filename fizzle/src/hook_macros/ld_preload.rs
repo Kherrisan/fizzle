@@ -77,7 +77,7 @@ macro_rules! real {
 
 pub(crate) use real;
 
-
+/*
 macro_rules! resolve {
     ($res:ident <= $real_fn:ident ( $($v:ident : $t:ty),* ) -> $r:ty) => {
         #[allow(non_camel_case_types)]
@@ -113,6 +113,7 @@ macro_rules! resolve {
         $crate::hook! { $real_fn ( $($v : $t),* ) -> ()}
     };
 }
+*/
 
 
 pub fn real_syscall() -> extern "C" fn(libc::c_long, ...) -> libc::c_long {

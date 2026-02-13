@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell, UnsafeCell};
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet, LinkedList, VecDeque};
 use std::fmt::Debug;
 use std::mem::MaybeUninit;
@@ -56,33 +56,6 @@ use crate::{GlobalHeap, GlobalList, GlobalMap, GlobalRc, GlobalSet, GlobalVec};
 use crate::backend::{
     ConnectingBackend, ConnectionlessBackend, FeedbackConnectionless, FileBackend, FileFeedback, PendingBackend, ServerBackend, StandardFeedback, StdioBackend
 };
-
-#[repr(transparent)]
-struct UnsafeBool {
-    inner: UnsafeCell<bool>
-}
-
-impl UnsafeBool {
-    pub const fn new(value: bool) -> Self {
-        Self {
-            inner: UnsafeCell::new(value)
-        }
-    }
-
-    unsafe fn get_and_set(&self) -> bool {
-        let res = *self.inner.get();
-        *self.inner.get() = true;
-        res
-    }
-
-    unsafe fn clear(&self) {
-        *self.inner.get() = false;
-    }
-}
-
-unsafe impl Send for UnsafeBool {}
-
-unsafe impl Sync for UnsafeBool {}
 
 // See `set_entered_handler` and `has_entered_handler`
 std::thread_local! {

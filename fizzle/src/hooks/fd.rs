@@ -182,7 +182,7 @@ pub unsafe extern "C" fn fcntl64(fd: libc::c_int, cmd: libc::c_int, mut va_args:
             | libc::F_GETOWN
             | F_GETSIG
             | libc::F_GETLEASE
-            | libc::F_GET_SEALS => hook_macros::real_fcntl()(fd, cmd),
+            | libc::F_GET_SEALS => hook_macros::real_fcntl()(fd, cmd, 0),
             libc::F_SETLK
             | libc::F_SETLKW
             | libc::F_GETLK
@@ -238,13 +238,13 @@ pub unsafe extern "C" fn fcntl64(fd: libc::c_int, cmd: libc::c_int, mut va_args:
             FcntlCommand::GetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
         }
         libc::F_OFD_SETLK => {
-            FcntlCommand::SetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+            FcntlCommand::OfdSetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
         }
         libc::F_OFD_SETLKW => {
-            FcntlCommand::SetLockWait(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+            FcntlCommand::OfdSetLockWait(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
         }
         libc::F_OFD_GETLK => {
-            FcntlCommand::GetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+            FcntlCommand::OfdGetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
         }
         F_GETOWN_EX => FcntlCommand::GetOwnEx(unsafe { &mut *(va_args.arg::<*mut f_owner_ex>()) }),
         F_SETOWN_EX => FcntlCommand::SetOwnEx(unsafe { &mut *(va_args.arg::<*mut f_owner_ex>()) }),

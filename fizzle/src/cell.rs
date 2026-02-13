@@ -1,4 +1,4 @@
-use std::cell::{Ref, RefCell, RefMut, UnsafeCell};
+use std::cell::{RefCell, RefMut, UnsafeCell};
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -18,12 +18,6 @@ impl<T> SequentialRefCell<T> {
         Self {
             inner: RefCell::new(inner),
         }
-    }
-
-    /// Immutably borrows a wrapped value.
-    #[inline]
-    pub fn borrow(&self) -> Ref<'_, T> {
-        self.inner.borrow()
     }
 
     /// Mutably borrows a wrapped value.

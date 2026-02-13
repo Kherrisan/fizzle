@@ -319,7 +319,7 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn chroot(
-        path: *const libc::c_char
+        _path: *const libc::c_char
     ) -> libc::c_int => fizzle_chroot(_ctx) {
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::chroot(path) };
@@ -615,8 +615,8 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn truncate(
-        path: *const libc::c_char,
-        length: libc::off_t
+        _path: *const libc::c_char,
+        _length: libc::off_t
     ) -> libc::c_int => fizzle_truncate(_ctx) {
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::truncate(path, length) };
@@ -627,8 +627,8 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn ftruncate(
-        fd: libc::c_int,
-        length: libc::off_t
+        _fd: libc::c_int,
+        _length: libc::off_t
     ) -> libc::c_int => fizzle_ftruncate(_ctx) {
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::ftruncate(fd, length) };

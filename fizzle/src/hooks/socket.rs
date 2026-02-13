@@ -527,7 +527,7 @@ hook_macros::hook! {
             (OptLevel::Tcp, _) => {
                 return 0;
                 // TODO: fixme
-                panic!("Unrecognized socket option: SOL_TCP, optname {}", optname);
+                // panic!("Unrecognized socket option: SOL_TCP, optname {}", optname);
             }
             // Socket options that are readonly
             (OptLevel::Socket, libc::SO_ACCEPTCONN | libc::SO_DOMAIN | libc::SO_ERROR | libc::SO_PROTOCOL) => {
@@ -640,10 +640,6 @@ hook_macros::hook! {
             (OptLevel::Ipv6, _) => {
                 log::error!("unrecognized SOL_IP6 option {}", optname);
                 panic!("Unrecognized socket option: SOL_IPV6, optname {}", optname)
-            }
-            _ => {
-                log::error!("unrecognized option level {}, optname {}", level, optname);
-                panic!("Unrecognized socket option: level {}, optname {}", level, optname)
             }
         };
 

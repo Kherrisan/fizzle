@@ -192,12 +192,6 @@ fn create_descriptor() -> RawFd {
     fd
 }
 
-fn destroy_descriptor(fd: RawFd) {
-    unsafe {
-        libc::close(fd);
-    }
-}
-
 fn create_inotify_watch() -> libc::c_int {
     NEXT_WATCH_DESCRIPTOR.fetch_add(1, Ordering::Relaxed)
 }

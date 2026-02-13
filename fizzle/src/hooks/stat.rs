@@ -190,8 +190,8 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_statvfs(_ctx) {
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::statvfs(path, buf) };
-
-        unimplemented!("statvfs()")
+        #[cfg(not(feature = "passthroughfs"))]
+        return unsafe { libc::statvfs(path, buf) };
     }
 }
 
@@ -202,6 +202,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_fstatvfs(_ctx) {
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::fstatvfs(fd, buf) };
-        unimplemented!("fstatvfs()")
+        #[cfg(not(feature = "passthroughfs"))]
+        return unsafe { libc::fstatvfs(fd, buf) };
     }
 }

@@ -356,19 +356,6 @@ fn run_without_plugin(query: &[u8], state: &mut FizzleState) -> Outcome<Vec<u8>,
                     }
                 };
             },
-            RecordType::CSYNC => {
-                match CSYNC::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
-                    Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::CSYNC(rdata))).to_bytes() {
-                        Ok(b) => break b,
-                        Err(_e) => {
-                            log::error!("Entropic created DNS CSYNC Resource Record that failed to convert to bytes--retrying...");
-                        }
-                    } 
-                    Err(_e) => {
-                        log::error!("Entropic failed to generate DNS CSYNC Resource Record--retrying...");
-                    }
-                };
-            },
             RecordType::HINFO => {
                 match HINFO::from_entropy::<_, DefaultEntropyScheme>(data.iter().chain(iter::repeat(&0u8).take(65536))) {
                     Ok(rdata) => match Message::new().add_query(q.clone()).add_answer(Record::from_rdata(q.name.clone(), 127, RData::HINFO(rdata))).to_bytes() {

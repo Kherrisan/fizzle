@@ -111,10 +111,10 @@ pub struct gaicb {
 
 hook_macros::hook! {
     unsafe fn getaddrinfo_a(
-        mode: libc::c_int,
-        list: *mut gaicb,
-        nitems: libc::c_int,
-        sevp: *mut libc::sigevent
+        _mode: libc::c_int,
+        _list: *mut gaicb,
+        _nitems: libc::c_int,
+        _sevp: *mut libc::sigevent
     ) -> libc::c_int => fizzle_getaddrinfo_a(_ctx) {
         unimplemented!("getaddrinfo_a()")
     }
@@ -122,9 +122,9 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn gai_suspend(
-        list: *const gaicb,
-        nitems: libc::c_int,
-        timeout: *const libc::timespec
+        _list: *const gaicb,
+        _nitems: libc::c_int,
+        _timeout: *const libc::timespec
     ) -> libc::c_int => fizzle_gai_suspend(_ctx) {
         unimplemented!("gai_suspend()")
     }
@@ -132,7 +132,7 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn gai_error(
-        req: *mut gaicb
+        _req: *mut gaicb
     ) -> libc::c_int => fizzle_gai_error(_ctx) {
         unimplemented!("gai_error()")
     }
@@ -140,7 +140,7 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn gai_cancel(
-        req: *mut gaicb
+        _req: *mut gaicb
     ) -> libc::c_int => fizzle_gai_cancel(_ctx) {
         unimplemented!("gai_cancel()")
     }

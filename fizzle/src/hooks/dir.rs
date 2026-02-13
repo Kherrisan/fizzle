@@ -16,7 +16,7 @@ hook_macros::hook! {
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::opendir(name) };
         #[cfg(not(feature = "passthroughfs"))]
-        unimplemented!("opendir()")
+        return unsafe { libc::opendir(name) };
     }
 }
 
@@ -34,7 +34,7 @@ hook_macros::hook! {
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::fdopendir(fd) };
         #[cfg(not(feature = "passthroughfs"))]
-        unimplemented!("fdopendir()")
+        return unsafe { libc::fdopendir(fd) };
     }
 }
 
@@ -45,7 +45,7 @@ hook_macros::hook! {
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::dirfd(dirp) };
         #[cfg(not(feature = "passthroughfs"))]
-        unimplemented!("dirfd()")
+        return unsafe { libc::dirfd(dirp) };
     }
 }
 
@@ -61,13 +61,13 @@ hook_macros::hook! {
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::closedir(dirp) };
         #[cfg(not(feature = "passthroughfs"))]
-        unimplemented!("closedir()")
+        return unsafe { libc::closedir(dirp) };
     }
 }
 
 hook_macros::hook! {
     unsafe fn readdir(
-        dirp: *mut libc::DIR
+        _dirp: *mut libc::DIR
     ) -> *mut libc::dirent => fizzle_readdir(_ctx) {
 
         #[cfg(feature = "sigsan")] {

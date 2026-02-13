@@ -355,9 +355,9 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn popen(
-        command: *const libc::c_char,
-        ty: *const libc::c_char
-    ) -> *mut libc::FILE => fizzle_popen(ctx) {
+        _command: *const libc::c_char,
+        _ty: *const libc::c_char
+    ) -> *mut libc::FILE => fizzle_popen(_ctx) {
 
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -371,8 +371,8 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn pclose(
-        stream: *mut libc::FILE
-    ) -> libc::c_int => fizzle_pclose(ctx) {
+        _stream: *mut libc::FILE
+    ) -> libc::c_int => fizzle_pclose(_ctx) {
 
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -909,10 +909,10 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn getline(
-        lineptr: *mut *mut libc::c_char,
-        n: libc::size_t,
-        stream: *mut libc::FILE
-    ) -> *mut libc::c_char => fizzle_getline(ctx) {
+        _lineptr: *mut *mut libc::c_char,
+        _n: libc::size_t,
+        _stream: *mut libc::FILE
+    ) -> *mut libc::c_char => fizzle_getline(_ctx) {
 
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -926,11 +926,11 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn getdelim(
-        lineptr: *mut *mut libc::c_char,
-        n: libc::size_t,
-        delim: libc::c_int,
-        stream: *mut libc::FILE
-    ) -> *mut libc::c_char => fizzle_getdelim(ctx) {
+        _lineptr: *mut *mut libc::c_char,
+        _n: libc::size_t,
+        _delim: libc::c_int,
+        _stream: *mut libc::FILE
+    ) -> *mut libc::c_char => fizzle_getdelim(_ctx) {
 
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -1266,9 +1266,9 @@ pub struct CookieIoFunctions {
 
 hook_macros::hook! {
     unsafe fn fopencookie(
-        cookie: *mut libc::c_void,
-        mode: *const libc::c_char,
-        io_funcs: CookieIoFunctions
+        _cookie: *mut libc::c_void,
+        _mode: *const libc::c_char,
+        _io_funcs: CookieIoFunctions
     ) -> *mut libc::FILE => fizzle_fopencookie(_ctx) {
         unimplemented!("fopencookie")
     }
@@ -1837,7 +1837,7 @@ hook_macros::hook! {
         buf: *mut libc::c_char,
         mode: libc::c_int,
         size: libc::c_int
-    ) -> libc::c_int => fizzle_setvbuf(ctx) {
+    ) -> libc::c_int => fizzle_setvbuf(_ctx) {
 
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -1858,7 +1858,7 @@ hook_macros::hook! {
     unsafe fn setbuf(
         stream: *mut libc::FILE,
         buf: *mut libc::c_char
-    ) => fizzle_setbuf(ctx) {
+    ) => fizzle_setbuf(_ctx) {
 
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -1879,7 +1879,7 @@ hook_macros::hook! {
         stream: *mut libc::FILE,
         buf: *mut libc::c_char,
         size: libc::c_int
-    ) => fizzle_setbuffer(ctx) {
+    ) => fizzle_setbuffer(_ctx) {
 
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {
@@ -1898,7 +1898,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn setlinebuf(
         stream: *mut libc::FILE
-    ) => fizzle_setlinebuf(ctx) {
+    ) => fizzle_setlinebuf(_ctx) {
 
         #[cfg(feature = "sigsan")] {
             if in_sighandler() {

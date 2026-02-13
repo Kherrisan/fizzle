@@ -456,7 +456,7 @@ fn gen_populate_plugins(config: &FizzleConfiguration) -> TokenStream {
         let plugin = quote::format_ident!("{}", str::replace(&plugin, "-", "_"));
         let key_id = quote::format_ident!("key_{}", module_id);
         comptime_output_tokens.extend(quote::quote! {
-            let #key_id = Rc::new(RefCell::new((#module::#plugin::new(endpoint_toml_configs))));
+            let #key_id = Rc::new(RefCell::new(#module::#plugin::new(endpoint_toml_configs)));
         });
     }
 
