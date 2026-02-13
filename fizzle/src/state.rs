@@ -84,10 +84,6 @@ unsafe impl Send for UnsafeBool {}
 
 unsafe impl Sync for UnsafeBool {}
 
-static ENTERED_HANDLER_META: UnsafeBool = UnsafeBool::new(false);
-
-static IN_SIGHANDLER_META: UnsafeBool = UnsafeBool::new(false);
-
 // See `set_entered_handler` and `has_entered_handler`
 std::thread_local! {
     static ENTERED_HANDLER: Cell<bool> = const { Cell::new(false) };
@@ -139,38 +135,11 @@ pub fn set_entered_handler(entered: bool) {
 /// infinite recursion. To do so, we keep track of whether we've already hooked the current
 /// function using a thread-local variable.
 pub fn has_entered_handler() -> bool {
-    /*
-    if unsafe { ENTERED_HANDLER_META.get_and_set() } {
-        // `ENTERED_HANDLER.with()` may call libc functions such as `malloc()` and `free()`, which
-        // are hooked by Fizzle. To avoid an infinite recursion here, this META global varaible
-        // is added. `has_entered_handler()` can never be called by two threads at once (thanks to
-        // the fact that yielded threads have always set their ENTERED_HANDLER variable prior to
-        // delegating control flow), so using a global is safe as long as it's reset within this
-        // context.
-        //
-        // On the first invocation of `has_entered_handler()`, this META variable will be false and
-        // control flow will continue on to `ENTERED_HANDLER.with()`. However, if that function ends
-        // up recursively calling this `has_entered_handler()` at any point, the META variable will
-        // be true on that invocation and will force `true` to be returned. This will enable the
-        // `with()` call to run normally and return, at which point the META variable will be
-        // cleared and the proper result of checking this thread-local variable will be returned.
-        //
-        // Like many of the other constructs in Fizzle, this is only possible because threads are
-        // scheduled in a strictly sequential manner.
-        return true
-    }
-    */
-
     let mut entered = false;
     ENTERED_HANDLER.with(|e| unsafe {
         entered = *e.as_ptr();
     });
 
-    /*
-    unsafe {
-        ENTERED_HANDLER_META.clear();
-    }
-    */
     entered
 }
 
