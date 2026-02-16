@@ -77,7 +77,7 @@ hook_macros::hook! {
         }
 
         #[cfg(feature = "passthroughfs")]
-        return unsafe { libc::readdir(dirp) };
+        return unsafe { libc::readdir(_dirp) };
         #[cfg(not(feature = "passthroughfs"))]
         unimplemented!("readdir()")
     }

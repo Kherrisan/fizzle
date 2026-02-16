@@ -744,7 +744,7 @@ impl Event for DescriptorReadEvent<'_> {
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
         match &mut self.state {
             DescriptorReadState::Start => {
-                let _is_random = matches!(state.local.fds.get(&self.fd), Some(DescriptorInfo { is_random: true, .. }));
+                let is_random = matches!(state.local.fds.get(&self.fd), Some(DescriptorInfo { is_random: true, .. }));
                 let Some(
                     fd_info @ DescriptorInfo {
                         is_passthrough: false,

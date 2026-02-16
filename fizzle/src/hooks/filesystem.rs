@@ -322,7 +322,7 @@ hook_macros::hook! {
         _path: *const libc::c_char
     ) -> libc::c_int => fizzle_chroot(_ctx) {
         #[cfg(feature = "passthroughfs")]
-        return unsafe { libc::chroot(path) };
+        return unsafe { libc::chroot(_path) };
 
         panic!("`chroot` not implemented for fizzle virtual fs")
     }
@@ -619,7 +619,7 @@ hook_macros::hook! {
         _length: libc::off_t
     ) -> libc::c_int => fizzle_truncate(_ctx) {
         #[cfg(feature = "passthroughfs")]
-        return unsafe { libc::truncate(path, length) };
+        return unsafe { libc::truncate(_path, _length) };
 
         unimplemented!("truncate()") // TODO: can implement now
     }
@@ -631,7 +631,7 @@ hook_macros::hook! {
         _length: libc::off_t
     ) -> libc::c_int => fizzle_ftruncate(_ctx) {
         #[cfg(feature = "passthroughfs")]
-        return unsafe { libc::ftruncate(fd, length) };
+        return unsafe { libc::ftruncate(_fd, _length) };
 
         unimplemented!("ftruncate()") // TODO: can implement now
     }
