@@ -445,7 +445,13 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
         libc::SYS_membarrier => {
             let cmd: libc::c_int = va_args.arg();
             let flags: libc::c_int = va_args.arg();
-            hook_macros::real_syscall()(324, cmd, flags)
+            hook_macros::real_syscall()(libc::SYS_membarrier, cmd, flags)
+        }
+        libc::SYS_mprotect => {
+            let addr: *const libc::c_void = va_args.arg();
+            let len: libc::size_t = va_args.arg();
+            let prot: libc::c_int = va_args.arg();
+            hook_macros::real_syscall()(libc::SYS_mprotect, addr, len, prot)
         }
         _ => panic!("syscall({}, ...) unsupported by Fizzle", number),
     };
