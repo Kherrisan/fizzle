@@ -36,8 +36,8 @@ hook_macros::hook! {
         crate::strace!("fork() -> ...");
 
         // TODO: fixme
-        if true { // env::var(FIZZLE_IGNORE_FORK_ENV).is_ok() {
-            crate::strace!("fork() -> 0 (FIZZLE_IGNORE_FORK activated)");
+        if !env::var(FIZZLE_DO_FORK_ENV).is_ok() {
+            crate::strace!("fork() -> 0 (FIZZLE_DO_FORK not activated)");
             return 0
         }
 
@@ -70,8 +70,8 @@ hook_macros::hook! {
         // TODO: set `vfork` local flag to check for UB
         crate::strace!("vfork() -> ...");
 
-        if env::var(FIZZLE_IGNORE_FORK_ENV).is_ok() {
-            crate::strace!("vfork() -> 0 (FIZZLE_IGNORE_FORK activated)");
+        if !env::var(FIZZLE_DO_FORK_ENV).is_ok() {
+            crate::strace!("vfork() -> 0 (FIZZLE_DO_FORK not activated)");
             return 0
         }
 

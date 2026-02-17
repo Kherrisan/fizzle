@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 pub const FIZZLE_IGNORE_FORK_ENV: &str = "FIZZLE_IGNORE_FORK";
+pub const FIZZLE_DO_FORK_ENV: &str = "FIZZLE_DO_FORK";
 
 pub const FIZZLE_ALLOC_OFFSET_ENV: &str = "FIZZLE_ALLOC_OFFSET";
 pub const FIZZLE_ALLOC_ENV: &str = "FIZZLE_ALLOC";
