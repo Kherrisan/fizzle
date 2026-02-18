@@ -257,7 +257,7 @@ hook_macros::hook! {
         match Scheduler::handle_event(&mut ctx, EpollCtlEvent::new(epoll_descriptor, operation, target_descriptor)) {
             Ok(()) => {
                 crate::strace!("epoll_ctl(epfd={}, op={}, fd={}, event={:?}) -> 0", epfd, op, fd, event);
-                fd
+                0
             },
             Err(e) => {
                 crate::strace!("epoll_ctl(epfd={}, op={}, fd={}, event={:?}) -> -1 ({})", epfd, op, fd, event, e);

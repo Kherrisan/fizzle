@@ -375,7 +375,7 @@ impl Event for MutexUnlockEvent {
             return Outcome::Error(Errno::EINVAL);
         };
 
-        let Some(popped_thread) = mutex_info.queued_threads.front().cloned() else {
+        let Some(front_thread) = mutex_info.queued_threads.front().cloned() else {
             if mutex_info.kind == MutexKind::ErrorChecking {
                 return Outcome::Error(Errno::EPERM);
             } else {
@@ -385,7 +385,7 @@ impl Event for MutexUnlockEvent {
             }
         };
 
-        if popped_thread != thread::current().id() {
+        if front_thread != thread::current().id() {
             if mutex_info.kind == MutexKind::ErrorChecking {
                 return Outcome::Error(Errno::EPERM);
             } else {
@@ -396,7 +396,7 @@ impl Event for MutexUnlockEvent {
 
         mutex_info.queued_threads.pop_front();
 
-        // Mark the thread as no longer being owned by the current process
+        // Mark the mutex as no longer being owned by the current thread
         state
             .local
             .pthreads
