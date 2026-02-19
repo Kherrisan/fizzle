@@ -13,6 +13,7 @@ mod errno;
 mod handlers;
 mod hook_macros;
 pub mod hooks;
+mod libc_ext;
 mod plugins;
 mod scheduler;
 mod semaphore;
