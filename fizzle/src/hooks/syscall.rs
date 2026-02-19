@@ -54,7 +54,7 @@ fn futex_op_fmt(futex_op: libc::c_int) -> String {
     s
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc::c_long {
 
     #[cfg(feature = "sigsan")] {

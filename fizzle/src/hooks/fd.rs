@@ -76,7 +76,7 @@ hook_macros::hook! {
         let descriptor_id = Descriptor::from_raw_fd(oldfd);
 
         crate::strace!("dup(oldfd={}) -> ...", oldfd);
-        match Scheduler::handle_event(&mut ctx, DescriptorDuplicateEvent::new(descriptor_id, None, false)) {
+        match Scheduler::handle_event(&mut ctx, DescriptorDuplicateEvent::new(descriptor_id, None, DescriptorDupFlags::empty(), false)) {
             Ok(newfd) => {
                 crate::strace!("dup(oldfd={}) -> {}", oldfd, newfd);
                 newfd
@@ -103,7 +103,7 @@ hook_macros::hook! {
         let new_descriptor = Descriptor::from_raw_fd(newfd);
 
         crate::strace!("dup2(oldfd={}, newfd={}) -> ...", oldfd, newfd);
-        match Scheduler::handle_event(&mut ctx, DescriptorDuplicateEvent::new(old_descriptor, Some(new_descriptor), false)) {
+        match Scheduler::handle_event(&mut ctx, DescriptorDuplicateEvent::new(old_descriptor, Some(new_descriptor), DescriptorDupFlags::empty(), false)) {
             Ok(ret) => {
                 crate::strace!("dup2(oldfd={}, newfd={}) -> {}", oldfd, newfd, ret);
                 ret
@@ -127,20 +127,24 @@ hook_macros::hook! {
 
         let old_descriptor = Descriptor::from_raw_fd(oldfd);
         let new_descriptor = Descriptor::from_raw_fd(newfd);
-        let flags_fmt = if close_on_exec {
-            format!("O_CLOEXEC ({})", flags)
-        } else {
-            format!("{}", flags)
+
+        crate::strace!("dup3(oldfd={oldfd}, newfd={newfd}, flags={flags:X}) -> ...");
+
+        let dup_flags = match DescriptorDupFlags::from_bits(flags) {
+            Some(f) => f,
+            None => {
+                log::warn!("Unrecognized flags in dup3(flags={flags:X})");
+                DescriptorDupFlags::from_bits_truncate(flags)
+            }
         };
 
-        crate::strace!("dup3(oldfd={}, newfd={}, flags={}) -> ...", oldfd, newfd, flags_fmt);
-        match Scheduler::handle_event(&mut ctx, DescriptorDuplicateEvent::new(old_descriptor, Some(new_descriptor), close_on_exec)) {
+        match Scheduler::handle_event(&mut ctx, DescriptorDuplicateEvent::new(old_descriptor, Some(new_descriptor), dup_flags, true)) {
             Ok(ret) => {
-                crate::strace!("dup3(oldfd={}, newfd={}, flags={}) -> {}", oldfd, newfd, flags_fmt, ret);
+                crate::strace!("dup3(oldfd={oldfd}, newfd={newfd}, flags={dup_flags}) -> {ret}");
                 ret
             },
             Err(e) => {
-                crate::strace!("dup3(oldfd={}, newfd={}, flags={}) -> -1 ({})", oldfd, newfd, flags_fmt, e);
+                crate::strace!("dup3(oldfd={oldfd}, newfd={newfd}, flags={dup_flags}) -> -1 ({e})");
                 e.set_errno();
                 -1
             },
@@ -161,7 +165,7 @@ pub const F_SET_RW_HINT: libc::c_int = 1036;
 pub const F_GET_FILE_RW_HINT: libc::c_int = 1037;
 pub const F_SET_FILE_RW_HINT: libc::c_int = 1038;
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn fcntl64(fd: libc::c_int, cmd: libc::c_int, mut va_args: ...) -> libc::c_int {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         return match cmd {
@@ -284,7 +288,7 @@ pub unsafe extern "C" fn fcntl64(fd: libc::c_int, cmd: libc::c_int, mut va_args:
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: ...) -> libc::c_int {
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         return match cmd {
@@ -305,7 +309,7 @@ pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: .
             | libc::F_GETOWN
             | F_GETSIG
             | libc::F_GETLEASE
-            | libc::F_GET_SEALS => hook_macros::real_fcntl()(fd, cmd),
+            | libc::F_GET_SEALS => hook_macros::real_fcntl()(fd, cmd, 0), // NOTE: third arg not needed; just for linter error
             libc::F_SETLK
             | libc::F_SETLKW
             | libc::F_GETLK

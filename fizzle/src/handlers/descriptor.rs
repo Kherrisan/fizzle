@@ -2,7 +2,7 @@ use std::io::{IoSlice, IoSliceMut};
 use std::mem::MaybeUninit;
 use std::os::fd::RawFd;
 use std::rc::{Rc, Weak};
-use std::{cmp, ptr};
+use std::{cmp, fmt, ptr};
 
 use super::directory::*;
 use super::epoll::*;
@@ -554,19 +554,34 @@ impl Event for FcntlEvent<'_> {
     }
 }
 
+bitflags! {
+    #[derive(Clone, Copy, Debug)]
+    pub struct DescriptorDupFlags: libc::c_int {
+        const CLOEXEC = libc::O_CLOEXEC;
+    }
+}
+
+impl fmt::Display for DescriptorDupFlags {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        bitflags::parser::to_writer(self, f)
+    }
+}
+
 pub struct DescriptorDuplicateEvent {
     old_fd: Descriptor,
     new_fd: Option<Descriptor>,
-    close_on_exec: bool,
+    flags: DescriptorDupFlags,
+    fail_if_identical: bool,
 }
 
 impl DescriptorDuplicateEvent {
     #[inline]
-    pub fn new(old_fd: Descriptor, new_fd: Option<Descriptor>, close_on_exec: bool) -> Self {
+    pub fn new(old_fd: Descriptor, new_fd: Option<Descriptor>, flags: DescriptorDupFlags, fail_if_identical: bool) -> Self {
         Self {
             old_fd,
             new_fd,
-            close_on_exec,
+            flags,
+            fail_if_identical,
         }
     }
 }
@@ -593,18 +608,24 @@ impl Event for DescriptorDuplicateEvent {
             };
         };
 
-        // Create a new, unique file descriptor
+
+        // dup3() returns EINVAL, dup2()
+        if let Some(new_fd) = self.new_fd && new_fd == self.old_fd {
+            if self.fail_if_identical {
+                return Outcome::Error(Errno::EINVAL);
+            } else {
+                return Outcome::Success(new_fd.as_raw_fd());
+            }
+        }
+
+        // Assign a new, unique file descriptor number if needed
         let new_fd = match self.new_fd {
             Some(fd) => fd,
             None => Descriptor::from_raw_fd(crate::create_descriptor()),
         };
 
-        if self.old_fd == new_fd {
-            return Outcome::Error(Errno::EINVAL); // Behavior for dup3 (dup2 is different)
-        }
-
-        // Update the close-on-exec flag
-        new_fd_info.close_on_exec = self.close_on_exec;
+        // Update the close-on-exec flag for the newly-created descriptor
+        new_fd_info.close_on_exec = self.flags.contains(DescriptorDupFlags::CLOEXEC);
 
         // Upref the file descriptor count where applicable
         if let FdResource::Socket(socket_info) = new_fd_info.resource.clone() {
@@ -614,11 +635,11 @@ impl Event for DescriptorDuplicateEvent {
         // Close `newfd` if it points to an occupied descriptor
         if state.local.fds.contains_key(&new_fd) {
             // TODO: this is dangerous(ish), as the behavior of the run event loop may change.
-            // Figure out how to call events within events more ergonomically while not exposing
-            // `ctx`
+            // Long-term stable behavior would be to figure out how to call events within
+            // events more ergonomically while not exposing `ctx`.
             match DescriptorCloseEvent::new(new_fd).run(state) {
                 Outcome::Success(()) => (),
-                Outcome::Error(_) => log::error!("internal state inconsistency--descriptor close returned error (could be due to AFL fd 198/199)"),
+                Outcome::Error(_) => log::error!("internal state inconsistency--descriptor close returned error (could be due to AFL fds 198/199)"),
                 _ => unreachable!(),
             }
         }

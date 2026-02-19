@@ -3,6 +3,7 @@ use std::{mem, usize};
 
 use crate::errno::Errno;
 use crate::handlers::filestream::{FilePtr, StreamReadEvent, StreamUngetEvent};
+use crate::external::{STDERR, STDIN, STDOUT, vsscanf};
 use crate::scheduler::Scheduler;
 #[cfg(feature = "sigsan")]
 use crate::state::in_sighandler;
@@ -794,7 +795,7 @@ fn match_param(format: &[u8], input: &[u8], _params: &[*mut libc::c_void], _para
     })
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn scanf(
     format: *const libc::c_char,
     va_args: ...
@@ -814,7 +815,7 @@ pub unsafe extern "C" fn scanf(
     let mut format_bytes = format_cstr.to_bytes();
     crate::strace!("scanf(format={:?}) -> ...", format_cstr);
 
-    let stream_ptr = FilePtr::from_raw(crate::stdin).unwrap();
+    let stream_ptr = FilePtr::from_raw(STDIN).unwrap();
 
     let mut buf = Vec::new();
     let mut buf_consumed = 0;
@@ -826,7 +827,7 @@ pub unsafe extern "C" fn scanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
+                let res = vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -893,7 +894,7 @@ pub unsafe extern "C" fn scanf(
     res
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn __isoc99_scanf(
     format: *const libc::c_char,
     va_args: ...,
@@ -913,7 +914,7 @@ pub unsafe extern "C" fn __isoc99_scanf(
     let mut format_bytes = format_cstr.to_bytes();
     crate::strace!("__isoc99_scanf(format={:?}) -> ...", format_cstr);
 
-    let stream_ptr = FilePtr::from_raw(crate::stdin).unwrap();
+    let stream_ptr = FilePtr::from_raw(STDIN).unwrap();
 
     let mut buf = Vec::new();
     let mut buf_consumed = 0;
@@ -925,7 +926,7 @@ pub unsafe extern "C" fn __isoc99_scanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
+                let res = vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -992,7 +993,7 @@ pub unsafe extern "C" fn __isoc99_scanf(
     res
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn __isoc23_scanf(
     format: *const libc::c_char,
     va_args: ...,
@@ -1013,7 +1014,7 @@ pub unsafe extern "C" fn __isoc23_scanf(
     let mut format_bytes = format_cstr.to_bytes();
     crate::strace!("__isoc23_scanf(format={:?}) -> ...", format_cstr);
 
-    let stream_ptr = FilePtr::from_raw(crate::stdin).unwrap();
+    let stream_ptr = FilePtr::from_raw(STDIN).unwrap();
 
     let mut buf = Vec::new();
     let mut buf_consumed = 0;
@@ -1025,7 +1026,7 @@ pub unsafe extern "C" fn __isoc23_scanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
+                let res = vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -1092,7 +1093,7 @@ pub unsafe extern "C" fn __isoc23_scanf(
     res
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn fscanf(
     stream: *mut libc::FILE,
     format: *const libc::c_char,
@@ -1125,7 +1126,7 @@ pub unsafe extern "C" fn fscanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
+                let res = vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -1192,7 +1193,7 @@ pub unsafe extern "C" fn fscanf(
     res
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn __isoc99_fscanf(
     stream: *mut libc::FILE,
     format: *const libc::c_char,
@@ -1226,7 +1227,7 @@ pub unsafe extern "C" fn __isoc99_fscanf(
                 debug_assert!(buf_consumed <= buf.len());
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
+                let res = vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -1292,7 +1293,7 @@ pub unsafe extern "C" fn __isoc99_fscanf(
     res
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn __isoc23_fscanf(
     stream: *mut libc::FILE,
     format: *const libc::c_char,
@@ -1325,7 +1326,7 @@ pub unsafe extern "C" fn __isoc23_fscanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
+                let res = vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -1392,7 +1393,7 @@ pub unsafe extern "C" fn __isoc23_fscanf(
     res
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn vscanf(
     format: *const libc::c_char,
     va_args: VaList
@@ -1412,7 +1413,7 @@ pub unsafe extern "C" fn vscanf(
     let mut format_bytes = format_cstr.to_bytes();
     crate::strace!("vscanf(format={:?}) -> ...", format_cstr);
 
-    let stream_ptr = FilePtr::from_raw(crate::stdin).unwrap();
+    let stream_ptr = FilePtr::from_raw(STDIN).unwrap();
 
     let mut buf = Vec::new();
     let mut buf_consumed = 0;
@@ -1424,7 +1425,7 @@ pub unsafe extern "C" fn vscanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
+                let res = vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -1491,7 +1492,7 @@ pub unsafe extern "C" fn vscanf(
     res
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn __isoc99_vscanf(
     format: *const libc::c_char,
     va_args: VaList,
@@ -1511,7 +1512,7 @@ pub unsafe extern "C" fn __isoc99_vscanf(
     let mut format_bytes = format_cstr.to_bytes();
     crate::strace!("__isoc99_vscanf(format={:?}) -> ...", format_cstr);
 
-    let stream_ptr = FilePtr::from_raw(crate::stdin).unwrap();
+    let stream_ptr = FilePtr::from_raw(STDIN).unwrap();
 
     let mut buf = Vec::new();
     let mut buf_consumed = 0;
@@ -1523,7 +1524,7 @@ pub unsafe extern "C" fn __isoc99_vscanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
+                let res = vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -1590,7 +1591,7 @@ pub unsafe extern "C" fn __isoc99_vscanf(
     res
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn __isoc23_vscanf(
     format: *const libc::c_char,
     va_args: VaList,
@@ -1611,7 +1612,7 @@ pub unsafe extern "C" fn __isoc23_vscanf(
     let mut format_bytes = format_cstr.to_bytes();
     crate::strace!("__isoc23_vscanf(format={:?}) -> ...", format_cstr);
 
-    let stream_ptr = FilePtr::from_raw(crate::stdin).unwrap();
+    let stream_ptr = FilePtr::from_raw(STDIN).unwrap();
 
     let mut buf = Vec::new();
     let mut buf_consumed = 0;
@@ -1623,7 +1624,7 @@ pub unsafe extern "C" fn __isoc23_vscanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
+                let res = vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -1690,7 +1691,7 @@ pub unsafe extern "C" fn __isoc23_vscanf(
     res
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn vfscanf(
     stream: *mut libc::FILE,
     format: *const libc::c_char,
@@ -1723,7 +1724,7 @@ pub unsafe extern "C" fn vfscanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
+                let res = vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -1790,7 +1791,7 @@ pub unsafe extern "C" fn vfscanf(
     res
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn __isoc99_vfscanf(
     stream: *mut libc::FILE,
     format: *const libc::c_char,
@@ -1823,7 +1824,7 @@ pub unsafe extern "C" fn __isoc99_vfscanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
+                let res = vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }
@@ -1890,7 +1891,7 @@ pub unsafe extern "C" fn __isoc99_vfscanf(
     res
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn __isoc23_vfscanf(
     stream: *mut libc::FILE,
     format: *const libc::c_char,
@@ -1923,7 +1924,7 @@ pub unsafe extern "C" fn __isoc23_vfscanf(
                 buf_consumed += consumed;
                 // We have all the bytes we need--now actually scan into va_args
 
-                let res = crate::vsscanf(buf.as_ptr().cast(), format, va_args);
+                let res = vsscanf(buf.as_ptr().cast(), format, va_args);
                 if res == libc::EOF {
                     panic!("libc and internal vsscanf() implementations in disagreement");
                 }

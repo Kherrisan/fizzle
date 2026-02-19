@@ -2,6 +2,7 @@ use std::ffi::CStr;
 use std::{cmp, ptr, slice};
 
 use crate::hook_macros;
+use crate::external::res_mkquery;
 use crate::scheduler::Scheduler;
 use crate::handlers::resolv::*;
 
@@ -17,7 +18,7 @@ hook_macros::hook! {
 
         crate::strace!("res_query(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> ...", dname, class, ty, answer, anslen);
 
-        let len = crate::res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
+        let len = res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
         if len < 0 {
             log::error!("res_mkquery() failed for res_query");
             crate::strace!("res_query(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", dname, class, ty, answer, anslen);
@@ -55,7 +56,7 @@ hook_macros::hook! {
 
         crate::strace!("res_nquery(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> ...", statep, dname_cstr, class, ty, answer, anslen);
 
-        let len = crate::res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
+        let len = res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
         if len < 0 {
             log::error!("res_mkquery() failed for res_nquery with dname {:?}", dname_cstr);
             crate::strace!("res_nquery(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", statep, dname_cstr, class, ty, answer, anslen);
@@ -101,7 +102,7 @@ hook_macros::hook! {
         dname_vec.push(b'\0');
         let dname = dname_vec.as_ptr().cast();
 
-        let len = crate::res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
+        let len = res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
         if len < 0 {
             log::error!("res_mkquery() failed for res_querydomain");
             crate::strace!("res_querydomain(name={:?}, domain={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", name_cstr, domain_cstr, class, ty, answer, anslen);
@@ -148,7 +149,7 @@ hook_macros::hook! {
         dname_vec.push(b'\0');
         let dname = dname_vec.as_ptr().cast();
 
-        let len = crate::res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
+        let len = res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
         if len < 0 {
             log::error!("res_mkquery() failed for res_nquerydomain");
             crate::strace!("res_nquerydomain(statep={:?}, name={:?}, domain={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", statep, name_cstr, domain_cstr, class, ty, answer, anslen);
@@ -183,7 +184,7 @@ hook_macros::hook! {
 
         crate::strace!("res_search(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> ...", dname, class, ty, answer, anslen);
 
-        let len = crate::res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
+        let len = res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
         if len < 0 {
             log::error!("res_mkquery() failed for res_query");
             crate::strace!("res_search(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", dname, class, ty, answer, anslen);
@@ -219,7 +220,7 @@ hook_macros::hook! {
 
         crate::strace!("res_nsearch(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> ...", statep, dname, class, ty, answer, anslen);
 
-        let len = crate::res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
+        let len = res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
         if len < 0 {
             log::error!("res_mkquery() failed for res_nsearch");
             crate::strace!("res_nsearch(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", statep, dname, class, ty, answer, anslen);

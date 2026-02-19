@@ -37,7 +37,7 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn umask(
         mask: libc::mode_t
-    ) -> libc::c_uint => fizzle_umask(ctx) {
+    ) -> libc::c_uint => fizzle_umask(_ctx) {
         let access_mode = AccessMode::from_bits_truncate(mask);
 
         crate::strace!("umask(mask={}) -> ...", access_mode);
@@ -48,8 +48,9 @@ hook_macros::hook! {
             return res
         }
 
-        // TODO: needs to return the previous mask
-        match Scheduler::handle_event(&mut ctx, UmaskEvent::new(access_mode)) {
+        // BUG: needs to return the previous mask
+        #[cfg(not(feature = "passthroughfs"))]
+        match Scheduler::handle_event(&mut _ctx, UmaskEvent::new(access_mode)) {
             Ok(prev) => {
                 crate::strace!("umask(mask={}) -> {}", access_mode, prev);
                 prev.bits()
@@ -67,7 +68,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_open(ctx) {
         crate::strace!("open(pathname={:?}, flags={:?}, mode={:?}) -> ...", pathname, flags, mode);
 
-        let path_cstr = CStr::from_ptr(pathname);
+        let path_cstr = unsafe { CStr::from_ptr(pathname) };
         if path_cstr == c"/dev/random" || path_cstr == c"/dev/urandom" {
             log::info!("open() random /dev accessed--passing null bytes...");
             return unsafe { libc::open(c"/dev/zero".as_ptr(), flags, mode) };
@@ -82,9 +83,9 @@ hook_macros::hook! {
 
         #[cfg(feature = "passthroughfs")] {
             let res = if open_flags.contains(FileOpenFlags::CREATE) {
-                libc::open(pathname, flags, mode)
+                unsafe { libc::open(pathname, flags, mode) }
             } else {
-                libc::open(pathname, flags)
+                unsafe { libc::open(pathname, flags) }
             };
             if res < 0 {
                 strace!("open(path_cstr={path_cstr:?}, flags={open_flags:?}) -> -1 ({})", Errno::get_errno());
@@ -101,7 +102,7 @@ hook_macros::hook! {
 
         // TODO: what about O_TRUNC?
 
-        let Ok(relative_path) = FilePath::from_cstr(CStr::from_ptr(pathname)) else {
+        let Ok(relative_path) = FilePath::from_cstr(unsafe { CStr::from_ptr(pathname) }) else {
             log::warn!("malformed or oversized filepath passed to `open()`");
             strace!("open(pathname={:?}, flags={:?}) -> -1 (EINVAL)", pathname, open_flags);
             Errno::EINVAL.set_errno();

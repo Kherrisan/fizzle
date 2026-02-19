@@ -44,13 +44,13 @@ macro_rules! hook {
                 }
             }
 
-            #[no_mangle]
+            #[unsafe(no_mangle)]
             pub unsafe extern "C" fn $real_fn ( $($v : $t),* ) -> $r {
                 let Some($state) = crate::hooks::pre_hook() else {
-                    return $real_fn.get() ( $($v),* )
+                    return unsafe { $real_fn.get() ( $($v),* ) }
                 };
 
-                let res = $hook_fn ( $state, $($v),*);
+                let res = unsafe { $hook_fn ( $state, $($v),*) };
                 crate::hooks::post_hook();
                 res
             }
@@ -134,7 +134,7 @@ pub fn real_syscall() -> extern "C" fn(libc::c_long, ...) -> libc::c_long {
     }
 }
 
-pub fn real_fcntl() -> extern "C" fn(libc::c_int, libc::c_int, ...) -> libc::c_int {
+pub fn real_fcntl() -> unsafe extern "C" fn(libc::c_int, libc::c_int, ...) -> libc::c_int {
     use crate::cell::SequentialRefCell;
 
     static REAL: SequentialRefCell<*const u8> = SequentialRefCell::new(std::ptr::null());

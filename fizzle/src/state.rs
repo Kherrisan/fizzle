@@ -23,6 +23,7 @@ use rand_chacha::ChaCha20Rng;
 
 use crate::constants::*;
 use crate::errno::Errno;
+use crate::external::{STDIN, STDOUT, STDERR};
 use crate::handlers::barrier::{BarrierInfo, BarrierPtr};
 use crate::handlers::condvar::{CondVarInfo, CondVarPtr};
 use crate::handlers::descriptor::{Descriptor, DescriptorInfo, FdResource};
@@ -493,9 +494,9 @@ impl FizzleState {
             local.initialize_thread(tid, None);
         }
 
-        let stdin_ptr = FilePtr::from_raw(unsafe { crate::stdin }).unwrap();
-        let stdout_ptr = FilePtr::from_raw(unsafe { crate::stdout }).unwrap();
-        let stderr_ptr = FilePtr::from_raw(unsafe { crate::stderr }).unwrap();
+        let stdin_ptr = FilePtr::from_raw(unsafe { STDIN }).unwrap();
+        let stdout_ptr = FilePtr::from_raw(unsafe { STDOUT }).unwrap();
+        let stderr_ptr = FilePtr::from_raw(unsafe { STDERR }).unwrap();
 
         let mut stdin_file = FileObject::new(
             FileStreamSource::Descriptor(0),
@@ -600,7 +601,9 @@ impl FizzleState {
         log::debug!("allocating public shared memory object...");
         let memfd = InterprocessState::interprocess_shmem_create();
         log::debug!("allocated public shared memory object with fd {}", memfd);
-        env::set_var(FIZZLE_MEMORY_ENV, memfd.to_string());
+        unsafe {
+            env::set_var(FIZZLE_MEMORY_ENV, memfd.to_string());
+        }
 
         let ret = unsafe {
             libc::ftruncate(memfd, size as i64)
@@ -647,7 +650,9 @@ impl FizzleState {
             panic!("failed to mmap global memory: {}", Errno::get_errno());
         }
 
-        env::set_var(FIZZLE_MEMORY_OFFSET_ENV, new.addr().to_string());
+        unsafe {
+            env::set_var(FIZZLE_MEMORY_OFFSET_ENV, new.addr().to_string());
+        }
     }
 
     /// Maps the memory to Fizzle's global shared state, creating a new shared memory object if this
@@ -724,7 +729,9 @@ impl FizzleState {
         }
 
         if memory_offset.is_null() {
-            env::set_var(FIZZLE_MEMORY_OFFSET_ENV, location.addr().to_string());
+            unsafe {
+                env::set_var(FIZZLE_MEMORY_OFFSET_ENV, location.addr().to_string());
+            }
         }
 
         unsafe { &mut *(location.cast::<MaybeUninit<InterprocessState>>()) }

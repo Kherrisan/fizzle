@@ -169,7 +169,7 @@ hook_macros::hook! {
     }
 }
     
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn argp_error(
         _state: *mut libc::c_void,
         _fmt: *mut libc::c_void,
@@ -188,7 +188,7 @@ pub unsafe extern "C" fn argp_error(
     panic!("argp_error() called by program");
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn argp_failure(
         _state: *mut libc::c_void,
         _status: libc::c_int,
@@ -423,14 +423,14 @@ hook_macros::hook! {
     }
 }
     
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn asprintf(
         ptr: *mut *mut i8,
         template: *const i8,
         mut va_args: ...
     ) -> libc::c_int  {
     let Some(_ctx) = crate::hooks::pre_hook() else {
-        return crate::vasprintf(ptr, template, va_args)
+        return vasprintf(ptr, template, va_args)
     };
 
     #[cfg(feature = "sigsan")] {
@@ -439,7 +439,7 @@ pub unsafe extern "C" fn asprintf(
         }
     }
 
-    let res = crate::vasprintf(ptr, template, va_args);
+    let res = vasprintf(ptr, template, va_args);
     crate::hooks::post_hook();
     res
 }
@@ -960,7 +960,7 @@ hook_macros::hook! {
     }
 }
     
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn err(
         status: libc::c_int,
         _format: *const libc::c_char,
@@ -981,7 +981,7 @@ pub unsafe extern "C" fn err(
     std::process::exit(status);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn error(
         status: libc::c_int,
         _errnum: libc::c_int,
@@ -1013,7 +1013,7 @@ pub unsafe extern "C" fn error(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn error_at_line(
         status: libc::c_int,
         _errnum: libc::c_int,
@@ -1045,7 +1045,7 @@ pub unsafe extern "C" fn error_at_line(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn errx(
         status: libc::c_int,
         _format: *mut libc::c_void,
@@ -1402,7 +1402,7 @@ hook_macros::hook! {
     }
 }
     
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn fwscanf(
         _stream: *mut libc::c_void,
         _template: *mut libc::c_void,
@@ -3026,7 +3026,7 @@ hook_macros::hook! {
     }
 }
     
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn obstack_printf(
         _obstack: *mut libc::c_void,
         _template: *mut libc::c_void,
@@ -3046,7 +3046,7 @@ pub unsafe extern "C" fn obstack_printf(
     crate::hooks::post_hook();
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn obstack_vprintf(
         _obstack: *mut libc::c_void,
         _template: *mut libc::c_void,
@@ -4064,7 +4064,7 @@ hook_macros::hook! {
     }
 }
     
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn snprintf(
         s: *mut libc::c_void,
         size: libc::size_t,
@@ -4090,7 +4090,7 @@ pub unsafe extern "C" fn snprintf(
     res
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn sprintf(
         s: *mut libc::c_void,
         template: *mut libc::c_void,
@@ -4117,7 +4117,7 @@ pub unsafe extern "C" fn sprintf(
     res
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn sscanf(
         _s: *mut libc::c_void,
         _template: *mut libc::c_void,
@@ -4197,7 +4197,7 @@ hook_macros::hook! {
     }
 }
     
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn strfmon(
         _s: *mut libc::c_void,
         _maxsize: libc::size_t,
@@ -4361,7 +4361,7 @@ hook_macros::hook! {
     }
 }
     
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swprintf(
         _ws: *mut libc::c_void,
         _size: libc::size_t,
@@ -4382,7 +4382,7 @@ pub unsafe extern "C" fn swprintf(
     crate::hooks::post_hook();
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn swscanf(
         _ws: *mut libc::c_void,
         _template: *mut libc::c_void,
@@ -4729,7 +4729,7 @@ hook_macros::hook! {
     }
 }
     
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn vasprintf(
         ptr: *mut *mut libc::c_void,
         template: *mut libc::c_void,
@@ -4757,7 +4757,7 @@ pub unsafe extern "C" fn vasprintf(
     res
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn verr(
         _status: libc::c_int,
         _format: *mut libc::c_void,
@@ -4777,7 +4777,7 @@ pub unsafe extern "C" fn verr(
     crate::hooks::post_hook();
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn verrx(
         _status: libc::c_int,
         _format: *mut libc::c_void,
@@ -4797,7 +4797,7 @@ pub unsafe extern "C" fn verrx(
     crate::hooks::post_hook();
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn vfwscanf(
         stream: *mut libc::c_void,
         template: *mut libc::c_void,
@@ -4839,7 +4839,7 @@ hook_macros::hook! {
     }
 }
     
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn vsnprintf(
         s: *mut libc::c_void,
         size: libc::size_t,
@@ -4866,7 +4866,7 @@ pub unsafe extern "C" fn vsnprintf(
     res
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn vsprintf(
         s: *mut libc::c_void,
         template: *mut libc::c_void,
@@ -4893,7 +4893,7 @@ pub unsafe extern "C" fn vsprintf(
     res
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn vsscanf(
         s: *mut libc::c_void,
         template: *mut libc::c_void,
@@ -4917,7 +4917,7 @@ pub unsafe extern "C" fn vsscanf(
     res
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn vswprintf(
         ws: *mut libc::c_void,
         size: libc::size_t,
@@ -4944,7 +4944,7 @@ pub unsafe extern "C" fn vswprintf(
     res
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn vswscanf(
         _s: *mut libc::c_void,
         _template: *mut libc::c_void,
@@ -4964,7 +4964,7 @@ pub unsafe extern "C" fn vswscanf(
     crate::hooks::post_hook();
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn vwarn(
         _format: *mut libc::c_void,
         _ap: std::ffi::VaList
@@ -4983,7 +4983,7 @@ pub unsafe extern "C" fn vwarn(
     crate::hooks::post_hook();
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn vwarnx(
         _format: *mut libc::c_void,
         _ap: std::ffi::VaList
@@ -5002,7 +5002,7 @@ pub unsafe extern "C" fn vwarnx(
     crate::hooks::post_hook();
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn vwscanf(
         _template: *mut libc::c_void,
         _ap: std::ffi::VaList
@@ -5021,7 +5021,7 @@ pub unsafe extern "C" fn vwscanf(
     crate::hooks::post_hook();
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn warn(
         _format: *mut libc::c_void,
         _va_args: ...
@@ -5040,7 +5040,7 @@ pub unsafe extern "C" fn warn(
     crate::hooks::post_hook();
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn warnx(
         _format: *mut libc::c_void,
         _va_args: ...
@@ -5233,7 +5233,7 @@ hook_macros::hook! {
     }
 }
     
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn wscanf(
         _template: *mut libc::c_void,
         _va_args: ...

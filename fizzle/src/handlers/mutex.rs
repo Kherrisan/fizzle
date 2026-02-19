@@ -290,13 +290,14 @@ impl Event for MutexLockEvent {
                     return Outcome::Error(Errno::ETIMEDOUT);
                 }
 
+                let curr_pthread = unsafe { libc::pthread_self() };
                 match mutex.status {
                     MutexStatus::Ready => {
                         // Mark the thread as being owned by the current process
                         state
                             .local
                             .pthreads
-                            .get_mut(unsafe { &libc::pthread_self() })
+                            .get_mut(&curr_pthread)
                             .unwrap()
                             .held_mutexes
                             .insert(self.lock);
@@ -308,7 +309,7 @@ impl Event for MutexLockEvent {
                         state
                             .local
                             .pthreads
-                            .get_mut(unsafe { &libc::pthread_self() })
+                            .get_mut(&curr_pthread)
                             .unwrap()
                             .held_mutexes
                             .insert(self.lock);
@@ -396,11 +397,13 @@ impl Event for MutexUnlockEvent {
 
         mutex_info.queued_threads.pop_front();
 
+        let curr_pthread = unsafe { libc::pthread_self() };
+
         // Mark the mutex as no longer being owned by the current thread
         state
             .local
             .pthreads
-            .get_mut(unsafe { &libc::pthread_self() })
+            .get_mut(&curr_pthread)
             .unwrap()
             .held_mutexes
             .remove(&self.lock);

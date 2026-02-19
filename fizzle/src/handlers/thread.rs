@@ -7,6 +7,7 @@ use std::{env, ptr, thread};
 
 use crate::constants::FIZZLE_SINGLEPROCESS_ENV;
 use crate::errno::Errno;
+use crate::external::pthread_attr_getdetachstate;
 use crate::scheduler::{
     fizzle_alloc, fizzle_singleton, Event, FizzleSingleton, Outcome, Scheduler,
     TerminateThreadTask, TerminationMethod, YieldUntil,
@@ -18,25 +19,6 @@ use crate::task::{Task, TaskResult};
 use super::id::Worker;
 use super::mutex::MutexPtr;
 use super::signal::SignalSet;
-
-extern "C" {
-    /*
-    pub fn pthread_attr_setsigmask_np(
-        attr: *mut libc::pthread_attr_t,
-        sigmask: *const libc::sigset_t,
-    ) -> libc::c_int;
-
-    pub fn pthread_attr_getsigmask_np(
-        attr: *const libc::pthread_attr_t,
-        sigmask: *mut libc::sigset_t,
-    ) -> libc::c_int;
-    */
-
-    pub fn pthread_attr_getdetachstate(
-        attr: *const libc::pthread_attr_t,
-        detachstate: *mut libc::c_int,
-    ) -> libc::c_int;
-}
 
 pub type PtFunction = unsafe extern "C" fn(*mut libc::c_void) -> *mut libc::c_void;
 pub type PTDestructor = unsafe extern "C" fn(*mut libc::c_void);

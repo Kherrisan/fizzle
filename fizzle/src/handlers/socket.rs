@@ -2038,6 +2038,9 @@ impl Event for SocketGetOptionEvent {
                     srto_min: 1000,
                 }))
             }
+            (OptLevel::Sctp, SCTP_SOCKOPT_CONNECTX3) => {
+                todo!() // TODO: continue on from here
+            }
             (OptLevel::Sctp, SCTP_GET_LOCAL_ADDRS) => {
                 // TODO: implement
                 Outcome::Success(SocketOption::SctpGetLocalAddrs(Vec::new()))

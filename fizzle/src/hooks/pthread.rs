@@ -2,6 +2,7 @@ use std::ptr;
 use std::time::Duration;
 
 use crate::errno::Errno;
+use crate::external::pthread_mutexattr_gettype;
 use crate::handlers::barrier::*;
 use crate::handlers::condvar::*;
 use crate::handlers::id::ThreadGetIdEvent;
@@ -29,13 +30,6 @@ const PTHREAD_RWLOCK_PREFER_WRITER_NP: libc::c_int = 1;
 const PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP: libc::c_int = 2;
 
 const PTHREAD_BARRIER_SERIAL_THREAD: libc::c_int = -1;
-
-extern "C" {
-    pub fn pthread_mutexattr_gettype(
-        attr: *const libc::pthread_mutexattr_t,
-        kind: *mut libc::c_int,
-    ) -> libc::c_int;
-}
 
 hook_macros::hook! {
     unsafe fn pthread_create(
@@ -585,8 +579,8 @@ hook_macros::hook! {
         } else {
             let mut kind: libc::c_int = 0;
             let mut robustness: libc::c_int = 0;
-            assert_eq!(pthread_mutexattr_gettype(attr, ptr::addr_of_mut!(kind)), 0);
-            assert_eq!(libc::pthread_mutexattr_getrobust(attr, ptr::addr_of_mut!(robustness)), 0);
+            assert_eq!(unsafe { pthread_mutexattr_gettype(attr, ptr::addr_of_mut!(kind)) }, 0);
+            assert_eq!(unsafe { libc::pthread_mutexattr_getrobust(attr, ptr::addr_of_mut!(robustness)) }, 0);
             let kind = match kind {
                 PTHREAD_MUTEX_FAST_NP => MutexKind::Fast,
                 PTHREAD_MUTEX_RECURSIVE_NP => MutexKind::Recursive,
@@ -983,8 +977,8 @@ hook_macros::hook! {
         } else {
             let mut pshared: libc::c_int = 0;
             let mut kind: libc::c_int = 0;
-            assert_eq!(libc::pthread_rwlockattr_getpshared(attr, ptr::addr_of_mut!(pshared)), 0);
-            assert_eq!(libc::pthread_rwlockattr_getkind_np(attr, ptr::addr_of_mut!(kind)), 0);
+            assert_eq!(unsafe { libc::pthread_rwlockattr_getpshared(attr, ptr::addr_of_mut!(pshared)) }, 0);
+            assert_eq!(unsafe { libc::pthread_rwlockattr_getkind_np(attr, ptr::addr_of_mut!(kind)) }, 0);
             let pshared = match pshared {
                 libc::PTHREAD_PROCESS_SHARED => true,
                 libc::PTHREAD_PROCESS_PRIVATE => false,
@@ -1306,7 +1300,7 @@ hook_macros::hook! {
 
         } else {
             let mut pshared: libc::c_int = 0;
-            assert_eq!(libc::pthread_barrierattr_getpshared(attr, ptr::addr_of_mut!(pshared)), 0);
+            assert_eq!(unsafe { libc::pthread_barrierattr_getpshared(attr, ptr::addr_of_mut!(pshared)) }, 0);
             let pshared = match pshared {
                 libc::PTHREAD_PROCESS_SHARED => true,
                 libc::PTHREAD_PROCESS_PRIVATE => false,

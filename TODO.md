@@ -1,23 +1,13 @@
 # Tasks
-
-## Refactor
-- check `dup`, `dup2` handling of reference counts
-
-## Eventually Needed Features
-- Handling special signal cases (SIGCHLD for SIGSTOP, SIGIO for async io, SIGPIPE for pipes, getaddrinfo async signal)
-- signalfd
-- Refactoring of sockets
-- C streams (FILE*) implementation
-- Embedded allocator use:
-  * https://crates.io/crates/embedded-alloc
-  * Use custom allocator APIs available in regular `Rc`, `Vec`, `BTreeMap`
-
-## On the Roadmap
-- time.rs: all timers; internals in `scheduler.rs` (effort: high)
-- `fprintf` and similar variadic stream-writing methods
-- posix_mq.rs: everything from scratch
-- sysv_mq.rs: everything from scratch
+- [ ] Implement SCTP multi-homing (e.g., `SCTP_SOCKOPT_CONNECTX3`)
+- [ ] Copy-on-Write filesystem
+- [ ] Add SIGCHLD when child is stopped or continued
+- [ ] Add SIGIO creation, implement async I/O
+- [ ] Add SIGPIPE for pipe write error
+- [ ] Implement async getaddrinfo API
+- [ ] Handle monotonic/non-monotonic clock API use
+- [ ] POSIX message queues (mq)
+- [ ] SYSV message queues (mq)
 
 ## Nice To Have
 - `memfd` backend for ephemeral files to ensure unconstrained storage
-- POSIX asynchronous I/O (AIO)

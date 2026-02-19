@@ -116,7 +116,7 @@ hook_macros::hook! {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn execl(
     pathname: *const libc::c_char,
     arg: *const libc::c_char,
@@ -177,7 +177,7 @@ pub unsafe extern "C" fn execl(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn execlp(
     pathname: *const libc::c_char,
     arg: *const libc::c_char,
@@ -238,7 +238,7 @@ pub unsafe extern "C" fn execlp(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn execle(
     pathname: *const libc::c_char,
     arg: *const libc::c_char,
@@ -892,7 +892,7 @@ hook_macros::hook! {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn clone(
     _f: CloneFunction,
     _stack: *mut libc::c_void,

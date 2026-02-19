@@ -3,12 +3,13 @@ use std::io::IoSlice;
 use std::ptr;
 
 use crate::errno::Errno;
+use crate::external::{STDOUT, vasprintf};
 use crate::handlers::filestream::*;
 use crate::scheduler::Scheduler;
 #[cfg(feature = "sigsan")]
 use crate::state::in_sighandler;
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn printf(format: *const libc::c_char, va_args: ...) -> libc::c_int {
 
     #[cfg(feature = "sigsan")] {
@@ -26,7 +27,7 @@ pub unsafe extern "C" fn printf(format: *const libc::c_char, va_args: ...) -> li
     let format_cstr = CStr::from_ptr(format);
     let mut out_string = ptr::null_mut();
 
-    let res = crate::vasprintf(&raw mut out_string, format, va_args);
+    let res = vasprintf(&raw mut out_string, format, va_args);
     if res < 0 {
         let e = Errno::get_errno();
         crate::strace!("printf(format={:?}, ...) -> -1 ({})", format_cstr, e);
@@ -44,7 +45,7 @@ pub unsafe extern "C" fn printf(format: *const libc::c_char, va_args: ...) -> li
         out_cstr
     );
 
-    let stream_ptr = FilePtr::from_raw(unsafe { crate::stdout }).unwrap();
+    let stream_ptr = FilePtr::from_raw(unsafe { STDOUT }).unwrap();
 
     match Scheduler::handle_event(
         &mut ctx,
@@ -69,7 +70,7 @@ pub unsafe extern "C" fn printf(format: *const libc::c_char, va_args: ...) -> li
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn fprintf(
     stream: *mut libc::FILE,
     format: *const libc::c_char,
@@ -84,7 +85,7 @@ pub unsafe extern "C" fn fprintf(
 
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         let mut out_string = ptr::null_mut();
-        let res = crate::vasprintf(&raw mut out_string, format, va_args);
+        let res = vasprintf(&raw mut out_string, format, va_args);
         if res < 0 {
             Errno::ENOMEM.set_errno();
             return libc::EOF
@@ -114,7 +115,7 @@ pub unsafe extern "C" fn fprintf(
         return libc::EOF;
     };
 
-    let res = crate::vasprintf(&raw mut out_string, format, va_args);
+    let res = vasprintf(&raw mut out_string, format, va_args);
     if res < 0 {
         let e = Errno::get_errno();
         crate::strace!(
@@ -166,7 +167,7 @@ pub unsafe extern "C" fn fprintf(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn __fprintf_chk(
     stream: *mut libc::FILE,
     flag: libc::c_int,
@@ -182,7 +183,7 @@ pub unsafe extern "C" fn __fprintf_chk(
 
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         let mut out_string = ptr::null_mut();
-        let res = crate::vasprintf(&raw mut out_string, format, va_args);
+        let res = vasprintf(&raw mut out_string, format, va_args);
         if res < 0 {
             Errno::ENOMEM.set_errno();
             return libc::EOF
@@ -214,7 +215,7 @@ pub unsafe extern "C" fn __fprintf_chk(
         return libc::EOF;
     };
 
-    let res = crate::vasprintf(&raw mut out_string, format, va_args);
+    let res = vasprintf(&raw mut out_string, format, va_args);
     if res < 0 {
         let e = Errno::get_errno();
         crate::strace!(
@@ -269,7 +270,7 @@ pub unsafe extern "C" fn __fprintf_chk(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn dprintf(
     _fd: libc::c_int,
     _format: *const libc::c_char,
@@ -288,7 +289,7 @@ pub unsafe extern "C" fn dprintf(
     unimplemented!("dprintf()")
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn vprintf(format: *const libc::c_char, va_args: VaList) -> libc::c_int {
 
     #[cfg(feature = "sigsan")] {
@@ -306,7 +307,7 @@ pub unsafe extern "C" fn vprintf(format: *const libc::c_char, va_args: VaList) -
     let format_cstr = CStr::from_ptr(format);
     let mut out_string = ptr::null_mut();
 
-    let res = crate::vasprintf(&raw mut out_string, format, va_args);
+    let res = vasprintf(&raw mut out_string, format, va_args);
     if res < 0 {
         let e = Errno::get_errno();
         crate::strace!("vprintf(format={:?}, ...) -> -1 ({})", format_cstr, e);
@@ -318,7 +319,7 @@ pub unsafe extern "C" fn vprintf(format: *const libc::c_char, va_args: VaList) -
     let out_bytes = CStr::from_ptr(out_string).to_bytes();
     let io_slice = IoSlice::new(out_bytes);
 
-    let stream_ptr = FilePtr::from_raw(unsafe { crate::stdout }).unwrap();
+    let stream_ptr = FilePtr::from_raw(unsafe { STDOUT }).unwrap();
 
     match Scheduler::handle_event(
         &mut ctx,
@@ -343,7 +344,7 @@ pub unsafe extern "C" fn vprintf(format: *const libc::c_char, va_args: VaList) -
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn vfprintf(
     stream: *mut libc::FILE,
     format: *const libc::c_char,
@@ -379,7 +380,7 @@ pub unsafe extern "C" fn vfprintf(
         return libc::EOF;
     };
 
-    let res = crate::vasprintf(&raw mut out_string, format, va_args);
+    let res = vasprintf(&raw mut out_string, format, va_args);
     if res < 0 {
         let e = Errno::get_errno();
         crate::strace!(
@@ -425,7 +426,7 @@ pub unsafe extern "C" fn vfprintf(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn vdprintf(
     _fd: libc::c_int,
     _format: *const libc::c_char,
@@ -444,7 +445,7 @@ pub unsafe extern "C" fn vdprintf(
     unimplemented!("vdprintf()")
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn wprintf(_format: *const libc::wchar_t, _va_args: VaList) -> libc::c_int {
     let Some(_ctx) = crate::hooks::pre_hook() else {
         panic!("wprintf() unimplemented for Fizzle internal use");
@@ -459,7 +460,7 @@ pub unsafe extern "C" fn wprintf(_format: *const libc::wchar_t, _va_args: VaList
     unimplemented!("wprintf()")
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn fwprintf(
     _stream: *mut libc::FILE,
     _format: *const libc::wchar_t,
@@ -478,7 +479,7 @@ pub unsafe extern "C" fn fwprintf(
     unimplemented!("fwprintf()")
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn vwprintf(
     _format: *const libc::wchar_t,
     _va_args: VaList,
@@ -495,7 +496,7 @@ pub unsafe extern "C" fn vwprintf(
     unimplemented!("vwprintf()")
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn vfwprintf(
     _stream: *mut libc::FILE,
     _format: *const libc::wchar_t,

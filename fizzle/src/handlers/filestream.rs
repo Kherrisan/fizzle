@@ -9,6 +9,7 @@ use std::{cmp, iter, mem, slice};
 
 use crate::constants::FIZZLE_STREAM_BUFSIZ;
 use crate::errno::Errno;
+use crate::external::{STDIN, STDOUT, STDERR};
 use crate::scheduler::{Event, Outcome, YieldUntil};
 use crate::state::FizzleState;
 
@@ -35,9 +36,9 @@ impl FilePtr {
         loop {
             let next = NEXT_FILE_PTR.fetch_add(16, Ordering::Relaxed);
             unsafe {
-                if next == crate::stdin.addr()
-                    || next == crate::stdout.addr()
-                    || next == crate::stderr.addr()
+                if next == STDIN.addr()
+                    || next == STDOUT.addr()
+                    || next == STDERR.addr()
                 {
                     continue;
                 }
