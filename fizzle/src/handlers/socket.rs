@@ -2132,6 +2132,10 @@ impl Event for SocketGetOptionEvent {
                     sasoc_cookie_life: 60000,
                 }))
             }
+            (OptLevel::Sctp, SCTP_SOCKOPT_CONNECTX | SCTP_SOCKOPT_CONNECTX3) => {
+                // TODO: implement
+                Outcome::Error(Errno::EINVAL)
+            }
             (OptLevel::Sctp, libc::SCTP_STATUS) => {
                 // TODO: implement
                 Outcome::Error(Errno::EINVAL)
