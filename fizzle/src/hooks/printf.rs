@@ -3,7 +3,7 @@ use std::io::IoSlice;
 use std::ptr;
 
 use crate::errno::Errno;
-use crate::external::{STDOUT, vasprintf};
+use crate::external::{stdout, vasprintf};
 use crate::handlers::filestream::*;
 use crate::scheduler::Scheduler;
 #[cfg(feature = "sigsan")]
@@ -45,7 +45,7 @@ pub unsafe extern "C" fn printf(format: *const libc::c_char, va_args: ...) -> li
         out_cstr
     );
 
-    let stream_ptr = FilePtr::from_raw(unsafe { STDOUT }).unwrap();
+    let stream_ptr = FilePtr::from_raw(unsafe { stdout }).unwrap();
 
     match Scheduler::handle_event(
         &mut ctx,
@@ -319,7 +319,7 @@ pub unsafe extern "C" fn vprintf(format: *const libc::c_char, va_args: VaList) -
     let out_bytes = CStr::from_ptr(out_string).to_bytes();
     let io_slice = IoSlice::new(out_bytes);
 
-    let stream_ptr = FilePtr::from_raw(unsafe { STDOUT }).unwrap();
+    let stream_ptr = FilePtr::from_raw(unsafe { stdout }).unwrap();
 
     match Scheduler::handle_event(
         &mut ctx,

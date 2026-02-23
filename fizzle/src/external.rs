@@ -78,9 +78,9 @@ unsafe extern "C" {
         kind: *mut libc::c_int,
     ) -> libc::c_int;
 
-    pub static mut STDIN: *mut libc::FILE;
+    pub static mut stdin: *mut libc::FILE;
 
-    pub static mut STDOUT: *mut libc::FILE;
+    pub static mut stdout: *mut libc::FILE;
 
-    pub static mut STDERR: *mut libc::FILE;
+    pub static mut stderr: *mut libc::FILE;
 }

@@ -3,7 +3,7 @@ use std::{mem, usize};
 
 use crate::errno::Errno;
 use crate::handlers::filestream::{FilePtr, StreamReadEvent, StreamUngetEvent};
-use crate::external::{STDERR, STDIN, STDOUT, vsscanf};
+use crate::external::{stderr, stdin, stdout, vsscanf};
 use crate::scheduler::Scheduler;
 #[cfg(feature = "sigsan")]
 use crate::state::in_sighandler;
@@ -815,7 +815,7 @@ pub unsafe extern "C" fn scanf(
     let mut format_bytes = format_cstr.to_bytes();
     crate::strace!("scanf(format={:?}) -> ...", format_cstr);
 
-    let stream_ptr = FilePtr::from_raw(STDIN).unwrap();
+    let stream_ptr = FilePtr::from_raw(stdin).unwrap();
 
     let mut buf = Vec::new();
     let mut buf_consumed = 0;
@@ -914,7 +914,7 @@ pub unsafe extern "C" fn __isoc99_scanf(
     let mut format_bytes = format_cstr.to_bytes();
     crate::strace!("__isoc99_scanf(format={:?}) -> ...", format_cstr);
 
-    let stream_ptr = FilePtr::from_raw(STDIN).unwrap();
+    let stream_ptr = FilePtr::from_raw(stdin).unwrap();
 
     let mut buf = Vec::new();
     let mut buf_consumed = 0;
@@ -1014,7 +1014,7 @@ pub unsafe extern "C" fn __isoc23_scanf(
     let mut format_bytes = format_cstr.to_bytes();
     crate::strace!("__isoc23_scanf(format={:?}) -> ...", format_cstr);
 
-    let stream_ptr = FilePtr::from_raw(STDIN).unwrap();
+    let stream_ptr = FilePtr::from_raw(stdin).unwrap();
 
     let mut buf = Vec::new();
     let mut buf_consumed = 0;
@@ -1413,7 +1413,7 @@ pub unsafe extern "C" fn vscanf(
     let mut format_bytes = format_cstr.to_bytes();
     crate::strace!("vscanf(format={:?}) -> ...", format_cstr);
 
-    let stream_ptr = FilePtr::from_raw(STDIN).unwrap();
+    let stream_ptr = FilePtr::from_raw(stdin).unwrap();
 
     let mut buf = Vec::new();
     let mut buf_consumed = 0;
@@ -1512,7 +1512,7 @@ pub unsafe extern "C" fn __isoc99_vscanf(
     let mut format_bytes = format_cstr.to_bytes();
     crate::strace!("__isoc99_vscanf(format={:?}) -> ...", format_cstr);
 
-    let stream_ptr = FilePtr::from_raw(STDIN).unwrap();
+    let stream_ptr = FilePtr::from_raw(stdin).unwrap();
 
     let mut buf = Vec::new();
     let mut buf_consumed = 0;
@@ -1612,7 +1612,7 @@ pub unsafe extern "C" fn __isoc23_vscanf(
     let mut format_bytes = format_cstr.to_bytes();
     crate::strace!("__isoc23_vscanf(format={:?}) -> ...", format_cstr);
 
-    let stream_ptr = FilePtr::from_raw(STDIN).unwrap();
+    let stream_ptr = FilePtr::from_raw(stdin).unwrap();
 
     let mut buf = Vec::new();
     let mut buf_consumed = 0;

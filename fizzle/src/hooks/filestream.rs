@@ -3,7 +3,7 @@ use std::ffi::CStr;
 use std::ptr;
 
 use crate::errno::Errno;
-use crate::external::STDOUT;
+use crate::external::stdout;
 use crate::handlers::file::{AccessMode, FileOpenFlags, SeekPosition};
 use crate::handlers::filestream::*;
 use crate::hook_macros;
@@ -1104,7 +1104,7 @@ hook_macros::hook! {
 
         crate::strace!("putchar(c={}) -> ...", c);
 
-        let file_ptr = FilePtr::from_raw(STDOUT).unwrap();
+        let file_ptr = FilePtr::from_raw(stdout).unwrap();
         let buf = [c as u8];
 
         match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, &buf, 1, false)) {
@@ -1133,7 +1133,7 @@ hook_macros::hook! {
 
         crate::strace!("putchar_unlocked(c={}) -> ...", c);
 
-        let file_ptr = FilePtr::from_raw(STDOUT).unwrap();
+        let file_ptr = FilePtr::from_raw(stdout).unwrap();
         let buf = [c as u8];
 
         match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, &buf, 1, true)) {
@@ -1214,7 +1214,7 @@ hook_macros::hook! {
 
         crate::strace!("puts(s={:?}) -> ...", s);
 
-        let file_ptr = FilePtr::from_raw(STDOUT).unwrap();
+        let file_ptr = FilePtr::from_raw(stdout).unwrap();
         let buf = CStr::from_ptr(s).to_bytes();
 
         match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, buf, 1, false)) {
@@ -1236,7 +1236,7 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_puts_unlocked(ctx) {
         crate::strace!("puts_unlocked(s={:?}) -> ...", s);
 
-        let file_ptr = FilePtr::from_raw(STDOUT).unwrap();
+        let file_ptr = FilePtr::from_raw(stdout).unwrap();
         let buf = CStr::from_ptr(s).to_bytes();
 
         match Scheduler::handle_event(&mut ctx, StreamWriteEvent::new(file_ptr, buf, 1, true)) {

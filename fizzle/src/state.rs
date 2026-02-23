@@ -23,7 +23,7 @@ use rand_chacha::ChaCha20Rng;
 
 use crate::constants::*;
 use crate::errno::Errno;
-use crate::external::{STDIN, STDOUT, STDERR};
+use crate::external::{stdin, stdout, stderr};
 use crate::handlers::barrier::{BarrierInfo, BarrierPtr};
 use crate::handlers::condvar::{CondVarInfo, CondVarPtr};
 use crate::handlers::descriptor::{Descriptor, DescriptorInfo, FdResource};
@@ -494,9 +494,9 @@ impl FizzleState {
             local.initialize_thread(tid, None);
         }
 
-        let stdin_ptr = FilePtr::from_raw(unsafe { STDIN }).unwrap();
-        let stdout_ptr = FilePtr::from_raw(unsafe { STDOUT }).unwrap();
-        let stderr_ptr = FilePtr::from_raw(unsafe { STDERR }).unwrap();
+        let stdin_ptr = FilePtr::from_raw(unsafe { stdin }).unwrap();
+        let stdout_ptr = FilePtr::from_raw(unsafe { stdout }).unwrap();
+        let stderr_ptr = FilePtr::from_raw(unsafe { stderr }).unwrap();
 
         let mut stdin_file = FileObject::new(
             FileStreamSource::Descriptor(0),
