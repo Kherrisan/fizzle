@@ -356,6 +356,13 @@ pub fn static_mutex_kind(mutex: MutexPtr) -> Option<MutexKind> {
         ) == 0
         {
             Some(MutexKind::ErrorChecking)
+        } else if libc::memcmp(
+            mutex.to_mut_ptr().cast::<libc::c_void>(),
+            ptr::addr_of!(ADAPTIVE_INIT).cast::<libc::c_void>(),
+            mem::size_of::<libc::pthread_mutex_t>(),
+        ) == 0
+        {
+            Some(MutexKind::Adaptive)
         } else {
             None
         }
