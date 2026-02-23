@@ -35,8 +35,40 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn timer_create(
 
-    ) -> libc::time_t => fizzle_adjtime(_ctx) {
-        unimplemented!("adjtime()")
+    ) -> libc::time_t => fizzle_timer_create(_ctx) {
+        unimplemented!("timer_create()")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn timer_delete(
+
+    ) -> libc::time_t => fizzle_timer_delete(_ctx) {
+        unimplemented!("timer_delete()")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn timer_getoverrun(
+
+    ) -> libc::time_t => fizzle_timer_getoverrun(_ctx) {
+        unimplemented!("timer_getoverrun()")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn timer_gettime(
+
+    ) -> libc::time_t => fizzle_timer_gettime(_ctx) {
+        unimplemented!("timer_gettime()")
+    }
+}
+
+hook_macros::hook! {
+    unsafe fn timer_setttime(
+
+    ) -> libc::time_t => fizzle_time_settime(_ctx) {
+        unimplemented!("timer_settime()")
     }
 }
 
