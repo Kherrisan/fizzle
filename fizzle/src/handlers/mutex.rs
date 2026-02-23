@@ -217,6 +217,10 @@ impl Event for MutexLockEvent {
                             return Outcome::Yield(YieldUntil::Immediate);
                         }
 
+                        if matches!(self.wait, WaitDuration::Immediate) {
+                            return Outcome::Error(Errno::EBUSY)
+                        }
+
                         let holding_thread = *mutex_info.queued_threads.front().unwrap();
                         if holding_thread == current_thread {
                             match mutex_info.kind {
@@ -327,6 +331,7 @@ pub fn static_mutex_kind(mutex: MutexPtr) -> Option<MutexKind> {
     static FAST_INIT: libc::pthread_mutex_t = libc::PTHREAD_MUTEX_INITIALIZER;
     static RECURSIVE_INIT: libc::pthread_mutex_t = libc::PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
     static ERRORCHECK_INIT: libc::pthread_mutex_t = libc::PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP;
+    static ADAPTIVE_INIT: libc::pthread_mutex_t = libc::PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP;
 
     // We need to find out if this lock is statically-initialized
     unsafe {
