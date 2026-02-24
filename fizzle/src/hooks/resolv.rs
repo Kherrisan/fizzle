@@ -2,9 +2,11 @@ use std::ffi::CStr;
 use std::{cmp, ptr, slice};
 
 use crate::hook_macros;
-use crate::external::res_mkquery;
 use crate::scheduler::Scheduler;
 use crate::handlers::resolv::*;
+
+#[cfg(feature = "resolv")]
+use crate::external::res_mkquery;
 
 hook_macros::hook! {
     unsafe fn res_query(
@@ -18,24 +20,30 @@ hook_macros::hook! {
 
         crate::strace!("res_query(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> ...", dname, class, ty, answer, anslen);
 
-        let len = res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
-        if len < 0 {
-            log::error!("res_mkquery() failed for res_query");
-            crate::strace!("res_query(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", dname, class, ty, answer, anslen);
-            return -1
-        }
+        #[cfg(not(feature = "resolv"))]
+        panic!("Fizzle not compiled with `resolv` feature");
 
-        match Scheduler::handle_event(&mut ctx, DnsResolveEvent::new(&buf[..len as usize])) {
-            Ok(response) => {
-                let len = cmp::min(response.len(), anslen as usize);
-                let answer_slice = slice::from_raw_parts_mut(answer.cast::<u8>(), anslen as usize);
-                answer_slice[..len].copy_from_slice(&response[..len]);
-                crate::strace!("res_query(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> {}", dname, class, ty, answer, anslen, len);
-                len as libc::c_int // TODO: correct behavior on truncation?
-            }
-            Err(_e) => {
+        #[cfg(feature = "resolv")]
+        {
+            let len = res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
+            if len < 0 {
+                log::error!("res_mkquery() failed for res_query");
                 crate::strace!("res_query(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", dname, class, ty, answer, anslen);
-                -1
+                return -1
+            }
+
+            match Scheduler::handle_event(&mut ctx, DnsResolveEvent::new(&buf[..len as usize])) {
+                Ok(response) => {
+                    let len = cmp::min(response.len(), anslen as usize);
+                    let answer_slice = slice::from_raw_parts_mut(answer.cast::<u8>(), anslen as usize);
+                    answer_slice[..len].copy_from_slice(&response[..len]);
+                    crate::strace!("res_query(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> {}", dname, class, ty, answer, anslen, len);
+                    len as libc::c_int // TODO: correct behavior on truncation?
+                }
+                Err(_e) => {
+                    crate::strace!("res_query(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", dname, class, ty, answer, anslen);
+                    -1
+                }
             }
         }
     }
@@ -56,24 +64,30 @@ hook_macros::hook! {
 
         crate::strace!("res_nquery(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> ...", statep, dname_cstr, class, ty, answer, anslen);
 
-        let len = res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
-        if len < 0 {
-            log::error!("res_mkquery() failed for res_nquery with dname {:?}", dname_cstr);
-            crate::strace!("res_nquery(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", statep, dname_cstr, class, ty, answer, anslen);
-            return -1
-        }
+        #[cfg(not(feature = "resolv"))]
+        panic!("Fizzle not compiled with `resolv` feature");
 
-        match Scheduler::handle_event(&mut ctx, DnsResolveEvent::new(&buf[..len as usize])) {
-            Ok(response) => {
-                let len = cmp::min(response.len(), anslen as usize);
-                let answer_slice = slice::from_raw_parts_mut(answer.cast::<u8>(), anslen as usize);
-                answer_slice[..len].copy_from_slice(&response[..len]);
-                crate::strace!("res_nquery(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> {}", statep, dname_cstr, class, ty, answer, anslen, len);
-                len as libc::c_int // TODO: correct behavior on truncation?
-            }
-            Err(_e) => {
+        #[cfg(feature = "resolv")]
+        {
+            let len = res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
+            if len < 0 {
+                log::error!("res_mkquery() failed for res_nquery with dname {:?}", dname_cstr);
                 crate::strace!("res_nquery(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", statep, dname_cstr, class, ty, answer, anslen);
-                -1
+                return -1
+            }
+
+            match Scheduler::handle_event(&mut ctx, DnsResolveEvent::new(&buf[..len as usize])) {
+                Ok(response) => {
+                    let len = cmp::min(response.len(), anslen as usize);
+                    let answer_slice = slice::from_raw_parts_mut(answer.cast::<u8>(), anslen as usize);
+                    answer_slice[..len].copy_from_slice(&response[..len]);
+                    crate::strace!("res_nquery(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> {}", statep, dname_cstr, class, ty, answer, anslen, len);
+                    len as libc::c_int // TODO: correct behavior on truncation?
+                }
+                Err(_e) => {
+                    crate::strace!("res_nquery(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", statep, dname_cstr, class, ty, answer, anslen);
+                    -1
+                }
             }
         }
     }
@@ -100,26 +114,32 @@ hook_macros::hook! {
         dname_vec.push(b'.');
         dname_vec.extend_from_slice(domain_cstr.to_bytes());
         dname_vec.push(b'\0');
-        let dname = dname_vec.as_ptr().cast();
+        let dname: *const libc::c_char = dname_vec.as_ptr().cast();
 
-        let len = res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
-        if len < 0 {
-            log::error!("res_mkquery() failed for res_querydomain");
-            crate::strace!("res_querydomain(name={:?}, domain={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", name_cstr, domain_cstr, class, ty, answer, anslen);
-            return -1
-        }
+        #[cfg(not(feature = "resolv"))]
+        panic!("Fizzle not compiled with `resolv` feature");
 
-        match Scheduler::handle_event(&mut ctx, DnsResolveEvent::new(&buf[..len as usize])) {
-            Ok(response) => {
-                let len = cmp::min(response.len(), anslen as usize);
-                let answer_slice = slice::from_raw_parts_mut(answer.cast::<u8>(), anslen as usize);
-                answer_slice[..len].copy_from_slice(&response[..len]);
-                crate::strace!("res_querydomain(name={:?}, domain={:?}, class={}, ty={}, answer={:?}, anslen={}) -> {}", name, domain, class, ty, answer, anslen, len);
-                len as libc::c_int // TODO: correct behavior on truncation?
+        #[cfg(feature = "resolv")]
+        {
+            let len = res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
+            if len < 0 {
+                log::error!("res_mkquery() failed for res_querydomain");
+                crate::strace!("res_querydomain(name={:?}, domain={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", name_cstr, domain_cstr, class, ty, answer, anslen);
+                return -1
             }
-            Err(_e) => {
-                crate::strace!("res_querydomain(name={:?}, domain={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", name, domain, class, ty, answer, anslen);
-                -1
+
+            match Scheduler::handle_event(&mut ctx, DnsResolveEvent::new(&buf[..len as usize])) {
+                Ok(response) => {
+                    let len = cmp::min(response.len(), anslen as usize);
+                    let answer_slice = slice::from_raw_parts_mut(answer.cast::<u8>(), anslen as usize);
+                    answer_slice[..len].copy_from_slice(&response[..len]);
+                    crate::strace!("res_querydomain(name={:?}, domain={:?}, class={}, ty={}, answer={:?}, anslen={}) -> {}", name, domain, class, ty, answer, anslen, len);
+                    len as libc::c_int // TODO: correct behavior on truncation?
+                }
+                Err(_e) => {
+                    crate::strace!("res_querydomain(name={:?}, domain={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", name, domain, class, ty, answer, anslen);
+                    -1
+                }
             }
         }
     }
@@ -147,26 +167,32 @@ hook_macros::hook! {
         dname_vec.push(b'.');
         dname_vec.extend_from_slice(domain_cstr.to_bytes());
         dname_vec.push(b'\0');
-        let dname = dname_vec.as_ptr().cast();
+        let dname: *const libc::c_char = dname_vec.as_ptr().cast();
 
-        let len = res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
-        if len < 0 {
-            log::error!("res_mkquery() failed for res_nquerydomain");
-            crate::strace!("res_nquerydomain(statep={:?}, name={:?}, domain={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", statep, name_cstr, domain_cstr, class, ty, answer, anslen);
-            return -1
-        }
+        #[cfg(not(feature = "resolv"))]
+        panic!("Fizzle not compiled with `resolv` feature");
 
-        match Scheduler::handle_event(&mut ctx, DnsResolveEvent::new(&buf[..len as usize])) {
-            Ok(response) => {
-                let len = cmp::min(response.len(), anslen as usize);
-                let answer_slice = slice::from_raw_parts_mut(answer.cast::<u8>(), anslen as usize);
-                answer_slice[..len].copy_from_slice(&response[..len]);
-                crate::strace!("res_nquerydomain(statep={:?}, name={:?}, domain={:?}, class={}, ty={}, answer={:?}, anslen={}) -> {}", statep, name, domain, class, ty, answer, anslen, len);
-                len as libc::c_int // TODO: correct behavior on truncation?
+        #[cfg(feature = "resolv")]
+        {
+            let len = res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
+            if len < 0 {
+                log::error!("res_mkquery() failed for res_nquerydomain");
+                crate::strace!("res_nquerydomain(statep={:?}, name={:?}, domain={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", statep, name_cstr, domain_cstr, class, ty, answer, anslen);
+                return -1
             }
-            Err(_e) => {
-                crate::strace!("res_nquerydomain(statep={:?}, name={:?}, domain={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", statep, name, domain, class, ty, answer, anslen);
-                -1
+
+            match Scheduler::handle_event(&mut ctx, DnsResolveEvent::new(&buf[..len as usize])) {
+                Ok(response) => {
+                    let len = cmp::min(response.len(), anslen as usize);
+                    let answer_slice = slice::from_raw_parts_mut(answer.cast::<u8>(), anslen as usize);
+                    answer_slice[..len].copy_from_slice(&response[..len]);
+                    crate::strace!("res_nquerydomain(statep={:?}, name={:?}, domain={:?}, class={}, ty={}, answer={:?}, anslen={}) -> {}", statep, name, domain, class, ty, answer, anslen, len);
+                    len as libc::c_int // TODO: correct behavior on truncation?
+                }
+                Err(_e) => {
+                    crate::strace!("res_nquerydomain(statep={:?}, name={:?}, domain={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", statep, name, domain, class, ty, answer, anslen);
+                    -1
+                }
             }
         }
     }
@@ -184,24 +210,30 @@ hook_macros::hook! {
 
         crate::strace!("res_search(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> ...", dname, class, ty, answer, anslen);
 
-        let len = res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
-        if len < 0 {
-            log::error!("res_mkquery() failed for res_query");
-            crate::strace!("res_search(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", dname, class, ty, answer, anslen);
-            return -1
-        }
+        #[cfg(not(feature = "resolv"))]
+        panic!("Fizzle not compiled with `resolv` feature");
 
-        match Scheduler::handle_event(&mut ctx, DnsResolveEvent::new(&buf[..len as usize])) {
-            Ok(response) => {
-                let len = cmp::min(response.len(), anslen as usize);
-                let answer_slice = slice::from_raw_parts_mut(answer.cast::<u8>(), anslen as usize);
-                answer_slice[..len].copy_from_slice(&response[..len]);
-                crate::strace!("res_search(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> {}", dname, class, ty, answer, anslen, len);
-                len as libc::c_int // TODO: correct behavior on truncation?
-            }
-            Err(_e) => {
+        #[cfg(feature = "resolv")]
+        {
+            let len = res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
+            if len < 0 {
+                log::error!("res_mkquery() failed for res_query");
                 crate::strace!("res_search(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", dname, class, ty, answer, anslen);
-                -1
+                return -1
+            }
+
+            match Scheduler::handle_event(&mut ctx, DnsResolveEvent::new(&buf[..len as usize])) {
+                Ok(response) => {
+                    let len = cmp::min(response.len(), anslen as usize);
+                    let answer_slice = slice::from_raw_parts_mut(answer.cast::<u8>(), anslen as usize);
+                    answer_slice[..len].copy_from_slice(&response[..len]);
+                    crate::strace!("res_search(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> {}", dname, class, ty, answer, anslen, len);
+                    len as libc::c_int // TODO: correct behavior on truncation?
+                }
+                Err(_e) => {
+                    crate::strace!("res_search(dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", dname, class, ty, answer, anslen);
+                    -1
+                }
             }
         }
     }
@@ -220,24 +252,30 @@ hook_macros::hook! {
 
         crate::strace!("res_nsearch(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> ...", statep, dname, class, ty, answer, anslen);
 
-        let len = res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
-        if len < 0 {
-            log::error!("res_mkquery() failed for res_nsearch");
-            crate::strace!("res_nsearch(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", statep, dname, class, ty, answer, anslen);
-            return -1
-        }
+        #[cfg(not(feature = "resolv"))]
+        panic!("Fizzle not compiled with `resolv` feature");
 
-        match Scheduler::handle_event(&mut ctx, DnsResolveEvent::new(&buf[..len as usize])) {
-            Ok(response) => {
-                let len = cmp::min(response.len(), anslen as usize);
-                let answer_slice = slice::from_raw_parts_mut(answer.cast::<u8>(), anslen as usize);
-                answer_slice[..len].copy_from_slice(&response[..len]);
-                crate::strace!("res_nsearch(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> {}", statep, dname, class, ty, answer, anslen, len);
-                len as libc::c_int // TODO: correct behavior on truncation?
-            }
-            Err(_e) => {
+        #[cfg(feature = "resolv")]
+        {
+            let len = res_mkquery(0, dname, class, ty, ptr::null_mut(), 0, ptr::null_mut(), buf.as_mut_ptr(), 1024);
+            if len < 0 {
+                log::error!("res_mkquery() failed for res_nsearch");
                 crate::strace!("res_nsearch(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", statep, dname, class, ty, answer, anslen);
-                -1
+                return -1
+            }
+
+            match Scheduler::handle_event(&mut ctx, DnsResolveEvent::new(&buf[..len as usize])) {
+                Ok(response) => {
+                    let len = cmp::min(response.len(), anslen as usize);
+                    let answer_slice = slice::from_raw_parts_mut(answer.cast::<u8>(), anslen as usize);
+                    answer_slice[..len].copy_from_slice(&response[..len]);
+                    crate::strace!("res_nsearch(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> {}", statep, dname, class, ty, answer, anslen, len);
+                    len as libc::c_int // TODO: correct behavior on truncation?
+                }
+                Err(_e) => {
+                    crate::strace!("res_nsearch(statep={:?}, dname={:?}, class={}, ty={}, answer={:?}, anslen={}) -> -1", statep, dname, class, ty, answer, anslen);
+                    -1
+                }
             }
         }
     }
