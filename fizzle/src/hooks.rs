@@ -39,6 +39,7 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub static LOG_INITIALIZED: AtomicBool = AtomicBool::new(false);
+pub static PANIC_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 pub fn pre_hook() -> Option<FizzleSingleton> {
     if crate::state::has_entered_handler() {
@@ -46,6 +47,15 @@ pub fn pre_hook() -> Option<FizzleSingleton> {
     }
 
     crate::state::set_entered_handler(true);
+
+    if !PANIC_INITIALIZED.fetch_or(true, Ordering::Relaxed) {
+        std::panic::set_hook(Box::new(|panic_info| {
+            let location = panic_info.location().map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column())).unwrap_or_else(|| "unknown location".to_string());
+            let payload = panic_info.payload_as_str().unwrap_or("no message");
+            eprintln!("Fizzle panicked at {location} with message: {payload}");
+            std::process::abort();
+        }))
+    }
 
     if !LOG_INITIALIZED.fetch_or(true, Ordering::Relaxed) {
         // Initialize the logger to print the current PID/TID with each message
