@@ -675,9 +675,8 @@ hook_macros::hook! {
                 0
             },
             Err(e) => {
-                crate::strace!("pthread_mutex_trylock(mutex={:?}) -> -1 ({})", lock, e);
-                e.set_errno();
-                -1
+                crate::strace!("pthread_mutex_trylock(mutex={:?}) -> {}", lock, e);
+                i32::from(e)
             }
         }
     }
