@@ -56,6 +56,7 @@ unsafe extern "C" {
         ap: VaList
     ) -> libc::c_int;
 
+    #[cfg(feature = "resolv")]
     pub fn res_mkquery(
         op: libc::c_int,
         dname: *const libc::c_char,

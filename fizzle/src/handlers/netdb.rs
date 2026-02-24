@@ -513,15 +513,15 @@ impl Event for GetNameInfoEvent<'_> {
         }
 
         if let Some(host_slice) = self.host.as_mut() {
-            let ip = match self.addr {
-                SockAddr::Ipv4(v4) => IpAddr::V4(*v4.ip()),
-                SockAddr::Ipv6(v6) => IpAddr::V6(*v6.ip()),
-                _ => unreachable!(),
+            let ip_str = match &self.addr {
+                SockAddr::Ipv4(v4) => IpAddr::V4(*v4.ip()).to_string(),
+                SockAddr::Ipv6(v6) => IpAddr::V6(*v6.ip()).to_string(),
+                SockAddr::Unix(un) => un.to_string(),
             };
 
             if self.flags.contains(GetNameInfoFlags::NUMERICHOST) {
-                let ip_str = ip.to_string();
                 let ip_slice = ip_str.as_bytes();
+
                 if host_slice.len() < ip_slice.len() + 1 {
                     return Outcome::Error(libc::EAI_OVERFLOW);
                 }
@@ -532,32 +532,15 @@ impl Event for GetNameInfoEvent<'_> {
                 host_slice[ip_slice.len()].write(b'\0');
             }
 
-            let host_str = match ip {
-                IpAddr::V4(v4) => {
-                    if v4 == Ipv4Addr::new(127, 0, 0, 1) {
-                        Some("localhost")
-                    } else if v4 == Ipv4Addr::new(192, 168, 0, 1) {
-                        Some("ubuntu") // Default host
-                    } else {
-                        log::warn!(
-                            "IP address {} had no associated hostname in getnameinfo()",
-                            v4
-                        );
-                        None
-                    }
-                }
-                IpAddr::V6(v6) => {
-                    if v6 == Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1) {
-                        Some("localhost")
-                    } else if v6 == Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 10) {
-                        Some("ubuntu")
-                    } else {
-                        log::warn!(
-                            "IP address {} had no associated hostname in getnameinfo()",
-                            v6
-                        );
-                        None
-                    }
+            let host_str = match ip_str.as_str() {
+                "127.0.0.1" | "::1" => Some("localhost"),
+                "192.168.0.1" | "::10" => Some("ubuntu"),
+                _ => {
+                    log::warn!(
+                        "IP address {} had no associated hostname in getnameinfo()",
+                        ip_str
+                    );
+                    None
                 }
             };
 
@@ -577,8 +560,8 @@ impl Event for GetNameInfoEvent<'_> {
                     return Outcome::Error(libc::EAI_NONAME);
                 }
 
-                let ip_str = ip.to_string();
                 let ip_slice = ip_str.as_bytes();
+
                 if host_slice.len() < ip_slice.len() + 1 {
                     return Outcome::Error(libc::EAI_OVERFLOW);
                 }
