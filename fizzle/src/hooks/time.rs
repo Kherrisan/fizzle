@@ -65,7 +65,7 @@ hook_macros::hook! {
 }
 
 hook_macros::hook! {
-    unsafe fn timer_setttime(
+    unsafe fn timer_settime(
 
     ) -> libc::time_t => fizzle_time_settime(_ctx) {
         unimplemented!("timer_settime()")
