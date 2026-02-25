@@ -354,6 +354,7 @@ impl FizzleState {
             // thread_locks: Default::default(),
             thread_tids: hashbrown::HashMap::new_in(fizzle_alloc()),
             tid_threads: Default::default(),
+            timers_posix: HashMap::default(),
             // Default umask is 0644
             umask: AccessMode::GROUP_READ | AccessMode::USER_WRITE | AccessMode::USER_EXEC,
             working_directory,

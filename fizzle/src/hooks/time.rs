@@ -58,16 +58,9 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn timer_gettime(
-
-    ) -> libc::time_t => fizzle_timer_gettime(_ctx) {
-        unimplemented!("timer_gettime()")
-    }
-}
-hook_macros::hook! {
-    unsafe fn timer_gettime(
-        timerid: libc::c_timer_t,
-        value: *mut libc::itimerspec,
-    ) -> libc::c_int => fizzle_getitimer(ctx) {
+        timerid: libc::timer_t,
+        value: *mut libc::itimerspec
+    ) -> libc::c_int => fizzle_timer_gettime(ctx) {
         crate::strace!("timer_gettime(timerid={}, value={:?}) -> ...", timerid, value);
 
         match Scheduler::handle_event(&mut ctx, GetItimerEvent::new(which_enum)) {
