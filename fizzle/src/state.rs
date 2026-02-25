@@ -46,7 +46,7 @@ use crate::handlers::socket::{
 };
 use crate::handlers::spinlock::SpinlockPtr;
 use crate::handlers::thread::{PThreadRoutine, ThreadInfo, Tid};
-use crate::handlers::time::ItimerInfo;
+use crate::handlers::time::{ItimerInfo, TimerPosixInfo};
 use crate::plugins::{IoEmulationType, PluginEndpoint};
 use crate::scheduler::fizzle_alloc;
 use crate::semaphore::Semaphore;
@@ -1333,6 +1333,7 @@ pub struct ProcessLocalState {
     pub terminated_threads: HashSet<ThreadId>,
     pub thread_tids: GlobalHashMap<ThreadId, Tid>,
     pub tid_threads: HashMap<Tid, ThreadId>,
+    pub timers_posix: HashMap<libc::timer_t, TimerPosixInfo>, 
     /// The current default permissions mask of the process.
     pub umask: AccessMode,
     /// The directory that the program is currently executing relative to.

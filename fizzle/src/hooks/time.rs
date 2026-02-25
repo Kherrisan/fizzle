@@ -61,8 +61,9 @@ hook_macros::hook! {
         timerid: libc::timer_t,
         value: *mut libc::itimerspec
     ) -> libc::c_int => fizzle_timer_gettime(ctx) {
-        crate::strace!("timer_gettime(timerid={}, value={:?}) -> ...", timerid, value);
-
+        crate::strace!("timer_gettime(timerid={:?}, value={:?}) -> ...", timerid, value);
+        
+        /*
         match Scheduler::handle_event(&mut ctx, GetItimerEvent::new(which_enum)) {
             Ok(timer_val) => {
                 if let Some(val_mut) = curr_value.as_mut() {
@@ -78,14 +79,16 @@ hook_macros::hook! {
                     };
                 };
 
-                crate::strace!("timer_gettime(timerid={}, value={:?}) -> 0", timerid, value);
+                crate::strace!("timer_gettime(timerid={:?}, value={:?}) -> 0", timerid, value);
                 0
             },
             Err(e) => {
-                crate::strace!("timer_gettime(timerid={}, value={:?}) -> -1 ({})", timerid, value, e);
+                crate::strace!("timer_gettime(timerid={:?}, value={:?}) -> -1 ({})", timerid, value, e);
                 -1
             },
         }
+        */
+        0
     }
 }
 

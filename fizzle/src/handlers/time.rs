@@ -194,6 +194,12 @@ impl Event for SetItimerEvent {
     }
 }
 
+pub struct TimerPosixInfo {
+    pub interval: Duration,
+    pub signal: i32,  // TODO Store the signal number here
+    pub exptime: Duration,
+}
+
 pub struct SigEvent {
     pub sigev_notify: i32,
     pub sigev_signo: i32,
