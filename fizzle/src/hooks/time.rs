@@ -63,6 +63,38 @@ hook_macros::hook! {
         unimplemented!("timer_gettime()")
     }
 }
+hook_macros::hook! {
+    unsafe fn timer_gettime(
+        timerid: libc::c_timer_t,
+        value: *mut libc::itimerspec,
+    ) -> libc::c_int => fizzle_getitimer(ctx) {
+        crate::strace!("timer_gettime(timerid={}, value={:?}) -> ...", timerid, value);
+
+        match Scheduler::handle_event(&mut ctx, GetItimerEvent::new(which_enum)) {
+            Ok(timer_val) => {
+                if let Some(val_mut) = curr_value.as_mut() {
+                    *val_mut = libc::itimerval {
+                        it_interval: libc::timeval {
+                            tv_sec: timer_val.interval.as_secs() as i64,
+                            tv_usec: timer_val.interval.subsec_micros() as i64,
+                        },
+                        it_value: libc::timeval {
+                            tv_sec: timer_val.val.as_secs() as i64,
+                            tv_usec: timer_val.val.subsec_micros() as i64,
+                        }
+                    };
+                };
+
+                crate::strace!("timer_gettime(timerid={}, value={:?}) -> 0", timerid, value);
+                0
+            },
+            Err(e) => {
+                crate::strace!("timer_gettime(timerid={}, value={:?}) -> -1 ({})", timerid, value, e);
+                -1
+            },
+        }
+    }
+}
 
 hook_macros::hook! {
     unsafe fn timer_settime(
