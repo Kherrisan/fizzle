@@ -193,3 +193,23 @@ impl Event for SetItimerEvent {
         })
     }
 }
+
+pub struct TimerPosixInfo {
+    pub interval: Duration,
+    pub signal: i32,  // TODO Store the signal number here
+    pub exptime: Duration,
+}
+
+pub struct SigEvent {
+    pub sigev_notify: i32,
+    pub sigev_signo: i32,
+    pub sigev_value: i32,
+    pub sigev_notify_function: *mut libc::c_void,
+    pub sigev_notify_attributes: *mut libc::c_void
+}
+
+pub struct TimerCreateEvent {
+    pub clockid: libc::clockid_t,
+    pub rvp: SigEvent,
+    pub timerid: libc::timer_t
+}
