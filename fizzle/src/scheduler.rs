@@ -408,6 +408,7 @@ impl ReturnTask {
     }
 }
 
+// TODO Update this task to handle the 2 new variables you added to ReadyInfo::Timer()
 pub struct HandleExpiredTimerTask {
     pid: Pid,
     timer_type: TimerType,
@@ -1547,7 +1548,7 @@ impl Scheduler {
             let worker_opt = match info {
                 ReadyInfo::Worker(worker) => Some(worker),
                 ReadyInfo::Poller(poller) => Scheduler::poller_ready_worker(poller),
-                ReadyInfo::Timer(pid, timer_type) => {
+                ReadyInfo::Timer(pid, timer_type, timer_id, signal_number) => {
                     state.global.tasks.push_front(Task::HandleExpiredTimer(
                         HandleExpiredTimerTask { pid, timer_type },
                     ));

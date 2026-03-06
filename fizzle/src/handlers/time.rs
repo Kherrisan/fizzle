@@ -77,7 +77,7 @@ impl Event for GetItimerEvent {
         let current_pid = state.local.process_info.borrow().pid;
 
         let ready = state.global.ready.iter().find(|r| match &r.info {
-            ReadyInfo::Timer(pid, ty) if &current_pid == pid && &self.which == ty => true,
+            ReadyInfo::Timer(pid, ty, timerid, signo) if &current_pid == pid && &self.which == ty => true,
             _ => false,
         });
 
@@ -130,7 +130,7 @@ impl Event for SetItimerEvent {
 
         // See if there's already a scheduled timer
         let ready = state.global.ready.iter().find(|r| match &r.info {
-            ReadyInfo::Timer(pid, ty) if &current_pid == pid && &self.which == ty => true,
+            ReadyInfo::Timer(pid, ty, timerid, signo) if &current_pid == pid && &self.which == ty => true,
             _ => false,
         });
 
@@ -142,7 +142,7 @@ impl Event for SetItimerEvent {
         if let Some(ItimerValue { interval, val }) = &self.new_value {
             // If any timer was in the process of completing, remove it
             state.global.ready.retain(|r| match &r.info {
-                ReadyInfo::Timer(pid, ty) if &current_pid == pid && &self.which == ty => false,
+                ReadyInfo::Timer(pid, ty, timerid, signo) if &current_pid == pid && &self.which == ty => false,
                 _ => true,
             });
 
@@ -181,7 +181,7 @@ impl Event for SetItimerEvent {
             if !timer_duration.is_zero() {
                 // Add the new timer
                 state.global.ready.push(ScheduledItem {
-                    info: ReadyInfo::Timer(current_pid, self.which),
+                    info: ReadyInfo::Timer(current_pid, self.which, 0, 0),
                     timestamp: current_time + timer_duration,
                 });
             }
@@ -194,22 +194,55 @@ impl Event for SetItimerEvent {
     }
 }
 
+pub struct TimerPosixState {
+    pub next_timer: i32,  // The next timer ID to assign
+}
+
 pub struct TimerPosixInfo {
+    pub clockid: i32,  // TODO Confirm that clockid_t is a 32-bit integer
     pub interval: Duration,
-    pub signal: i32,  // TODO Store the signal number here
+    pub signal: Option<i32>,  // TODO Store the signal number here
     pub exptime: Duration,
 }
 
-pub struct SigEvent {
-    pub sigev_notify: i32,
-    pub sigev_signo: i32,
-    pub sigev_value: i32,
-    pub sigev_notify_function: *mut libc::c_void,
-    pub sigev_notify_attributes: *mut libc::c_void
+pub struct TimerCreateEvent {
+    pub clockid: i32,  // TODO Confirm that clockid_t is a 32-bit integer
+    pub signal_to_send: Option<i32>,
 }
 
-pub struct TimerCreateEvent {
-    pub clockid: libc::clockid_t,
-    pub rvp: SigEvent,
-    pub timerid: libc::timer_t
+impl TimerCreateEvent {
+    pub fn new(clockid: libc::clockid_t, signal_to_send: Option<i32>) -> Self {
+        Self { clockid, signal_to_send }
+    }
+}
+
+impl Event for TimerCreateEvent {
+    type Success = i32;
+    type Error = ();
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        state.local.timer_posix_state.next_timer += 1;
+        let current_timer_id = state.local.timer_posix_state.next_timer - 1;
+
+        state.local.timers_posix.insert(state.local.timer_posix_state.next_timer - 1, TimerPosixInfo {
+            clockid: self.clockid,  // Store the clock ID for later use
+            interval: Duration::from_secs(0),  // We don't know this value yet. Maybe store None instead of 0. 
+            signal: self.signal_to_send,
+            exptime: Duration::from_secs(0),  // We don't know this value yet. Maybe store None instead of 0. 
+        });
+
+        // Grab the current process's PID and the current time for later use
+        let current_pid = state.local.process_info.borrow().pid;
+        let current_time = state.global.current_time;
+
+        // Add the timer to the priority queue.
+        /*
+        state.global.ready.push(ScheduledItem {
+            info: ReadyInfo::Timer(current_pid, self.which, current_timer_id, self.signal_to_send),
+            timestamp: current_time + timer_duration,
+        });
+        */
+
+        Outcome::Success(current_timer_id)
+    }
 }

@@ -34,12 +34,36 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn timer_create(
+        clockid: libc::clockid_t,
+        rvp: *mut libc::sigevent,
+        timerid: *mut libc::timer_t
+    ) -> libc::c_int => fizzle_timer_create(ctx) {
+        crate::strace!("timer_create(clockid={}, rvp={:?}, value={:?}) -> ...", clockid, rvp, timerid);
 
-    ) -> libc::time_t => fizzle_timer_create(_ctx) {
-        unimplemented!("timer_create()")
+        let mut signal_number: Option<i32> = None;
+        if (&(*rvp).sigev_notify == &libc::SIGEV_SIGNAL) {
+            // sival_ptr is (presumably) a pointer that points to the signal value. Need to test.
+            signal_number = Some(*(&(*rvp).sigev_value.sival_ptr) as i32);
+        }
+        else {
+        }
+        
+        match Scheduler::handle_event(&mut ctx, TimerCreateEvent::new(clockid, signal_number)) {
+            Ok(timer_id_val) => {
+                if let Some(val_mut) = timerid.as_mut() {
+                    *val_mut = timer_id_val as *mut libc::timer_t as *mut libc::c_void;
+                };
+
+                crate::strace!("timer_create(clockid={}, rvp={:?}, value={:?}) -> 0", clockid, rvp, timerid);
+                0
+            },
+            Err(e) => {
+                crate::strace!("timer_create(clockid={}, rvp={:?}, value={:?}) -> -1 ({:?})", clockid, rvp, timerid, e);
+                -1
+            },
+        }
     }
 }
-
 hook_macros::hook! {
     unsafe fn timer_delete(
 
