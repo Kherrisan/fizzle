@@ -6,6 +6,11 @@ use crate::hook_macros;
 use crate::scheduler::Scheduler;
 use crate::state::TimerType;
 
+union union_sigval {
+    sival_int: libc::c_int,
+    sival_ptr: *mut libc::c_void,
+}
+
 hook_macros::hook! {
     unsafe fn time(
         tloc: *mut libc::time_t
@@ -40,10 +45,27 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_timer_create(ctx) {
         crate::strace!("timer_create(clockid={}, rvp={:?}, value={:?}) -> ...", clockid, rvp, timerid);
 
-        let mut signal_number: Option<i32> = None;
-        if (&(*rvp).sigev_notify == &libc::SIGEV_SIGNAL) {
+        let mut signal_number: Option<libc::c_int> = None;
+
+        let mut rvp_ptr = rvp;
+
+        if (rvp_ptr.is_null()) {
+            // Because the `libc` library is incomplete, we need to do this
+            // in 2 steps. First initialize struct with zero memory.
+            let rvp_layout = std::alloc::Layout::new::<libc::sigevent>();
+            rvp_ptr = std::alloc::alloc(rvp_layout) as *mut libc::sigevent;
+            if (rvp_ptr.is_null()) {
+                std::alloc::handle_alloc_error(rvp_layout);
+            }
+            *rvp_ptr = std::mem::zeroed();
+            // Then, we set each field as needed.
+            (*rvp_ptr).sigev_notify = libc::SIGEV_SIGNAL;
+            (*rvp_ptr).sigev_signo =  libc::SIGALRM;
+            (*rvp_ptr).sigev_value = libc::sigval { sival_ptr: *timerid };
+        }
+        if (&(*rvp_ptr).sigev_notify == &libc::SIGEV_SIGNAL) {
             // sival_ptr is (presumably) a pointer that points to the signal value. Need to test.
-            signal_number = Some(*(&(*rvp).sigev_value.sival_ptr) as i32);
+            signal_number = Some((*rvp_ptr).sigev_signo);
         }
         else {
         }

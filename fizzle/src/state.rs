@@ -2009,8 +2009,8 @@ pub enum TimerType {
     Prof,
 
     // Used in timer_*() and timerfd_*() functions
-    Realtime,
-    Monotonic,
+    ClockRealtime,
+    ClockMonotonic,
 }
 
 impl TimerType {
@@ -2019,6 +2019,10 @@ impl TimerType {
             TimerType::Real => libc::SIGALRM,
             TimerType::Virtual => libc::SIGVTALRM,
             TimerType::Prof => libc::SIGPROF,
+
+            // TODO Fix placeholder values
+            TimerType::ClockRealtime => libc::SIGALRM,
+            TimerType::ClockMonotonic => libc::SIGALRM,
         }
     }
 
@@ -2027,6 +2031,10 @@ impl TimerType {
             TimerType::Real => libc::ITIMER_REAL,
             TimerType::Virtual => libc::ITIMER_VIRTUAL,
             TimerType::Prof => libc::ITIMER_PROF,
+
+            // TODO Fix placeholder values
+            TimerType::ClockRealtime => 0,
+            TimerType::ClockMonotonic => 0,
         }
     }
 }

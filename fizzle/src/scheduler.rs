@@ -412,6 +412,8 @@ impl ReturnTask {
 pub struct HandleExpiredTimerTask {
     pid: Pid,
     timer_type: TimerType,
+    timer_id: libc::c_int,
+    signal_number: libc::c_int,
 }
 
 impl HandleExpiredTimerTask {
@@ -420,6 +422,8 @@ impl HandleExpiredTimerTask {
         let current_worker = state.current_worker();
         let pid = self.pid;
         let timer_type = self.timer_type;
+        let timer_id = self.timer_id;
+        let signal_number = self.signal_number;
 
         // Need to ensure this is executing within the destination process
         if pid != current_worker.pid {
@@ -449,13 +453,15 @@ impl HandleExpiredTimerTask {
             TimerType::Prof => state.local.itimer_prof.clone(),
             TimerType::Real => state.local.itimer_real.clone(),
             TimerType::Virtual => state.local.itimer_virtual.clone(),
+            TimerType::ClockRealtime => None,
+            TimerType::ClockMonotonic => None,
         };
 
         // Repeat timer if applicable
         if let Some(ItimerInfo { interval }) = itimer_info {
             let timestamp = state.global.current_time.saturating_add(interval);
             state.global.ready.push(ScheduledItem {
-                info: ReadyInfo::Timer(pid, timer_type),
+                info: ReadyInfo::Timer(pid, timer_type, timer_id, signal_number),
                 timestamp,
             })
         }
@@ -1550,7 +1556,7 @@ impl Scheduler {
                 ReadyInfo::Poller(poller) => Scheduler::poller_ready_worker(poller),
                 ReadyInfo::Timer(pid, timer_type, timer_id, signal_number) => {
                     state.global.tasks.push_front(Task::HandleExpiredTimer(
-                        HandleExpiredTimerTask { pid, timer_type },
+                        HandleExpiredTimerTask { pid, timer_type, timer_id, signal_number },
                     ));
                     return Some(false);
                 }

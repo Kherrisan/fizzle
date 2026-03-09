@@ -67,6 +67,8 @@ impl Event for GetItimerEvent {
             TimerType::Real => &state.local.itimer_real,
             TimerType::Virtual => &state.local.itimer_virtual,
             TimerType::Prof => &state.local.itimer_prof,
+            TimerType::ClockRealtime => &state.local.itimer_real,
+            TimerType::ClockMonotonic => &state.local.itimer_real,
         };
 
         let interval = match timer_info {
@@ -119,6 +121,8 @@ impl Event for SetItimerEvent {
             TimerType::Real => &state.local.itimer_real,
             TimerType::Virtual => &state.local.itimer_virtual,
             TimerType::Prof => &state.local.itimer_prof,
+            TimerType::ClockRealtime => &state.local.itimer_real,
+            TimerType::ClockMonotonic => &state.local.itimer_real,
         };
 
         let old_interval = match timer_info {
@@ -174,6 +178,8 @@ impl Event for SetItimerEvent {
                         })
                     }
                 }
+                TimerType::ClockRealtime => {}
+                TimerType::ClockMonotonic => {}
             }
 
             let timer_duration = if val.is_zero() { *interval } else { *val };
