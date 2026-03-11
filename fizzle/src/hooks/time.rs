@@ -140,8 +140,12 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn timer_settime(
-
+        timerid: libc::timer_t,
+        flags: libc::c_int,
+        value: *mut libc::itimerspec,
+        ovalue: *mut libc::itimerspec
     ) -> libc::time_t => fizzle_time_settime(_ctx) {
+
         unimplemented!("timer_settime()")
     }
 }

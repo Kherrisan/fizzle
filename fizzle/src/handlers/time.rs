@@ -187,7 +187,7 @@ impl Event for SetItimerEvent {
             if !timer_duration.is_zero() {
                 // Add the new timer
                 state.global.ready.push(ScheduledItem {
-                    info: ReadyInfo::Timer(current_pid, self.which, 0, 0),
+                    info: ReadyInfo::Timer(current_pid, self.which, 0, None),
                     timestamp: current_time + timer_duration,
                 });
             }
@@ -204,15 +204,16 @@ pub struct TimerPosixState {
     pub next_timer: i32,  // The next timer ID to assign
 }
 
+#[derive(Clone, Copy)]
 pub struct TimerPosixInfo {
-    pub clockid: i32,  // TODO Confirm that clockid_t is a 32-bit integer
+    pub clockid: libc::clockid_t,
     pub interval: Duration,
-    pub signal: Option<i32>,  // TODO Store the signal number here
+    pub signal: Option<i32>,
     pub exptime: Duration,
 }
 
 pub struct TimerCreateEvent {
-    pub clockid: i32,  // TODO Confirm that clockid_t is a 32-bit integer
+    pub clockid: libc::clockid_t,
     pub signal_to_send: Option<i32>,
 }
 
@@ -223,7 +224,7 @@ impl TimerCreateEvent {
 }
 
 impl Event for TimerCreateEvent {
-    type Success = i32;
+    type Success = libc::clockid_t;
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
@@ -232,9 +233,9 @@ impl Event for TimerCreateEvent {
 
         state.local.timers_posix.insert(state.local.timer_posix_state.next_timer - 1, TimerPosixInfo {
             clockid: self.clockid,  // Store the clock ID for later use
-            interval: Duration::from_secs(0),  // We don't know this value yet. Maybe store None instead of 0. 
+            interval: Duration::ZERO,
             signal: self.signal_to_send,
-            exptime: Duration::from_secs(0),  // We don't know this value yet. Maybe store None instead of 0. 
+            exptime: Duration::ZERO,
         });
 
         // Grab the current process's PID and the current time for later use
@@ -252,3 +253,90 @@ impl Event for TimerCreateEvent {
         Outcome::Success(current_timer_id)
     }
 }
+
+pub struct TimerSettimeEvent {
+    pub timerid: i32,
+    is_absolute: bool,
+    new_value: ItimerValue,
+}
+
+impl TimerSettimeEvent {
+    pub fn new(timerid: i32, is_absolute: bool, new_value: ItimerValue) -> Self {
+        Self { timerid, is_absolute, new_value }
+    }
+}
+
+impl Event for TimerSettimeEvent {
+    type Success = ItimerValue;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let current_time = state.global.current_time;
+
+        /// The TimerInfo object currently stored in the local state
+        let Some(timer_info_const) = state.local.timers_posix.get(&self.timerid) else { return Outcome::Error(Errno::EINVAL); };
+
+        let mut timer_info: TimerPosixInfo = TimerPosixInfo {
+            clockid: timer_info_const.clockid,
+            interval: timer_info_const.interval,
+            signal: timer_info_const.signal,
+            exptime: timer_info_const.exptime,
+        };
+
+        let old_interval = timer_info.interval;
+
+        let current_pid = state.local.process_info.borrow().pid;
+
+        // See if there's already a scheduled timer
+        let ready = state.global.ready.iter().find(|r| match &r.info {
+            ReadyInfo::Timer(pid, type_, timerid, signo) if 
+                &current_pid == pid && &self.timerid == timerid => true,
+            _ => false,
+        });
+
+        let old_remaining = match ready {
+            Some(ScheduledItem { timestamp, .. }) => timestamp.saturating_sub(current_time),
+            None => Duration::ZERO,
+        };
+
+        if let ItimerValue { interval, val } = &self.new_value {
+            // If any timer was in the process of completing, remove it
+            state.global.ready.retain(|r| match &r.info {
+                ReadyInfo::Timer(pid, type_, timerid, signo) if 
+                    &current_pid == pid && &self.timerid == timerid => true,
+                _ => false,
+            });
+
+            // Set the interval and expiration time for the TimerInfo object
+            timer_info.interval = self.new_value.interval;
+            if (self.is_absolute) {
+                timer_info.exptime = self.new_value.val - current_time;
+            }
+            else {
+                timer_info.exptime = self.new_value.val;
+            }
+
+            state.local.timers_posix.insert(self.timerid, timer_info);
+
+            // Put the new and improved TimerPosixInfo object back into the HashMap
+
+            let timer_duration = if timer_info.interval.is_zero() { timer_info.interval } else { timer_info.exptime };
+
+            // TODO Find out if bad things will happen if you schedule something in the past. If
+            // so, be more careful about not doing that.
+            if !timer_duration.is_zero() {
+                // Add the new timer
+                state.global.ready.push(ScheduledItem {
+                    info: ReadyInfo::Timer(current_pid, TimerType::ClockRealtime, self.timerid, timer_info.signal),
+                    timestamp: current_time + timer_duration,
+                });
+            }
+        };
+
+        Outcome::Success(ItimerValue {
+            interval: old_interval,
+            val: old_remaining,
+        })
+    }
+}
+

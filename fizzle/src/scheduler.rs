@@ -408,12 +408,11 @@ impl ReturnTask {
     }
 }
 
-// TODO Update this task to handle the 2 new variables you added to ReadyInfo::Timer()
 pub struct HandleExpiredTimerTask {
     pid: Pid,
     timer_type: TimerType,
     timer_id: libc::c_int,
-    signal_number: libc::c_int,
+    signal_number: Option<libc::c_int>,
 }
 
 impl HandleExpiredTimerTask {

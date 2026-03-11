@@ -1999,7 +1999,7 @@ impl Ord for ScheduledItem {
 pub enum ReadyInfo {
     Poller(GlobalRc<PollerInfo>),
     Worker(Worker),
-    Timer(Pid, TimerType, i32, i32),  // (PID, TimerType, TimerID, SignalNumber)
+    Timer(Pid, TimerType, libc::c_int, Option<libc::c_int>),  // (PID, TimerType, TimerID, SignalNumber)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
