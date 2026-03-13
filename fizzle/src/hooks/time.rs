@@ -109,18 +109,19 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_timer_gettime(ctx) {
         crate::strace!("timer_gettime(timerid={:?}, value={:?}) -> ...", timerid, value);
         
-        /*
-        match Scheduler::handle_event(&mut ctx, GetItimerEvent::new(which_enum)) {
+        let timerid_int = timerid as i64;
+
+        match Scheduler::handle_event(&mut ctx, TimerGettimeEvent::new(timerid_int)) {
             Ok(timer_val) => {
-                if let Some(val_mut) = curr_value.as_mut() {
-                    *val_mut = libc::itimerval {
-                        it_interval: libc::timeval {
+                if let Some(val_mut) = value.as_mut() {
+                    *val_mut = libc::itimerspec {
+                        it_interval: libc::timespec {
                             tv_sec: timer_val.interval.as_secs() as i64,
-                            tv_usec: timer_val.interval.subsec_micros() as i64,
+                            tv_nsec: timer_val.interval.subsec_nanos() as i64,
                         },
-                        it_value: libc::timeval {
+                        it_value: libc::timespec {
                             tv_sec: timer_val.val.as_secs() as i64,
-                            tv_usec: timer_val.val.subsec_micros() as i64,
+                            tv_nsec: timer_val.val.subsec_nanos() as i64,
                         }
                     };
                 };
@@ -133,8 +134,6 @@ hook_macros::hook! {
                 -1
             },
         }
-        */
-        0
     }
 }
 

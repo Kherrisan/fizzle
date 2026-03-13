@@ -84,7 +84,7 @@ impl Event for GetItimerEvent {
         });
 
         let val = match ready {
-            Some(ScheduledItem { timestamp, .. }) => current_time.saturating_sub(*timestamp),
+            Some(ScheduledItem { timestamp, .. }) => (*timestamp).saturating_sub(current_time),
             None => Duration::ZERO,
         };
 
@@ -254,10 +254,52 @@ impl Event for TimerCreateEvent {
     }
 }
 
+pub struct TimerGettimeEvent {
+    pub timerid: i64,
+}
+
+impl TimerGettimeEvent {
+    pub fn new(timerid: i64) -> Self {
+        Self { timerid }
+    }
+}
+
+impl Event for TimerGettimeEvent {
+    type Success = ItimerValue;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let current_time = state.global.current_time;
+
+        /// The TimerInfo object currently stored in the local state
+        let Some(timer_info_const) = state.local.timers_posix.get(&self.timerid) else { return Outcome::Error(Errno::EINVAL); };
+
+        let current_pid = state.local.process_info.borrow().pid;
+
+        let ready = state.global.ready.iter().find(|r| match &r.info {
+            ReadyInfo::Timer(pid, type_, timerid, signo) 
+                if &current_pid == pid && &self.timerid == timerid => true,
+            _ => false,
+        });
+
+        let timer_interval = timer_info_const.interval;
+
+        let timer_value = match ready {
+            Some(ScheduledItem { timestamp, .. }) => (*timestamp).saturating_sub(current_time),
+            None => Duration::ZERO,
+        };
+
+        Outcome::Success(ItimerValue {
+            interval: timer_interval,
+            val: timer_value,
+        })
+    }
+}
+
 pub struct TimerSettimeEvent {
     pub timerid: i64,
-    is_absolute: bool,
-    new_value: ItimerValue,
+    pub is_absolute: bool,
+    pub new_value: ItimerValue,
 }
 
 impl TimerSettimeEvent {
