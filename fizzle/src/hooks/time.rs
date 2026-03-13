@@ -144,9 +144,49 @@ hook_macros::hook! {
         flags: libc::c_int,
         value: *mut libc::itimerspec,
         ovalue: *mut libc::itimerspec
-    ) -> libc::time_t => fizzle_time_settime(_ctx) {
+    ) -> libc::time_t => fizzle_timer_settime(ctx) {
 
-        unimplemented!("timer_settime()")
+        crate::strace!("timer_settime(timerid={:?}, flags={}, value={:?}, ovalue={:?}) -> ...", timerid, flags, value, ovalue);
+
+        let mut is_absolute: bool = false;
+        if (flags & libc::TIMER_ABSTIME > 0) {
+            is_absolute = true;
+        }
+
+        let new_timer_value = value.as_mut().map(|n| ItimerValue {
+            interval: Duration::from_secs(n.it_interval.tv_sec as u64) + Duration::from_nanos(n.it_interval.tv_nsec as u64),
+            val: Duration::from_secs(n.it_value.tv_sec as u64) + Duration::from_nanos(n.it_value.tv_nsec as u64),
+        });
+
+        let timerid_int = timerid as i64;
+
+        let new_timer_value_notnull = new_timer_value.unwrap();
+
+        match Scheduler::handle_event(&mut ctx, TimerSettimeEvent::new(timerid_int, is_absolute, new_timer_value_notnull)) {
+            Ok(timer_val) => {
+                if let Some(val_mut) = ovalue.as_mut() {
+                    *val_mut = libc::itimerspec {
+                        it_interval: libc::timespec {
+                            tv_sec: timer_val.interval.as_secs() as i64,
+                            tv_nsec: timer_val.interval.subsec_nanos() as i64,
+                        },
+                        it_value: libc::timespec {
+                            tv_sec: timer_val.val.as_secs() as i64,
+                            tv_nsec: timer_val.val.subsec_nanos() as i64,
+                        }
+                    };
+                };
+
+                crate::strace!("timer_settime(timerid={:?}, flags={}, value={:?}, ovalue={:?}) -> 0", 
+                    timerid, flags, value, ovalue);
+                0
+            },
+            Err(e) => {
+                crate::strace!("timer_settime(timerid={:?}, flags={}, value={:?}, ovalue={:?}) -> -1 ({})", 
+                    timerid, flags, value, ovalue, e);
+                -1
+            },
+        }
     }
 }
 

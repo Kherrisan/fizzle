@@ -1335,7 +1335,7 @@ pub struct ProcessLocalState {
     pub thread_tids: GlobalHashMap<ThreadId, Tid>,
     pub tid_threads: HashMap<Tid, ThreadId>,
     /// Information related to `timer_*` functions
-    pub timers_posix: HashMap<i32, TimerPosixInfo>, 
+    pub timers_posix: HashMap<i64, TimerPosixInfo>, 
     pub timer_posix_state: TimerPosixState,
     /// The current default permissions mask of the process.
     pub umask: AccessMode,
@@ -1999,7 +1999,7 @@ impl Ord for ScheduledItem {
 pub enum ReadyInfo {
     Poller(GlobalRc<PollerInfo>),
     Worker(Worker),
-    Timer(Pid, TimerType, libc::c_int, Option<libc::c_int>),  // (PID, TimerType, TimerID, SignalNumber)
+    Timer(Pid, TimerType, i64, Option<libc::c_int>),  // (PID, TimerType, TimerID, SignalNumber)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

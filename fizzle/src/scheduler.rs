@@ -411,7 +411,7 @@ impl ReturnTask {
 pub struct HandleExpiredTimerTask {
     pid: Pid,
     timer_type: TimerType,
-    timer_id: libc::c_int,
+    timer_id: i64,
     signal_number: Option<libc::c_int>,
 }
 

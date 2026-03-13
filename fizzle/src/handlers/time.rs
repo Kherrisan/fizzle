@@ -201,7 +201,7 @@ impl Event for SetItimerEvent {
 }
 
 pub struct TimerPosixState {
-    pub next_timer: i32,  // The next timer ID to assign
+    pub next_timer: i64,  // The next timer ID to assign
 }
 
 #[derive(Clone, Copy)]
@@ -224,7 +224,7 @@ impl TimerCreateEvent {
 }
 
 impl Event for TimerCreateEvent {
-    type Success = libc::clockid_t;
+    type Success = i64;
     type Error = ();
 
     fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
@@ -255,13 +255,13 @@ impl Event for TimerCreateEvent {
 }
 
 pub struct TimerSettimeEvent {
-    pub timerid: i32,
+    pub timerid: i64,
     is_absolute: bool,
     new_value: ItimerValue,
 }
 
 impl TimerSettimeEvent {
-    pub fn new(timerid: i32, is_absolute: bool, new_value: ItimerValue) -> Self {
+    pub fn new(timerid: i64, is_absolute: bool, new_value: ItimerValue) -> Self {
         Self { timerid, is_absolute, new_value }
     }
 }
