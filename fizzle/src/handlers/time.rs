@@ -254,6 +254,37 @@ impl Event for TimerCreateEvent {
     }
 }
 
+pub struct TimerDeleteEvent {
+    pub timerid: i64,
+}
+
+impl TimerDeleteEvent {
+    pub fn new(timerid: i64) -> Self {
+        Self { timerid }
+    }
+}
+
+impl Event for TimerDeleteEvent {
+    type Success = ();
+    type Error = ();
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        // Technically it's supposed to return EINVAL on Linux, but it's undefined
+        // in the POSIX standards so we'll ignore wheteher it was success or
+        // failure unless something breaks.
+        
+        let current_pid = state.local.process_info.borrow().pid;
+
+        state.global.ready.retain(|r| match &r.info {
+            ReadyInfo::Timer(pid, type_, timerid, signo) if 
+                &current_pid == pid && &self.timerid == timerid => true,
+            _ => false,
+        });
+
+        Outcome::Success(())
+   }
+}
+
 pub struct TimerGettimeEvent {
     pub timerid: i64,
 }

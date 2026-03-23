@@ -88,15 +88,28 @@ hook_macros::hook! {
 }
 hook_macros::hook! {
     unsafe fn timer_delete(
+        timerid: libc::timer_t
+    ) -> libc::time_t => fizzle_timer_delete(ctx) {
+        crate::strace!("timer_delete(timerid={:?}) -> ...", timerid);
 
-    ) -> libc::time_t => fizzle_timer_delete(_ctx) {
-        unimplemented!("timer_delete()")
+        let timerid_int = timerid as i64;
+
+        match Scheduler::handle_event(&mut ctx, TimerDeleteEvent::new(timerid_int)) {
+            Ok(()) => {
+                crate::strace!("timer_delete(timerid={:?}) -> 0", timerid);
+                0
+            },
+            Err(()) => {
+                crate::strace!("timer_delete(timerid={:?}) -> -1", timerid);
+                -1
+            }
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn timer_getoverrun(
-
+        timerid: libc::timer_t
     ) -> libc::time_t => fizzle_timer_getoverrun(_ctx) {
         unimplemented!("timer_getoverrun()")
     }
