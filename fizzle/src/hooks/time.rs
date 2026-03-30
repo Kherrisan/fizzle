@@ -6,6 +6,11 @@ use crate::hook_macros;
 use crate::scheduler::Scheduler;
 use crate::state::TimerType;
 
+union union_sigval {
+    sival_int: libc::c_int,
+    sival_ptr: *mut libc::c_void,
+}
+
 hook_macros::hook! {
     unsafe fn time(
         tloc: *mut libc::time_t
@@ -34,23 +39,77 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn timer_create(
+        clockid: libc::clockid_t,
+        rvp: *mut libc::sigevent,
+        timerid: *mut libc::timer_t
+    ) -> libc::c_int => fizzle_timer_create(ctx) {
+        crate::strace!("timer_create(clockid={}, rvp={:?}, value={:?}) -> ...", clockid, rvp, timerid);
 
-    ) -> libc::time_t => fizzle_timer_create(_ctx) {
-        unimplemented!("timer_create()")
+        let mut signal_number: Option<libc::c_int> = None;
+
+        let mut rvp_ptr = rvp;
+
+        if (rvp_ptr.is_null()) {
+            // Because the `libc` library is incomplete, we need to do this
+            // in 2 steps. First initialize struct with zero memory.
+            let rvp_layout = std::alloc::Layout::new::<libc::sigevent>();
+            rvp_ptr = std::alloc::alloc(rvp_layout) as *mut libc::sigevent;
+            if (rvp_ptr.is_null()) {
+                std::alloc::handle_alloc_error(rvp_layout);
+            }
+            *rvp_ptr = std::mem::zeroed();
+            // Then, we set each field as needed.
+            (*rvp_ptr).sigev_notify = libc::SIGEV_SIGNAL;
+            (*rvp_ptr).sigev_signo =  libc::SIGALRM;
+            (*rvp_ptr).sigev_value = libc::sigval { sival_ptr: *timerid };
+        }
+        if (&(*rvp_ptr).sigev_notify == &libc::SIGEV_SIGNAL) {
+            // sival_ptr is (presumably) a pointer that points to the signal value. Need to test.
+            signal_number = Some((*rvp_ptr).sigev_signo);
+        }
+        else {
+        }
+        
+        match Scheduler::handle_event(&mut ctx, TimerCreateEvent::new(clockid, signal_number)) {
+            Ok(timer_id_val) => {
+                if let Some(val_mut) = timerid.as_mut() {
+                    *val_mut = timer_id_val as *mut libc::timer_t as *mut libc::c_void;
+                };
+
+                crate::strace!("timer_create(clockid={}, rvp={:?}, value={:?}) -> 0", clockid, rvp, timerid);
+                0
+            },
+            Err(e) => {
+                crate::strace!("timer_create(clockid={}, rvp={:?}, value={:?}) -> -1 ({:?})", clockid, rvp, timerid, e);
+                -1
+            },
+        }
     }
 }
-
 hook_macros::hook! {
     unsafe fn timer_delete(
+        timerid: libc::timer_t
+    ) -> libc::time_t => fizzle_timer_delete(ctx) {
+        crate::strace!("timer_delete(timerid={:?}) -> ...", timerid);
 
-    ) -> libc::time_t => fizzle_timer_delete(_ctx) {
-        unimplemented!("timer_delete()")
+        let timerid_int = timerid as i64;
+
+        match Scheduler::handle_event(&mut ctx, TimerDeleteEvent::new(timerid_int)) {
+            Ok(()) => {
+                crate::strace!("timer_delete(timerid={:?}) -> 0", timerid);
+                0
+            },
+            Err(()) => {
+                crate::strace!("timer_delete(timerid={:?}) -> -1", timerid);
+                -1
+            }
+        }
     }
 }
 
 hook_macros::hook! {
     unsafe fn timer_getoverrun(
-
+        timerid: libc::timer_t
     ) -> libc::time_t => fizzle_timer_getoverrun(_ctx) {
         unimplemented!("timer_getoverrun()")
     }
@@ -63,18 +122,19 @@ hook_macros::hook! {
     ) -> libc::c_int => fizzle_timer_gettime(ctx) {
         crate::strace!("timer_gettime(timerid={:?}, value={:?}) -> ...", timerid, value);
         
-        /*
-        match Scheduler::handle_event(&mut ctx, GetItimerEvent::new(which_enum)) {
+        let timerid_int = timerid as i64;
+
+        match Scheduler::handle_event(&mut ctx, TimerGettimeEvent::new(timerid_int)) {
             Ok(timer_val) => {
-                if let Some(val_mut) = curr_value.as_mut() {
-                    *val_mut = libc::itimerval {
-                        it_interval: libc::timeval {
+                if let Some(val_mut) = value.as_mut() {
+                    *val_mut = libc::itimerspec {
+                        it_interval: libc::timespec {
                             tv_sec: timer_val.interval.as_secs() as i64,
-                            tv_usec: timer_val.interval.subsec_micros() as i64,
+                            tv_nsec: timer_val.interval.subsec_nanos() as i64,
                         },
-                        it_value: libc::timeval {
+                        it_value: libc::timespec {
                             tv_sec: timer_val.val.as_secs() as i64,
-                            tv_usec: timer_val.val.subsec_micros() as i64,
+                            tv_nsec: timer_val.val.subsec_nanos() as i64,
                         }
                     };
                 };
@@ -87,16 +147,58 @@ hook_macros::hook! {
                 -1
             },
         }
-        */
-        0
     }
 }
 
 hook_macros::hook! {
     unsafe fn timer_settime(
+        timerid: libc::timer_t,
+        flags: libc::c_int,
+        value: *mut libc::itimerspec,
+        ovalue: *mut libc::itimerspec
+    ) -> libc::time_t => fizzle_timer_settime(ctx) {
 
-    ) -> libc::time_t => fizzle_time_settime(_ctx) {
-        unimplemented!("timer_settime()")
+        crate::strace!("timer_settime(timerid={:?}, flags={}, value={:?}, ovalue={:?}) -> ...", timerid, flags, value, ovalue);
+
+        let mut is_absolute: bool = false;
+        if (flags & libc::TIMER_ABSTIME > 0) {
+            is_absolute = true;
+        }
+
+        let new_timer_value = value.as_mut().map(|n| ItimerValue {
+            interval: Duration::from_secs(n.it_interval.tv_sec as u64) + Duration::from_nanos(n.it_interval.tv_nsec as u64),
+            val: Duration::from_secs(n.it_value.tv_sec as u64) + Duration::from_nanos(n.it_value.tv_nsec as u64),
+        });
+
+        let timerid_int = timerid as i64;
+
+        let new_timer_value_notnull = new_timer_value.unwrap();
+
+        match Scheduler::handle_event(&mut ctx, TimerSettimeEvent::new(timerid_int, is_absolute, new_timer_value_notnull)) {
+            Ok(timer_val) => {
+                if let Some(val_mut) = ovalue.as_mut() {
+                    *val_mut = libc::itimerspec {
+                        it_interval: libc::timespec {
+                            tv_sec: timer_val.interval.as_secs() as i64,
+                            tv_nsec: timer_val.interval.subsec_nanos() as i64,
+                        },
+                        it_value: libc::timespec {
+                            tv_sec: timer_val.val.as_secs() as i64,
+                            tv_nsec: timer_val.val.subsec_nanos() as i64,
+                        }
+                    };
+                };
+
+                crate::strace!("timer_settime(timerid={:?}, flags={}, value={:?}, ovalue={:?}) -> 0", 
+                    timerid, flags, value, ovalue);
+                0
+            },
+            Err(e) => {
+                crate::strace!("timer_settime(timerid={:?}, flags={}, value={:?}, ovalue={:?}) -> -1 ({})", 
+                    timerid, flags, value, ovalue, e);
+                -1
+            },
+        }
     }
 }
 
