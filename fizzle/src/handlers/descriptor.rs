@@ -15,6 +15,7 @@ use super::pipe::*;
 use super::poller::PollerInfo;
 use super::signal::{SignalfdInfo, SignalfdReadEvent};
 use super::socket::*;
+use super::time::TimerfdInfo;
 use crate::backend::{ConnectedBackend, StdioBackend};
 use crate::errno::Errno;
 use crate::hooks::fd::{F_GETOWN_EX, F_GET_FILE_RW_HINT, F_GET_RW_HINT, F_SETOWN_EX, F_SETSIG, F_SET_FILE_RW_HINT, F_SET_RW_HINT};
@@ -80,6 +81,8 @@ pub enum FdResource {
     Stdout,
     /// The standard error of the parent process. (which may be inherited by children).
     Stderr,
+    /// File descriptor used in `timerfd_*()` functions
+    Timerfd(GlobalRc<TimerfdInfo>),
     /// An opaque fd meant only to be used in passthrough
     Opaque,
 }

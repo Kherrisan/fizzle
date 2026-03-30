@@ -204,10 +204,26 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn timerfd_create(
-        _clockid: libc::c_int,
-        _flags: libc::c_int
-    ) -> libc::c_int => fizzle_timerfd_create(_ctx) {
-        unimplemented!("timerfd_create()")
+        clockid: libc::c_int,
+        flags: libc::c_int
+    ) -> libc::c_int => fizzle_timerfd_create(ctx) {
+        // TODO Implementation is not currently complete.
+        crate::strace!("timerfd_create(clockid={}, flags={}) -> ...", clockid, flags);
+
+        // Get a file descriptor that won't be used by the system.
+        // This will prevent file descriptor conflicts later on when
+        // more files are opened, for example.
+        let fd_to_use = crate::create_descriptor();
+        match Scheduler::handle_event(&mut ctx, TimerfdCreateEvent::new(fd_to_use, clockid)) {
+            Ok(timer_id) => {
+                crate::strace!("timerfd_create(clockid={}, flags={}) -> 0", clockid, flags);
+                0
+            }
+            Err(e) => {
+                crate::strace!("timerfd_create(clockid={}, flags={}) -> -1 ({})", clockid, flags, e);
+                -1
+            }
+        }
     }
 }
 

@@ -1,8 +1,11 @@
 use std::time::Duration;
 
 use crate::errno::Errno;
+use crate::GlobalRc;
 use crate::scheduler::{Event, Outcome};
 use crate::state::{FizzleState, ReadyInfo, ScheduledItem, TimerType};
+
+use super::polled::PolledInfo;
 
 #[derive(Clone)]
 pub struct ItimerInfo {
@@ -212,6 +215,14 @@ pub struct TimerPosixInfo {
     pub exptime: Duration,
 }
 
+/// Used to holder information about the timer file descriptor when
+/// created by the `timerfd_*()` functions in Linux.
+pub struct TimerfdInfo {
+    pub polled: GlobalRc<PolledInfo>,
+    /// Information about the timer itself
+    pub timerid: i64,
+}
+
 pub struct TimerCreateEvent {
     pub clockid: libc::clockid_t,
     pub signal_to_send: Option<i32>,
@@ -395,8 +406,6 @@ impl Event for TimerSettimeEvent {
 
             let timer_duration = if timer_info.interval.is_zero() { timer_info.interval } else { timer_info.exptime };
 
-            // TODO Find out if bad things will happen if you schedule something in the past. If
-            // so, be more careful about not doing that.
             if !timer_duration.is_zero() {
                 // Add the new timer
                 state.global.ready.push(ScheduledItem {
@@ -413,3 +422,36 @@ impl Event for TimerSettimeEvent {
     }
 }
 
+pub struct TimerfdCreateEvent {
+    /// The file descriptor number with which to create this `Timerfd` object
+    pub fd: i32,
+    pub clockid: libc::clockid_t,
+}
+
+impl TimerfdCreateEvent {
+    pub fn new(fd: i32, clockid: libc::clockid_t) -> Self {
+        Self { fd, clockid }
+    }
+}
+
+
+impl Event for TimerfdCreateEvent {
+    type Success = i64;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        state.local.timer_posix_state.next_timer += 1;
+        let current_timer_id = state.local.timer_posix_state.next_timer - 1;
+
+        state.local.timers_posix.insert(state.local.timer_posix_state.next_timer - 1, TimerPosixInfo {
+            clockid: self.clockid,  // Store the clock ID for later use
+            interval: Duration::ZERO,
+            signal: self.signal_to_send,
+            exptime: Duration::ZERO,
+        });
+
+        // TODO Add the file to the B-Tree of file descriptors so that we can locate it again.
+
+        Outcome::Success(current_timer_id)
+    }
+}

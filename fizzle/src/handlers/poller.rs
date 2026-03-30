@@ -1162,6 +1162,10 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
         },
         FdResource::Inotify(inotify) => PolledStatus::Pollable(inotify.borrow().polled.clone()),
         FdResource::Signalfd(signalfd) => PolledStatus::Pollable(signalfd.borrow().polled.clone()),
+        FdResource::Timerfd(timerfd) => {
+            // TODO Implement this properly so that the timer expires appropriately
+            PolledStatus::ImmediatelyPollable
+        }
         FdResource::Opaque => {
             let mut pfd = libc::pollfd {
                 fd: fd.as_raw_fd(),
