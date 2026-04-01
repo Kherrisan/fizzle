@@ -921,6 +921,12 @@ impl Event for DescriptorReadEvent<'_> {
                             self.data.take().unwrap(),
                         ));
                     }
+                    FdResource::Timerfd(timerfd_info) => {
+                        // TODO Should return an unsigned 8-byte integer with the number of
+                        // overruns. If implementing this will really be difficult, at least make
+                        // this function return 1 every time.
+                        unimplemented!("Timerfd read()")
+                    }
                     FdResource::Inotify(_) => unimplemented!(),
                     FdResource::Opaque => unreachable!(),
                 }
@@ -1365,6 +1371,11 @@ impl Event for DescriptorWriteEvent<'_> {
                             fd_info.nonblocking,
                             self.data.take().unwrap(),
                         ));
+                    }
+                    FdResource::Timerfd(timerfd_info) => {
+                        // File descriptor is not supposed to be writeable, should
+                        // set errno to EBADF
+                        return Outcome::Error(Errno::EBADF)
                     }
                     FdResource::Inotify(_) => unimplemented!("inotify write()"),
                     FdResource::Opaque => unreachable!(),

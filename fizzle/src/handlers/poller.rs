@@ -1162,7 +1162,7 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
         },
         FdResource::Inotify(inotify) => PolledStatus::Pollable(inotify.borrow().polled.clone()),
         FdResource::Signalfd(signalfd) => PolledStatus::Pollable(signalfd.borrow().polled.clone()),
-        FdResource::Timerfd(timerfd) => {
+        FdResource::Timerfd(timerfd_info) => {
             // TODO Implement this properly so that the timer expires appropriately
             PolledStatus::ImmediatelyPollable
         }
@@ -1260,6 +1260,10 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                 ConnectedBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
             },
             // SocketState::Error => PolledStatus::ImmediatelyPollable,
+        },
+        FdResource::Timerfd(timerfd_info) => {
+            // Not possible to poll for write() operations.
+            PolledStatus::NotPollable
         },
         FdResource::Inotify(_) => PolledStatus::NotPollable,
         FdResource::Signalfd(_) => PolledStatus::NotPollable,

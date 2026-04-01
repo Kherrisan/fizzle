@@ -1,8 +1,11 @@
+use std::cell::RefCell;
+use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use crate::errno::Errno;
 use crate::GlobalRc;
-use crate::scheduler::{Event, Outcome};
+use crate::handlers::descriptor::{Descriptor, DescriptorInfo, FdResource};
+use crate::scheduler::{Event, fizzle_alloc, Outcome};
 use crate::state::{FizzleState, ReadyInfo, ScheduledItem, TimerType};
 
 use super::polled::PolledInfo;
@@ -443,14 +446,35 @@ impl Event for TimerfdCreateEvent {
         state.local.timer_posix_state.next_timer += 1;
         let current_timer_id = state.local.timer_posix_state.next_timer - 1;
 
-        state.local.timers_posix.insert(state.local.timer_posix_state.next_timer - 1, TimerPosixInfo {
+        state.local.timers_posix.insert(current_timer_id, TimerPosixInfo {
             clockid: self.clockid,  // Store the clock ID for later use
             interval: Duration::ZERO,
-            signal: self.signal_to_send,
+            signal: None,
             exptime: Duration::ZERO,
         });
 
-        // TODO Add the file to the B-Tree of file descriptors so that we can locate it again.
+        state.local.fds.insert(
+            Descriptor::from_raw_fd(self.fd),
+            DescriptorInfo {
+                close_on_exec: false,
+                nonblocking: false,
+                is_passthrough: false,
+                is_random: false,
+                resource: FdResource::Timerfd(Rc::new_in(
+                        RefCell::new(TimerfdInfo {
+                            polled: Rc::new_in(
+                                RefCell::new(PolledInfo {
+                                    pollers: Vec::new_in(fizzle_alloc()),
+                                    event_raised: false,
+                                }),
+                                fizzle_alloc(),
+                            ),
+                            timerid: current_timer_id,
+                    }),
+                    fizzle_alloc(),
+                ))
+            }
+        );
 
         Outcome::Success(current_timer_id)
     }
