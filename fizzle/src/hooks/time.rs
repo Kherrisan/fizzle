@@ -109,7 +109,7 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn timer_getoverrun(
-        timerid: libc::timer_t
+        _timerid: libc::timer_t
     ) -> libc::time_t => fizzle_timer_getoverrun(_ctx) {
         unimplemented!("timer_getoverrun()")
     }
@@ -207,17 +207,16 @@ hook_macros::hook! {
         clockid: libc::c_int,
         flags: libc::c_int
     ) -> libc::c_int => fizzle_timerfd_create(ctx) {
-        // TODO Implementation is not currently complete.
         crate::strace!("timerfd_create(clockid={}, flags={}) -> ...", clockid, flags);
 
         // Get a file descriptor that won't be used by the system.
         // This will prevent file descriptor conflicts later on when
         // more files are opened, for example.
-        let fd_to_use = crate::create_descriptor();
+        let fd_to_use = libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY);
         match Scheduler::handle_event(&mut ctx, TimerfdCreateEvent::new(fd_to_use, clockid)) {
             Ok(timer_id) => {
-                crate::strace!("timerfd_create(clockid={}, flags={}) -> 0", clockid, flags);
-                0
+                crate::strace!("timerfd_create(clockid={}, flags={}) -> {}", clockid, flags, fd_to_use);
+                fd_to_use
             }
             Err(e) => {
                 crate::strace!("timerfd_create(clockid={}, flags={}) -> -1 ({})", clockid, flags, e);
@@ -229,11 +228,14 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn timerfd_settime(
-        _fd: libc::c_int,
-        _new_value: *const libc::itimerspec,
-        _old_value: *mut libc::itimerspec
-    ) -> libc::c_int => fizzle_timerfd_settime(_ctx) {
-        unimplemented!("timerfd_settime()")
+        fd: libc::c_int,
+        flags: libc::c_int,
+        new_value: *const libc::itimerspec,
+        old_value: *mut libc::itimerspec
+    ) -> libc::c_int => fizzle_timerfd_settime(ctx) {
+        crate::strace!("timerfd_settime(fd={}, new_value={:?}, old_value={:?}) -> ...", fd, new_value, old_value);
+        // TODO Finish implementation!
+        0
     }
 }
 
