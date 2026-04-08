@@ -1,0 +1,12 @@
+[package]
+name = "fizzle-plugin-ngap-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+asnfuzzgen-codecs = { version = "0.1.3" }
+asnfuzzgen-codecs-derive = { version = "0.1.3" }
+bitvec = { version = "1.0" }
+entropic = { version = "0.1.1", features = ["bitvec", "derive", "std"] }
+fizzle-plugin = { version = "0.1", path = "../fizzle-plugin" }
+toml = "0.8"
