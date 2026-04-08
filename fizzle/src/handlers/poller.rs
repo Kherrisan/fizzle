@@ -1162,6 +1162,9 @@ pub fn fd_to_pollin(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
         },
         FdResource::Inotify(inotify) => PolledStatus::Pollable(inotify.borrow().polled.clone()),
         FdResource::Signalfd(signalfd) => PolledStatus::Pollable(signalfd.borrow().polled.clone()),
+        FdResource::Timerfd(timerfd_info) => {
+            PolledStatus::Pollable(timerfd_info.borrow().polled.clone())
+        }
         FdResource::Opaque => {
             let mut pfd = libc::pollfd {
                 fd: fd.as_raw_fd(),
@@ -1256,6 +1259,10 @@ pub fn fd_to_pollout(state: &mut FizzleState, fd: RawFd) -> PolledStatus {
                 ConnectedBackend::Fuzz(_) => PolledStatus::ImmediatelyPollable,
             },
             // SocketState::Error => PolledStatus::ImmediatelyPollable,
+        },
+        FdResource::Timerfd(timerfd_info) => {
+            // Not possible to poll for write() operations.
+            PolledStatus::NotPollable
         },
         FdResource::Inotify(_) => PolledStatus::NotPollable,
         FdResource::Signalfd(_) => PolledStatus::NotPollable,

@@ -808,7 +808,8 @@ impl Event for FileSeekEvent {
             | FdResource::Stdin
             | FdResource::Stdout
             | FdResource::Stderr
-            | FdResource::Socket(_) => return Outcome::Error(Errno::ESPIPE),
+            | FdResource::Socket(_)
+            | FdResource::Timerfd(_) => return Outcome::Error(Errno::ESPIPE),
             FdResource::File(_) => todo!(),
             FdResource::Opaque => todo!(),
         }

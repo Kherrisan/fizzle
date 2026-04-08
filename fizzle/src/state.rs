@@ -46,7 +46,7 @@ use crate::handlers::socket::{
 };
 use crate::handlers::spinlock::SpinlockPtr;
 use crate::handlers::thread::{PThreadRoutine, ThreadInfo, Tid};
-use crate::handlers::time::ItimerInfo;
+use crate::handlers::time::{ItimerInfo, TimerPosixInfo, TimerPosixState};
 use crate::plugins::{IoEmulationType, PluginEndpoint};
 use crate::scheduler::fizzle_alloc;
 use crate::semaphore::Semaphore;
@@ -354,6 +354,8 @@ impl FizzleState {
             // thread_locks: Default::default(),
             thread_tids: hashbrown::HashMap::new_in(fizzle_alloc()),
             tid_threads: Default::default(),
+            timers_posix: HashMap::default(),
+            timer_posix_state: TimerPosixState{next_timer: 1},
             // Default umask is 0644
             umask: AccessMode::GROUP_READ | AccessMode::USER_WRITE | AccessMode::USER_EXEC,
             working_directory,
@@ -1332,6 +1334,9 @@ pub struct ProcessLocalState {
     pub terminated_threads: HashSet<ThreadId>,
     pub thread_tids: GlobalHashMap<ThreadId, Tid>,
     pub tid_threads: HashMap<Tid, ThreadId>,
+    /// Information related to `timer_*` functions
+    pub timers_posix: HashMap<i64, TimerPosixInfo>, 
+    pub timer_posix_state: TimerPosixState,
     /// The current default permissions mask of the process.
     pub umask: AccessMode,
     /// The directory that the program is currently executing relative to.
@@ -1994,7 +1999,7 @@ impl Ord for ScheduledItem {
 pub enum ReadyInfo {
     Poller(GlobalRc<PollerInfo>),
     Worker(Worker),
-    Timer(Pid, TimerType),
+    Timer(Pid, TimerType, TimerIdType, Option<libc::c_int>),  // (PID, TimerType, TimerID, SignalNumber)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2002,6 +2007,10 @@ pub enum TimerType {
     Real,
     Virtual,
     Prof,
+
+    // Used in timer_*() and timerfd_*() functions
+    ClockRealtime,
+    ClockMonotonic,
 }
 
 impl TimerType {
@@ -2010,6 +2019,10 @@ impl TimerType {
             TimerType::Real => libc::SIGALRM,
             TimerType::Virtual => libc::SIGVTALRM,
             TimerType::Prof => libc::SIGPROF,
+
+            // TODO Fix placeholder values
+            TimerType::ClockRealtime => libc::SIGALRM,
+            TimerType::ClockMonotonic => libc::SIGALRM,
         }
     }
 
@@ -2018,8 +2031,23 @@ impl TimerType {
             TimerType::Real => libc::ITIMER_REAL,
             TimerType::Virtual => libc::ITIMER_VIRTUAL,
             TimerType::Prof => libc::ITIMER_PROF,
+
+            // TODO Fix placeholder values
+            TimerType::ClockRealtime => 0,
+            TimerType::ClockMonotonic => 0,
         }
     }
+}
+
+/// The type of timer identifier.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TimerIdType {
+    /// Posix timer
+    Timer(i64),
+    /// Timerfd
+    Fd(libc::c_int),
+    /// Itimer (no timer ID)
+    Itimer(()),
 }
 
 #[derive(Clone, Debug)]

@@ -20,6 +20,7 @@ use crate::backend::{
 use crate::cell::{PanicOnceCell, SequentialRefCell};
 use crate::constants::*;
 use crate::errno::Errno;
+use crate::handlers::descriptor::{Descriptor, FdResource};
 use crate::handlers::file::{CowInfo, FileInfo};
 use crate::handlers::id::Worker;
 use crate::handlers::mutex::MutexStatus;
@@ -27,7 +28,7 @@ use crate::handlers::poller::PollerInfo;
 use crate::handlers::process::*;
 use crate::handlers::signal::*;
 use crate::handlers::socket::SocketState;
-use crate::handlers::time::ItimerInfo;
+use crate::handlers::time::{ItimerInfo, TimerPosixInfo};
 use crate::semaphore::Semaphore;
 use crate::state;
 use crate::state::*;
@@ -411,6 +412,8 @@ impl ReturnTask {
 pub struct HandleExpiredTimerTask {
     pid: Pid,
     timer_type: TimerType,
+    timer_id_type: TimerIdType,
+    signal_number: Option<libc::c_int>,
 }
 
 impl HandleExpiredTimerTask {
@@ -419,6 +422,8 @@ impl HandleExpiredTimerTask {
         let current_worker = state.current_worker();
         let pid = self.pid;
         let timer_type = self.timer_type;
+        let timer_id_type = self.timer_id_type;
+        let signal_number = self.signal_number;
 
         // Need to ensure this is executing within the destination process
         if pid != current_worker.pid {
@@ -448,13 +453,63 @@ impl HandleExpiredTimerTask {
             TimerType::Prof => state.local.itimer_prof.clone(),
             TimerType::Real => state.local.itimer_real.clone(),
             TimerType::Virtual => state.local.itimer_virtual.clone(),
+            TimerType::ClockRealtime => None,
+            TimerType::ClockMonotonic => None,
         };
+
+        let timer_id_info_opt: Option<(i64, TimerPosixInfo)> = match timer_id_type {
+            TimerIdType::Fd(timer_fd) => {
+                let Some(fd_info) = state.local.fds.get(&Descriptor::from_raw_fd(timer_fd)) 
+                    else { panic!("Expected a valid file descriptor") };
+                let timerfd_info = match &fd_info.resource {
+                    FdResource::Timerfd(timerfd_globalrc) => timerfd_globalrc.clone(),
+                    _ => panic!("Expected file descriptor to be a Timerfd file descriptor"),
+                };
+
+                // Raise the polled object so that all threads waiting on this 
+                // timer get unblocked.
+                state.raise_polled(&timerfd_info.borrow().polled);
+
+                let internal_timer_id = timerfd_info.borrow().timerid;
+                let Some(timer_info) = state.local.timers_posix.get(&internal_timer_id) 
+                    else { panic!("Invalid timer ID stored in FdResource::Timerfd(TimerFdInfo)") };
+
+
+                Some((
+                    internal_timer_id,
+                    timer_info.clone(),
+                ))
+            },
+            TimerIdType::Timer(timer_id) => {
+                let Some(timer_info) = state.local.timers_posix.get(&timer_id) 
+                    else { panic!("Expected a valid timer ID") };
+                Some((
+                    timer_id,
+                    timer_info.clone(),
+                ))
+            },
+            TimerIdType::Itimer(()) => None,
+        };
+
+        if let Some(timer_id_info) = timer_id_info_opt {
+            // The timer just expired, so add 1 to the number of overruns
+            let new_timer_posix_info = TimerPosixInfo {
+                clockid: timer_id_info.1.clockid,
+                interval: timer_id_info.1.interval,
+                signal: timer_id_info.1.signal,
+                exptime: timer_id_info.1.exptime,
+                overruns: timer_id_info.1.overruns + 1,
+            };
+
+            // Update the value in the HashMap
+            state.local.timers_posix.insert(timer_id_info.0, new_timer_posix_info);
+        }
 
         // Repeat timer if applicable
         if let Some(ItimerInfo { interval }) = itimer_info {
             let timestamp = state.global.current_time.saturating_add(interval);
             state.global.ready.push(ScheduledItem {
-                info: ReadyInfo::Timer(pid, timer_type),
+                info: ReadyInfo::Timer(pid, timer_type, timer_id_type, signal_number),
                 timestamp,
             })
         }
@@ -1547,9 +1602,9 @@ impl Scheduler {
             let worker_opt = match info {
                 ReadyInfo::Worker(worker) => Some(worker),
                 ReadyInfo::Poller(poller) => Scheduler::poller_ready_worker(poller),
-                ReadyInfo::Timer(pid, timer_type) => {
+                ReadyInfo::Timer(pid, timer_type, timer_id_type, signal_number) => {
                     state.global.tasks.push_front(Task::HandleExpiredTimer(
-                        HandleExpiredTimerTask { pid, timer_type },
+                        HandleExpiredTimerTask { pid, timer_type, timer_id_type, signal_number },
                     ));
                     return Some(false);
                 }

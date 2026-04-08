@@ -15,6 +15,7 @@ use super::pipe::*;
 use super::poller::PollerInfo;
 use super::signal::{SignalfdInfo, SignalfdReadEvent};
 use super::socket::*;
+use super::time::{TimerfdInfo, TimerfdReadEvent};
 use crate::backend::{ConnectedBackend, StdioBackend};
 use crate::errno::Errno;
 use crate::hooks::fd::{F_GETOWN_EX, F_GET_FILE_RW_HINT, F_GET_RW_HINT, F_SETOWN_EX, F_SETSIG, F_SET_FILE_RW_HINT, F_SET_RW_HINT};
@@ -80,6 +81,8 @@ pub enum FdResource {
     Stdout,
     /// The standard error of the parent process. (which may be inherited by children).
     Stderr,
+    /// File descriptor used in `timerfd_*()` functions
+    Timerfd(GlobalRc<TimerfdInfo>),
     /// An opaque fd meant only to be used in passthrough
     Opaque,
 }
@@ -735,6 +738,7 @@ enum DescriptorReadState<'a> {
     Mq(MqReadEvent<'a>),
     Pipe(PipeReadEvent<'a>),
     Stdin(StdinReadEvent<'a>),
+    Timerfd(TimerfdReadEvent<'a>),
 }
 
 fn write_random(state: &mut FizzleState, data: &mut [u8]) {
@@ -918,6 +922,16 @@ impl Event for DescriptorReadEvent<'_> {
                             self.data.take().unwrap(),
                         ));
                     }
+                    FdResource::Timerfd(timerfd_info) => {
+                        // TODO Should return an unsigned 8-byte integer with the number of
+                        // overruns. If implementing this will really be difficult, at least make
+                        // this function return 1 every time.
+                        self.state = DescriptorReadState::Timerfd(TimerfdReadEvent::new(
+                            timerfd_info.clone(),
+                            fd_info.nonblocking,
+                            self.data.take().unwrap(),
+                        ));
+                    }
                     FdResource::Inotify(_) => unimplemented!(),
                     FdResource::Opaque => unreachable!(),
                 }
@@ -932,6 +946,7 @@ impl Event for DescriptorReadEvent<'_> {
             DescriptorReadState::Mq(e) => e.run(state),
             DescriptorReadState::Pipe(e) => e.run(state),
             DescriptorReadState::Stdin(e) => e.run(state),
+            DescriptorReadState::Timerfd(e) => e.run(state),
         }
     }
 }
@@ -1362,6 +1377,12 @@ impl Event for DescriptorWriteEvent<'_> {
                             fd_info.nonblocking,
                             self.data.take().unwrap(),
                         ));
+                    }
+                    FdResource::Timerfd(timerfd_info) => {
+                        // File descriptor is not supposed to be writeable, should
+                        // set errno to EBADF
+                        // TODO Pass in an event instead
+                        return Outcome::Error(Errno::EBADF)
                     }
                     FdResource::Inotify(_) => unimplemented!("inotify write()"),
                     FdResource::Opaque => unreachable!(),
