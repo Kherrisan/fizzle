@@ -219,7 +219,7 @@ pub struct TimerPosixInfo {
     pub signal: Option<i32>,
     pub exptime: Duration,
     /// Number of timer expirations since the last `timer_settime()` call
-    pub overruns: libc::c_int,
+    pub overruns: u64,
 }
 
 /// Used to holder information about the timer file descriptor when
@@ -430,6 +430,41 @@ impl Event for TimerSettimeEvent {
         })
     }
 }
+
+pub struct TimerGetoverrunEvent {
+    pub timerid: i64,
+}
+
+impl TimerGetoverrunEvent {
+    pub fn new(timerid: i64) -> Self {
+        Self { timerid }
+    }
+}
+
+impl Event for TimerGetoverrunEvent {
+    type Success = libc::c_int;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let current_time = state.global.current_time;
+
+        /// The TimerInfo object currently stored in the local state
+        let Some(timer_info_const) = state.local.timers_posix.get(&self.timerid) else { return Outcome::Error(Errno::EINVAL); };
+
+        let overrun_count: u64 = timer_info_const.overruns;
+
+        if (overrun_count > libc::c_int::MAX as u64) {
+            // POSIX standards require that we return the DELAYTIMER_MAX in
+            // the event the number of overruns exceeds the size of the
+            // field to return.
+            Outcome::Success(libc::c_int::MAX)
+        }
+        else {
+            Outcome::Success(overrun_count as libc::c_int)
+        }
+    }
+}
+
 
 
 pub enum TimerfdReadState {
