@@ -62,11 +62,11 @@
 # By default, most I/O methods apply on program startup.
 # The exception to this is `fuzz` and `plugin` methods, which are established at the start of each fuzzing round.
 
-#[io."sctp-server:127.0.0.1:38412"]
-#method = "plugin" # The means of passing I/O on the device
-#module = "fizzle-ngap" # The name of the cargo crate to source the plugin from
-#plugin = "NgapServer" # The name of the `Plugin` implementation to be used
-
+[io."sctp-server:127.0.1.100:38412"]
+method = "plugin" # The means of passing I/O on the device
+when = "perround"
+module = "fizzle-plugin-ngap-server" # The name of the cargo crate to source the plugin from
+plugin = "NgapServer" # The name of the `Plugin` implementation to be used
 
 
 #[io."tcp-client:127.0.0.1:80".config]

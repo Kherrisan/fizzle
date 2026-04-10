@@ -987,6 +987,9 @@ impl Event for SocketConnectEvent {
                             }
                         };
 
+                        // Fix double mutable borrow
+                        drop(server_sock_mut);
+
                         server_socket_info.borrow_mut().state =
                             SocketState::Connected(ConnectedSocket {
                                 backend: connected_backend,

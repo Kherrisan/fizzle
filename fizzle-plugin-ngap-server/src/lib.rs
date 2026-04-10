@@ -10,7 +10,8 @@ use asnfuzzgen_codecs::aper::AperCodec;
 use asnfuzzgen_codecs::PerCodecData;
 use fizzle_plugin::{Plugin, PluginError, PluginModule};
 
-use crate::ngap::NGAP_PDU;
+use crate::ngap::{AMFName, Criticality, NGAP_PDU, ProcedureCode, ProtocolIE_ID, SuccessfulOutcome, SuccessfulOutcomeValue};
+use crate::ngap::{NGSetupResponse, NGSetupResponseProtocolIEs, NGSetupResponseProtocolIEs_Entry, NGSetupResponseProtocolIEs_EntryValue};
 
 pub enum NgapState {
     PreNgapSetup,
@@ -53,6 +54,29 @@ impl PluginModule for NgapServer {
                     };
 
                     // TODO: continue here, pull out fields from NGSetupRequest, create NGSetupResponse and encode to `response_bytes` buffer.
+                    
+                    // Let's see if sending the same NGSetupResponse every time
+                    // will cause any problems.
+                    let mut ng_setup_response_protocol_i_es = NGSetupResponseProtocolIEs(Vec::new());
+
+                    // TODO Add the NGSetupResponseProtocolIEs_Entry structs to NGSetupResponseProtocolIEs
+                    // TODO Check if it compiles first, I guess
+                    ng_setup_response_protocol_i_es.0.push(
+                        NGSetupResponseProtocolIEs_Entry{
+                            id: ProtocolIE_ID(1),
+                            criticality: ngap::Criticality(Criticality::REJECT),
+                            value: NGSetupResponseProtocolIEs_EntryValue::Id_AMFName(AMFName("Fizzle".to_owned())),
+                        }
+                    );
+                        
+                    let mut response_ngap_pdu = NGAP_PDU::SuccessfulOutcome(SuccessfulOutcome {
+                        procedure_code: ProcedureCode(21),  // ngsetup is response code 21
+                        criticality: Criticality {0: Criticality::REJECT},
+                        value: SuccessfulOutcomeValue::Id_NGSetup(NGSetupResponse {
+                            protocol_i_es: ng_setup_response_protocol_i_es
+                        }),
+                    });
+
 
                 },
                 NgapState::PostNgapSetup => todo!(),
