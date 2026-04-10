@@ -109,9 +109,22 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn timer_getoverrun(
-        _timerid: libc::timer_t
-    ) -> libc::time_t => fizzle_timer_getoverrun(_ctx) {
-        unimplemented!("timer_getoverrun()")
+        timerid: libc::timer_t
+    ) -> libc::c_int => fizzle_timer_getoverrun(ctx) {
+        crate::strace!("timer_getoverrun(timerid={:?}) -> ...", timerid);
+        
+        let timerid_int = timerid as i64;
+
+        match Scheduler::handle_event(&mut ctx, TimerGetoverrunEvent::new(timerid_int)) {
+            Ok(overrun_count) => {
+                crate::strace!("timer_getoverrun(timerid={:?}) -> {}", timerid, overrun_count);
+                overrun_count
+            },
+            Err(e) => {
+                crate::strace!("timer_getoverrun(timerid={:?}) -> -1 ({})", timerid, e);
+                -1
+            },
+        }
     }
 }
 
