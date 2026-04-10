@@ -1,8 +1,16 @@
+use std::cell::RefCell;
+use std::cmp;
+use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use crate::errno::Errno;
-use crate::scheduler::{Event, Outcome};
-use crate::state::{FizzleState, ReadyInfo, ScheduledItem, TimerType};
+use crate::GlobalRc;
+use crate::handlers::descriptor::{Descriptor, DescriptorInfo, FdResource, ReadData};
+use crate::handlers::poller::PollerInfo;
+use crate::scheduler::{Event, fizzle_alloc, Outcome, YieldUntil};
+use crate::state::{FizzleState, ReadyInfo, ScheduledItem, TimerType, TimerIdType};
+
+use super::polled::PolledInfo;
 
 #[derive(Clone)]
 pub struct ItimerInfo {
@@ -187,7 +195,7 @@ impl Event for SetItimerEvent {
             if !timer_duration.is_zero() {
                 // Add the new timer
                 state.global.ready.push(ScheduledItem {
-                    info: ReadyInfo::Timer(current_pid, self.which, 0, None),
+                    info: ReadyInfo::Timer(current_pid, self.which, TimerIdType::Itimer(()), None),
                     timestamp: current_time + timer_duration,
                 });
             }
@@ -210,6 +218,16 @@ pub struct TimerPosixInfo {
     pub interval: Duration,
     pub signal: Option<i32>,
     pub exptime: Duration,
+    /// Number of timer expirations since the last `timer_settime()` call
+    pub overruns: libc::c_int,
+}
+
+/// Used to holder information about the timer file descriptor when
+/// created by the `timerfd_*()` functions in Linux.
+pub struct TimerfdInfo {
+    pub polled: GlobalRc<PolledInfo>,
+    /// Information about the timer itself
+    pub timerid: i64,
 }
 
 pub struct TimerCreateEvent {
@@ -236,6 +254,7 @@ impl Event for TimerCreateEvent {
             interval: Duration::ZERO,
             signal: self.signal_to_send,
             exptime: Duration::ZERO,
+            overruns: 0,  // No overruns yet, this is a fresh new timer.
         });
 
         // Grab the current process's PID and the current time for later use
@@ -277,7 +296,7 @@ impl Event for TimerDeleteEvent {
 
         state.global.ready.retain(|r| match &r.info {
             ReadyInfo::Timer(pid, type_, timerid, signo) if 
-                &current_pid == pid && &self.timerid == timerid => true,
+                &current_pid == pid && &TimerIdType::Timer(self.timerid) == timerid => true,
             _ => false,
         });
 
@@ -309,7 +328,7 @@ impl Event for TimerGettimeEvent {
 
         let ready = state.global.ready.iter().find(|r| match &r.info {
             ReadyInfo::Timer(pid, type_, timerid, signo) 
-                if &current_pid == pid && &self.timerid == timerid => true,
+                if &current_pid == pid && &TimerIdType::Timer(self.timerid) == timerid => true,
             _ => false,
         });
 
@@ -354,6 +373,7 @@ impl Event for TimerSettimeEvent {
             interval: timer_info_const.interval,
             signal: timer_info_const.signal,
             exptime: timer_info_const.exptime,
+            overruns: timer_info_const.overruns
         };
 
         let old_interval = timer_info.interval;
@@ -363,7 +383,7 @@ impl Event for TimerSettimeEvent {
         // See if there's already a scheduled timer
         let ready = state.global.ready.iter().find(|r| match &r.info {
             ReadyInfo::Timer(pid, type_, timerid, signo) if 
-                &current_pid == pid && &self.timerid == timerid => true,
+                &current_pid == pid && &TimerIdType::Timer(self.timerid) == timerid => true,
             _ => false,
         });
 
@@ -376,7 +396,7 @@ impl Event for TimerSettimeEvent {
             // If any timer was in the process of completing, remove it
             state.global.ready.retain(|r| match &r.info {
                 ReadyInfo::Timer(pid, type_, timerid, signo) if 
-                    &current_pid == pid && &self.timerid == timerid => true,
+                    &current_pid == pid && &TimerIdType::Timer(self.timerid) == timerid => true,
                 _ => false,
             });
 
@@ -389,18 +409,16 @@ impl Event for TimerSettimeEvent {
                 timer_info.exptime = self.new_value.val;
             }
 
-            state.local.timers_posix.insert(self.timerid, timer_info);
-
             // Put the new and improved TimerPosixInfo object back into the HashMap
+            state.local.timers_posix.insert(self.timerid, timer_info);
 
             let timer_duration = if timer_info.interval.is_zero() { timer_info.interval } else { timer_info.exptime };
 
-            // TODO Find out if bad things will happen if you schedule something in the past. If
-            // so, be more careful about not doing that.
             if !timer_duration.is_zero() {
                 // Add the new timer
                 state.global.ready.push(ScheduledItem {
-                    info: ReadyInfo::Timer(current_pid, TimerType::ClockRealtime, self.timerid, timer_info.signal),
+                    info: ReadyInfo::Timer(current_pid, TimerType::ClockRealtime, 
+                              TimerIdType::Timer(self.timerid), timer_info.signal),
                     timestamp: current_time + timer_duration,
                 });
             }
@@ -413,3 +431,249 @@ impl Event for TimerSettimeEvent {
     }
 }
 
+
+pub enum TimerfdReadState {
+    Start,
+    Finish(Option<GlobalRc<PollerInfo>>),
+}
+
+pub struct TimerfdReadEvent<'a> {
+    timerfd_info: GlobalRc<TimerfdInfo>,
+    nonblocking: bool,
+    data: ReadData<'a>,
+    state: TimerfdReadState,
+}
+
+impl<'a> TimerfdReadEvent<'a> {
+    #[inline]
+    pub fn new(timerfd_info: GlobalRc<TimerfdInfo>, nonblocking: bool, data: ReadData<'a>) -> Self {
+        Self {
+            timerfd_info,
+            nonblocking,
+            data,
+            state: TimerfdReadState::Start,
+        }
+    }
+}
+
+impl Event for TimerfdReadEvent<'_> {
+    type Success = usize;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let ReadData::Iovec(iovec) = &mut self.data else {
+            unreachable!(
+                "internal error--buffer other than ReadData::Iovec passed to TimerfdReadEvent"
+            );
+        };
+
+        let timer_id = self.timerfd_info.borrow().timerid;
+
+        match &self.state {
+            TimerfdReadState::Start => {
+                let polled = self.timerfd_info.borrow().polled.clone();
+
+                if state.polled_is_ready(&polled) {
+                    self.state = TimerfdReadState::Finish(None);
+                    Outcome::Yield(YieldUntil::Immediate)
+                } else if self.nonblocking {
+                    Outcome::Error(Errno::EAGAIN)
+                } else {
+                    let poller_id = state.new_poller();
+                    state.register_poller(poller_id.clone(), polled.clone());
+                    self.state = TimerfdReadState::Finish(Some(poller_id));
+                    Outcome::Yield(YieldUntil::None)
+                }
+            }
+            TimerfdReadState::Finish(poller) => {
+                if let Some(poller) = poller {
+                    state.delete_poller(poller.clone());
+                }
+                let Some(timer_info) = state.local.timers_posix.get(&timer_id) 
+                    else { panic!("Invalid timer ID stored in FdResource::Timerfd(TimerFdInfo)") };
+                // Read the value out of the variable
+                // TODO Get the correct value out of the state
+                let overruns: u64 = timer_info.overruns as u64;
+
+                // Convert overruns integer into bytes in platform-native
+                // order.
+                let overruns_bytes = overruns.to_ne_bytes();
+
+                let mut total_read = 0;
+                for slice in iovec.iter_mut() {
+                    let v_read = cmp::min(overruns_bytes.len() - total_read, slice.len());
+                    slice.copy_from_slice(&overruns_bytes[total_read..total_read + v_read]);
+                    total_read += v_read;
+                }
+
+                Outcome::Success(total_read)
+            }
+        }
+    }
+}
+
+
+pub struct TimerfdCreateEvent {
+    /// The file descriptor number with which to create this `Timerfd` object
+    pub fd: i32,
+    pub clockid: libc::clockid_t,
+}
+
+impl TimerfdCreateEvent {
+    pub fn new(fd: i32, clockid: libc::clockid_t) -> Self {
+        Self { fd, clockid }
+    }
+}
+
+impl Event for TimerfdCreateEvent {
+    type Success = i64;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        state.local.timer_posix_state.next_timer += 1;
+        let current_timer_id = state.local.timer_posix_state.next_timer - 1;
+
+        state.local.timers_posix.insert(current_timer_id, TimerPosixInfo {
+            clockid: self.clockid,
+            interval: Duration::ZERO,
+            signal: None,
+            exptime: Duration::ZERO,
+            overruns: 0,  // No overruns yet, this is a new timer.
+        });
+
+        state.local.fds.insert(
+            Descriptor::from_raw_fd(self.fd),
+            DescriptorInfo {
+                close_on_exec: false,
+                nonblocking: false,
+                is_passthrough: false,
+                is_random: false,
+                // Rc - heap allocated object with reference counter ("smart pointer").
+                // fizzle_alloc() - The custom allocator for Fizzle that allocates into shared
+                // memory across all processes.
+                // RefCell - "global variable", allows mutability to be checked at runtime rather
+                // than compile time.
+                // PolledInfo - You can call `raise_polled()` to indicate that the polling
+                // processes should be woken up.
+                resource: FdResource::Timerfd(Rc::new_in(
+                        RefCell::new(TimerfdInfo {
+                            polled: Rc::new_in(
+                                RefCell::new(PolledInfo {
+                                    pollers: Vec::new_in(fizzle_alloc()),
+                                    event_raised: false,
+                                }),
+                                fizzle_alloc(),
+                            ),
+                            timerid: current_timer_id,
+                    }),
+                    fizzle_alloc(),
+                ))
+            }
+        );
+
+        Outcome::Success(current_timer_id)
+    }
+}
+
+
+pub struct TimerfdSettimeEvent {
+    pub fd: libc::c_int,
+    pub is_absolute: bool,
+    pub new_value: ItimerValue,
+}
+
+impl TimerfdSettimeEvent {
+    pub fn new(fd: libc::c_int, is_absolute: bool, new_value: ItimerValue) -> Self {
+        Self { fd, is_absolute, new_value }
+    }
+}
+
+impl Event for TimerfdSettimeEvent {
+    type Success = ItimerValue;
+    type Error = Errno;
+
+    fn run(&mut self, state: &mut FizzleState) -> Outcome<Self::Success, Self::Error> {
+        let current_time = state.global.current_time;
+
+        let Some(fd_info) = state.local.fds.get(&Descriptor::from_raw_fd(self.fd)) else {
+            return Outcome::Error(Errno::EBADF);
+        };
+
+        let timerfd_info_const = match &fd_info.resource {
+            FdResource::Timerfd(timerfd_info_const) => timerfd_info_const,
+            _ => return Outcome::Error(Errno::EINVAL),
+        };
+
+        /// The internal ID given to this timer.
+        let internal_timer_id = timerfd_info_const.borrow().timerid;
+
+        /// The TimerInfo object currently stored in the local state
+        let Some(timer_info_const) = state.local.timers_posix.get(&internal_timer_id) else { panic!("Invalid timer ID stored in FdResource::Timerfd(TimerFdInfo)") };
+
+        let mut timer_info: TimerPosixInfo = TimerPosixInfo {
+            clockid: timer_info_const.clockid,
+            interval: timer_info_const.interval,
+            signal: timer_info_const.signal,
+            exptime: timer_info_const.exptime,
+            overruns: timer_info_const.overruns,
+        };
+
+        let old_interval = timer_info.interval;
+
+        let current_pid = state.local.process_info.borrow().pid;
+
+        // See if there's already a scheduled timer
+        let ready = state.global.ready.iter().find(|r| match &r.info {
+            ReadyInfo::Timer(pid, type_, timerfdint, signo) if 
+                &current_pid == pid && &TimerIdType::Fd(self.fd) == timerfdint => true,
+            _ => false,
+        });
+
+        let old_remaining = match ready {
+            Some(ScheduledItem { timestamp, .. }) => timestamp.saturating_sub(current_time),
+            None => Duration::ZERO,
+        };
+
+        if let ItimerValue { interval, val } = &self.new_value {
+            // If any timer was in the process of completing, remove it
+            state.global.ready.retain(|r| match &r.info {
+                ReadyInfo::Timer(pid, type_, timerfdint, signo) if 
+                    &current_pid == pid && &TimerIdType::Fd(self.fd) == timerfdint => true,
+                _ => false,
+            });
+
+            // Set the interval and expiration time for the TimerInfo object
+            timer_info.interval = self.new_value.interval;
+            if (self.is_absolute) {
+                timer_info.exptime = self.new_value.val - current_time;
+            }
+            else {
+                timer_info.exptime = self.new_value.val;
+            }
+
+            // Put the new and improved TimerPosixInfo object back into the HashMap
+            state.local.timers_posix.insert(internal_timer_id, timer_info);
+
+            let timer_duration = if timer_info.interval.is_zero() { timer_info.interval } else { timer_info.exptime };
+
+            if !timer_duration.is_zero() {
+                // Add the new timer
+                // TODO What to put instead of the ReadyInfo::Timer? We need to 
+                // update the internal state some how so that, when the
+                // timer expires, an overrun counter is incremented and 
+                // any select() or poll() calls waiting on this timer
+                // should be notified. Also, anyone blocked on read()
+                // should get unblocked.
+                state.global.ready.push(ScheduledItem {
+                    info: ReadyInfo::Timer(current_pid, TimerType::ClockRealtime, TimerIdType::Fd(self.fd), timer_info.signal),
+                    timestamp: current_time + timer_duration,
+                });
+            }
+        };
+
+        Outcome::Success(ItimerValue {
+            interval: old_interval,
+            val: old_remaining,
+        })
+    }
+}

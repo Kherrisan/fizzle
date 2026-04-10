@@ -1999,7 +1999,7 @@ impl Ord for ScheduledItem {
 pub enum ReadyInfo {
     Poller(GlobalRc<PollerInfo>),
     Worker(Worker),
-    Timer(Pid, TimerType, i64, Option<libc::c_int>),  // (PID, TimerType, TimerID, SignalNumber)
+    Timer(Pid, TimerType, TimerIdType, Option<libc::c_int>),  // (PID, TimerType, TimerID, SignalNumber)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2037,6 +2037,17 @@ impl TimerType {
             TimerType::ClockMonotonic => 0,
         }
     }
+}
+
+/// The type of timer identifier.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TimerIdType {
+    /// Posix timer
+    Timer(i64),
+    /// Timerfd
+    Fd(libc::c_int),
+    /// Itimer (no timer ID)
+    Itimer(()),
 }
 
 #[derive(Clone, Debug)]
