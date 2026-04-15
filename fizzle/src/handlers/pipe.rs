@@ -215,10 +215,6 @@ impl Event for PipeReadEvent<'_> {
                 }
             }
             PipeReadState::Finish(poller) => {
-                if let Some(poller) = poller {
-                    state.delete_poller(poller.clone());
-                }
-
                 let peer_is_closed = self.pipe_info.borrow().peer.upgrade().is_none();
                 let pipe_mode = self.pipe_info.borrow().mode;
 
@@ -228,9 +224,20 @@ impl Event for PipeReadEvent<'_> {
                 let read_polled = self.pipe_info.borrow().read_polled.clone();
 
                 if buf_mut.is_empty() {
-                    assert!(peer_is_closed);
-                    // TODO: sigpipe to self?
-                    return Outcome::Success(0);
+                    if peer_is_closed {
+                        // TODO: sigpipe to self?
+                        return Outcome::Success(0);
+                    } else if poller.is_some() {
+                        // Some other file descriptor beat this one to the read--wait for another
+                        // raised polled...
+                        return Outcome::Yield(YieldUntil::None)
+                    } else {
+                        unreachable!("Pipe read yielded zero bytes despite not blocking");
+                    }
+                }
+
+                if let Some(poller) = poller {
+                    state.delete_poller(poller.clone());
                 }
 
                 let total_read = match pipe_mode {
