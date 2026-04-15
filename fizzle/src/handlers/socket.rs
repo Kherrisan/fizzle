@@ -987,9 +987,6 @@ impl Event for SocketConnectEvent {
                             }
                         };
 
-                        // Fix double mutable borrow
-                        drop(server_sock_mut);
-
                         server_socket_info.borrow_mut().state =
                             SocketState::Connected(ConnectedSocket {
                                 backend: connected_backend,
@@ -3569,7 +3566,30 @@ impl Event for SocketWriteEvent<'_> {
                     }
                 }
             }
-            _ => Outcome::Error(Errno::EINVAL), // Invalid socket state
+            _ => {
+                match (&mut borrowed_socket_info.state) {
+                    SocketState::Connected(_) => {
+                        crate::strace!("Invalid socket state: connected");
+                    }
+                    SocketState::Connectionless(_) => {
+                        crate::strace!("Invalid socket state: connectionless");
+                    }
+                    SocketState::Unassociated(_) => {
+                        crate::strace!("Invalid socket state: unassociated");
+                    }
+                    SocketState::Server(_) => {
+                        crate::strace!("Invalid socket state: server");
+                    }
+                    SocketState::PendingConnection(_) => {
+                        crate::strace!("Invalid socket state: pendingconnection");
+                    }
+                    SocketState::Connecting(_) => {
+                        crate::strace!("Invalid socket state: connecting");
+                    }
+                }
+                Outcome::Error(Errno::EINVAL)  // Invalid socket state
+            }
         }
     }
 }
+
