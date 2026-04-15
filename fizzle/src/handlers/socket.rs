@@ -198,6 +198,29 @@ pub enum SocketState {
     Connected(ConnectedSocket),
 }
 
+impl SocketState {
+    pub fn discriminant(&self) -> SocketStateDiscriminant {
+        match self {
+            SocketState::Connectionless(_) => SocketStateDiscriminant::Connectionless,
+            SocketState::Unassociated(_) => SocketStateDiscriminant::Unassociated,
+            SocketState::Server(_) => SocketStateDiscriminant::Server,
+            SocketState::PendingConnection(_) => SocketStateDiscriminant::PendingConnection,
+            SocketState::Connecting(_) => SocketStateDiscriminant::Connecting,
+            SocketState::Connected(_) => SocketStateDiscriminant::Connected,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SocketStateDiscriminant {
+    Connectionless,
+    Unassociated,
+    Server,
+    PendingConnection,
+    Connecting,
+    Connected,
+}
+
 pub struct ConnectionlessSocket {
     pub backend: ConnectionlessBackend,
     pub rem_addr: Option<TransportAddress>,
@@ -868,10 +891,12 @@ impl Event for SocketConnectEvent {
                 let _addr = get_or_assign_local(&mut socket_info, state);
 
                 let mut borrowed_socket_info = socket_info.borrow_mut();
+                let socket_state = borrowed_socket_info.state.discriminant();
                 let protocol = borrowed_socket_info.protocol;
+                drop(borrowed_socket_info);
 
-                match &mut borrowed_socket_info.state {
-                    SocketState::Unassociated(_) => {
+                match socket_state {
+                    SocketStateDiscriminant::Unassociated => {
                         let dst_addr = TransportAddress {
                             sockaddr: self.dst_addr.clone(),
                             protocol,
@@ -932,7 +957,7 @@ impl Event for SocketConnectEvent {
                                     fizzle_alloc(),
                                 );
 
-                                borrowed_socket_info.state = SocketState::Connecting(ConnectingSocket {
+                                socket_info.borrow_mut().state = SocketState::Connecting(ConnectingSocket {
                                     backend: ConnectingBackend::Peered(()),
                                     connect_polled: client_poll.clone(),
                                 });
@@ -996,15 +1021,19 @@ impl Event for SocketConnectEvent {
 
                         Outcome::Success(())
                     }
-                    SocketState::Server(_) => {
+                    SocketStateDiscriminant::Server => {
                         log::error!("connect() called on listening socket--unsupported by Fizzle");
                         Outcome::Error(Errno::EINVAL)
                     }
-                    SocketState::PendingConnection(_) => unreachable!(),
-                    SocketState::Connecting(c) => {
+                    SocketStateDiscriminant::PendingConnection => unreachable!(),
+                    SocketStateDiscriminant::Connecting => {
                         if nonblocking {
                             Outcome::Error(Errno::EINPROGRESS)
                         } else {
+                            let SocketState::Connecting(c) = &mut socket_info.borrow_mut().state else {
+                                unreachable!()
+                            };
+
                             let client_poll = c.connect_polled.clone();
 
                             if state.polled_is_ready(&client_poll) {
@@ -1019,8 +1048,12 @@ impl Event for SocketConnectEvent {
                             }
                         }
                     }
-                    SocketState::Connected(_) => Outcome::Error(Errno::EISCONN),
-                    SocketState::Connectionless(conn) => {
+                    SocketStateDiscriminant::Connected => Outcome::Error(Errno::EISCONN),
+                    SocketStateDiscriminant::Connectionless => {
+                        let SocketState::Connectionless(conn) = &mut socket_info.borrow_mut().state else {
+                            unreachable!()
+                        };
+
                         let dst_addr = TransportAddress {
                             sockaddr: self.dst_addr.clone(),
                             protocol,
