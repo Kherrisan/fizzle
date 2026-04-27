@@ -987,10 +987,9 @@ impl Event for SocketConnectEvent {
                             }
                         };
 
-                        // Fix double mutable borrow
-                        drop(server_sock_mut);
-
-                        server_socket_info.borrow_mut().state =
+                        // TODO This does not appear to be updating because the
+                        // original location in memory is not updated.
+                        borrowed_socket_info.state =
                             SocketState::Connected(ConnectedSocket {
                                 backend: connected_backend,
                                 rem_addr: dst_addr,
@@ -3572,22 +3571,22 @@ impl Event for SocketWriteEvent<'_> {
             _ => {
                 match (&mut borrowed_socket_info.state) {
                     SocketState::Connected(_) => {
-                        crate::strace!("Invalid socket state: connected");
+                        log::warn!("Invalid socket state: connected");
                     }
                     SocketState::Connectionless(_) => {
-                        crate::strace!("Invalid socket state: connectionless");
+                        log::warn!("Invalid socket state: connectionless");
                     }
                     SocketState::Unassociated(_) => {
-                        crate::strace!("Invalid socket state: unassociated");
+                        log::warn!("Invalid socket state: unassociated");
                     }
                     SocketState::Server(_) => {
-                        crate::strace!("Invalid socket state: server");
+                        log::warn!("Invalid socket state: server");
                     }
                     SocketState::PendingConnection(_) => {
-                        crate::strace!("Invalid socket state: pendingconnection");
+                        log::warn!("Invalid socket state: pendingconnection");
                     }
                     SocketState::Connecting(_) => {
-                        crate::strace!("Invalid socket state: connecting");
+                        log::warn!("Invalid socket state: connecting");
                     }
                 }
                 Outcome::Error(Errno::EINVAL)  // Invalid socket state
