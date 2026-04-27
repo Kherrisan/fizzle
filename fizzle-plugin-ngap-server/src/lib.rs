@@ -77,6 +77,9 @@ impl PluginModule for NgapServer {
                         }),
                     });
 
+                    let mut pdu_data = PerCodecData::new_aper();
+                    response_ngap_pdu.aper_encode(&mut pdu_data).unwrap();
+                    self.response_bytes = pdu_data.into_bytes();
 
                 },
                 NgapState::PostNgapSetup => todo!(),
