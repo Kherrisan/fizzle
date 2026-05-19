@@ -115,7 +115,7 @@ pub unsafe extern "C" fn execl(
 
     let mut args = vec![unsafe { CStr::from_ptr(arg).to_owned() }];
     loop {
-        let arg: *const libc::c_char = va_args.arg();
+        let arg: *const libc::c_char = va_args.next_arg();
         if arg.is_null() {
             break;
         }
@@ -170,7 +170,7 @@ pub unsafe extern "C" fn execlp(
 
     let mut args = vec![unsafe { CStr::from_ptr(arg).to_owned() }];
     loop {
-        let arg: *const libc::c_char = va_args.arg();
+        let arg: *const libc::c_char = va_args.next_arg();
         if arg.is_null() {
             break;
         }
@@ -225,14 +225,14 @@ pub unsafe extern "C" fn execle(
 
     let mut args = vec![unsafe { CStr::from_ptr(arg).to_owned() }];
     loop {
-        let arg: *const libc::c_char = va_args.arg();
+        let arg: *const libc::c_char = va_args.next_arg();
         if arg.is_null() {
             break;
         }
         args.push(unsafe { CStr::from_ptr(pathname).to_owned() });
     }
 
-    let envp: *const *const libc::c_char = va_args.arg();
+    let envp: *const *const libc::c_char = va_args.next_arg();
     let mut env = Vec::new();
     let mut env_idx = 0;
     loop {

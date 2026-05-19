@@ -58,21 +58,21 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         return match number {
             libc::SYS_statx => {
-                let dirfd: libc::c_int = va_args.arg();
-                let pathname: *const libc::c_char = va_args.arg();
-                let flags: libc::c_int = va_args.arg();
-                let mask: libc::c_uint = va_args.arg();
-                let statxbuf: *mut libc::statx = va_args.arg();
+                let dirfd: libc::c_int = va_args.next_arg();
+                let pathname: *const libc::c_char = va_args.next_arg();
+                let flags: libc::c_int = va_args.next_arg();
+                let mask: libc::c_uint = va_args.next_arg();
+                let statxbuf: *mut libc::statx = va_args.next_arg();
 
                 hook_macros::real_syscall()(number, dirfd, pathname, flags, mask, statxbuf)
             }
             libc::SYS_futex => {
-                let uaddr: *mut u32 = va_args.arg();
-                let futex_op: libc::c_int = va_args.arg();
-                let val: u32 = va_args.arg();
-                let timeout: *const libc::timespec = va_args.arg();
-                let uaddr2: *mut u32 = va_args.arg();
-                let val3: u32 = va_args.arg();
+                let uaddr: *mut u32 = va_args.next_arg();
+                let futex_op: libc::c_int = va_args.next_arg();
+                let val: u32 = va_args.next_arg();
+                let timeout: *const libc::timespec = va_args.next_arg();
+                let uaddr2: *mut u32 = va_args.next_arg();
+                let val3: u32 = va_args.next_arg();
 
                 hook_macros::real_syscall()(number, uaddr, futex_op, val, timeout, uaddr2, val3)
             }
@@ -86,9 +86,9 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
 
     let res = match number {
         libc::SYS_read => {
-            let fd: libc::c_int = va_args.arg();
-            let buf: *mut libc::c_void = va_args.arg();
-            let count: libc::size_t = va_args.arg();
+            let fd: libc::c_int = va_args.next_arg();
+            let buf: *mut libc::c_void = va_args.next_arg();
+            let count: libc::size_t = va_args.next_arg();
             let descriptor_id = Descriptor::from_raw_fd(fd);
 
             crate::strace!("syscall(SYS_read, {fd}, {buf:?}, {count}) -> ...");
@@ -107,9 +107,9 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
             }
         }
          libc::SYS_write => {
-            let fd: libc::c_int = va_args.arg();
-            let buf: *const libc::c_void = va_args.arg();
-            let count: libc::size_t = va_args.arg();
+            let fd: libc::c_int = va_args.next_arg();
+            let buf: *const libc::c_void = va_args.next_arg();
+            let count: libc::size_t = va_args.next_arg();
             let descriptor_id = Descriptor::from_raw_fd(fd);
             let data = slice::from_raw_parts(buf.cast::<u8>(), count);
 
@@ -128,13 +128,13 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
             }
         }       
         libc::SYS_open => {
-            let pathname: *const libc::c_char = va_args.arg();
-            let flags: libc::c_int = va_args.arg();
-            let mode: libc::mode_t = va_args.arg();
+            let pathname: *const libc::c_char = va_args.next_arg();
+            let flags: libc::c_int = va_args.next_arg();
+            let mode: libc::mode_t = va_args.next_arg();
             unsafe { libc::open(pathname, flags, mode) as i64 }
         }
         libc::SYS_close => {
-            let fd: libc::c_int = va_args.arg();
+            let fd: libc::c_int = va_args.next_arg();
             let descriptor_id = Descriptor::from_raw_fd(fd);
 
             crate::strace!("syscall(SYS_close, {fd}) -> ...");
@@ -159,9 +159,9 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
         }
         libc::SYS_sched_getaffinity => {
             crate::strace!("syscall(SYS_sched_getaffinity, ...) -> ...");
-            let pid: libc::pid_t = va_args.arg();
-            let cpusetsize: libc::size_t = va_args.arg();
-            let mask: *mut libc::cpu_set_t = va_args.arg();
+            let pid: libc::pid_t = va_args.next_arg();
+            let cpusetsize: libc::size_t = va_args.next_arg();
+            let mask: *mut libc::cpu_set_t = va_args.next_arg();
 
             let res = hook_macros::real_syscall()(number, pid, cpusetsize, mask);
             crate::strace!("syscall(SYS_sched_getaffinity, pid={}, cupusetsize={}, mask={:?}) -> {}", pid, cpusetsize, mask, res);
@@ -169,14 +169,14 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
         }
         libc::SYS_gettid => {
             crate::strace!("syscall(SYS_gettid) -> ...");
-            let res = hook_macros::real_syscall()(number);
+            let res = hook_macros::real_syscall()(number, 0u32); // TODO: 0u32 applied even though not needed
             crate::strace!("syscall(SYS_gettid) -> {}", res);
             res
         }
         libc::SYS_getrandom => {
-            let buf: *mut libc::c_void = va_args.arg();
-            let buflen: libc::size_t = va_args.arg();
-            let flags: libc::c_uint = va_args.arg();
+            let buf: *mut libc::c_void = va_args.next_arg();
+            let buflen: libc::size_t = va_args.next_arg();
+            let flags: libc::c_uint = va_args.next_arg();
 
             crate::strace!(
                 "syscall(SYS_getrandom, buf={:?}, buflen={}, flags={}) -> ...",
@@ -201,9 +201,9 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
             }
         }
         libc::SYS_futex => {
-            let uaddr: *mut u32 = va_args.arg();
-            let futex_op: libc::c_int = va_args.arg();
-            let val: u32 = va_args.arg();
+            let uaddr: *mut u32 = va_args.next_arg();
+            let futex_op: libc::c_int = va_args.next_arg();
+            let val: u32 = va_args.next_arg();
 
             let futex_private_flag = (futex_op & libc::FUTEX_PRIVATE_FLAG) != 0;
             let _futex_clock_realtime = (futex_op & libc::FUTEX_CLOCK_REALTIME) != 0;
@@ -215,7 +215,7 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
 
             match futex_op {
                 libc::FUTEX_WAIT => {
-                    let timeout_ptr: *const libc::timespec = va_args.arg();
+                    let timeout_ptr: *const libc::timespec = va_args.next_arg();
                     let timeout = if timeout_ptr.is_null() {
                         None
                     } else {
@@ -276,8 +276,8 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                     }
                 }
                 libc::FUTEX_REQUEUE => {
-                    let timeout_ptr: *const libc::timespec = va_args.arg();
-                    let uaddr2: *mut u32 = va_args.arg();
+                    let timeout_ptr: *const libc::timespec = va_args.next_arg();
+                    let uaddr2: *mut u32 = va_args.next_arg();
                     let timeout = if timeout_ptr.is_null() {
                         None
                     } else {
@@ -303,9 +303,9 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                     }
                 }
                 libc::FUTEX_CMP_REQUEUE => {
-                    let timeout_ptr: *const libc::timespec = va_args.arg();
-                    let uaddr2: *mut u32 = va_args.arg();
-                    let val3: u32 = va_args.arg();
+                    let timeout_ptr: *const libc::timespec = va_args.next_arg();
+                    let uaddr2: *mut u32 = va_args.next_arg();
+                    let val3: u32 = va_args.next_arg();
 
                     let timeout = if timeout_ptr.is_null() {
                         None
@@ -332,9 +332,9 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                     }
                 }
                 libc::FUTEX_WAKE_OP => {
-                    let timeout_ptr: *const libc::timespec = va_args.arg();
-                    let uaddr2: *mut u32 = va_args.arg();
-                    let val3: u32 = va_args.arg();
+                    let timeout_ptr: *const libc::timespec = va_args.next_arg();
+                    let uaddr2: *mut u32 = va_args.next_arg();
+                    let val3: u32 = va_args.next_arg();
 
                     // Convert timeout to val2
                     let val2 = u32::from_le_bytes(
@@ -362,9 +362,9 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                     }
                 }
                 libc::FUTEX_WAIT_BITSET => {
-                    let timeout_ptr: *const libc::timespec = va_args.arg();
-                    let uaddr2: *mut u32 = va_args.arg();
-                    let val3: u32 = va_args.arg();
+                    let timeout_ptr: *const libc::timespec = va_args.next_arg();
+                    let uaddr2: *mut u32 = va_args.next_arg();
+                    let val3: u32 = va_args.next_arg();
 
                     let timeout = if timeout_ptr.is_null() {
                         None
@@ -399,9 +399,9 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
                 }
 
                 libc::FUTEX_WAKE_BITSET => {
-                    let _timeout: *const libc::timespec = va_args.arg();
-                    let _uaddr2: *mut u32 = va_args.arg();
-                    let val3: u32 = va_args.arg();
+                    let _timeout: *const libc::timespec = va_args.next_arg();
+                    let _uaddr2: *mut u32 = va_args.next_arg();
+                    let val3: u32 = va_args.next_arg();
 
                     crate::strace!(
                         "syscall(SYS_futex, uaddr={:?}, futex_op={}, val={}, val3={}) -> ...",
@@ -435,24 +435,24 @@ pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc
             }
         }
         libc::SYS_membarrier => {
-            let cmd: libc::c_int = va_args.arg();
-            let flags: libc::c_int = va_args.arg();
+            let cmd: libc::c_int = va_args.next_arg();
+            let flags: libc::c_int = va_args.next_arg();
             hook_macros::real_syscall()(libc::SYS_membarrier, cmd, flags)
         }
         libc::SYS_mprotect => {
-            let addr: *const libc::c_void = va_args.arg();
-            let len: libc::size_t = va_args.arg();
-            let prot: libc::c_int = va_args.arg();
+            let addr: *const libc::c_void = va_args.next_arg();
+            let len: libc::size_t = va_args.next_arg();
+            let prot: libc::c_int = va_args.next_arg();
             hook_macros::real_syscall()(libc::SYS_mprotect, addr, len, prot)
         }
         libc::SYS_capget => {
-            let hdrp: *const libc::c_void = va_args.arg();
-            let datap: *const libc::c_void = va_args.arg();
+            let hdrp: *const libc::c_void = va_args.next_arg();
+            let datap: *const libc::c_void = va_args.next_arg();
             hook_macros::real_syscall()(libc::SYS_capget, hdrp, datap)
         }
         libc::SYS_capset => {
-            let hdrp: *const libc::c_void = va_args.arg();
-            let datap: *const libc::c_void = va_args.arg();
+            let hdrp: *const libc::c_void = va_args.next_arg();
+            let datap: *const libc::c_void = va_args.next_arg();
             hook_macros::real_syscall()(libc::SYS_capset, hdrp, datap)
         }
         _ => panic!("syscall({}, ...) unsupported by Fizzle", number),

@@ -176,7 +176,7 @@ pub unsafe extern "C" fn fcntl64(fd: libc::c_int, cmd: libc::c_int, mut va_args:
             | libc::F_NOTIFY
             | libc::F_SETPIPE_SZ
             | libc::F_ADD_SEALS => {
-                let arg: libc::c_int = va_args.arg();
+                let arg: libc::c_int = va_args.next_arg();
                 hook_macros::real_fcntl()(fd, cmd, arg)
             }
             libc::F_GETFD
@@ -197,7 +197,7 @@ pub unsafe extern "C" fn fcntl64(fd: libc::c_int, cmd: libc::c_int, mut va_args:
             | F_SET_RW_HINT
             | F_GET_FILE_RW_HINT
             | F_SET_FILE_RW_HINT => {
-                let arg: *mut libc::c_void = va_args.arg();
+                let arg: *mut libc::c_void = va_args.next_arg();
                 hook_macros::real_fcntl()(fd, cmd, arg)
             }
             _ => {
@@ -210,47 +210,47 @@ pub unsafe extern "C" fn fcntl64(fd: libc::c_int, cmd: libc::c_int, mut va_args:
     crate::strace!("fcntl(fd={}, cmd={}, ...) -> ...", fd, cmd);
 
     let command = match cmd {
-        libc::F_DUPFD => FcntlCommand::DupFd(va_args.arg()),
-        libc::F_DUPFD_CLOEXEC => FcntlCommand::DupFdCloexec(va_args.arg()),
-        libc::F_SETFD => FcntlCommand::SetFd(va_args.arg()),
-        libc::F_SETFL => FcntlCommand::SetFl(va_args.arg()),
-        libc::F_SETOWN => FcntlCommand::SetOwn(va_args.arg()),
-        F_SETSIG => FcntlCommand::SetSig(va_args.arg()),
-        libc::F_NOTIFY => FcntlCommand::Notify(va_args.arg()),
-        libc::F_SETPIPE_SZ => FcntlCommand::SetPipeSize(va_args.arg()),
-        libc::F_ADD_SEALS => FcntlCommand::AddSeals(va_args.arg()),
+        libc::F_DUPFD => FcntlCommand::DupFd(va_args.next_arg()),
+        libc::F_DUPFD_CLOEXEC => FcntlCommand::DupFdCloexec(va_args.next_arg()),
+        libc::F_SETFD => FcntlCommand::SetFd(va_args.next_arg()),
+        libc::F_SETFL => FcntlCommand::SetFl(va_args.next_arg()),
+        libc::F_SETOWN => FcntlCommand::SetOwn(va_args.next_arg()),
+        F_SETSIG => FcntlCommand::SetSig(va_args.next_arg()),
+        libc::F_NOTIFY => FcntlCommand::Notify(va_args.next_arg()),
+        libc::F_SETPIPE_SZ => FcntlCommand::SetPipeSize(va_args.next_arg()),
+        libc::F_ADD_SEALS => FcntlCommand::AddSeals(va_args.next_arg()),
         libc::F_GETFD => FcntlCommand::GetFd,
         libc::F_GETFL => FcntlCommand::GetFl,
         libc::F_GETOWN => FcntlCommand::GetOwn,
         libc::F_GETLEASE => FcntlCommand::GetLease,
         libc::F_GET_SEALS => FcntlCommand::GetSeals,
         libc::F_SETLK => {
-            FcntlCommand::SetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+            FcntlCommand::SetLock(unsafe { &mut *(va_args.next_arg::<*mut libc::flock>()) })
         }
         libc::F_SETLKW => {
-            FcntlCommand::SetLockWait(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+            FcntlCommand::SetLockWait(unsafe { &mut *(va_args.next_arg::<*mut libc::flock>()) })
         }
         libc::F_GETLK => {
-            FcntlCommand::GetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+            FcntlCommand::GetLock(unsafe { &mut *(va_args.next_arg::<*mut libc::flock>()) })
         }
         libc::F_OFD_SETLK => {
-            FcntlCommand::OfdSetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+            FcntlCommand::OfdSetLock(unsafe { &mut *(va_args.next_arg::<*mut libc::flock>()) })
         }
         libc::F_OFD_SETLKW => {
-            FcntlCommand::OfdSetLockWait(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+            FcntlCommand::OfdSetLockWait(unsafe { &mut *(va_args.next_arg::<*mut libc::flock>()) })
         }
         libc::F_OFD_GETLK => {
-            FcntlCommand::OfdGetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+            FcntlCommand::OfdGetLock(unsafe { &mut *(va_args.next_arg::<*mut libc::flock>()) })
         }
-        F_GETOWN_EX => FcntlCommand::GetOwnEx(unsafe { &mut *(va_args.arg::<*mut f_owner_ex>()) }),
-        F_SETOWN_EX => FcntlCommand::SetOwnEx(unsafe { &mut *(va_args.arg::<*mut f_owner_ex>()) }),
-        F_GET_RW_HINT => FcntlCommand::GetRwHint(unsafe { &mut *(va_args.arg::<*mut u64>()) }),
-        F_SET_RW_HINT => FcntlCommand::SetRwHint(unsafe { &mut *(va_args.arg::<*mut u64>()) }),
+        F_GETOWN_EX => FcntlCommand::GetOwnEx(unsafe { &mut *(va_args.next_arg::<*mut f_owner_ex>()) }),
+        F_SETOWN_EX => FcntlCommand::SetOwnEx(unsafe { &mut *(va_args.next_arg::<*mut f_owner_ex>()) }),
+        F_GET_RW_HINT => FcntlCommand::GetRwHint(unsafe { &mut *(va_args.next_arg::<*mut u64>()) }),
+        F_SET_RW_HINT => FcntlCommand::SetRwHint(unsafe { &mut *(va_args.next_arg::<*mut u64>()) }),
         F_GET_FILE_RW_HINT => {
-            FcntlCommand::GetFileRwHint(unsafe { &mut *(va_args.arg::<*mut u64>()) })
+            FcntlCommand::GetFileRwHint(unsafe { &mut *(va_args.next_arg::<*mut u64>()) })
         }
         F_SET_FILE_RW_HINT => {
-            FcntlCommand::SetFileRwHint(unsafe { &mut *(va_args.arg::<*mut u64>()) })
+            FcntlCommand::SetFileRwHint(unsafe { &mut *(va_args.next_arg::<*mut u64>()) })
         }
         _ => {
             strace!("fcntl(fd={}, cmd={}, ...) -> -1 (EINVAL)", fd, cmd);
@@ -293,7 +293,7 @@ pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: .
             | libc::F_NOTIFY
             | libc::F_SETPIPE_SZ
             | libc::F_ADD_SEALS => {
-                let arg: libc::c_int = va_args.arg();
+                let arg: libc::c_int = va_args.next_arg();
                 hook_macros::real_fcntl()(fd, cmd, arg)
             }
             libc::F_GETFD
@@ -314,7 +314,7 @@ pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: .
             | F_SET_RW_HINT
             | F_GET_FILE_RW_HINT
             | F_SET_FILE_RW_HINT => {
-                let arg: *mut libc::c_void = va_args.arg();
+                let arg: *mut libc::c_void = va_args.next_arg();
                 hook_macros::real_fcntl()(fd, cmd, arg)
             }
             _ => {
@@ -326,48 +326,48 @@ pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: .
 
     crate::strace!("fcntl(fd={}, cmd={}, ...) -> ...", fd, cmd);
 
-    let command = match cmd {
-        libc::F_DUPFD => FcntlCommand::DupFd(va_args.arg()),
-        libc::F_DUPFD_CLOEXEC => FcntlCommand::DupFdCloexec(va_args.arg()),
-        libc::F_SETFD => FcntlCommand::SetFd(va_args.arg()),
-        libc::F_SETFL => FcntlCommand::SetFl(va_args.arg()),
-        libc::F_SETOWN => FcntlCommand::SetOwn(va_args.arg()),
-        F_SETSIG => FcntlCommand::SetSig(va_args.arg()),
-        libc::F_NOTIFY => FcntlCommand::Notify(va_args.arg()),
-        libc::F_SETPIPE_SZ => FcntlCommand::SetPipeSize(va_args.arg()),
-        libc::F_ADD_SEALS => FcntlCommand::AddSeals(va_args.arg()),
+    let command = unsafe { match cmd {
+        libc::F_DUPFD => FcntlCommand::DupFd(va_args.next_arg()),
+        libc::F_DUPFD_CLOEXEC => FcntlCommand::DupFdCloexec(va_args.next_arg()),
+        libc::F_SETFD => FcntlCommand::SetFd(va_args.next_arg()),
+        libc::F_SETFL => FcntlCommand::SetFl(va_args.next_arg()),
+        libc::F_SETOWN => FcntlCommand::SetOwn(va_args.next_arg()),
+        F_SETSIG => FcntlCommand::SetSig(va_args.next_arg()),
+        libc::F_NOTIFY => FcntlCommand::Notify(va_args.next_arg()),
+        libc::F_SETPIPE_SZ => FcntlCommand::SetPipeSize(va_args.next_arg()),
+        libc::F_ADD_SEALS => FcntlCommand::AddSeals(va_args.next_arg()),
         libc::F_GETFD => FcntlCommand::GetFd,
         libc::F_GETFL => FcntlCommand::GetFl,
         libc::F_GETOWN => FcntlCommand::GetOwn,
         libc::F_GETLEASE => FcntlCommand::GetLease,
         libc::F_GET_SEALS => FcntlCommand::GetSeals,
         libc::F_SETLK => {
-            FcntlCommand::SetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+            FcntlCommand::SetLock(unsafe { &mut *(va_args.next_arg::<*mut libc::flock>()) })
         }
         libc::F_SETLKW => {
-            FcntlCommand::SetLockWait(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+            FcntlCommand::SetLockWait(unsafe { &mut *(va_args.next_arg::<*mut libc::flock>()) })
         }
         libc::F_GETLK => {
-            FcntlCommand::GetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+            FcntlCommand::GetLock(unsafe { &mut *(va_args.next_arg::<*mut libc::flock>()) })
         }
         libc::F_OFD_SETLK => {
-            FcntlCommand::SetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+            FcntlCommand::SetLock(unsafe { &mut *(va_args.next_arg::<*mut libc::flock>()) })
         }
         libc::F_OFD_SETLKW => {
-            FcntlCommand::SetLockWait(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+            FcntlCommand::SetLockWait(unsafe { &mut *(va_args.next_arg::<*mut libc::flock>()) })
         }
         libc::F_OFD_GETLK => {
-            FcntlCommand::GetLock(unsafe { &mut *(va_args.arg::<*mut libc::flock>()) })
+            FcntlCommand::GetLock(unsafe { &mut *(va_args.next_arg::<*mut libc::flock>()) })
         }
-        F_GETOWN_EX => FcntlCommand::GetOwnEx(unsafe { &mut *(va_args.arg::<*mut f_owner_ex>()) }),
-        F_SETOWN_EX => FcntlCommand::SetOwnEx(unsafe { &mut *(va_args.arg::<*mut f_owner_ex>()) }),
-        F_GET_RW_HINT => FcntlCommand::GetRwHint(unsafe { &mut *(va_args.arg::<*mut u64>()) }),
-        F_SET_RW_HINT => FcntlCommand::SetRwHint(unsafe { &mut *(va_args.arg::<*mut u64>()) }),
+        F_GETOWN_EX => FcntlCommand::GetOwnEx(unsafe { &mut *(va_args.next_arg::<*mut f_owner_ex>()) }),
+        F_SETOWN_EX => FcntlCommand::SetOwnEx(unsafe { &mut *(va_args.next_arg::<*mut f_owner_ex>()) }),
+        F_GET_RW_HINT => FcntlCommand::GetRwHint(unsafe { &mut *(va_args.next_arg::<*mut u64>()) }),
+        F_SET_RW_HINT => FcntlCommand::SetRwHint(unsafe { &mut *(va_args.next_arg::<*mut u64>()) }),
         F_GET_FILE_RW_HINT => {
-            FcntlCommand::GetFileRwHint(unsafe { &mut *(va_args.arg::<*mut u64>()) })
+            FcntlCommand::GetFileRwHint(unsafe { &mut *(va_args.next_arg::<*mut u64>()) })
         }
         F_SET_FILE_RW_HINT => {
-            FcntlCommand::SetFileRwHint(unsafe { &mut *(va_args.arg::<*mut u64>()) })
+            FcntlCommand::SetFileRwHint(unsafe { &mut *(va_args.next_arg::<*mut u64>()) })
         }
         _ => {
             strace!("fcntl(fd={}, cmd={}, ...) -> -1 (EINVAL)", fd, cmd);
@@ -375,7 +375,7 @@ pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: .
             crate::state::set_entered_handler(false);
             return -1;
         }
-    };
+    }};
 
     match Scheduler::handle_event(
         &mut ctx,
