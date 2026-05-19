@@ -1,82 +1,8 @@
 
 # To learn more about how to define values in TOML, see https://toml.io/en/v1.0.0
 
-# [[process]]
-# path = "/bin/bash"
-# args = ["-e", "-h"]
-# when = "onstartup"
-
-
-# Potential improvements (Seaver)
-
-# look at something random to increase coverage -- statically analyze functions that do good stuff?
-# Look at coverage! Does it help?
-
-# Some binaries are some networking, mostly not...
-# How would it do on binaries that are .5% networking?
-
-# Run it on a non-networked binary!
-# Hello world?
-# Run on FuzzBench--does it increase fuzzing speed generally? Show a control for the experiment
-# -> Show you didn't break anything with AFL++
-
-# Expect to find about this much vulns, found this much vulns
-
-# Stuff is hard to model! (network stuff)
-# You'll need to test a lot of programs and make sure it makes right
-# File: Copy on Write
-
-# Edge case: YubiKeys (won't be able to model deterministically)
-# Copy on Write won't handle correctly
-
-# Programs that depend on the hardware could have bitflips that make nondeterministic
-
-# Reviewers will come up with a bunch of edge cases that are out of scope but nonetheless technically
-# make the system non-deterministic
-
-# "Even if you control 100% of your software, there can be nondeterminism in your hardware"
-# As long as:
-# - We control all timing primitives
-# - We control all inputs into the process (via syscall interposition)
-
-# The more (less?) threads that exist, the more faster it runs!
-
-
-#[fizzle]
-#max_fds = "100" # TODO: implement this in the future with build.rs
-
 # The "io" table lists I/O endpoints and corresponding actions that should be taken for each.
 [io]
-#"sctp-client:127.0.0.2:36412" = "fuzz"
-# stdio = "fuzz" # Consume all input, produce fuzzing data as output
 "file:/dev/null" = "nullsink" # Consume all input, produce repeating 0s
+"stdio" = "fuzz" # Fuzz this endpoint
 
-#"tcp-client:127.0.0.1:25" = "fuzz"
-
-# For Magma only
-"tcp-server:192.168.61.132:3868" = "sink"
-
-#"file:./myconfig" = "feedback" # Output whatever is given as input
-#"udp-server:127.0.0.1:53" = "passthrough" # Pass on to an actual network service (warning: unstable)
-
-# By default, most I/O methods apply on program startup.
-# The exception to this is `fuzz` and `plugin` methods, which are established at the start of each fuzzing round.
-
-[io."sctp-server:127.0.1.100:38412"]
-method = "plugin" # The means of passing I/O on the device
-when = "perround"
-module = "fizzle-plugin-ngap-server" # The name of the cargo crate to source the plugin from
-plugin = "NgapServer" # The name of the `Plugin` implementation to be used
-
-
-#[io."tcp-client:127.0.0.1:80".config]
-
-#[io."tcp-client:127.0.0.1:8080"]
-#method = "plugin" # The means of passing I/O on the device
-#module = "fizzle-http" # The name of the cargo crate to source the plugin from
-#plugin = "HttpClient" # The name of the `Plugin` implementation to be used
-#streams = 1 # Establishes 5 client connections with the given server.
-
-#[io."tcp-client:127.0.0.1:8080".config]
-# Arbitrary configuration options specific to `fizzle-http` go here
-# This configuration is passed
