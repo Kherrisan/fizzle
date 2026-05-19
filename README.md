@@ -1,50 +1,34 @@
-
-- Cross-platform idea--running with Wine?
-
-
-# Notes
-
-A useful option for reproducing fuzzing behavior in AFL++ is:
-
-`-s seed       - use a fixed seed for the RNG`
-
-This leads to a variable within AFL++ internal state being set:
-
-`OKF("Running with fixed seed: %u", (u32)afl->init_seed);`
-
-Unfortunately, we cannot use this for deriving randomness in Fizzle prior to the first fuzzing round.
-Instead, we implement something ourselves.
+# 🔌⚡ Fizzle ⚡🔌 - A Fuzzing Harness for Eliminating Instability in Network Applications
 
 
-# FAQ
+Fizzle is a dynamically-linked shared library for emulating system library functions in a deterministic manner to a *NIX application. It is designed to be preloaded (either via LD_PRELOAD or DYLD_INSERT_LIBRARIES) to interpose libc functions, and it comes with a configurable I/O plugin interface for providing custom inputs to network sockets, nameserver lookups, files and the like.
 
-1. Fizzle keeps crashing with a bus error in my Docker/Podman container or VM!
+If you use this work as part of a publication, cite the following [paper](https://www.computer.org/csdl/proceedings-article/sp/2026/606500b689/2bojwkNTstO):
 
-To share state among processes, Fizzle allocates a sizeable portion of shared memory (around 65MB per harness with standard settings applied).
-Containers enforce a maximum of 64MB in /dev/shm. To overcome this, use `--shm-size=<amount>` during `docker run`, where `<amount>` is equal to some memory amount (`1gb` usually works well). This won't immediately consume 1 gigabyte of memory; it will simply give the container the ability to allocate up to that amount as shared memory.
+```
+@inproceedings{bennett2026fizzle,
+    title={{Fizzle: {A} Framework for Deterministic and Reproducible Network Fuzzing}},
+    booktitle={{2026 IEEE Symposium on Security and Privacy (S\&P)}},
+    author={Bennett, Nathaniel and Tucker, Tyler and Stillman, Carson and Enck, William and Traynor, Patrick and Butler, Kevin R. B.},
+    month={may},
+    year={2026}
+}
+```
 
-2. I want to run Fizzle with AFL++ in deferred forserver mode, but it isn't working.
+## Project Status
 
-Make sure to set the environment variable `AFL_DEFER_FORKSRV=1` when running `afl-fuzz`.
-This is necessary as Fizzle performs deferred initialization of the forkserver; as Fizzle is a shared library, `afl-fuzz` can't detect its presence in the binary and so will assume no deferred initialization is available unless you set this flag.
+Fizzle is at this time an experimental research project, not a production-ready tool. Ongoing development is going into making Fizzle handle system library APIs in a more comprehensive and robust manner, and we will happily consider pull requests from those who wish to contribute to the project. If you are looking for production-grade deterministic simulation testing, [Antithesis](https://antithesis.com/) is another deterministic simulation testing tool that offers paid support.
 
-Note that deferred forkserver fuzzing will not work for multi-process fuzzing if deferred forkserver is used.
-We recommend using Nyx with Fizzle to fuzz multi-process applications.
+## Security Model
 
-3. I want to fuzz a Go binary
+Fizzle is a tool for application fuzzing, **not** sandboxing. Though fizzle interposes system library functions, it can be readily circumvented by an application. In general, you should run Fizzle only if you trust the application you are testing, and are not passing in inputs that may be controlled by an adversary (as there may be internal bugs in Fizzle's handling of userspace simulation that could be affected by such).
 
-Go is unique among languages in that it implements system calls from scratch on Linux instead of linking to libc.
-This means that `LD_PRELOAD` will not interpose system calls for Go programs; this is a more fundamental limitation of using LD_PRELOAD.
-Thankfully, there's a workaraound to this.
+## Prerequisites
 
-Several operating systems (notably MacOS and Solaris) do not define a stable ABI for syscalls, but instead mandate that applications use the provided standard library.
-As a result, Go binaries that are build for these platforms use libc calls instead of raw system calls to communicate with the OS.
-To use Fizzle with Go binaries, simply cross-compile the application you would like to fuzz to Solaris or MacOS and run fuzzing within on of these operating systems.
+- [AFLPlusPlus](github.com/AFLplusplus/AFLplusplus) or [libAFL](https://github.com/AFLplusplus/LibAFL) fuzzing engine
+- Coverage feedback compiled into the target binary using AFLPlusPlus (or alternatively remove `afl` build feature to use in black-box contexts such as AFL-QEMU)
+- Rust nightly (see [https://rust-lang.org/tools/install/](https://rust-lang.org/tools/install/))
 
-4. I want to fuzz a Go binary, but I don't have source code access to cross-compile and I only have the binary for Linux
+## Examples
 
-Okay, okay, you got me. Fizzle can't fuzz closed-source Go binaries that are built only for Linux, for reasons outlined in (3) and (5). Fizzle is *nearly* universally compatible across programming language/UNIX OS combinations; this is the one exception (unless there are other esoteric languages that re-implement syscalls by themselves; those would fall under this category too).
-
-5. Can I use fizzle against a program that calls raw system calls?
-
-It depends. If the program uses the `syscall()` libc function (as is the case for gRPC), then Fizzle should be able to run your program (so long as it doesn't call a syscall not recognized by Fizzle). If the program uses hand-crafted assembly blocks to call a system call (rare but possible), you're out of luck--Fizzle won't work for your program.
+Several examples of tuning Fizzle for miscellaneous network servers can be found in the companion artifact repository, [determsim/fizzle-artifact](https://https://github.com/determsim/fizzle-artifact). More to follow in this repository.
