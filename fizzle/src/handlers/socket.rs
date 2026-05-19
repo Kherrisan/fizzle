@@ -1014,7 +1014,7 @@ impl Event for SocketConnectEvent {
 
                         // TODO This does not appear to be updating because the
                         // original location in memory is not updated.
-                        borrowed_socket_info.state =
+                        socket_info.borrow_mut().state =
                             SocketState::Connected(ConnectedSocket {
                                 backend: connected_backend,
                                 rem_addr: dst_addr,
