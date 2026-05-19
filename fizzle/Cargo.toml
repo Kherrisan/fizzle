@@ -17,8 +17,6 @@ afl = []
 pcr = ["afl"]
 passthroughfs = []
 quikcov = []
-sigsan = []
-sigsan_posix = ["sigsan"]
 
 [build-dependencies]
 proc-macro2 = { version = "1.0" }

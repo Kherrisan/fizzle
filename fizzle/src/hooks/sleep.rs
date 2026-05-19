@@ -3,17 +3,9 @@ use std::time::Duration;
 use crate::handlers::sleep::SleepEvent;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
-#[cfg(feature = "sigsan")]
-use crate::state::in_sighandler;
 
 hook_macros::hook! {
     unsafe fn pause() -> libc::c_int => fizzle_pause(ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function pause() called within signal handler")
-            }
-        }
 
         crate::strace!("pause() -> ...");
         match Scheduler::handle_event(&mut ctx, SleepEvent::new(None)) {
@@ -31,12 +23,6 @@ hook_macros::hook! {
     unsafe fn sleep(
         seconds: libc::c_uint
     ) -> libc::c_uint => fizzle_sleep(ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function sleep() called within signal handler")
-            }
-        }
 
         crate::strace!("sleep(seconds={}) -> ...", seconds);
         match Scheduler::handle_event(&mut ctx, SleepEvent::new(Some(Duration::from_secs(seconds as u64)))) {

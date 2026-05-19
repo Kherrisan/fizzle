@@ -15,8 +15,6 @@ use crate::handlers::process::*;
 use crate::handlers::signal::*;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
-#[cfg(feature = "sigsan")]
-use crate::state::in_sighandler;
 
 pub type CloneFunction = unsafe extern "C" fn(*mut libc::c_void) -> libc::c_int;
 
@@ -26,12 +24,6 @@ pub type CloneFunction = unsafe extern "C" fn(*mut libc::c_void) -> libc::c_int;
 
 hook_macros::hook! {
     unsafe fn fork() -> libc::pid_t => fizzle_fork(ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fork() called within signal handler")
-            }
-        }
 
         crate::strace!("fork() -> ...");
 
@@ -60,12 +52,6 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn vfork() -> libc::pid_t => fizzle_vfork(ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function vfork() called within signal handler")
-            }
-        }
 
         // TODO: set `vfork` local flag to check for UB
         crate::strace!("vfork() -> ...");
@@ -123,12 +109,6 @@ pub unsafe extern "C" fn execl(
     mut va_args: ...
 ) -> libc::c_int {
 
-    #[cfg(feature = "sigsan")] {
-        if in_sighandler() {
-            panic!("async-signal-unsafe function execl() called within signal handler")
-        }
-    }
-
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("calls to `execl()` within Fizzle not allowed");
     };
@@ -183,12 +163,6 @@ pub unsafe extern "C" fn execlp(
     arg: *const libc::c_char,
     mut va_args: ...
 ) -> libc::c_int {
-
-    #[cfg(feature = "sigsan")] {
-        if in_sighandler() {
-            panic!("async-signal-unsafe function execlp() called within signal handler")
-        }
-    }
 
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("calls to `execlp()` within Fizzle not allowed");
@@ -245,12 +219,6 @@ pub unsafe extern "C" fn execle(
     mut va_args: ...
 ) -> libc::c_int {
 
-    #[cfg(feature = "sigsan")] {
-        if in_sighandler() {
-            panic!("async-signal-unsafe function execle() called within signal handler")
-        }
-    }
-    
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("calls to `execle()` within Fizzle not allowed");
     };
@@ -393,13 +361,6 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn execvp(file: *const libc::c_char, argv: *const *const libc::c_char) -> libc::c_int => fizzle_execvp(ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function execvp() called within signal handler")
-            }
-        }
-
         let mut args = Vec::new();
         let mut arg_idx = 0;
         loop {
@@ -667,13 +628,6 @@ hook_macros::hook! {
 
 hook_macros::hook! {
      unsafe fn system(command: *const libc::c_char) -> libc::c_int => fizzle_system(_ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function system() called within signal handler")
-            }
-        }
-
         // env is inherited, so no variables need to be defined
         let fizzle_memory = env::var(FIZZLE_MEMORY_ENV).unwrap();
         let fizzle_alloc = env::var(FIZZLE_ALLOC_ENV).unwrap();
@@ -693,13 +647,6 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn exit(status: libc::c_int) => fizzle_exit(ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function exit() called within signal handler")
-            }
-        }
-
         crate::strace!("exit(status={}) -> !", status);
         let _ = Scheduler::handle_event(&mut ctx, ProcessExitEvent::new(status, true));
         panic!("exit() failed to exit")
@@ -725,12 +672,6 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn atexit(cb: AtExitFunction) -> libc::c_int => fizzle_atexit(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function atexit() called within signal handler")
-            }
-        }
-
         crate::strace!("atexit(cb={:?}) -> ...", cb);
         match Scheduler::handle_event(&mut ctx, ProcessAtExitEvent::new(cb)) {
             Ok(()) => {
@@ -744,12 +685,6 @@ hook_macros::hook! {
 
 hook_macros::hook! {
     unsafe fn on_exit(cb: OnExitFunction, arg: *mut libc::c_void) -> libc::c_int => fizzle_on_exit(ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function on_exit() called within signal handler")
-            }
-        }
 
         crate::strace!("on_exit(cb={:?}, arg={:?}) -> ...", cb, arg);
         match Scheduler::handle_event(&mut ctx, ProcessOnExitEvent::new(cb, arg)) {
@@ -903,12 +838,6 @@ pub unsafe extern "C" fn clone(
     let Some(_ctx) = crate::hooks::pre_hook() else {
         panic!("calls to `clone()` within Fizzle not allowed");
     };
-
-    #[cfg(feature = "sigsan")] {
-        if in_sighandler() {
-            panic!("async-signal-unsafe function clone() called within signal handler")
-        }
-    }
 
     // Feels more like a thread initially...
     // But also kind of acts more like `fork()`

@@ -5,8 +5,6 @@ use crate::errno::Errno;
 use crate::handlers::descriptor::*;
 use crate::scheduler::Scheduler;
 use crate::{hook_macros, strace};
-#[cfg(feature = "sigsan")]
-use crate::state::in_sighandler;
 
 hook_macros::hook! {
     unsafe fn close(
@@ -211,12 +209,6 @@ pub unsafe extern "C" fn fcntl64(fd: libc::c_int, cmd: libc::c_int, mut va_args:
 
     crate::strace!("fcntl(fd={}, cmd={}, ...) -> ...", fd, cmd);
 
-    #[cfg(feature = "sigsan")] {
-        if in_sighandler() {
-            panic!("async-signal-unsafe function fcntl() called within signal handler")
-        }
-    }
-
     let command = match cmd {
         libc::F_DUPFD => FcntlCommand::DupFd(va_args.arg()),
         libc::F_DUPFD_CLOEXEC => FcntlCommand::DupFdCloexec(va_args.arg()),
@@ -333,12 +325,6 @@ pub unsafe extern "C" fn fcntl(fd: libc::c_int, cmd: libc::c_int, mut va_args: .
     };
 
     crate::strace!("fcntl(fd={}, cmd={}, ...) -> ...", fd, cmd);
-
-    #[cfg(feature = "sigsan")] {
-        if in_sighandler() {
-            panic!("async-signal-unsafe function fcntl() called within signal handler")
-        }
-    }
 
     let command = match cmd {
         libc::F_DUPFD => FcntlCommand::DupFd(va_args.arg()),

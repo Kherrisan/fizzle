@@ -74,28 +74,6 @@ pub fn set_entered_sighandler(entered: bool) {
     });
 }
 
-/// Indicates whether the thread being called from is currently in a signal handler.
-#[cfg(feature = "sigsan")]
-pub fn in_sighandler() -> bool {
-    /*
-    if unsafe { IN_SIGHANDLER_META.get_and_set() } {
-        return true
-    }
-    */
-
-    let mut in_sighandler = false;
-    IN_SIGHANDLER.with(|e| unsafe {
-        in_sighandler = *e.as_ptr();
-    });
-
-    /*
-    unsafe {
-        IN_SIGHANDLER_META.clear();
-    }
-    */
-    in_sighandler
-}
-
 /// Marks the thread as currently executing within a fizzle handler.
 pub fn set_entered_handler(entered: bool) {
     ENTERED_HANDLER.with(|e| unsafe {

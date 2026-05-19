@@ -8,8 +8,6 @@ use crate::handlers::signal::*;
 use crate::handlers::thread::Tid;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
-#[cfg(feature = "sigsan")]
-use crate::state::in_sighandler;
 
 // SIGSEGV, SIGBUS, SIGFPE and family can't be caught using `sigwait` or `signalfd`. But SIGCHLD can...
 
@@ -116,12 +114,6 @@ hook_macros::hook! {
         sig: libc::c_int,
         flag: libc::c_int
     ) -> libc::c_int => fizzle_siginterrupt(_ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function siginterrupt() called within signal handler")
-            }
-        }
 
         log::error!("siginterrupt() unimplemented");
         // TODO: implement
@@ -443,12 +435,6 @@ hook_macros::hook! {
         set: *mut libc::sigset_t
     ) -> libc::c_int => fizzle_sigpending(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function sigpending() called within signal handler")
-            }
-        }
-
         crate::strace!("sigpending(set={:?}) -> ...", set);
 
         match Scheduler::handle_event(&mut ctx, SignalGetPendingEvent) {
@@ -471,13 +457,6 @@ hook_macros::hook! {
         set: *const libc::sigset_t,
         oldset: *mut libc::sigset_t
     ) -> libc::c_int => fizzle_sigprocmask(ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function sigprocmask() called within signal handler")
-            }
-        }
-
 
         let op = match how {
             libc::SIG_BLOCK => SigmaskOp::Block,
@@ -552,12 +531,6 @@ hook_macros::hook! {
     unsafe fn sigsuspend(
         mask: *const libc::sigset_t
     ) -> libc::c_int => fizzle_sigsuspend(ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function sigsuspend() called within signal handler")
-            }
-        }
 
         let sigmask = SignalSet::from_sigset(unsafe { *mask });
 

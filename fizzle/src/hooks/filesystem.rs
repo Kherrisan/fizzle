@@ -7,8 +7,6 @@ use crate::handlers::file::*;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
 use crate::strace;
-#[cfg(feature = "sigsan")]
-use crate::state::in_sighandler;
 
 hook_macros::hook! {
     unsafe fn lseek(

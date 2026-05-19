@@ -8,8 +8,6 @@ use crate::handlers::file::{AccessMode, FileOpenFlags, SeekPosition};
 use crate::handlers::filestream::*;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
-#[cfg(feature = "sigsan")]
-use crate::state::in_sighandler;
 
 const FSETLOCKING_QUERY: libc::c_int = 0;
 const FSETLOCKING_INTERNAL: libc::c_int = 1;
@@ -21,11 +19,6 @@ hook_macros::hook! {
         mode: *const libc::c_char
     ) -> *mut libc::FILE => fizzle_fdopen(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fdopen() called within signal handler")
-            }
-        }
 
         // SAFETY: caller guarantees `mode` points to a null-terminated string
         let mode_cstr = CStr::from_ptr(mode);
@@ -59,11 +52,6 @@ hook_macros::hook! {
         mode: *const libc::c_char
     ) -> *mut libc::FILE => fizzle_fopen(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fopen() called within signal handler")
-            }
-        }
 
         // SAFETY: caller guarantees `pathaname` and `mode` point to a null-terminated string
         let path_cstr = unsafe { CStr::from_ptr(pathname) };
@@ -140,11 +128,6 @@ hook_macros::hook! {
         mode: *const libc::c_char
     ) -> *mut libc::FILE => fizzle_fopen64(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fopen64() called within signal handler")
-            }
-        }
 
         // SAFETY: caller guarantees `pathaname` and `mode` point to a null-terminated string
         let path_cstr = unsafe { CStr::from_ptr(pathname) };
@@ -216,11 +199,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) -> *mut libc::FILE => fizzle_freopen(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function freopen() called within signal handler")
-            }
-        }
 
         // SAFETY: caller guarantees `pathaname` and `mode` point to a null-terminated string
         let path_cstr = unsafe { CStr::from_ptr(pathname) };
@@ -272,11 +250,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) -> *mut libc::FILE => fizzle_freopen64(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function freopen64() called within signal handler")
-            }
-        }
 
         // SAFETY: caller guarantees `pathaname` and `mode` point to a null-terminated string
         let path_cstr = unsafe { CStr::from_ptr(pathname) };
@@ -327,11 +300,6 @@ hook_macros::hook! {
         _mode: *const libc::c_char
     ) -> *mut libc::FILE => fizzle_fmemopen(_ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fmemopen() called within signal handler")
-            }
-        }
 
         unimplemented!("fmemopen()")
         // hook_macros::real!(fmemopen)(buf, size, mode)
@@ -344,11 +312,6 @@ hook_macros::hook! {
         _sizeloc: *mut libc::size_t
     ) -> *mut libc::FILE => fizzle_open_memstream(_ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function open_memstream() called within signal handler")
-            }
-        }
 
         unimplemented!("open_memstream()")
     }
@@ -360,11 +323,6 @@ hook_macros::hook! {
         _ty: *const libc::c_char
     ) -> *mut libc::FILE => fizzle_popen(_ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function popen() called within signal handler")
-            }
-        }
 
         unimplemented!("popen")
     }
@@ -375,11 +333,6 @@ hook_macros::hook! {
         _stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_pclose(_ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function pclose() called within signal handler")
-            }
-        }
 
         unimplemented!("pclose")
     }
@@ -390,11 +343,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_fclose(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fclose() called within signal handler")
-            }
-        }
 
         crate::strace!("fclose(stream={:?}) -> ...", stream);
 
@@ -427,11 +375,6 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn fflush(stream: *mut libc::FILE) -> libc::c_int => fizzle_fflush(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fflush() called within signal handler")
-            }
-        }
 
         crate::strace!("fflush(stream={:?}) -> ...", stream);
 
@@ -454,11 +397,6 @@ hook_macros::hook! {
 hook_macros::hook! {
     unsafe fn fflush_unlocked(stream: *mut libc::FILE) -> libc::c_int => fizzle_fflush_unlocked(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fflush_unlocked() called within signal handler")
-            }
-        }
 
         crate::strace!("fflush_unlocked(stream={:?}) -> ...", stream);
 
@@ -534,11 +472,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) -> libc::size_t => fizzle_fwrite(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fwrite() called within signal handler")
-            }
-        }
 
         crate::strace!("fwrite(ptr={:?}, size={}, nmemb={}, stream={:?}) -> ...", ptr, size, nmemb, stream);
 
@@ -573,11 +506,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) -> libc::size_t => fizzle_fwrite_unlocked(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fwrite_unlocked() called within signal handler")
-            }
-        }
 
         crate::strace!("fwrite_unlocked(ptr={:?}, size={}, nmemb={}, stream={:?}) -> ...", ptr, size, nmemb, stream);
 
@@ -610,11 +538,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) -> libc::size_t => fizzle_fread(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fread() called within signal handler")
-            }
-        }
 
         crate::strace!("fread(ptr={:?}, size={}, nmemb={}, stream={:?}) -> ...", ptr, size, nmemb, stream);
 
@@ -678,11 +601,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) -> libc::size_t => fizzle_fread_unlocked(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fread_unlocked() called within signal handler")
-            }
-        }
 
         crate::strace!("fread_unlocked(ptr={:?}, size={}, nmemb={}, stream={:?}) -> ...", ptr, size, nmemb, stream);
 
@@ -768,11 +686,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_getc(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function getc() called within signal handler")
-            }
-        }
 
         crate::strace!("getc(stream={:?}) -> ...", stream);
 
@@ -800,11 +713,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_fgetc(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fgetc() called within signal handler")
-            }
-        }
 
         crate::strace!("fgetc(stream={:?}) -> ...", stream);
 
@@ -832,11 +740,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_fgetc_unlocked(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fgetc_unlocked() called within signal handler")
-            }
-        }
 
         crate::strace!("fgetc_unlocked(stream={:?}) -> ...", stream);
 
@@ -866,11 +769,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) -> *mut libc::c_char => fizzle_fgets(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fgets() called within signal handler")
-            }
-        }
 
         crate::strace!("fgets(s={:?}, size={}, stream={:?}) -> ...", s, size, stream);
 
@@ -915,11 +813,6 @@ hook_macros::hook! {
         _stream: *mut libc::FILE
     ) -> *mut libc::c_char => fizzle_getline(_ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function getline() called within signal handler")
-            }
-        }
 
         unimplemented!()
     }
@@ -933,11 +826,6 @@ hook_macros::hook! {
         _stream: *mut libc::FILE
     ) -> *mut libc::c_char => fizzle_getdelim(_ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function getdelim() called within signal handler")
-            }
-        }
 
         unimplemented!()
     }
@@ -950,11 +838,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) -> *mut libc::c_char => fizzle_fgets_unlocked(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fgets_unlocked() called within signal handler")
-            }
-        }
 
         crate::strace!("fgets_unlocked(s={:?}, size={}, stream={:?}) -> ...", s, size, stream);
 
@@ -1000,11 +883,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_ungetc(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function ungetc() called within signal handler")
-            }
-        }
 
         crate::strace!("ungetc(c={:?}, stream={:?}) -> ...", c, stream);
 
@@ -1031,11 +909,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_fputc(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fputc() called within signal handler")
-            }
-        }
 
         crate::strace!("fputc(c={}, stream={:?}) -> ...", c, stream);
 
@@ -1064,11 +937,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_fputc_unlocked(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fputc_unlocked() called within signal handler")
-            }
-        }
 
         crate::strace!("fputc_unlocked(c={}, stream={:?}) -> ...", c, stream);
 
@@ -1096,11 +964,6 @@ hook_macros::hook! {
         c: libc::c_int
     ) -> libc::c_int => fizzle_putchar(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function putchar() called within signal handler")
-            }
-        }
 
         crate::strace!("putchar(c={}) -> ...", c);
 
@@ -1125,11 +988,6 @@ hook_macros::hook! {
         c: libc::c_int
     ) -> libc::c_int => fizzle_putchar_unlocked(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function putchar_unlocked() called within signal handler")
-            }
-        }
 
         crate::strace!("putchar_unlocked(c={}) -> ...", c);
 
@@ -1206,11 +1064,6 @@ hook_macros::hook! {
         s: *const libc::c_char
     ) -> libc::c_int => fizzle_puts(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function puts() called within signal handler")
-            }
-        }
 
         crate::strace!("puts(s={:?}) -> ...", s);
 
@@ -1282,11 +1135,6 @@ hook_macros::hook! {
         whence: libc::c_int
     ) -> libc::c_int => fizzle_fseek(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fseek() called within signal handler")
-            }
-        }
 
         crate::strace!("fseek(stream={:?}, offset={}, whence={}) -> ...", stream, offset, whence);
 
@@ -1337,11 +1185,6 @@ hook_macros::hook! {
         whence: libc::c_int
     ) -> libc::c_int => fizzle_fseeko(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fseeko() called within signal handler")
-            }
-        }
 
         crate::strace!("fseeko(stream={:?}, offset={}, whence={}) -> ...", stream, offset, whence);
 
@@ -1392,11 +1235,6 @@ hook_macros::hook! {
         whence: libc::c_int
     ) -> libc::c_int => fizzle_fseeko64(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fseeko64() called within signal handler")
-            }
-        }
 
         crate::strace!("fseeko(stream={:?}, offset={}, whence={}) -> ...", stream, offset, whence);
 
@@ -1445,11 +1283,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) -> libc::c_long => fizzle_ftell(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function ftell() called within signal handler")
-            }
-        }
 
         crate::strace!("ftell(stream={:?}) -> ...", stream);
 
@@ -1472,11 +1305,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) -> libc::c_long => fizzle_ftello(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function ftello() called within signal handler")
-            }
-        }
 
         crate::strace!("ftello(stream={:?}) -> ...", stream);
 
@@ -1499,11 +1327,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) -> libc::c_long => fizzle_ftello64(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function ftello64() called within signal handler")
-            }
-        }
 
         crate::strace!("ftello64(stream={:?}) -> ...", stream);
 
@@ -1526,11 +1349,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) => fizzle_rewind(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function rewind() called within signal handler")
-            }
-        }
 
         crate::strace!("rewind(stream={:?}) -> ...", stream);
 
@@ -1567,11 +1385,6 @@ hook_macros::hook! {
         pos: *mut i64 // was libc::fpos_t, but that isn't defined...
     ) -> libc::c_int => fizzle_fgetpos(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fgetpos() called within signal handler")
-            }
-        }
 
         crate::strace!("fgetpos(stream={:?}, pos={:?}) -> ...", stream, pos);
 
@@ -1598,11 +1411,6 @@ hook_macros::hook! {
         pos: *const i64 // was libc::fpos_t
     ) -> libc::c_int => fizzle_fsetpos(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fsetpos() called within signal handler")
-            }
-        }
 
         crate::strace!("fsetpos(stream={:?}, pos={:?}) -> ...", stream, pos);
 
@@ -1840,11 +1648,6 @@ hook_macros::hook! {
         size: libc::c_int
     ) -> libc::c_int => fizzle_setvbuf(_ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function setvbuf() called within signal handler")
-            }
-        }
 
         crate::strace!("setvbuf(stream={:?}, buf={:?}, mode={}, size={}) -> ...", stream, buf, mode, size);
 
@@ -1861,11 +1664,6 @@ hook_macros::hook! {
         buf: *mut libc::c_char
     ) => fizzle_setbuf(_ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function setbuf() called within signal handler")
-            }
-        }
 
         crate::strace!("setbuf(stream={:?}, buf={:?}) -> ...", stream, buf);
 
@@ -1882,11 +1680,6 @@ hook_macros::hook! {
         size: libc::c_int
     ) => fizzle_setbuffer(_ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function setbuffer() called within signal handler")
-            }
-        }
 
         crate::strace!("setbuffer(stream={:?}, buf={:?}, size={}) -> ...", stream, buf, size);
 
@@ -1901,11 +1694,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) => fizzle_setlinebuf(_ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function setlinebuf() called within signal handler")
-            }
-        }
 
         crate::strace!("setlinebuf(stream={:?}) -> ...", stream);
 
@@ -1920,11 +1708,6 @@ hook_macros::hook! {
         stream: *mut libc::FILE
     ) -> libc::c_int => fizzle_fpurge(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fpurge() called within signal handler")
-            }
-        }
 
         crate::strace!("fpurge(stream={:?}) -> ...", stream);
 
@@ -1952,11 +1735,6 @@ hook_macros::hook! {
     ) -> libc::size_t => fizzle_fbufsize(ctx) {
         crate::strace!("__fbufsize(stream={:?}) -> ...", stream);
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function __fbufsize() called within signal handler")
-            }           
-        }
 
         let Some(file_ptr) = FilePtr::from_raw(stream) else {
             panic!("invalid FILE* pointer passed to __fbufsize()")

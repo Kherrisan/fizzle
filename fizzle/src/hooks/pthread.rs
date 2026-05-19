@@ -13,8 +13,6 @@ use crate::handlers::thread::*;
 use crate::scheduler;
 use crate::scheduler::Scheduler;
 use crate::{hook_macros, WaitDuration};
-#[cfg(feature = "sigsan")]
-use crate::state::in_sighandler;
 
 // TODO: add these to libc
 const PTHREAD_CANCEL_ENABLE: libc::c_int = 0;
@@ -205,12 +203,6 @@ hook_macros::hook! {
         pointer: *mut libc::c_void // NOTE: this is actually `*const libc::c_void` in the function definition.
     ) -> libc::c_int => fizzle_pthread_key_setspecific(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function pthread_setspecific() called within signal handler")
-            }
-        }
-
         crate::strace!("pthread_setspecific(key={:?}, pointer={:?}) -> ...", key, pointer);
 
         match Scheduler::handle_event(&mut ctx, ThreadSetSpecificEvent::new(key, pointer)) {
@@ -249,12 +241,6 @@ hook_macros::hook! {
         _retval: *mut *mut libc::c_void
     ) -> libc::c_int => fizzle_pthread_tryjoin_np(_ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function pthread_tryjoin_np() called within signal handler")
-            }
-        }
-
         panic!("`pthread_tryjoin_np` unimplemented");
     }
 }
@@ -265,13 +251,6 @@ hook_macros::hook! {
         _retval: *mut *mut libc::c_void,
         _abstime: *const libc::timespec
     ) -> libc::c_int => fizzle_pthread_timedjoin_np(_ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function pthread_timedjoin_np() called within signal handler")
-            }
-        }
-
 
         panic!("`pthread_timedjoin_np` unimplemented");
     }
@@ -284,13 +263,6 @@ hook_macros::hook! {
         _clock_id: *mut libc::clockid_t,
         _abstime: *const libc::timespec
     ) -> libc::c_int => fizzle_pthread_clockjoin_np(_ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function pthread_clockjoin_np() called within signal handler")
-            }
-        }
-
 
         panic!("`pthread_clockjoin_np` unimplemented");
     }
@@ -929,12 +901,6 @@ hook_macros::hook! {
         abstime: *const libc::timespec
     ) -> libc::c_int => fizzle_pthread_cond_clockwait(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function pthread_cond_clockwait() called within signal handler")
-            }
-        }
-
         let cond_id = CondVarPtr::from(cond);
         let mutex_id = MutexPtr::from(mutex);
 
@@ -1116,12 +1082,6 @@ hook_macros::hook! {
         abstime: *const libc::timespec
     ) -> libc::c_int => fizzle_pthread_rwlock_clockrdlock(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function pthread_rwlock_clockrdlock() called within signal handler")
-            }
-        }
-
         let rwlock_ptr = RwLockPtr::from(rwlock);
 
         if abstime.is_null() || unsafe { (*abstime).tv_sec < 0 || (*abstime).tv_nsec < 0 } {
@@ -1229,12 +1189,6 @@ hook_macros::hook! {
         clock_id: libc::clockid_t,
         abstime: *const libc::timespec
     ) -> libc::c_int => fizzle_pthread_rwlock_clockwrlock(ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function pthread_rwlock_clockwrlock() called within signal handler")
-            }
-        }
 
         let rwlock_ptr = RwLockPtr::from(rwlock);
 

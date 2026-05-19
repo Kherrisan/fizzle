@@ -6,17 +6,9 @@ use crate::errno::Errno;
 use crate::external::{stdout, vasprintf};
 use crate::handlers::filestream::*;
 use crate::scheduler::Scheduler;
-#[cfg(feature = "sigsan")]
-use crate::state::in_sighandler;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn printf(format: *const libc::c_char, va_args: ...) -> libc::c_int {
-
-    #[cfg(feature = "sigsan")] {
-        if in_sighandler() {
-            panic!("async-signal-unsafe function printf() called within signal handler")
-        }
-    }
 
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("printf() unimplemented for Fizzle internal use");
@@ -76,12 +68,6 @@ pub unsafe extern "C" fn fprintf(
     format: *const libc::c_char,
     va_args: ...
 ) -> libc::c_int {
-
-    #[cfg(feature = "sigsan")] {
-        if in_sighandler() {
-            panic!("async-signal-unsafe function fprintf() called within signal handler")
-        }
-    }
 
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         let mut out_string = ptr::null_mut();
@@ -174,12 +160,6 @@ pub unsafe extern "C" fn __fprintf_chk(
     format: *const libc::c_char,
     va_args: ...
 ) -> libc::c_int {
-
-    #[cfg(feature = "sigsan")] {
-        if in_sighandler() {
-            panic!("async-signal-unsafe function __fprintf_chk() called within signal handler")
-        }
-    }
 
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         let mut out_string = ptr::null_mut();
@@ -280,23 +260,11 @@ pub unsafe extern "C" fn dprintf(
         panic!("dprintf() unimplemented for Fizzle internal use");
     };
 
-    #[cfg(feature = "sigsan")] {
-        if in_sighandler() {
-            panic!("async-signal-unsafe function dprintf() called within signal handler")
-        }
-    }
-
     unimplemented!("dprintf()")
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vprintf(format: *const libc::c_char, va_args: VaList) -> libc::c_int {
-
-    #[cfg(feature = "sigsan")] {
-        if in_sighandler() {
-            panic!("async-signal-unsafe function vprintf() called within signal handler")
-        }
-    }
 
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         panic!("vprintf() unimplemented for Fizzle internal use");
@@ -359,12 +327,6 @@ pub unsafe extern "C" fn vfprintf(
         stream,
         format
     );
-
-    #[cfg(feature = "sigsan")] {
-        if in_sighandler() {
-            panic!("async-signal-unsafe function vfprintf() called within signal handler")
-        }
-    }
 
     let format_cstr = CStr::from_ptr(format);
     let mut out_string = ptr::null_mut();
@@ -436,12 +398,6 @@ pub unsafe extern "C" fn vdprintf(
         panic!("vdprintf() unimplemented for Fizzle internal use");
     };
 
-    #[cfg(feature = "sigsan")] {
-        if in_sighandler() {
-            panic!("async-signal-unsafe function vdprintf() called within signal handler")
-        }
-    }
-
     unimplemented!("vdprintf()")
 }
 
@@ -450,12 +406,6 @@ pub unsafe extern "C" fn wprintf(_format: *const libc::wchar_t, _va_args: VaList
     let Some(_ctx) = crate::hooks::pre_hook() else {
         panic!("wprintf() unimplemented for Fizzle internal use");
     };
-
-    #[cfg(feature = "sigsan")] {
-        if in_sighandler() {
-            panic!("async-signal-unsafe function wprintf() called within signal handler")
-        }
-    }
 
     unimplemented!("wprintf()")
 }
@@ -470,12 +420,6 @@ pub unsafe extern "C" fn fwprintf(
         panic!("fwprintf() unimplemented for Fizzle internal use");
     };
 
-    #[cfg(feature = "sigsan")] {
-        if in_sighandler() {
-            panic!("async-signal-unsafe function fwprintf() called within signal handler")
-        }
-    }
-
     unimplemented!("fwprintf()")
 }
 
@@ -487,12 +431,7 @@ pub unsafe extern "C" fn vwprintf(
     let Some(_ctx) = crate::hooks::pre_hook() else {
         panic!("vwprintf() unimplemented for Fizzle internal use");
     };
-    #[cfg(feature = "sigsan")] {
-        if in_sighandler() {
-            panic!("async-signal-unsafe function vwprintf() called within signal handler")
-        }
-    }
-
+    
     unimplemented!("vwprintf()")
 }
 
@@ -505,12 +444,6 @@ pub unsafe extern "C" fn vfwprintf(
     let Some(_ctx) = crate::hooks::pre_hook() else {
         panic!("vfwprintf() unimplemented for Fizzle internal use");
     };
-
-    #[cfg(feature = "sigsan")] {
-        if in_sighandler() {
-            panic!("async-signal-unsafe function vfwprintf() called within signal handler")
-        }
-    }
 
     unimplemented!("vfwprintf()")
 }

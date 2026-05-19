@@ -6,8 +6,6 @@ use crate::errno::Errno;
 use crate::handlers::descriptor::*;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
-#[cfg(feature = "sigsan")]
-use crate::state::in_sighandler;
 
 hook_macros::hook! {
     unsafe fn write(
@@ -566,12 +564,6 @@ hook_macros::hook! {
         iovcnt: libc::c_int
     ) -> libc::ssize_t => fizzle_readv(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function readv() called within signal handler")
-            }
-        }
-
         let descriptor_id = Descriptor::from_raw_fd(fd);
 
         crate::strace!("readv(fd={}, iov={:?}, iovcnt={}) -> ...", fd, iov, iovcnt);
@@ -599,12 +591,6 @@ hook_macros::hook! {
         iov: *const libc::iovec,
         iovcnt: libc::c_int
     ) -> libc::ssize_t => fizzle_writev(ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function writev() called within signal handler")
-            }
-        }
 
         let descriptor_id = Descriptor::from_raw_fd(fd);
 

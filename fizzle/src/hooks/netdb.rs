@@ -7,8 +7,6 @@ use fizzle_common::io::SockAddr;
 use crate::handlers::netdb::*;
 use crate::hook_macros;
 use crate::scheduler::Scheduler;
-#[cfg(feature = "sigsan")]
-use crate::state::in_sighandler;
 
 // TODO: Upstream this.
 const EAI_ADDRFAMILY: libc::c_int = -9;
@@ -154,11 +152,6 @@ hook_macros::hook! {
         ty: libc::c_int
     ) -> *mut libc::hostent => fizzle_gethostbyaddr(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function gethostbyaddr() called within signal handler")
-            }
-        }
 
         // deprecated--should we implement??
         unimplemented!("gethostbyaddr")
@@ -171,11 +164,6 @@ hook_macros::hook! {
         name: *const libc::c_char
     ) -> *mut libc::hostent => fizzle_gethostbyname(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function gethostbyname() called within signal handler")
-            }
-        }
 
         crate::strace!("gethostbyname(name={:?}) -> ...", name);
 
@@ -215,11 +203,6 @@ hook_macros::hook! {
         af: libc::c_int
     ) -> *mut libc::hostent => fizzle_gethostbyname2(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function gethostbyname2() called within signal handler")
-            }
-        }
 
         crate::strace!("gethostbyname2(name={:?}, af={}) -> ...", name, af);
 
@@ -336,11 +319,6 @@ hook_macros::hook! {
         proto: *const libc::c_char
     ) -> *mut libc::servent => fizzle_getservbyname(ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function getservbyname() called within signal handler")
-            }
-        }
 
         let name_cstr = CStr::from_ptr(name);
         let proto_cstr = if proto.is_null() {

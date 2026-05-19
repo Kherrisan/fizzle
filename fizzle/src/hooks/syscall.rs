@@ -7,8 +7,6 @@ use crate::handlers::entropy::*;
 use crate::handlers::futex::*;
 use crate::scheduler::Scheduler;
 use crate::{hook_macros, WaitDuration};
-#[cfg(feature = "sigsan")]
-use crate::state::in_sighandler;
 
 /*
 const FUTEX_OP_SHIFT_SET: i32 = libc::FUTEX_OP_OPARG_SHIFT | libc::FUTEX_OP_SET;
@@ -56,12 +54,6 @@ fn futex_op_fmt(futex_op: libc::c_int) -> String {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn syscall(number: libc::c_long, mut va_args: ...) -> libc::c_long {
-
-    #[cfg(feature = "sigsan")] {
-        if in_sighandler() {
-            panic!("async-signal-unsafe function syscall() called within signal handler")
-        }
-    }
 
     let Some(mut ctx) = crate::hooks::pre_hook() else {
         return match number {

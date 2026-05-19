@@ -1,17 +1,9 @@
 use crate::hook_macros;
-#[cfg(feature = "sigsan")]
-use crate::state::in_sighandler;
 
 hook_macros::hook! {
     unsafe fn opendir(
         name: *const libc::c_char
     ) -> *mut libc::DIR => fizzle_opendir(_ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function opendir() called within signal handler")
-            }
-        }
 
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::opendir(name) };
@@ -24,12 +16,6 @@ hook_macros::hook! {
     unsafe fn fdopendir(
         fd: libc::c_int
     ) -> *mut libc::DIR => fizzle_fdopendir(_ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function fdopendir() called within signal handler")
-            }
-        }
 
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::fdopendir(fd) };
@@ -53,11 +39,6 @@ hook_macros::hook! {
     unsafe fn closedir(
         dirp: *mut libc::DIR
     ) -> libc::c_int => fizzle_closedir(_ctx) {
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function closedir() called within signal handler")
-            }
-        }
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::closedir(dirp) };
         #[cfg(not(feature = "passthroughfs"))]
@@ -69,12 +50,6 @@ hook_macros::hook! {
     unsafe fn readdir(
         _dirp: *mut libc::DIR
     ) -> *mut libc::dirent => fizzle_readdir(_ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function readdir() called within signal handler")
-            }
-        }
 
         #[cfg(feature = "passthroughfs")]
         return unsafe { libc::readdir(_dirp) };

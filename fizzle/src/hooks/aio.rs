@@ -1,17 +1,9 @@
 use crate::hook_macros;
-#[cfg(feature = "sigsan")]
-use crate::state::in_sighandler;
 
 hook_macros::hook! {
     unsafe fn aio_read(
         _aiocbp: *mut libc::aiocb
     ) -> libc::ssize_t => fizzle_aio_read(_ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function aio_read() called within signal handler")
-            }
-        }
 
         unimplemented!("aio_read")
     }
@@ -21,12 +13,6 @@ hook_macros::hook! {
     unsafe fn aio_write(
         _aiocbp: *mut libc::aiocb
     ) -> libc::ssize_t => fizzle_aio_write(_ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function aio_write() called within signal handler")
-            }
-        }
 
         unimplemented!("aio_write")
     }
@@ -38,11 +24,6 @@ hook_macros::hook! {
         _aiocbp: *mut libc::aiocb
     ) -> libc::ssize_t => fizzle_aio_fsync(_ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function aio_fsync() called within signal handler")
-            }
-        }
         unimplemented!("aio_fsync")
     }
 }
@@ -70,12 +51,6 @@ hook_macros::hook! {
         _timeout: *const libc::timespec
     ) -> libc::ssize_t => fizzle_aio_suspend(_ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function aio_suspend() called within signal handler")
-            }
-        }
-
         unimplemented!("aio_suspend")
     }
 }
@@ -86,11 +61,6 @@ hook_macros::hook! {
         _aiocbp: *mut libc::aiocb
     ) -> libc::ssize_t => fizzle_aio_cancel(_ctx) {
 
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function aio_cancel() called within signal handler")
-            }
-        }
         unimplemented!("aio_cancel")
     }
 }
@@ -102,12 +72,6 @@ hook_macros::hook! {
         _nitems: libc::c_int,
         _sevp: *mut libc::sigevent
     ) -> libc::ssize_t => fizzle_lio_listio(_ctx) {
-
-        #[cfg(feature = "sigsan")] {
-            if in_sighandler() {
-                panic!("async-signal-unsafe function lio_listio() called within signal handler")
-            }
-        }
 
         unimplemented!("lio_listio")
     }
