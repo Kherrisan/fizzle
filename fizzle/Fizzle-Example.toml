@@ -43,3 +43,12 @@ module = "fizzle-plugin-fuzz-s1ap"
 plugin = "S1apFuzzClient"
 # Specifies the number of concurrent connections to establish. This should normally be set to 1.
 streams = 1
+
+# File-backed stream plugin example:
+#   FIZZLE_PAYLOAD_FILE=/tmp/payload.raw LD_PRELOAD=target/release/libfizzle.so ./target-server
+# [io."tcp-client:127.0.0.1:6379"]
+# method = "plugin"
+# when = "startup"
+# module = "fizzle-plugin-file-stream"
+# plugin = "FileBackedFuzzClient"
+# streams = 1

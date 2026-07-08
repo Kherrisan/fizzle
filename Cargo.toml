@@ -12,6 +12,7 @@ members = [
     "fizzle-plugin-fuzz-s1ap",
     "fizzle-plugin-libafl-stream",
     "fizzle-plugin-libafl-datagram",
+    "fizzle-plugin-file-stream",
     "fizzle-plugin-ngap-server",
     "fizzle-plugin-spf-pbt",
 ]
