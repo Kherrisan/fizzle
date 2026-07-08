@@ -21,7 +21,12 @@ SERVER_STDERR="$WORKDIR/server.stderr"
 BUILD_STDOUT="$WORKDIR/build.stdout"
 BUILD_STDERR="$WORKDIR/build.stderr"
 
-printf 'file-backed payload over fizzle\n' > "$PAYLOAD_FILE"
+cat > "$PAYLOAD_FILE" <<'EOF'
+file-backed payload over fizzle
+second recv-sized segment with more bytes
+third segment keeps the stream open long enough
+final segment proves repeated recv aggregation
+EOF
 
 cat > "$CONFIG_FILE" <<'EOF'
 [io."tcp-client:127.0.0.1:39175"]

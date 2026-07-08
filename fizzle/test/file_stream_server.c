@@ -7,7 +7,11 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-static const char expected[] = "file-backed payload over fizzle\n";
+static const char expected[] =
+    "file-backed payload over fizzle\n"
+    "second recv-sized segment with more bytes\n"
+    "third segment keeps the stream open long enough\n"
+    "final segment proves repeated recv aggregation\n";
 
 static void die(const char *message) {
     perror(message);
@@ -45,8 +49,11 @@ int main(void) {
     memset(buf, 0, sizeof(buf));
 
     size_t total = 0;
+    size_t recv_calls = 0;
     while (total < sizeof(expected) - 1) {
-        ssize_t got = recv(client_fd, buf + total, sizeof(buf) - 1 - total, 0);
+        size_t remaining = sizeof(expected) - 1 - total;
+        size_t request = remaining < 7 ? remaining : 7;
+        ssize_t got = recv(client_fd, buf + total, request, 0);
         if (got < 0) {
             die("recv");
         }
@@ -55,10 +62,15 @@ int main(void) {
             return 1;
         }
         total += (size_t)got;
+        recv_calls++;
     }
 
     if (total != sizeof(expected) - 1 || memcmp(buf, expected, sizeof(expected) - 1) != 0) {
         fprintf(stderr, "unexpected payload: got %zu bytes: %.*s\n", total, (int)total, buf);
+        return 1;
+    }
+    if (recv_calls < 2) {
+        fprintf(stderr, "expected multiple recv calls, got %zu\n", recv_calls);
         return 1;
     }
 
