@@ -1165,17 +1165,16 @@ impl Event for SocketAcceptEvent {
                             state.lower_polled(&server_poll);
                         }
 
-                        let mut connecting_info_mut = connecting_info.borrow_mut();
-
-                        let SocketState::Connecting(connecting_socket_info) =
-                            &mut connecting_info_mut.state
-                        else {
-                            unreachable!()
+                        let connect_polled = match &mut connecting_info.borrow_mut().state {
+                            SocketState::Connecting(connecting_socket_info) => {
+                                Some(connecting_socket_info.connect_polled.clone())
+                            }
+                            SocketState::PendingConnection(_) => None,
+                            _ => unreachable!(),
                         };
-
-                        let connect_polled = connecting_socket_info.connect_polled.clone();
-                        drop(connecting_info_mut);
-                        state.raise_polled(&connect_polled);
+                        if let Some(connect_polled) = connect_polled {
+                            state.raise_polled(&connect_polled);
+                        }
 
                         self.state =
                             SocketAcceptState::Finish(connecting_info.clone(), server_address);
@@ -3627,4 +3626,3 @@ impl Event for SocketWriteEvent<'_> {
         }
     }
 }
-
